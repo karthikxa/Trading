@@ -78,6 +78,7 @@ This repository hosts **Chartkar / Openbots TradingAI**, an ultra-lightweight, h
 │   │   ├── ChartCore.tsx   # KlineCharts integration wrapper
 │   │   └── index.css       # Source CSS design tokens
 ├── kronos_model/           # Foundation model architecture & BSQ tokenizer definitions
+├── laya/                   # Laya 0.4B ModernBERT System 1 decision engine & router
 ├── static/                 # Classic terminal fallback interface
 ├── test_pipeline.py        # Standalone verification script for Kronos + Laya
 └── requirements.txt        # Python dependency manifest
