@@ -1,0 +1,1033 @@
+// TradingView-style chart tabs along the top of the app. Each tab is an
+// independent chart view (instrument + interval); the active tab drives the
+// single ChartCore. Per-tab state lives entirely in App (see persist.ChartTab) —
+// this component is presentational plus drag-to-reorder.
+
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import type { ChartCell, ChartTab } from "./lib/persist";
+import { dropTarget, previewDeltas, type DragTarget, type Rect } from "./lib/tabDrag";
+import SymbolIcon from "./SymbolIcon";
+import Tooltip from "./components/Tooltip";
+import ContextMenu from "./ContextMenu";
+import MergeTabsMenu from "./MergeTabsMenu";
+import { isSynthetic } from "./lib/syntheticRegistry";
+import { catalogueMatches, matchingTabIds } from "./lib/tabSearch";
+import type { PriceSide, TabStrip } from "./theme";
+import { fmtBarChange, useTabBarChange } from "./lib/tabBarChange";
+import { fetchAllMarkets, type Instrument } from "./lib/feed";
+
+// Where the floating clone of the dragged chip sits for a given cursor point:
+// the grab offset, clamped to the tab bar (the chip rides the bar only). The
+// document listener that moves the clone and the merge hit test must agree on
+// this, or a merge would trigger somewhere other than where the chip is drawn.
+function floatPos(
+  g: { grabDx: number; grabDy: number; bounds: { minX: number; maxX: number; minY: number; maxY: number } },
+  clientX: number,
+  clientY: number,
+): { x: number; y: number } {
+  return {
+    x: Math.min(Math.max(clientX - g.grabDx, g.bounds.minX), g.bounds.maxX),
+    y: Math.min(Math.max(clientY - g.grabDy, g.bounds.minY), g.bounds.maxY),
+  };
+}
+
+// Must match .tab-bar-tabs { gap } in App.css — the flow simulation that
+// slides chips apart uses it to predict where each chip lands.
+const TAB_GAP = 6;
+
+// 1x1 transparent GIF handed to setDragImage so the browser's faded chip
+// snapshot never shows — the .tab-float clone below is the visible drag image.
+const NO_TABS: ReadonlySet<string> = new Set();
+
+const emptyImg = typeof Image === "undefined" ? null : new Image();
+if (emptyImg != null)
+  emptyImg.src =
+    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
+// Format an ISO-8601 UTC next-open time for the closed-badge tooltip, in the
+// viewer's local zone. "today"/"tomorrow" when near; otherwise a dated weekday
+// (e.g. "Mon, Jun 29 22:00") since the next open can be up to a week out and the
+// weekday alone can't tell this week from next. Falls back to the raw string if
+// it doesn't parse.
+function fmtNextOpen(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const time = d.toLocaleString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const startOfDay = (x: Date) =>
+    new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOfDay(d) - startOfDay(new Date())) / 86_400_000);
+  if (days <= 0) return `today ${time}`;
+  if (days === 1) return `tomorrow ${time}`;
+  const date = d.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  return `${date} ${time}`;
+}
+
+// The chip's inner markup, shared by the real tab and its floating drag clone
+// so the two can't drift (the clone previously copy-pasted this and lost the
+// closed-market badge). The close button stays chip-only, outside this.
+function ChipContent({
+  lead,
+  cells,
+  closedTip,
+  alertBadge = false,
+  snapshotBadge = false,
+  barChange = null,
+  tips = true,
+}: {
+  lead: ChartCell;
+  cells: ChartCell[];
+  closedTip: string | null;
+  alertBadge?: boolean;
+  snapshotBadge?: boolean;
+  // Live-bar % change of the lead cell; null hides it (option off, no data).
+  barChange?: number | null;
+  // Badge tooltips (the chip itself has none). Off on the drag clone.
+  tips?: boolean;
+}) {
+  const cellCount = cells.length;
+  const tip = (content: string | string[], node: ReactNode) => (
+    <Tooltip asChild content={content} disabled={!tips}>
+      {node}
+    </Tooltip>
+  );
+  // The hover × sits over the chip's right end, so only the LAST trailing item
+  // fades under it (App.css .tab-trail-last); the rest stay readable.
+  const last = alertBadge
+    ? "alert"
+    : cellCount > 1
+      ? "count"
+      : barChange != null
+        ? "change"
+        : "period";
+  const trail = (k: string) => (k === last ? " tab-trail-last" : "");
+  return (
+    <>
+      <SymbolIcon epic={lead.symbol.epic} type={lead.symbol.type} className="tab-icon" />
+      {/* Camera on a tab restored from a snapshot (read-only until Unlock), so
+          it can't be mistaken for the live chart of the same symbol. Leading,
+          not trailing: the trailing items fade out under the hover ×. */}
+      {snapshotBadge && tip("Snapshot view (read-only)",
+        <span className="tab-snapshot-badge" aria-label="Snapshot view">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+            <circle cx="12" cy="13" r="4" />
+          </svg>
+        </span>
+      )}
+      <span className="tab-symbol">
+        {isSynthetic(lead.symbol.epic) ? (lead.symbol.name ?? lead.symbol.epic) : lead.symbol.epic}
+      </span>
+      <span className={`tab-period${trail("period")}`}>{lead.period.label}</span>
+      {barChange != null && (
+        <span
+          className={`tab-bar-change${barChange > 0 ? " up" : barChange < 0 ? " down" : ""}${trail("change")}`}
+        >
+          {fmtBarChange(barChange)}
+        </span>
+      )}
+      {cellCount > 1 && tip(
+        cells.map((c) => `${c.symbol.name} · ${c.period.label}`),
+        <span className={`tab-count${trail("count")}`}>{cellCount}</span>,
+      )}
+      {/* Crescent-moon badge pinned to the tab's top-right when the lead cell's
+          market is closed (CSS positions it absolutely). Its tooltip names
+          the next opening time when known. */}
+      {closedTip != null && tip(closedTip,
+        <span className="tab-closed-badge" aria-label={closedTip}>
+          {/* Solid crescent (currentColor) — keeps the chrome monochrome rather
+              than the lone colored 🌙 emoji it replaced. */}
+          <svg viewBox="0 0 24 24" width="8" height="8" aria-hidden="true">
+            <path fill="currentColor" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+          </svg>
+        </span>
+      )}
+      {/* Inline bell when an alert fired for an epic in this tab while it was
+          in the background; cleared on visit (App owns the set). Inline (not
+          corner-pinned) so it can never be clipped by the bar edge or collide
+          with the close ×. */}
+      {alertBadge && tip("Alert fired",
+        <span className={`tab-alert-badge${trail("alert")}`} aria-label="Alert fired">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M12 22a2.3 2.3 0 0 0 2.3-2.3H9.7A2.3 2.3 0 0 0 12 22zm7-5.3v-1l-1.7-1.7v-4.2A5.3 5.3 0 0 0 13.5 4.6V4a1.5 1.5 0 0 0-3 0v.6A5.3 5.3 0 0 0 6.7 9.8V14L5 15.7v1z"
+            />
+          </svg>
+        </span>
+      )}
+    </>
+  );
+}
+
+interface Props {
+  tabs: ChartTab[];
+  activeId: string;
+  // Market-closed state keyed by EPIC (polled at the App level for every tab's
+  // lead epic, so it's live for background tabs too). A tab shows a crescent-moon
+  // badge when its lead cell's epic is closed; nextOpen feeds the badge tooltip.
+  closedEpics: Record<string, { closed: boolean; nextOpen: string | null }>;
+  // Tabs with an unseen alert firing (App-owned, cleared on visit) — their chips
+  // show a bell dot.
+  alertTabIds: ReadonlySet<string>;
+  // Tabs holding a read-only snapshot view (camera badge on the chip).
+  snapshotTabIds?: ReadonlySet<string>;
+  onSelect: (id: string) => void;
+  onAdd: () => void;
+  onClose: (id: string) => void;
+  onReorder: (from: number, to: number) => void;
+  // Merge gestures (see App.mergeTabs). canMerge gates UI affordances by the
+  // 4-cell cap; onMerge performs the merge (sources merge in the given order).
+  canMerge: (sourceId: string, targetId: string) => boolean;
+  onMerge: (targetId: string, sourceIds: string[]) => void;
+  // The context menu's checklist already ends in an explicit Merge click, so
+  // App can route it past the confirm that guards the drag gestures.
+  onMergePicked?: (targetId: string, sourceIds: string[]) => void;
+  // A chip drag started/ended (id or null) — App shows ChartGrid's merge
+  // overlay while a chip is in flight.
+  onDragActive: (tabId: string | null) => void;
+  // Workspace-level controls pinned to the right of the bar (Backtest, workspace
+  // layouts, the split picker, theme toggle) — they aren't specific to one chart.
+  trailing?: ReactNode;
+  // Find-open-symbol search (spec 2026-07-17-tab-symbol-search). The query is
+  // lifted to App because it also drives cell glow in ChartGrid; the
+  // open/collapsed state of the input is local to this component.
+  searchQuery: string;
+  onSearchQuery: (q: string) => void;
+  // Full-catalogue fallback (spec 2026-08-12-tab-search-catalogue-fallback):
+  // when the query matches no OPEN tab, a dropdown offers catalogue symbols;
+  // picking one opens it as a new tab. The catalogue is broker-specific.
+  brokerId: string;
+  onOpenSymbol: (s: Instrument) => void;
+  // Strip layout (Settings / Appearance): wrapping rows or one scrolling row.
+  strip?: TabStrip;
+  // Today's % change on the chips: each tab's own ChartTab.barChange, else
+  // this default (Settings.tabBarChange). The context menu toggles one tab.
+  // The feeds run here, not in App, so ticks re-render only the bar.
+  showBarChange?: boolean;
+  onToggleBarChange?: (tabId: string) => void;
+  priceSide?: PriceSide;
+}
+
+export default function TabBar({
+  tabs,
+  activeId,
+  closedEpics,
+  alertTabIds,
+  snapshotTabIds = NO_TABS,
+  onSelect,
+  onAdd,
+  onClose,
+  onReorder,
+  canMerge,
+  onMerge,
+  onMergePicked = onMerge,
+  onDragActive,
+  trailing,
+  searchQuery,
+  onSearchQuery,
+  brokerId,
+  onOpenSymbol,
+  strip = "rows",
+  showBarChange = false,
+  onToggleBarChange,
+  priceSide = "mid",
+}: Props) {
+  const leadOf = (t: ChartTab) => t.cells.find((c) => c.id === t.activeCellId) ?? t.cells[0];
+  const showsBarChange = (t: ChartTab) => t.barChange ?? showBarChange;
+  const barChanges = useTabBarChange(
+    tabs.filter(showsBarChange).map((t) => leadOf(t).symbol.epic),
+    brokerId,
+    priceSide,
+  );
+  const hasCtxItems = tabs.length > 1 || onToggleBarChange != null;
+  const barChangeOf = (t: ChartTab): number | null => {
+    if (!showsBarChange(t)) return null;
+    return barChanges[leadOf(t).symbol.epic] ?? null;
+  };
+  const searchHits = matchingTabIds(tabs, searchQuery);
+  const scrolls = strip === "scroll";
+  // Drag-to-reorder state. The dragged tab is tracked by ID, not index (see
+  // the effect below); `target` is where a drop right now would land — an
+  // insertion slot (chips slide apart to preview it) or a merge into a chip
+  // (highlight, only when the dragged chip lands squarely on it). Geometry is
+  // measured ONCE at dragstart into dragGeom: the preview transforms change
+  // getBoundingClientRect, so live measurement would feed back into itself.
+  // `anim` gates the transform transition, so a committed drop can apply the
+  // real new order without every chip animating its transform back to zero.
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [target, setTarget] = useState<DragTarget | null>(null);
+  // The insertion slot the slide-apart preview is drawn for. It survives a
+  // merge hover (the gap stays open while a chip is highlighted) so the drawn
+  // geometry never snaps back under the cursor — a snap-back would re-hit-test
+  // somewhere else and flip the target on every dragover.
+  const [previewTo, setPreviewTo] = useState<number | null>(null);
+  const [anim, setAnim] = useState(false);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  // Edge fades (App.css reads data-more-left / data-more-right off the strip):
+  // stamped straight onto the DOM from scroll and resize rather than through
+  // state, since the value changes on every scrolled pixel.
+  const updateEdges = useCallback(() => {
+    const bar = barRef.current;
+    if (bar == null) return;
+    const left = bar.scrollLeft > 1;
+    const right = bar.scrollLeft + bar.clientWidth < bar.scrollWidth - 1;
+    if (left) bar.setAttribute("data-more-left", "");
+    else bar.removeAttribute("data-more-left");
+    if (right) bar.setAttribute("data-more-right", "");
+    else bar.removeAttribute("data-more-right");
+  }, []);
+  useEffect(() => {
+    updateEdges();
+    const bar = barRef.current;
+    if (bar == null || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(updateEdges);
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, [updateEdges, tabs]);
+  // Selecting a tab (click, keyboard, a cross-window push) brings it into
+  // view; otherwise a tab activated off-screen leaves the strip looking as if
+  // nothing is selected.
+  useEffect(() => {
+    const bar = barRef.current;
+    const chip = bar == null
+      ? null
+      : Array.from(bar.querySelectorAll<HTMLElement>(":scope > .tab")).find(
+          (c) => c.dataset.tabId === activeId,
+        );
+    if (chip != null && typeof chip.scrollIntoView === "function") {
+      chip.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+    updateEdges();
+  }, [activeId, updateEdges]);
+  const searchBoxRef = useRef<HTMLDivElement | null>(null);
+  const floatRef = useRef<HTMLDivElement | null>(null);
+  const dragGeom = useRef<{
+    rects: Rect[];
+    // Tab ids in order AT dragstart. If the live `tabs` sequence diverges from
+    // this (a cross-window state push replaced the array mid-drag), the cached
+    // rects/indices no longer describe the DOM — abort rather than mis-target.
+    ids: string[];
+    // scrollLeft AT dragstart. The rects below are viewport coordinates, but
+    // the strip scrolls (Chrome auto-scrolls a scrollable container during a
+    // native drag, and the wheel handler is live throughout), which slides
+    // every chip sideways under the cached rects. Hit-testing shifts them by
+    // the scroll since this mark, or a drop past the boundary lands on the
+    // wrong slot.
+    scrollLeft: number;
+    containerWidth: number;
+    // Rows mode: the first row is shorter by the floated .tab-bar-actions.
+    firstRowWidth: number;
+    grabDx: number;
+    grabDy: number;
+    // Clamp range for the clone's translate: the chip rides the tab bar only
+    // (Chrome-style), sliding horizontally along it no matter where the
+    // cursor goes — including down onto the chart's merge overlay.
+    bounds: { minX: number; maxX: number; minY: number; maxY: number };
+  } | null>(null);
+  // The cancelled-drag anim-off timer (see cancelDrag) — held in a ref so a new
+  // drag started within its 200ms window can cancel it before it strips the
+  // transition mid-gesture.
+  const animTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const draggedTab = dragId != null ? (tabs.find((t) => t.id === dragId) ?? null) : null;
+  const fromIdx = dragId != null ? tabs.findIndex((t) => t.id === dragId) : -1;
+
+  const clearAnimTimer = () => {
+    if (animTimer.current != null) {
+      clearTimeout(animTimer.current);
+      animTimer.current = null;
+    }
+  };
+
+  // Shared cancel cleanup for a drag that ends WITHOUT committing (dragend, or
+  // the tab list changing under the drag): drop the drag state but leave `anim`
+  // on so the preview gap can slide closed, clearing it once the 150ms App.css
+  // transition has played. The single owner of the cancel path (Fix C).
+  const cancelDrag = useCallback(() => {
+    setDragId(null);
+    setTarget(null);
+    setPreviewTo(null);
+    dragGeom.current = null;
+    onDragActive(null);
+    if (animTimer.current != null) clearTimeout(animTimer.current);
+    animTimer.current = setTimeout(() => {
+      setAnim(false);
+      animTimer.current = null;
+    }, 200);
+  }, [onDragActive]);
+
+  useEffect(() => {
+    // Any mid-drag change to the tab list invalidates the dragstart geometry
+    // snapshot: the dragged tab merging away (its chip unmounts before dragend,
+    // which Chrome swallows on a detached node), OR a cross-window state push
+    // replacing `tabs`. Either way the cached rects/indices no longer describe
+    // the DOM — abort rather than index into stale data.
+    if (dragId == null) return;
+    const g = dragGeom.current;
+    const idsChanged =
+      g != null && (g.ids.length !== tabs.length || g.ids.some((id, i) => tabs[i]?.id !== id));
+    if (draggedTab == null || idsChanged) cancelDrag();
+  }, [dragId, draggedTab, tabs, cancelDrag]);
+
+  useEffect(() => {
+    // The clone tracks the cursor for the whole gesture — so listen at the
+    // document — but its position is clamped to the tab bar (bounds cached at
+    // dragstart): the chip slides only along the bar, Chrome-style, even while
+    // the cursor is down over the chart's merge overlay or off the window.
+    // It's positioned via style.transform directly: dragover fires roughly
+    // per frame, and a React state update per event would re-render the bar.
+    if (dragId == null) return;
+    const move = (e: DragEvent) => {
+      const g = dragGeom.current;
+      const el = floatRef.current;
+      if (g == null || el == null) return;
+      const { x, y } = floatPos(g, e.clientX, e.clientY);
+      el.style.transform = `translate(${x}px, ${y}px) scale(1.05)`;
+    };
+    document.addEventListener("dragover", move);
+    return () => document.removeEventListener("dragover", move);
+  }, [dragId]);
+
+  // Right-click menu on a chip and the follow-up merge checklist, anchored
+  // where the user clicked.
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
+  const ctxTab = ctxMenu != null ? tabs.find((t) => t.id === ctxMenu.tabId) : undefined;
+  const [mergePick, setMergePick] = useState<{ x: number; y: number; tabId: string } | null>(null);
+
+  // Find-open-symbol search: collapsed magnifier ⇄ inline input.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    onSearchQuery("");
+  }, [onSearchQuery]);
+
+  // Broker catalogue for the no-open-tab-matches fallback. Loaded when the
+  // search opens (fetchAllMarkets is session-cached per broker, so repeat opens
+  // are free); reloaded if the broker changes while the search is open.
+  const [catalogue, setCatalogue] = useState<Instrument[]>([]);
+  const [catalogueLoading, setCatalogueLoading] = useState(false);
+  useEffect(() => {
+    if (!searchOpen) return;
+    let alive = true;
+    setCatalogueLoading(true);
+    void fetchAllMarkets(brokerId).then((all) => {
+      if (!alive) return;
+      setCatalogue(all);
+      setCatalogueLoading(false);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [searchOpen, brokerId]);
+
+  // A query that matches open tabs scrolls the first match into view: the
+  // highlight is useless on a chip that sits off the edge of a scrolling
+  // strip. In rows mode every chip is already visible, so this is a no-op.
+  const firstHit = tabs.find((t) => searchHits.has(t.id))?.id ?? null;
+  useEffect(() => {
+    if (firstHit == null) return;
+    const bar = barRef.current;
+    const chip = bar == null
+      ? null
+      : Array.from(bar.querySelectorAll<HTMLElement>(":scope > .tab")).find(
+          (c) => c.dataset.tabId === firstHit,
+        );
+    if (chip != null && typeof chip.scrollIntoView === "function") {
+      chip.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+    updateEdges();
+  }, [firstHit, updateEdges]);
+
+  // The fallback dropdown shows only when the query matches NO open tab.
+  const fallbackOpen =
+    searchOpen && searchQuery.trim() !== "" && searchHits.size === 0;
+  const fallbackHits = fallbackOpen ? catalogueMatches(catalogue, searchQuery) : [];
+  // Keyboard highlight in the dropdown; re-anchored to the top on every query
+  // change (the list under the cursor is new).
+  const [fallbackIdx, setFallbackIdx] = useState(0);
+  useEffect(() => setFallbackIdx(0), [searchQuery]);
+
+  const pickFallback = useCallback(
+    (s: Instrument) => {
+      onOpenSymbol(s);
+      closeSearch();
+    },
+    [onOpenSymbol, closeSearch],
+  );
+
+  // Outside-click closes the search: anything that isn't the search control
+  // itself (input, magnifier, catalogue dropdown) dismisses it, a tab chip
+  // included. Deliberately on CLICK rather than the house mousedown idiom —
+  // closing swaps the input back to the narrow magnifier, which reflows the
+  // whole wrapping strip, so on mousedown the chips would shift out from under
+  // the cursor before mouseup and the chip the user pressed would never receive
+  // its click. On click its handler has already run. (The click that OPENS the
+  // search lands inside the control, so it can't immediately close it.)
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onClick = (e: MouseEvent) => {
+      const box = searchBoxRef.current;
+      const target = e.target as Node | null;
+      if (box == null || target == null) return;
+      // The opening click on the magnifier arrives here with its target ALREADY
+      // unmounted: React swaps in the input during the same dispatch (trusted
+      // clicks flush synchronously) and this effect attaches mid-propagation.
+      // A detached node fails box.contains() and would read as an outside
+      // click, shutting the search the instant it opened.
+      if (!target.isConnected) return;
+      if (!box.contains(target)) closeSearch();
+    };
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, [searchOpen, closeSearch]);
+
+  // Move the selection `delta` tabs along and focus the chip that lands there,
+  // so a keyboard walk moves focus and selection together (the roving-tabindex
+  // pattern a role="tablist" implies). Clamped, not wrapped: running off the
+  // end should stop, not jump back to the other side of the strip.
+  const stepTab = useCallback(
+    (delta: number) => {
+      const from = tabs.findIndex((t) => t.id === activeId);
+      if (from === -1) return;
+      const to = Math.min(Math.max(from + delta, 0), tabs.length - 1);
+      const next = tabs[to];
+      if (next == null || next.id === activeId) return;
+      onSelect(next.id);
+      // The chip for the new id doesn't exist as the focused one until React
+      // re-renders, so focus it on the next frame. The activeId effect above
+      // has already scrolled it into view by then.
+      requestAnimationFrame(() => {
+        const bar = barRef.current;
+        const chip = bar == null
+          ? null
+          : Array.from(bar.querySelectorAll<HTMLElement>(":scope > .tab")).find(
+              (c) => c.dataset.tabId === next.id,
+            );
+        chip?.focus();
+      });
+    },
+    [tabs, activeId, onSelect],
+  );
+
+  // Bare [ / ] step through the tabs. Every conventional tab-cycling chord
+  // (Ctrl+Tab, Ctrl+PageUp/Down, Cmd+Alt+Arrow) is claimed by the browser
+  // itself and can't be intercepted by a page, so this uses single keys —
+  // suppressed whenever an editable element has focus.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "[" && e.key !== "]") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (
+        el != null &&
+        (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      stepTab(e.key === "]" ? 1 : -1);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [stepTab]);
+
+  // Ctrl/Cmd+F opens (or re-focuses) the search instead of the browser find.
+  // Suppressed while another editable element has focus so in-app text fields
+  // keep their native find/typing behavior.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Escape closes the open search from anywhere on the page — after a
+      // click-to-jump, focus sits on the clicked tab, not the input, so the
+      // input's own onKeyDown can't catch it. Guarded on searchOpen so a
+      // closed search never swallows Escape from other UI.
+      if (e.key === "Escape") {
+        if (searchOpen) closeSearch();
+        return;
+      }
+      if (e.key !== "f" || !(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      const editable =
+        el != null &&
+        el !== searchRef.current &&
+        (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if (editable) return;
+      e.preventDefault();
+      if (searchOpen) searchRef.current?.select();
+      else setSearchOpen(true);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [searchOpen, closeSearch]);
+
+  // committed = the drop landed and the real order is about to change: kill
+  // the transition in the same commit, otherwise every chip animates its
+  // transform back to 0 while the layout also jumps. A cancelled drag keeps
+  // the transition on so the preview gap visibly slides closed.
+  const endDrag = (committed: boolean) => {
+    // Idempotent: dragend fires after a committed drop too, so onDrop's
+    // endDrag(true) is followed by onDragEnd's endDrag(false). This closure is
+    // from the post-drop render (dragId already flushed to null), so the
+    // trailing call no-ops instead of re-arming the cancel timer.
+    if (dragId == null) return;
+    if (committed) {
+      setDragId(null);
+      setTarget(null);
+      setPreviewTo(null);
+      clearAnimTimer();
+      setAnim(false);
+      dragGeom.current = null;
+      onDragActive(null);
+    } else {
+      cancelDrag();
+    }
+  };
+
+  // A drag in flight when the bar unmounts leaves a pending cancel timer.
+  useEffect(() => () => clearAnimTimer(), []);
+
+  // Slide-apart preview: for an insertion target, each chip's translate to
+  // where it would sit with the dragged chip moved there. null = no shifts
+  // (no drag, or hovering a merge target).
+  const deltas =
+    fromIdx !== -1 && target != null && previewTo != null && dragGeom.current != null
+      ? previewDeltas(
+          dragGeom.current.rects,
+          dragGeom.current.containerWidth,
+          TAB_GAP,
+          fromIdx,
+          previewTo,
+          dragGeom.current.firstRowWidth,
+        )
+      : null;
+
+  const floatLead =
+    draggedTab != null
+      ? (draggedTab.cells.find((c) => c.id === draggedTab.activeCellId) ??
+        draggedTab.cells[0])
+      : null;
+  // The clone shows the same closed-market badge as the chip it lifted off —
+  // recomputed here because the chip's per-row closedTip is scoped to the map.
+  const floatMeta = floatLead != null ? closedEpics[floatLead.symbol.epic] : undefined;
+  const floatClosedTip = floatMeta?.closed
+    ? floatMeta.nextOpen
+      ? `Market closed · opens ${fmtNextOpen(floatMeta.nextOpen)}`
+      : "Market closed"
+    : null;
+
+  // + and Find symbol. In rows mode they ride INSIDE the wrapping strip, at
+  // the end of the last row; in scroll mode they sit in a fixed slot after the
+  // scroller, so they stay reachable at any scroll position and the search
+  // dropdown is never clipped by the scroller's overflow.
+  const tail = (
+    <div className="tab-bar-tail">
+    <Tooltip content="New tab">
+      <button className="tab-add" onClick={onAdd}>
+        +
+      </button>
+    </Tooltip>
+    <div className="tab-bar-search" ref={searchBoxRef}>
+      {searchOpen ? (
+        <input
+          ref={searchRef}
+          className="tab-search-input"
+          placeholder="Find symbol…"
+          aria-label="Find open symbol"
+          value={searchQuery}
+          onChange={(e) => onSearchQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") closeSearch();
+            if (!fallbackOpen || fallbackHits.length === 0) return;
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setFallbackIdx((i) => Math.min(i + 1, fallbackHits.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setFallbackIdx((i) => Math.max(i - 1, 0));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              const hit = fallbackHits[fallbackIdx] ?? fallbackHits[0];
+              if (hit != null) pickFallback(hit);
+            }
+          }}
+          autoFocus
+        />
+      ) : (
+        <Tooltip content="Find open symbol (Ctrl/Cmd+F)">
+          <button
+            className="tab-search"
+            aria-label="Find open symbol"
+            onClick={() => setSearchOpen(true)}
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+                 stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+          </button>
+        </Tooltip>
+      )}
+      {/* Catalogue fallback: no open tab matched, so offer the full symbol
+          list. Inside .tab-bar-search (and so .tab-bar) on purpose: the
+          outside-click closer above treats clicks here as in-search. */}
+      {fallbackOpen && (
+        <div className="tab-search-dropdown" role="listbox" aria-label="All symbols">
+          <div className="tab-search-dropdown-head">No open tab matches</div>
+          {catalogueLoading && catalogue.length === 0 ? (
+            <div className="tab-search-dropdown-empty">Loading…</div>
+          ) : fallbackHits.length === 0 ? (
+            <div className="tab-search-dropdown-empty">
+              No symbols match “{searchQuery.trim()}”.
+            </div>
+          ) : (
+            <>
+              <div className="tab-search-dropdown-label">All symbols</div>
+              {fallbackHits.map((m, i) => (
+                <button
+                  key={m.epic}
+                  type="button"
+                  role="option"
+                  aria-selected={i === fallbackIdx}
+                  className={
+                    "tab-search-dropdown-row" + (i === fallbackIdx ? " on" : "")
+                  }
+                  onMouseEnter={() => setFallbackIdx(i)}
+                  onClick={() => pickFallback(m)}
+                >
+                  <SymbolIcon epic={m.epic} type={m.type} className="ss-icon" />
+                  <span className="tab-search-dropdown-epic">{m.epic}</span>
+                  <span className="tab-search-dropdown-name">{m.name}</span>
+                </button>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+    </div>
+  );
+
+  return (
+    <div className={`tab-bar strip-${strip}`}>
+      {/* Rows: the actions come FIRST in the DOM so they can float right on
+          the first row and the chips flow around them (a float only shapes
+          content that follows it). Scroll: one row, actions pinned after. */}
+      {!scrolls && trailing && <div className="tab-bar-actions">{trailing}</div>}
+      <div
+        className={"tab-bar-tabs" + (anim ? " drag-anim" : "")}
+        role="tablist"
+        ref={barRef}
+        onScroll={updateEdges}
+        onWheel={(e) => {
+          // A mouse wheel only gives vertical deltas; turn them into strip
+          // scroll so the wheel reaches hidden tabs without a shift key.
+          // Trackpads send deltaX and scroll natively, so leave those alone.
+          const bar = e.currentTarget;
+          if (e.deltaX === 0 && e.deltaY !== 0 && bar.scrollWidth > bar.clientWidth) {
+            bar.scrollLeft += e.deltaY;
+          }
+        }}
+        onDragOver={(e) => {
+          // Track where a drop would land, working entirely off the rects
+          // cached at dragstart. A foreign drag (no chip dragstart happened
+          // in this bar, so draggedTab is null) is not a drop target at all.
+          const g = dragGeom.current;
+          if (draggedTab == null || g == null) {
+            // A foreign drag (no chip dragstart in this bar) isn't a drop
+            // target, but must still be captured so the browser's default drop
+            // — navigating the app to a dropped file — never fires.
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "none";
+            return;
+          }
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          // Where the chips are NOW: the cached rects slid left by whatever
+          // the strip has scrolled since dragstart.
+          const scrolled = e.currentTarget.scrollLeft - g.scrollLeft;
+          const rects =
+            scrolled === 0
+              ? g.rects
+              : g.rects.map((r) => ({ ...r, left: r.left - scrolled }));
+          // A merge is judged on the floating chip's own rect (where the user
+          // sees it) against the chips as drawn, so it takes near-perfect
+          // alignment; `deltas` is the translate the chips currently carry.
+          const src = rects[fromIdx];
+          const pos = src != null ? floatPos(g, e.clientX, e.clientY) : null;
+          const next = dropTarget(
+            rects,
+            e.clientX,
+            e.clientY,
+            fromIdx,
+            (i) => tabs[i] != null && canMerge(draggedTab.id, tabs[i].id),
+            {
+              drag:
+                src != null && pos != null
+                  ? { left: pos.x, top: pos.y, width: src.width, height: src.height }
+                  : null,
+              deltas,
+              current: target,
+            },
+          );
+          if (next.kind === "insert") setPreviewTo(next.index);
+          setTarget((cur) =>
+            cur != null && cur.kind === next.kind && cur.index === next.index
+              ? cur
+              : next,
+          );
+        }}
+        onDragLeave={(e) => {
+          // Cursor left the strip (e.g. heading for the chart's merge overlay):
+          // close the preview gap. rt === null means the cursor left the window
+          // entirely — which happens through the bar's own top edge too, so no
+          // coordinate special-case: any exit that isn't into the bar closes it.
+          const rt = e.relatedTarget as Node | null;
+          const bar = barRef.current;
+          if (bar == null) return;
+          if (rt != null && bar.contains(rt)) return;
+          setTarget(null);
+          setPreviewTo(null);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          // `target` indexes the dragstart snapshot; if `tabs` changed under the
+          // drag (cross-window push), those indices now point at different tabs,
+          // so a merge/reorder would hit the wrong one — skip the mutation when
+          // the live id sequence no longer matches the snapshot.
+          const g = dragGeom.current;
+          const snapshotValid =
+            g != null &&
+            g.ids.length === tabs.length &&
+            g.ids.every((id, i) => tabs[i]?.id === id);
+          // A drop can only fire here after our own dragover preventDefault,
+          // so `target` is always current. Foreign drags never get that far.
+          if (snapshotValid && draggedTab != null && target != null) {
+            if (target.kind === "merge") {
+              onMerge(tabs[target.index].id, [draggedTab.id]);
+            } else if (
+              fromIdx !== -1 &&
+              // from and from+1 are the two slots around the chip's own spot —
+              // both are no-op moves.
+              target.index !== fromIdx &&
+              target.index !== fromIdx + 1
+            ) {
+              onReorder(fromIdx, target.index);
+            }
+          }
+          endDrag(true);
+        }}
+      >
+      {tabs.map((t, i) => {
+        // The tab chip represents the layout by its focused (or first) cell; a
+        // multi-cell layout adds a small count badge. No hover tooltip: the
+        // chip already says what it holds.
+        const lead =
+          t.cells.find((c) => c.id === t.activeCellId) ?? t.cells[0];
+        const leadMeta = closedEpics[lead.symbol.epic];
+        const leadClosed = !!leadMeta?.closed;
+        const closedTip = leadClosed
+          ? leadMeta?.nextOpen
+            ? `Market closed · opens ${fmtNextOpen(leadMeta.nextOpen)}`
+            : "Market closed"
+          : null;
+        return (
+        <div
+          key={t.id}
+          role="tab"
+          // DOM hook for anchoring floating UI to a specific chip (the merge
+          // undo snackbar positions itself under the merged tab).
+          data-tab-id={t.id}
+          aria-selected={t.id === activeId}
+          // Roving tabindex: only the selected chip is in the tab order, and
+          // Left/Right walk the strip from there. Without this the chips carry
+          // role="tab" but can't take focus at all, so the tablist promises
+          // keyboard navigation it doesn't deliver.
+          tabIndex={t.id === activeId ? 0 : -1}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowRight") stepTab(1);
+            else if (e.key === "ArrowLeft") stepTab(-1);
+            else if (e.key === "Home") stepTab(-tabs.length);
+            else if (e.key === "End") stepTab(tabs.length);
+            else if (e.key === "Enter" || e.key === " ") onSelect(t.id);
+            else return;
+            e.preventDefault();
+          }}
+          className={[
+            "tab",
+            t.id === activeId ? "on" : "",
+            dragId === t.id ? "dragging" : "",
+            target?.kind === "merge" && target.index === i && dragId !== t.id
+              ? "drop-merge"
+              : "",
+            searchHits.has(t.id) ? "search-hit" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          style={
+            // deltas is sized to the dragstart snapshot; if `tabs` grew under
+            // the drag, deltas[i] is undefined for the new chips (guarded).
+            deltas != null && deltas[i] != null && (deltas[i].dx !== 0 || deltas[i].dy !== 0)
+              ? { transform: `translate(${deltas[i].dx}px, ${deltas[i].dy}px)` }
+              : undefined
+          }
+          onClick={() => onSelect(t.id)}
+          draggable
+          onDragStart={(e) => {
+            // Cache every chip's rect NOW — the preview transforms change
+            // getBoundingClientRect, so all later hit-testing works off this
+            // snapshot (chip order can't change mid-drag except the
+            // merged-away case, which the effect above resets).
+            const bar = barRef.current;
+            if (bar == null) return;
+            const rects: Rect[] = Array.from(
+              bar.querySelectorAll<HTMLElement>(":scope > .tab"),
+            ).map((c) => {
+              const r = c.getBoundingClientRect();
+              return { left: r.left, top: r.top, width: r.width, height: r.height };
+            });
+            const barRect = bar.getBoundingClientRect();
+            dragGeom.current = {
+              rects,
+              ids: tabs.map((t) => t.id),
+              scrollLeft: bar.scrollLeft,
+              // Rows: -6 for .tab-bar-tabs' padding-left (App.css), since
+              // clientWidth includes it but the flow simulation lays chips out
+              // from the content box. Scroll: one row, so the simulation must
+              // never wrap a chip.
+              containerWidth: scrolls ? Number.POSITIVE_INFINITY : bar.clientWidth - 6,
+              // Rows: the workspace actions float at the right of row 1, so
+              // that row's budget ends where they start (the float sits in
+              // the strip's flow, measured live so a resize can't stale it).
+              firstRowWidth: (() => {
+                if (scrolls) return Number.POSITIVE_INFINITY;
+                const actions = bar.parentElement?.querySelector<HTMLElement>(
+                  ":scope > .tab-bar-actions",
+                );
+                if (actions == null) return bar.clientWidth - 6;
+                // Narrow viewports stack the actions on a row of their own
+                // above the strip (App.css, max-width 640px): nothing shares
+                // row 1 with the chips, so the budget is the full width.
+                const aRect = actions.getBoundingClientRect();
+                if (aRect.bottom <= barRect.top + 1) return bar.clientWidth - 6;
+                return Math.max(0, aRect.left - (barRect.left + 6));
+              })(),
+              grabDx: e.clientX - rects[i].left,
+              grabDy: e.clientY - rects[i].top,
+              bounds: {
+                minX: barRect.left,
+                maxX: barRect.right - rects[i].width,
+                minY: barRect.top,
+                maxY: barRect.bottom - rects[i].height,
+              },
+            };
+            if (emptyImg != null) e.dataTransfer.setDragImage(emptyImg, 0, 0);
+            // Firefox refuses to start an HTML5 drag when no drag data is set;
+            // the payload itself is unused (state carries the dragged id).
+            e.dataTransfer.setData("text/plain", t.id);
+            e.dataTransfer.effectAllowed = "move";
+            setDragId(t.id);
+            // A cancelled drag's pending anim-off timer would strip the
+            // transition mid-gesture if it fired during this new drag.
+            clearAnimTimer();
+            setAnim(true);
+            onDragActive(t.id);
+          }}
+          onDragEnd={() => endDrag(false)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            // Gated like the menu's render below, so an itemless menu never
+            // leaves state set that nothing would clear.
+            if (hasCtxItems) setCtxMenu({ x: e.clientX, y: e.clientY, tabId: t.id });
+          }}
+        >
+          <ChipContent
+            lead={lead}
+            cells={t.cells}
+            closedTip={closedTip}
+            alertBadge={alertTabIds.has(t.id)}
+            snapshotBadge={snapshotTabIds.has(t.id)}
+            barChange={barChangeOf(t)}
+          />
+          <button
+            className="tab-close"
+            // Closing must not also select the tab.
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose(t.id);
+            }}
+            aria-label="Close tab"
+          >
+            ×
+          </button>
+        </div>
+        );
+      })}
+      {!scrolls && tail}
+      </div>
+      {scrolls && tail}
+      {scrolls && trailing && <div className="tab-bar-actions">{trailing}</div>}
+      {ctxMenu && hasCtxItems && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          items={[
+            // With one tab, merging has nothing to target.
+            ...(onToggleBarChange && ctxTab
+              ? [
+                  {
+                    label: "Show day change %",
+                    checked: showsBarChange(ctxTab),
+                    onClick: () => onToggleBarChange(ctxTab.id),
+                  },
+                ]
+              : []),
+            ...(tabs.length > 1
+              ? [{ label: "Merge into this tab", onClick: () => setMergePick(ctxMenu) }]
+              : []),
+          ]}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
+      {mergePick && (
+        <MergeTabsMenu
+          x={mergePick.x}
+          y={mergePick.y}
+          tabs={tabs}
+          targetId={mergePick.tabId}
+          onMerge={(sourceIds) => onMergePicked(mergePick.tabId, sourceIds)}
+          onClose={() => setMergePick(null)}
+        />
+      )}
+      {/* The cursor-following clone of the grabbed chip. Starts on the chip's
+          own rect; the document dragover listener above steers it. */}
+      {draggedTab != null &&
+        floatLead != null &&
+        dragGeom.current != null &&
+        fromIdx !== -1 &&
+        // fromIdx indexes live `tabs`; if the array grew past the snapshot the
+        // rect is undefined — skip the clone rather than read a bad transform.
+        dragGeom.current.rects[fromIdx] != null &&
+        createPortal(
+          <div
+            className="tab tab-float"
+            ref={floatRef}
+            style={{
+              transform: `translate(${dragGeom.current.rects[fromIdx].left}px, ${dragGeom.current.rects[fromIdx].top}px) scale(1.05)`,
+            }}
+          >
+            <ChipContent
+              lead={floatLead}
+              cells={draggedTab.cells}
+              tips={false}
+              closedTip={floatClosedTip}
+              alertBadge={alertTabIds.has(draggedTab.id)}
+              snapshotBadge={snapshotTabIds.has(draggedTab.id)}
+              barChange={barChangeOf(draggedTab)}
+            />
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}

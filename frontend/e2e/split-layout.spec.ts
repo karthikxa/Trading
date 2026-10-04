@@ -1,0 +1,92 @@
+import { test, expect } from "@playwright/test";
+import { seedSingleChartDefault, stubStateApi } from "./helpers";
+
+// Multi-chart split layout: two cells in ONE tab must keep independent drawings,
+// addressed by their own per-cell scope. The primary cell reuses `tab.<id>`; the
+// added cell uses `tab.<id>.cell.<cellId>` — so two distinct drawing scopes appear
+// under the same tab, with independent counts that survive a reload.
+test("split layout cells have independent drawings", async ({ page }) => {
+  await seedSingleChartDefault(page);
+  await stubStateApi(page);
+  await page.goto("/");
+  await page.locator(".tab-bar").waitFor();
+
+  // Switch the active tab to a two-column layout (2 independent cells).
+  // The split picker is the glyph-only button in the tab bar (no "Layout" text).
+  // The added cell pre-paints from the session bar cache, but a drawing tool
+  // only arms once its own candle fetch lands and its drawings rehydrate, so a
+  // click before that places nothing. Wait for the fetch before drawing.
+  const cell2Candles = page.waitForResponse(
+    (r) => r.url().includes("/api/candles?") && r.url().includes("US100"),
+  );
+  await page.locator(".layout-menu button.tabbar-action").click();
+  await page.locator(".layout-dropdown li", { hasText: "Two columns" }).click();
+  await expect(page.locator(".chart-cell")).toHaveCount(2);
+  await (await cell2Candles).finished();
+
+  // Wait until BOTH cells' charts are live AND have loaded candles — a horizontal
+  // line can only anchor to a price once the cell has data.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const charts = (window as unknown as { __charts?: Map<string, { getDataList(): unknown[] }> })
+            .__charts;
+          if (!charts || charts.size < 2) return 0;
+          return [...charts.values()].filter((c) => c.getDataList().length > 0).length;
+        }),
+      { timeout: 20000 },
+    )
+    .toBe(2);
+
+  const cellCanvas = (i: number) =>
+    page.locator(".chart-cell").nth(i).locator("canvas").first();
+
+  // Focus cell `i` by clicking its center, and WAIT until the focus actually moved
+  // (avoids racing the focus re-render before driving the toolbar). Read focus
+  // from the DOM (`.chart-cell.focused`), which is what the user sees.
+  const focusCell = async (i: number) => {
+    const box = await cellCanvas(i).boundingBox();
+    await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await expect(page.locator(".chart-cell").nth(i)).toHaveClass(/\bfocused\b/);
+  };
+
+  // Place a horizontal line at the focused cell's center.
+  const drawHLineOn = async (i: number) => {
+    await focusCell(i);
+    const box = await cellCanvas(i).boundingBox();
+    // Tools now live in the left draw sidebar (Lines family flyout).
+    const lines = page.locator(".draw-sidebar .ds-family").first();
+    await lines.hover();
+    await lines.locator(".ds-caret").click();
+    await page
+      .locator(".draw-sidebar .ds-flyout .ds-row", { hasText: "Horizontal line" })
+      .click();
+    await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  };
+
+  // Drawing counts keyed by per-cell scope (under any tab), from storage.
+  const scopeCounts = () =>
+    page.evaluate(() => {
+      const out: Record<string, number> = {};
+      for (const k of Object.keys(localStorage)) {
+        const m = k.match(/^auto-trader\.(tab\..+?)\.drawings\./);
+        if (m) out[m[1]] = (JSON.parse(localStorage.getItem(k) || "[]") as unknown[]).length;
+      }
+      return out;
+    });
+
+  await drawHLineOn(0); // 1 line on the primary cell
+  await drawHLineOn(1); // 2 lines on the second cell
+  await drawHLineOn(1);
+
+  // Two distinct cell scopes, with counts 1 and 2 (fully independent).
+  await expect.poll(async () => Object.keys(await scopeCounts()).length).toBe(2);
+  expect(Object.values(await scopeCounts()).sort()).toEqual([1, 2]);
+
+  // Survives a reload (per-cell scope is persisted on each cell).
+  await page.reload();
+  await page.locator(".chart-cell").first().waitFor();
+  await expect(page.locator(".chart-cell")).toHaveCount(2);
+  expect(Object.values(await scopeCounts()).sort()).toEqual([1, 2]);
+});

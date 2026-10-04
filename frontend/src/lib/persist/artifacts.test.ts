@@ -1,0 +1,274 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import { installMemStorage } from "../testMemStorage";
+
+installMemStorage();
+const { saveBacktestResult, loadBacktestResult, loadSweepResultId, saveSweepResultId, clearSweepResultId, matchBacktestKey, matchSweepPointerKey, loadInsetBand, saveInsetBand, pruneStaleBacktests, BACKTEST_TTL_MS, loadIndicatorConfigs, saveIndicatorConfig, migrateIndicatorConfigStashes } =
+  await import("./artifacts");
+const { save } = await import("./core");
+const { EQUITY_PERSIST_CAP } = await import("../equityDownsample");
+
+beforeEach(() => localStorage.clear());
+
+// Minimal BacktestResult-shaped object with an oversized equity array + candles.
+const bigResult = (nEquity: number) =>
+  ({
+    epic: "US100",
+    resolution: "MINUTE_5",
+    candles: Array.from({ length: 10 }, (_, i) => ({ timestamp: i, open: 1, high: 1, low: 1, close: 1, volume: 0 })),
+    markers: [],
+    trades: [],
+    equity: Array.from({ length: nEquity }, (_, i) => ({ time: 1000 + i, value: i + 0.111 })),
+    summary: { net_pnl: 0, n_trades: 0, win_rate: 0, max_drawdown: 0 },
+    metrics: {} as never,
+  }) as unknown as import("../../api").BacktestResult;
+
+const KEY = "auto-trader.tab.A.backtest.US100";
+
+describe("saveBacktestResult / loadBacktestResult", () => {
+  it("downsamples equity to <= cap and strips candles on save", () => {
+    const ok = saveBacktestResult("tab.A", "US100", bigResult(37128));
+    expect(ok).toBe(true);
+    const loaded = loadBacktestResult("tab.A", "US100")!;
+    expect(loaded.equity.length).toBeLessThanOrEqual(EQUITY_PERSIST_CAP + 1);
+    expect((loaded as { candles?: unknown }).candles).toBeUndefined();
+    expect(loaded.equity[0].time).toBe(1000);
+  });
+
+  it("returns false when the underlying write is dropped", () => {
+    const orig = localStorage.setItem.bind(localStorage);
+    localStorage.setItem = () => {
+      throw new DOMException("quota", "QuotaExceededError");
+    };
+    try {
+      expect(saveBacktestResult("tab.A", "US100", bigResult(10))).toBe(false);
+    } finally {
+      localStorage.setItem = orig;
+    }
+  });
+
+  it("self-heals an already-oversized stored entry on load (downsamples + rewrites)", () => {
+    // Write a pre-fix oversized entry DIRECTLY (bypassing saveBacktestResult) to
+    // simulate data saved before this fix.
+    const oversized = { ...bigResult(37128) };
+    delete (oversized as { candles?: unknown }).candles;
+    save(KEY, oversized);
+    expect(JSON.parse(localStorage.getItem(KEY)!).equity.length).toBe(37128);
+
+    const loaded = loadBacktestResult("tab.A", "US100")!;
+    expect(loaded.equity.length).toBeLessThanOrEqual(EQUITY_PERSIST_CAP + 1);
+    // The rewrite reclaimed space: the stored entry is now slim too.
+    expect(JSON.parse(localStorage.getItem(KEY)!).equity.length).toBeLessThanOrEqual(
+      EQUITY_PERSIST_CAP + 1,
+    );
+  });
+
+  it("leaves an already-slim entry untouched on load", () => {
+    saveBacktestResult("tab.A", "US100", bigResult(50));
+    const before = localStorage.getItem(KEY);
+    loadBacktestResult("tab.A", "US100");
+    expect(localStorage.getItem(KEY)).toBe(before);
+  });
+
+  it("boundary: does not self-heal a just-capped entry (cap+1 points)", () => {
+    // A raw equity of 4000 points, when downsampled with step=ceil(4000/2000)=2,
+    // yields 2000 strided points + 1 appended final point = 2001 total.
+    // This tests the exact boundary: downsampleEquity always appends the final
+    // point, so a freshly-capped entry is at most cap+1. Only entries beyond
+    // that are genuinely legacy-oversized and worth re-downsampling.
+    saveBacktestResult("tab.A", "US100", bigResult(4000));
+    const beforeLoad = localStorage.getItem(KEY)!;
+    const beforeParsed = JSON.parse(beforeLoad);
+    expect(beforeParsed.equity.length).toBe(2001); // Just-capped at cap+1
+
+    // Load once: should NOT trigger self-heal rewrite (the entry is already slim).
+    const loaded = loadBacktestResult("tab.A", "US100")!;
+    const afterLoad = localStorage.getItem(KEY)!;
+
+    // Assert: localStorage unchanged (no spurious re-downsampling).
+    expect(afterLoad).toBe(beforeLoad);
+    // Assert: returned result still has 2001 points (not re-thinned).
+    expect(loaded.equity.length).toBe(2001);
+  });
+});
+
+describe("sweep result pointer (per scope + epic)", () => {
+  it("round-trips an archive id and isolates scope + epic", () => {
+    expect(loadSweepResultId("tab.A", "US100")).toBeNull();
+
+    saveSweepResultId("tab.A", "US100", "sw-1");
+    expect(loadSweepResultId("tab.A", "US100")).toBe("sw-1");
+
+    // A different cell (scope) on the same epic has its own binding.
+    expect(loadSweepResultId("tab.A.cell.b", "US100")).toBeNull();
+    // The same cell on a different epic is independent.
+    expect(loadSweepResultId("tab.A", "US500")).toBeNull();
+
+    saveSweepResultId("tab.A.cell.b", "US100", "sw-2");
+    expect(loadSweepResultId("tab.A", "US100")).toBe("sw-1");
+    expect(loadSweepResultId("tab.A.cell.b", "US100")).toBe("sw-2");
+  });
+
+  it("clears the pointer", () => {
+    saveSweepResultId("tab.A", "US100", "sw-1");
+    clearSweepResultId("tab.A", "US100");
+    expect(loadSweepResultId("tab.A", "US100")).toBeNull();
+  });
+});
+
+describe("matchBacktestKey", () => {
+  it("matches a visible scope's backtest key and extracts the epic", () => {
+    expect(matchBacktestKey("auto-trader.tab.A.backtest.US100", ["tab.A"])).toEqual({
+      scope: "tab.A",
+      epic: "US100",
+    });
+    expect(
+      matchBacktestKey("auto-trader.tab.A.cell.b.backtest.EURUSD", ["tab.A", "tab.A.cell.b"]),
+    ).toEqual({ scope: "tab.A.cell.b", epic: "EURUSD" });
+  });
+
+  it("does not cross-match between a tab scope and its cell scopes", () => {
+    // The cell key starts with the tab scope's prefix but not its backtest
+    // prefix — it must resolve to the cell scope only.
+    expect(matchBacktestKey("auto-trader.tab.A.cell.b.backtest.US100", ["tab.A"])).toBeNull();
+  });
+
+  it("returns null for non-backtest content keys and empty epics", () => {
+    expect(matchBacktestKey("auto-trader.tab.A.drawings.US100", ["tab.A"])).toBeNull();
+    expect(matchBacktestKey("auto-trader.tab.A.backtest.", ["tab.A"])).toBeNull();
+    expect(matchBacktestKey("auto-trader.tab.B.backtest.US100", ["tab.A"])).toBeNull();
+  });
+});
+
+describe("matchSweepPointerKey", () => {
+  it("matches a visible scope's sweep pointer key, and nothing else", () => {
+    expect(matchSweepPointerKey("auto-trader.tab.A.sweep.US100", ["tab.A"])).toEqual({
+      scope: "tab.A",
+      epic: "US100",
+    });
+    expect(matchSweepPointerKey("auto-trader.tab.A.backtest.US100", ["tab.A"])).toBeNull();
+    expect(matchSweepPointerKey("auto-trader.tab.B.sweep.US100", ["tab.A"])).toBeNull();
+  });
+});
+
+describe("inset band height", () => {
+  it("round-trips the dragged fraction per scope", () => {
+    saveInsetBand("tab.A", 0.42);
+    expect(loadInsetBand("tab.A")).toBe(0.42);
+    // Per cell: a second chart in the same tab keeps its own band.
+    expect(loadInsetBand("tab.B")).toBeNull();
+  });
+
+  it("reads null for a cell that was never dragged, so the default applies", () => {
+    expect(loadInsetBand("tab.A")).toBeNull();
+  });
+
+  it("rejects a stored non-number instead of handing a NaN band to the chart", () => {
+    save("auto-trader.tab.A.insetBand", "half" as never);
+    expect(loadInsetBand("tab.A")).toBeNull();
+  });
+});
+
+// --- backtest expiry ---------------------------------------------------------
+// Saved results are working data, not an archive: they exist so a chart can
+// redraw the run you just did. Anything older than the TTL is swept. Expiry is
+// by TIMESTAMP, not by liveness, so a sweep can never race a freshly-mounted
+// cell's save — that save is new by definition.
+
+describe("backtest result expiry", () => {
+  const day = 24 * 60 * 60 * 1000;
+
+  it("stamps a saved result with the time it was written", () => {
+    saveBacktestResult("tab.A", "US100", bigResult(10), undefined, 5_000);
+    expect(JSON.parse(localStorage.getItem(KEY)!).savedAt).toBe(5_000);
+  });
+
+  it("sweeps results older than the TTL and keeps fresh ones", () => {
+    const now = 100 * day;
+    saveBacktestResult("tab.old", "US100", bigResult(10), undefined, now - BACKTEST_TTL_MS - 1);
+    saveBacktestResult("tab.new", "US100", bigResult(10), undefined, now - 1000);
+    expect(pruneStaleBacktests(now)).toBe(1);
+    expect(localStorage.getItem("auto-trader.tab.old.backtest.US100")).toBeNull();
+    expect(localStorage.getItem("auto-trader.tab.new.backtest.US100")).not.toBeNull();
+  });
+
+  it("treats a result saved before stamping existed as stale", () => {
+    save("auto-trader.tab.legacy.backtest.US100", { epic: "US100", trades: [] });
+    expect(pruneStaleBacktests(100 * day)).toBe(1);
+    expect(localStorage.getItem("auto-trader.tab.legacy.backtest.US100")).toBeNull();
+  });
+
+  it("leaves keys that are not backtest results alone", () => {
+    save("auto-trader.tab.A.drawings.US100", [{ name: "line" }]);
+    save("auto-trader.b.capital.layouts", [{ id: "x" }]);
+    expect(pruneStaleBacktests(100 * day)).toBe(0);
+    expect(localStorage.getItem("auto-trader.tab.A.drawings.US100")).not.toBeNull();
+    expect(localStorage.getItem("auto-trader.b.capital.layouts")).not.toBeNull();
+  });
+
+  it("sweeps stale neighbours when a new result is saved", () => {
+    const now = 100 * day;
+    saveBacktestResult("tab.old", "US100", bigResult(10), undefined, now - BACKTEST_TTL_MS - 1);
+    saveBacktestResult("tab.new", "EURUSD", bigResult(10), undefined, now);
+    expect(localStorage.getItem("auto-trader.tab.old.backtest.US100")).toBeNull();
+  });
+});
+
+
+// The coordinator's computed MTF stash is not settings and must never reach
+// storage: it is recomputed on load, it is orders of magnitude bigger than the
+// config around it (a single symbol template reached 1.27 MB in the field), and
+// because its shape follows the detector, a stash written by an older build
+// restores objects the current draw path does not recognise. That is what froze
+// charts in Sept 2026. Only the pin itself (timeframe/waitClose) survives.
+describe("MTF stash never reaches persisted indicator config", () => {
+  const stashed = {
+    calcParams: [14],
+    extendData: {
+      mtf: {
+        timeframe: "DAY",
+        waitClose: false,
+        htfLines: [{ i1: 1, touchIdxs: [1, 3] }],
+        htfPoints: [1, 2, 3],
+        htfStarts: [1, 2, 3],
+        coveredFromMs: 1,
+      },
+      declutter: true,
+    },
+  };
+  const pinOnly = { timeframe: "DAY", waitClose: false };
+
+  it("strips the stash on write, keeping the pin and the rest of extendData", () => {
+    saveIndicatorConfig("tab.A", "TRENDLINES", stashed);
+    const saved = JSON.parse(localStorage.getItem("auto-trader.tab.A.indicatorConfig")!);
+    expect(saved.TRENDLINES.extendData.mtf).toEqual(pinOnly);
+    expect(saved.TRENDLINES.extendData.declutter).toBe(true);
+    expect(saved.TRENDLINES.calcParams).toEqual([14]);
+  });
+
+  it("strips a stash an older build already wrote, on read", () => {
+    save("auto-trader.tab.A.indicatorConfig", { TRENDLINES: stashed });
+    expect(loadIndicatorConfigs("tab.A").TRENDLINES.extendData!.mtf).toEqual(pinOnly);
+  });
+
+  it("rewrites the stored bytes once, across configs and templates", () => {
+    save("auto-trader.tab.A.indicatorConfig", { TRENDLINES: stashed });
+    save("auto-trader.b.capital-live.template.DXY", {
+      epic: "DXY",
+      indicatorConfigs: { TRENDLINES: stashed },
+      drawings: [],
+    });
+    migrateIndicatorConfigStashes();
+    const cfg = JSON.parse(localStorage.getItem("auto-trader.tab.A.indicatorConfig")!);
+    const tpl = JSON.parse(localStorage.getItem("auto-trader.b.capital-live.template.DXY")!);
+    expect(cfg.TRENDLINES.extendData.mtf).toEqual(pinOnly);
+    expect(tpl.indicatorConfigs.TRENDLINES.extendData.mtf).toEqual(pinOnly);
+    expect(tpl.epic).toBe("DXY"); // the rest of the template is untouched
+    // Sentinel-gated: a second run is a no-op even if a stash reappears.
+    save("auto-trader.tab.A.indicatorConfig", { TRENDLINES: stashed });
+    migrateIndicatorConfigStashes();
+    expect(
+      JSON.parse(localStorage.getItem("auto-trader.tab.A.indicatorConfig")!).TRENDLINES.extendData
+        .mtf.htfLines,
+    ).toHaveLength(1);
+  });
+});

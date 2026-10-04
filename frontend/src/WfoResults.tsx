@@ -1,0 +1,589 @@
+// Walk-forward results panel: robustness scorecard, train-span matrix strip,
+// per-fold table with drill-in, and a parameter-drift strip. Renders off the
+// WfoRunState mirror (live run or archive reconstruction); all numbers come
+// from the backend result payload, nothing is recomputed here.
+import { memo, useState, useSyncExternalStore } from "react";
+import type { JSX } from "react";
+import type { SweepRow, WfoFold, WfoScheme } from "./api";
+import type { WfoRunState } from "./lib/signals";
+import {
+  wfoEquityShownSignal,
+  wfoBandsShownSignal,
+  wfoEquityCompoundedSignal,
+} from "./lib/signals";
+import type { SweepAxis, SweepCombo } from "./lib/sweep";
+import { axisColumnLabel, comboAxisText } from "./lib/sweep";
+import { formatPeriodDateRange } from "./lib/backtestPeriods";
+import { SweepResults, SweepSortHeader, axisTag, type SortDir } from "./SweepResults";
+import Tooltip from "./components/Tooltip";
+import InfoTip from "./components/InfoTip";
+import RunTiming from "./components/RunTiming";
+
+export const PHASE_LABEL: Record<string, string> = {
+  grid: "evaluating grid",
+  test: "testing winners",
+  aggregate: "aggregating",
+};
+
+// Trailing-zero-trimmed fixed formatting; en dash for missing values.
+function fmt(v: number | null | undefined, digits = 2): string {
+  if (v == null || !isFinite(v)) return "–";
+  const s = v.toFixed(digits);
+  // Strip trailing zeros only when there is a fractional part (fmt(100, 0)
+  // must stay "100"), then fold a rounded-away "-0" back to "0".
+  const t = s.includes(".") ? s.replace(/\.?0+$/, "") : s;
+  return t === "-0" ? "0" : t;
+}
+function fmtPct01(v: number | null | undefined): string {
+  return v == null || !isFinite(v) ? "–" : `${Math.round(v * 100)}%`;
+}
+
+// Fold-index -> chosen-value step line for one axis. x walks the folds, y is
+// the value's rank among the axis's sorted unique swept values (higher value
+// higher on the chart); null (no winner that fold) lifts the pen so the line
+// breaks. Pure and exported for tests.
+export function driftPath(values: Array<number | string | null>): string {
+  const W = 220, H = 36, PAD = 4;
+  const present = values.filter((v): v is number | string => v != null);
+  if (present.length === 0) return "";
+  const uniq = Array.from(new Set(present)).sort((a, b) =>
+    typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b)),
+  );
+  const xFor = (i: number) =>
+    values.length === 1 ? W / 2 : PAD + (i / (values.length - 1)) * (W - 2 * PAD);
+  const yFor = (v: number | string) =>
+    uniq.length === 1 ? H / 2 : H - PAD - (uniq.indexOf(v) / (uniq.length - 1)) * (H - 2 * PAD);
+  let d = "";
+  let pen = false;
+  values.forEach((v, i) => {
+    if (v == null) { pen = false; return; }
+    d += `${d ? " " : ""}${pen ? "L" : "M"}${xFor(i).toFixed(1)} ${yFor(v).toFixed(1)}`;
+    pen = true;
+  });
+  return d;
+}
+
+type FoldCol = "window" | "is_obj" | "oos_return" | "excess" | "hold" | "reversed" | "oos_trades" | "wfe";
+
+// The fold's enter-and-hold return: the long side when it ran (its return IS
+// the market's move that window), else the short side, else the combined
+// value archives recorded before the per-side split.
+function foldHoldReturn(f: WfoFold): number | null {
+  return f.hold_long_metrics?.return_pct
+    ?? f.hold_short_metrics?.return_pct
+    ?? f.hold_metrics?.return_pct
+    ?? null;
+}
+
+function foldColValue(f: WfoFold, col: FoldCol, metric: string): number | null {
+  switch (col) {
+    case "window": return f.test_from;
+    case "is_obj": return f.is_metrics?.[metric] ?? null;
+    case "oos_return": return f.oos_metrics?.return_pct ?? null;
+    case "excess": return f.excess_return_pct ?? null;
+    case "hold": return foldHoldReturn(f);
+    case "reversed": return f.reversed_metrics?.return_pct ?? null;
+    case "oos_trades": return f.oos_metrics?.n_trades ?? null;
+    case "wfe": return f.wfe;
+  }
+}
+
+export const SCORE_TIP = [
+  "0-100 blend of the walk-forward health checks:",
+  <ul className="tooltip-weights" key="weights">
+    <li><b>30%</b> walk-forward efficiency</li>
+    <li><b>20%</b> folds profitable</li>
+    <li><b>15%</b> OOS Sharpe</li>
+    <li><b>15%</b> parameter stability</li>
+    <li><b>10%</b> OOS drawdown</li>
+    <li><b>10%</b> plateau breadth</li>
+  </ul>,
+  "Discounted when total OOS trades or the fold count is low.",
+];
+const WFE_TIP =
+  "Out-of-sample return relative to in-sample, annualized. Above ~0.5 is strong; negative means train gains did not carry forward";
+
+// Fold-table column tips. IS = in-sample (the fold's train window, the span
+// right before the test window); OOS = out-of-sample (the unseen test window).
+const FOLD_TIPS = {
+  window: "Dates of the fold's out-of-sample test window. The train window is the span immediately before it.",
+  params: "Winning parameter combo, picked on the fold's train window by the objective.",
+  is_obj: (metric: string) =>
+    `In-sample ${metric}: the winner's ${metric} on the train window it was optimized on.`,
+  oos_return: "Return of the winning combo on the unseen test window.",
+  excess: "Fold return minus the null baseline's return over the same test window (1==1 entries per traded side, base strategy settings, sides summed). Positive means the strategy beat always-in.",
+  hold: "Enter-and-hold return over the fold's test window (long side when it ran, so this is what the market itself did; a short-only strategy shows the short side, its mirror). Compare with OOS ret %: folds where the strategy loses to plain hold.",
+  reversed: "The mirror-image strategy's return on this fold (every decision taken the other way). Highlighted red when it BEATS the fold's OOS return: on that window the signal pointed the wrong way.",
+  oos_trades: "Trade count in the test window. Folds with fewer than 5 trades are greyed out; their results are noise.",
+  wfe: "Walk-forward efficiency for this fold: annualized test return divided by annualized train return.",
+} as const;
+
+// Train-span matrix tips: one row per training scheme, all numbers per scheme.
+const MATRIX_TIPS = {
+  train: "Train window length of this scheme.",
+  score: "Robustness score (0-100) of this scheme; see the scorecard tip for the blend.",
+  wfe: "Median walk-forward efficiency across this scheme's folds.",
+  folds: "Share of this scheme's test windows that ended positive.",
+  sharpe: "Sharpe ratio of this scheme's stitched out-of-sample equity.",
+  dd: "Largest peak-to-trough drop of this scheme's stitched out-of-sample equity.",
+  stability: "Steadiness of the winning parameters from fold to fold; 1 means the same pick every fold.",
+} as const;
+
+// Streaming-table tips (winner rows landing while the job runs).
+const STREAM_TIPS = {
+  fold: "Fold key: scheme index / fold index, in chronological fold order.",
+  params: "Winning parameter combo from the fold's train window.",
+  oos_net: "The winner's net P&L on the fold's out-of-sample test window.",
+} as const;
+
+// Fold-table endpoints 404 an hour after the job clears from the runner; the
+// drill-in surfaces this fixed copy rather than the raw fetch error.
+const FOLD_EXPIRY_COPY = "Fold tables expire with the job; reopen from the archive";
+
+export const WfoResults = memo(function WfoResults(props: {
+  state: WfoRunState;
+  onApplyCombo: (combo: Record<string, number | boolean | string>) => void;
+  onLoadFoldTable: (key: string) => Promise<SweepRow[]>;
+  axes: SweepAxis[];
+  schemeIndex: number;
+  onSchemeIndex: (i: number) => void;
+  // Set when this view is a reopened archive (not a live/last run). Enables the
+  // "Archive" back-link in the header that returns to the ranking list.
+  archiveId?: string;
+  onBackToArchive?: () => void;
+}): JSX.Element {
+  const { state, onApplyCombo, onLoadFoldTable, axes, schemeIndex, onSchemeIndex, archiveId, onBackToArchive } = props;
+  const result = state.result;
+  const schemes = result?.schemes ?? [];
+  const scheme: WfoScheme | undefined = schemes[schemeIndex] ?? schemes[0];
+  const metric = result?.objective?.metric ?? "objective";
+
+  // Chart-display toggles. The render side (renderWfoArtifacts) already subscribes
+  // to these signals, so writing them shows/hides/swaps the chart live with no
+  // re-run needed. Mirror the backtest equity-toggle idiom (useSyncExternalStore).
+  const equityShown = useSyncExternalStore(
+    (cb) => wfoEquityShownSignal.subscribe(cb),
+    () => wfoEquityShownSignal.value,
+  );
+  const bandsShown = useSyncExternalStore(
+    (cb) => wfoBandsShownSignal.subscribe(cb),
+    () => wfoBandsShownSignal.value,
+  );
+  const compounded = useSyncExternalStore(
+    (cb) => wfoEquityCompoundedSignal.subscribe(cb),
+    () => wfoEquityCompoundedSignal.value,
+  );
+  const [sort, setSort] = useState<{ key: FoldCol; dir: SortDir } | null>(null);
+  const toggleSort = (key: FoldCol) =>
+    setSort((s) => (s?.key === key ? (s.dir === "desc" ? { key, dir: "asc" } : null) : { key, dir: "desc" }));
+
+  // Drill-in: one expanded fold at a time. `expandedKey` is the open fold (null
+  // when collapsed); fetched tables are cached per key in `foldCache` so
+  // collapsing and re-expanding never refetches. A cached entry's `rows === null`
+  // means the fetch is still in flight, `error` set means it failed.
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [foldCache, setFoldCache] = useState<Record<string, { rows: SweepRow[] | null; error?: string }>>({});
+  const toggleFold = (key: string) => {
+    if (expandedKey === key) { setExpandedKey(null); return; }
+    setExpandedKey(key);
+    if (foldCache[key]) return; // already fetched (or fetching) — use the cache
+    setFoldCache((c) => ({ ...c, [key]: { rows: null } }));
+    onLoadFoldTable(key)
+      .then((rows) => setFoldCache((c) => ({ ...c, [key]: { rows } })))
+      .catch(() => setFoldCache((c) => ({ ...c, [key]: { rows: [], error: FOLD_EXPIRY_COPY } })));
+  };
+  const expanded = expandedKey ? { key: expandedKey, ...(foldCache[expandedKey] ?? { rows: null }) } : null;
+
+  // Params referenced by the same A/B/C tags the drill-in table uses; the
+  // legend below the scorecard spells the tags out once instead of every row
+  // repeating full axis labels.
+  const comboText = (combo: Record<string, number | boolean | string>): string =>
+    axes.length
+      ? axes.map((a, i) => `${axisTag(i)}=${comboAxisText(a, combo as SweepCombo)}`).join(" ")
+      : Object.entries(combo).map(([k, v]) => `${k.replace(/^param:/, "")} ${v}`).join(", ");
+  const axisLegend = axes.length > 0 && (
+    <div className="sweep-axis-legend">
+      {axes.map((a, ai) => (
+        <span key={a.target} className="sweep-axis-legend-item">
+          <span className="sweep-axis-tag">{axisTag(ai)}</span>
+          {axisColumnLabel(a)}
+        </span>
+      ))}
+    </div>
+  );
+
+  // Sorted view of the selected scheme's folds; original index rides along so
+  // fold keys (s{scheme}/f{fold}) stay correct under any sort order. With no
+  // column sort active, folds read chronologically by test window (the stored
+  // order is completion order, which a parallel run scrambles).
+  const folds = (scheme?.folds ?? []).map((f, i) => ({ f, i }));
+  if (!sort) folds.sort((a, b) => a.f.test_from - b.f.test_from);
+  if (sort) {
+    const dir = sort.dir === "asc" ? 1 : -1;
+    folds.sort((a, b) => {
+      const av = foldColValue(a.f, sort.key, metric);
+      const bv = foldColValue(b.f, sort.key, metric);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return (av - bv) * dir;
+    });
+  }
+
+  const rb = scheme?.robustness ?? {};
+  const score = rb.robustness_score ?? null;
+  const scoreTone = score == null ? "" : score >= 60 ? " pos" : score < 40 ? " neg" : "";
+  const gridErrors = result?.grid_errors;
+  const allFailed = gridErrors != null && gridErrors.total > 0 && gridErrors.failed === gridErrors.total;
+
+  const stats: Array<{ label: string; value: string; tip: string; tone?: string }> = [
+    { label: "WFE (median)", value: fmt(rb.wfe_median), tip: WFE_TIP,
+      tone: rb.wfe_median != null ? (rb.wfe_median >= 0.5 ? " pos" : rb.wfe_median < 0 ? " neg" : "") : "" },
+    { label: "Folds profitable", value: fmtPct01(rb.pct_folds_profitable),
+      tip: "Share of test windows that ended positive." },
+    { label: "Median excess", value: rb.median_fold_excess_pct == null ? "–" : `${fmt(rb.median_fold_excess_pct, 1)}%`,
+      tip: "Median across folds of the fold's return minus the null baseline's return (1==1 entries, base strategy settings). Positive means the strategy typically beat always-in.",
+      tone: rb.median_fold_excess_pct != null ? (rb.median_fold_excess_pct > 0 ? " pos" : rb.median_fold_excess_pct < 0 ? " neg" : "") : "" },
+    { label: "Folds > null", value: fmtPct01(rb.pct_folds_beating_null),
+      tip: "Share of folds whose return beat the null baseline (1==1 entries, base strategy settings) on the same test window." },
+    { label: "OOS Sharpe", value: fmt(rb.oos_sharpe),
+      tip: "Sharpe ratio of the stitched out-of-sample equity." },
+    { label: "OOS max DD", value: rb.oos_max_drawdown_pct == null ? "–" : `${fmt(rb.oos_max_drawdown_pct, 1)}%`,
+      tip: "Largest peak-to-trough drop of the stitched out-of-sample equity." },
+    { label: "Stability", value: fmt(rb.param_stability),
+      tip: "Steadiness of the winning parameters from fold to fold. 1 means the same pick every fold." },
+    { label: "OOS trades", value: fmt(rb.oos_trades_total, 0),
+      tip: "Total trades across all test windows." },
+  ];
+
+  return (
+    <div className="wfo-results">
+      {archiveId && onBackToArchive && (
+        <div className="wfo-arch-back">
+          <button type="button" className="ghost wfo-arch-back-btn" onClick={onBackToArchive}>
+            ‹ Archive
+          </button>
+        </div>
+      )}
+
+      {state.running && (
+        <div className="sweep-progress">
+          <span>{PHASE_LABEL[state.phase] ?? state.phase}</span>
+          <span>{state.done} / {state.total}</span>
+          <div className="sweep-progress-bar">
+            <div
+              className="sweep-progress-fill"
+              style={{ width: `${state.total ? (state.done / state.total) * 100 : 0}%` }}
+            />
+          </div>
+          <RunTiming
+            etaSeconds={state.etaSeconds}
+            startedAt={state.startedAt}
+            className="sweep-progress-timing"
+          />
+        </div>
+      )}
+
+      {allFailed && (
+        <div className="wfo-error">
+          All {gridErrors.total} combos failed{gridErrors.sample ? `: ${gridErrors.sample}` : ""}
+        </div>
+      )}
+
+      {/* Streaming view while the job runs: winner rows as they land. */}
+      {state.running && !result && state.foldRows.length > 0 && (
+        <>
+        {axisLegend}
+        <div className="sweep-table-wrap">
+        <table className="sweep-table wfo-folds-table">
+          <thead>
+            <tr>
+              <th><Tooltip content={STREAM_TIPS.fold}><span>Fold</span></Tooltip></th>
+              <th><Tooltip content={STREAM_TIPS.params}><span>Params</span></Tooltip></th>
+              <th><Tooltip content={STREAM_TIPS.oos_net}><span>OOS net</span></Tooltip></th>
+            </tr>
+          </thead>
+          <tbody>
+            {state.foldRows.map((r) => (
+              <tr key={r.key} className="wfo-stream-row">
+                <td>{r.key}</td>
+                <td>
+                  {r.combo ? comboText(r.combo)
+                    : r.error ? <Tooltip content={r.error}><span>failed</span></Tooltip>
+                    : <span className="wfo-dim">no eligible winner</span>}
+                </td>
+                <td>{fmt(r.oos_metrics?.net_pnl ?? null)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        </div>
+        </>
+      )}
+
+      {result && scheme && (
+        <>
+          <div className="wfo-display">
+            <button
+              type="button"
+              className={`bt-chip${equityShown ? " seg-on" : ""}`}
+              aria-pressed={equityShown}
+              onClick={() => wfoEquityShownSignal.set(!wfoEquityShownSignal.value)}
+            >
+              Equity
+            </button>
+            <button
+              type="button"
+              className={`bt-chip${bandsShown ? " seg-on" : ""}`}
+              aria-pressed={bandsShown}
+              onClick={() => wfoBandsShownSignal.set(!wfoBandsShownSignal.value)}
+            >
+              Fold bands
+            </button>
+            <div className="seg" role="group" aria-label="Equity mode">
+              <button
+                type="button"
+                className={compounded ? "seg-on" : ""}
+                aria-pressed={compounded}
+                onClick={() => wfoEquityCompoundedSignal.set(true)}
+              >
+                Compounded
+              </button>
+              <button
+                type="button"
+                className={compounded ? "" : "seg-on"}
+                aria-pressed={!compounded}
+                onClick={() => wfoEquityCompoundedSignal.set(false)}
+              >
+                Summed
+              </button>
+            </div>
+            <InfoTip
+              title="Equity mode"
+              text={[
+                "Compounded reinvests each fold's return, so the curve grows on the running balance.",
+                "Summed adds each fold's return on the starting balance, keeping folds equally weighted.",
+              ]}
+            />
+          </div>
+
+          <div className="wfo-scorecard">
+            <div className="bt-panel-stat wfo-score-lead">
+              <span className="bt-panel-stat-label">
+                <span className="bt-panel-stat-name">Robustness</span>
+                <InfoTip title="Robustness score" text={SCORE_TIP} />
+              </span>
+              <span className={`bt-panel-stat-value wfo-score-value${scoreTone}`}>{fmt(score, 1)}</span>
+            </div>
+            {stats.map((s) => (
+              <div className="bt-panel-stat" key={s.label}>
+                <span className="bt-panel-stat-label">
+                  <span className="bt-panel-stat-name">{s.label}</span>
+                  <InfoTip title={s.label} text={s.tip} />
+                </span>
+                <span className={`bt-panel-stat-value${s.tone ?? ""}`}>{s.value}</span>
+              </div>
+            ))}
+          </div>
+
+          {schemes.length > 1 && (
+            <table className="sweep-table wfo-matrix">
+              <thead>
+                <tr>
+                  <th><Tooltip content={MATRIX_TIPS.train}><span>Train</span></Tooltip></th>
+                  <th><Tooltip content={MATRIX_TIPS.score}><span>Score</span></Tooltip></th>
+                  <th><Tooltip content={MATRIX_TIPS.wfe}><span>WFE</span></Tooltip></th>
+                  <th><Tooltip content={MATRIX_TIPS.folds}><span>Folds+</span></Tooltip></th>
+                  <th><Tooltip content={MATRIX_TIPS.sharpe}><span>Sharpe</span></Tooltip></th>
+                  <th><Tooltip content={MATRIX_TIPS.dd}><span>DD</span></Tooltip></th>
+                  <th><Tooltip content={MATRIX_TIPS.stability}><span>Stability</span></Tooltip></th>
+                </tr>
+              </thead>
+              <tbody>
+                {schemes.map((s, i) => (
+                  <tr
+                    key={s.train_span + i}
+                    className={`wfo-matrix-row${i === schemeIndex ? " seg-on" : ""}`}
+                    onClick={() => onSchemeIndex(i)}
+                  >
+                    <td>{s.train_span}</td>
+                    <td>{fmt(s.robustness?.robustness_score ?? null, 1)}</td>
+                    <td>{fmt(s.robustness?.wfe_median ?? null)}</td>
+                    <td>{fmtPct01(s.robustness?.pct_folds_profitable ?? null)}</td>
+                    <td>{fmt(s.robustness?.oos_sharpe ?? null)}</td>
+                    <td>{s.robustness?.oos_max_drawdown_pct == null ? "–" : `${fmt(s.robustness.oos_max_drawdown_pct, 1)}%`}</td>
+                    <td>{fmt(s.robustness?.param_stability ?? null)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {axisLegend}
+          {/* Scroll container, same as the sweep panel's: a fold drill-in
+              (heatmap + combo table) is wider than a narrow panel, and without
+              this the overflow is CLIPPED — cells past the edge unreachable. */}
+          <div className="sweep-table-wrap">
+          <table className="sweep-table wfo-folds-table">
+            <thead>
+              <tr>
+                <th>
+                  <Tooltip content={FOLD_TIPS.window}>
+                    <span><SweepSortHeader<FoldCol> label="Test window" col="window" sort={sort} onSort={toggleSort} /></span>
+                  </Tooltip>
+                </th>
+                <th><Tooltip content={FOLD_TIPS.params}><span>Params</span></Tooltip></th>
+                <th>
+                  <Tooltip content={FOLD_TIPS.is_obj(metric)}>
+                    <span><SweepSortHeader<FoldCol> label={`IS ${metric}`} col="is_obj" sort={sort} onSort={toggleSort} /></span>
+                  </Tooltip>
+                </th>
+                <th>
+                  <Tooltip content={FOLD_TIPS.oos_return}>
+                    <span><SweepSortHeader<FoldCol> label="OOS ret %" col="oos_return" sort={sort} onSort={toggleSort} /></span>
+                  </Tooltip>
+                </th>
+                <th>
+                  <Tooltip content={FOLD_TIPS.excess}>
+                    <span><SweepSortHeader<FoldCol> label="Excess %" col="excess" sort={sort} onSort={toggleSort} /></span>
+                  </Tooltip>
+                </th>
+                <th>
+                  <Tooltip content={FOLD_TIPS.hold}>
+                    <span><SweepSortHeader<FoldCol> label="Hold %" col="hold" sort={sort} onSort={toggleSort} /></span>
+                  </Tooltip>
+                </th>
+                <th>
+                  <Tooltip content={FOLD_TIPS.reversed}>
+                    <span><SweepSortHeader<FoldCol> label="Rev %" col="reversed" sort={sort} onSort={toggleSort} /></span>
+                  </Tooltip>
+                </th>
+                <th>
+                  <Tooltip content={FOLD_TIPS.oos_trades}>
+                    <span><SweepSortHeader<FoldCol> label="OOS trades" col="oos_trades" sort={sort} onSort={toggleSort} /></span>
+                  </Tooltip>
+                </th>
+                <th>
+                  <Tooltip content={FOLD_TIPS.wfe}>
+                    <span><SweepSortHeader<FoldCol> label="WFE" col="wfe" sort={sort} onSort={toggleSort} /></span>
+                  </Tooltip>
+                </th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {folds.map(({ f, i }) => {
+                const key = `s${Math.min(schemeIndex, schemes.length - 1)}/f${i}`;
+                const window = formatPeriodDateRange(f.test_from * 1000, f.test_to * 1000);
+                const noWinner = f.combo === null && f.error === null;
+                const open = expanded?.key === key;
+                return (
+                  <FoldRowGroup key={key} open={open}>
+                    <tr
+                      className={`wfo-fold-row${f.low_sample ? " sweep-error" : ""}${open ? " wfo-fold-open" : ""}`}
+                      onClick={() => toggleFold(key)}
+                    >
+                      <td>{window}</td>
+                      {noWinner ? (
+                        <td colSpan={8} className="wfo-dim">no eligible winner</td>
+                      ) : f.error !== null ? (
+                        <>
+                          <td><Tooltip content={f.error}><span>failed</span></Tooltip></td>
+                          <td>–</td><td>–</td><td>–</td><td>–</td><td>–</td><td>–</td><td>–</td>
+                        </>
+                      ) : (
+                        <>
+                          <td>{f.combo ? comboText(f.combo) : "–"}</td>
+                          <td>{fmt(f.is_metrics?.[metric] ?? null)}</td>
+                          <td>{f.oos_metrics?.return_pct == null ? "–" : `${fmt(f.oos_metrics.return_pct, 1)}%`}</td>
+                          {/* Exactly 0 is neither a win nor a loss: neutral tone, no "+" prefix
+                              (matches the Median excess tile). */}
+                          <td className={f.excess_return_pct == null ? ""
+                            : f.excess_return_pct > 0 ? "pos" : f.excess_return_pct < 0 ? "neg" : ""}>
+                            {f.excess_return_pct == null ? "–"
+                              : `${f.excess_return_pct > 0 ? "+" : ""}${fmt(f.excess_return_pct, 1)}%`}
+                          </td>
+                          <td>{foldHoldReturn(f) == null ? "–" : `${fmt(foldHoldReturn(f), 1)}%`}</td>
+                          {/* Red only when the mirror strategy BEAT this fold's
+                              real run — the signal pointed the wrong way there. */}
+                          <td className={
+                            f.reversed_metrics?.return_pct != null
+                              && f.oos_metrics?.return_pct != null
+                              && f.reversed_metrics.return_pct > f.oos_metrics.return_pct
+                              ? "neg" : ""
+                          }>
+                            {f.reversed_metrics?.return_pct == null ? "–"
+                              : `${fmt(f.reversed_metrics.return_pct, 1)}%`}
+                          </td>
+                          <td>{fmt(f.oos_metrics?.n_trades ?? null, 0)}</td>
+                          <td>{fmt(f.wfe)}</td>
+                        </>
+                      )}
+                      <td>
+                        {f.combo && (
+                          <button
+                            type="button"
+                            className="ghost wfo-apply"
+                            onClick={(e) => { e.stopPropagation(); onApplyCombo(f.combo!); }}
+                          >
+                            Apply
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr className="wfo-fold-drill">
+                        <td colSpan={10}>
+                          {expanded!.error ? (
+                            <div className="wfo-error">{expanded!.error}</div>
+                          ) : expanded!.rows === null ? (
+                            <div className="wfo-dim">Loading fold table…</div>
+                          ) : (
+                            <SweepResults
+                              rows={expanded!.rows}
+                              axes={axes}
+                              onApply={onApplyCombo}
+                              progress={null}
+                            />
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </FoldRowGroup>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+
+          {Object.keys(scheme.stability?.per_axis ?? {}).length > 0 && (
+            <div className="wfo-drift">
+              {Object.entries(scheme.stability.per_axis).map(([target, ax]) => {
+                const label =
+                  axes.find((a) => a.kind !== "list" && "target" in a && a.target === target)?.label ??
+                  target.replace(/^param:/, "");
+                return (
+                  <div className="wfo-drift-axis" key={target}>
+                    <span className="wfo-drift-label">{label}</span>
+                    <span className="wfo-drift-nums">
+                      stability {fmt(ax.stability)} · adjacency {fmt(ax.adjacency)}
+                    </span>
+                    <svg width={220} height={36} className="wfo-drift-line" aria-hidden="true">
+                      <path d={driftPath(ax.values)} fill="none" stroke="var(--accent)" strokeWidth={1.5} />
+                    </svg>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+});
+
+// Fragment wrapper so a fold row and its drill-in row share one list key
+// without an extra tbody per fold.
+function FoldRowGroup({ children }: { open: boolean; children: React.ReactNode }) {
+  return <>{children}</>;
+}

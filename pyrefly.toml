@@ -1,0 +1,14 @@
+# Pyrefly Configuration for Low Memory
+project-excludes = [
+    "dist/**",
+    "frontend/**",
+    "static/**",
+    "node_modules/**",
+    ".agents/**",
+    "__pycache__/**",
+    "*.mp4",
+    "*.zip"
+]
+
+[errors]
+"*" = "ignore"

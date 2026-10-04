@@ -1,0 +1,3210 @@
+// TradingView-style per-indicator settings modal, opened from the indicator
+// legend's gear icon (ChartCore's OnTooltipIconClick -> indicatorSettingsRequest
+// -> App mounts this). Reads the live indicator via getIndicator and
+// writes changes back with overrideIndicator. Three tabs mirror TV:
+//   Inputs     — for our TV-style EMA/MA: Length, Source, Offset, Smoothing and
+//                the Calculation group (Timeframe = multi-timeframe). For every
+//                other indicator: its numeric calcParams (labeled via
+//                indicatorMeta), with a disabled Timeframe placeholder.
+//   Style      — per-line color + thickness
+//   Visibility — whether the indicator is drawn
+//
+// Edits preview live on the chart; Cancel/Escape restores the opening snapshot.
+
+import { DBG_FAILED_DASH, DBG_FORCED_DASH, DBG_OUTRANKED_DASH } from "./lib/indicators/trendlinesDebugDraw";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import FloatingModal from "./components/FloatingModal";
+import type { Chart, Indicator } from "klinecharts";
+import VisibilityTab from "./VisibilityTab";
+import { type VisibilityModel, defaultVisibility, isVisibleOnResolution } from "./lib/visibility";
+import {
+  resolveInputs,
+  groupInputs,
+  isMovingAverage,
+  padTrendlinesParams,
+  presetsFor,
+  presetStepOf,
+  withPresetStep,
+  SMOOTHING_TYPES,
+  type IndicatorInputDef,
+} from "./lib/indicatorMeta";
+import { applyAutoFibTimeframe, applyFvgTimeframe, applyPivotBandsTimeframe, applySlopeTimeframe, applySrLevelsTimeframe, applyTrendlinesTimeframe, refreshMtfIndicators, refreshMtfOnVisibilityChange, setMtfWaitClose } from "./lib/mtfCoordinator";
+import { autoFibFibConfig, parseAutoFibConfig } from "./lib/indicators/autoFibOutputs";
+import type { FibConfig } from "./lib/fibConfig";
+import FibLevelsEditor from "./components/FibLevelsEditor";
+import {
+  legacyMergeAtr,
+  legacyNearPrice,
+  legacyOnePerPivot,
+  parseTrendlinesConfig,
+  TL_NEAR_PRICE_ATR,
+} from "./lib/indicators/trendlinesOutputs";
+import { TL_LINE_COLOR, trendlineStyleOf, type TrendlinesExtend, type TrendPivots } from "./lib/indicators/trendlines";
+import {
+  slopeLengths,
+  type SlopeExtend,
+  type SlopeSmoothing,
+  type SlopeThreshold,
+  type SlopeUnit,
+} from "./lib/indicators/slope";
+import { normalizeMaKind, type PriceSource } from "./lib/mtf";
+import type {
+  MaExtend,
+  PivotBandsMode,
+  PivotBandsSource,
+  AvwapExtend,
+  BandMode,
+  BandSetting,
+  PrevHlAgg,
+  RsiExtend,
+  RsiDivergenceConfig,
+  RsiSmoothing,
+  RsiStyle,
+  CurveLabelSide,
+  CurveLabelAlign,
+  SessionDef,
+  SessionsExtend,
+  TimeWindowDef,
+  TimeHighlightExtend,
+  PivotAnalysisExtend,
+  PivotConnectorStyle,
+  SrLevelsExtend,
+  SrZoneStyle,
+} from "./lib/customIndicators";
+import {
+  AVWAP_DEFAULT_BANDS,
+  RSI_DIVERGENCE_DEFAULTS,
+  RSI_SMOOTHING_DEFAULTS,
+  SR_ZONE_STYLE_DEFAULTS,
+  srZoneStyleOf,
+  fvgZoneStyleOf,
+  parseFvgConfig,
+  FVG_ZONE_STYLE_DEFAULTS,
+  type FvgZoneStyle,
+  type FvgExtend,
+  parseSrConfig,
+  RSI_STYLE_DEFAULTS,
+  DEFAULT_SESSIONS,
+  DEFAULT_TIME_WINDOWS,
+  timeHighlightZone,
+  indTypeOf,
+  templateMaKind,
+  maLegendLabel,
+  maFigures,
+  curveLabelConfig,
+  PIVOT_CONNECTOR_DEFAULTS,
+  resolvePivotConnector,
+} from "./lib/customIndicators";
+import { overrideExtend } from "./lib/overrideExtend";
+import { periodByResolution, pinnableTimeframes, pinBelowChart } from "./lib/feed";
+import {
+  saveIndicatorConfig,
+  loadIndicatorConfigs,
+  loadCustomResolutions,
+  type SavedIndicatorConfig,
+} from "./lib/persist";
+import InfoTip from "./components/InfoTip";
+import Tooltip from "./components/Tooltip";
+import SelectMenu from "./components/SelectMenu";
+import { requestIndicatorOverlayRepaint } from "./lib/signals";
+import {
+  mirrorAccelCompanion,
+  syncAccelCompanion,
+  mirrorPivotBarsSinceCompanion,
+  syncPivotBarsSinceCompanion,
+  getIndicator,
+  SESSION_GESTURE_KEYS,
+} from "./lib/indicators";
+import { EXPR_INSTANCE_TYPES } from "./lib/exprInstances";
+import { renameInstanceEverywhere } from "./lib/renameInstance";
+import type { RenameInstanceError } from "./lib/indicators";
+import type { ChartController } from "./lib/chartController";
+import { toast } from "./lib/notify";
+import { legendFiguresOf } from "./lib/indicators/inset";
+import ColorLineStylePicker from "./ColorLineStylePicker";
+import { toKLineStyle, fromKLineStyle } from "./lib/lineStyle";
+import { cloneStyles } from "./lib/overlays";
+import DefaultsMenu from "./indicatorSettings/DefaultsMenu";
+import { RsiInputsPanel, RsiDivergencePanel, RsiStylePanel, rsiConfig } from "./indicatorSettings/RsiPanels";
+import {
+  makeSetPrevHlTimezone,
+  makeSetPrevHlLength,
+  makeSetPrevHlAgg,
+  makeSetPrevHlRolling,
+  makeSetPrevHlAnchorInput,
+  makeSetBoundaryVisible,
+  PrevHlInputsPanel,
+  PrevHlCalculationRows,
+  PrevHlStylePairs,
+  PrevHlLegendToggle,
+  prevHlConfig,
+} from "./indicatorSettings/PrevHlPanels";
+import {
+  makeApplyMa,
+  MaInputsPanel,
+  maConfig,
+  makeApplyAvwap,
+  AvwapInputsPanel,
+  avwapConfig,
+} from "./indicatorSettings/MaAvwapPanels";
+import {
+  makeWriteSessions,
+  makePatchSession,
+  makeAddSession,
+  SessionsInputsPanel,
+  SessionsStylePanel,
+  sessionsConfig,
+} from "./indicatorSettings/SessionsPanels";
+import {
+  makeWriteWindows,
+  makePatchWindow,
+  makeAddWindow,
+  TimeHighlightInputsPanel,
+  TimeHighlightStylePanel,
+  timeHighlightConfig,
+} from "./indicatorSettings/TimeHighlightPanels";
+import { CandlePatternsPanel, candlePatternsConfig } from "./indicatorSettings/CandlePatternsPanel";
+import type { CandlePatternsExtend } from "./lib/indicators/candlePatterns";
+import SlopeColorPanel, { slopeColorConfig } from "./indicatorSettings/SlopeColorPanel";
+import { defaultSlopeColor, type SlopeColorConfig } from "./lib/indicators/slopeColor";
+import { adaptiveStep } from "./lib/adaptiveStep";
+import {
+  DEFAULT_LINE_PALETTE,
+  CURVE_LABEL_TYPES,
+  parseColor,
+  toColor,
+  type PrevHlKind,
+  type LineDraft,
+  TimeframePinRows,
+} from "./indicatorSettings/shared";
+
+// The Timeframe row's tip per pinnable type (Pivot Bands shows none).
+const TIMEFRAME_TIPS: Record<string, string[]> = {
+  SLOPE: [
+    "Compute the slope on this timeframe instead of the chart's.",
+    "A higher timeframe gives a steadier, slower trend read.",
+  ],
+  SR_LEVELS: [
+    "Detect and cluster the levels on this timeframe instead of the chart's.",
+    "A higher timeframe surfaces the bigger, slower zones, e.g. daily levels on a 5m chart.",
+  ],
+  AUTO_FIB: [
+    "Find the swings on this timeframe instead of the chart's.",
+    "A higher timeframe draws the bigger swing, e.g. the daily fib on a 5m chart.",
+  ],
+  FVG: [
+    "Detect the gaps on this timeframe instead of the chart's.",
+    "A higher timeframe surfaces the bigger, slower imbalances, e.g. 1h gaps on a 5m chart.",
+  ],
+  TRENDLINES: [
+    "Detect the lines on this timeframe instead of the chart's.",
+    "A higher timeframe gives fewer, longer trends, e.g. daily lines on a 15m chart.",
+  ],
+};
+
+interface Props {
+  chart: Chart;
+  // The focused cell's storage scope — per-indicator config is stored per cell.
+  scope: string;
+  // The focused cell's id. Only the PREV_HL anchor field needs it, and only to
+  // ask whether THIS cell is running a masked session: the any-cell read made a
+  // session on one chart lock the anchor editor on a sibling that was not
+  // replaying at all.
+  cellId: string;
+  epic: string;
+  // Active data broker id — MTF (higher-timeframe) data is fetched against it.
+  brokerId: string;
+  chartResolution: string;
+  paneId: string;
+  name: string;
+  // Only needed for the "Reference name" field (renaming needs to update the
+  // cell's persisted instance list and the active backtest config's rule
+  // text, both reached through the controller). Absent -> field is a no-op.
+  controller?: ChartController | null;
+  onClose: () => void;
+}
+
+type Tab = "inputs" | "divergence" | "slope" | "style" | "visibility" | "debug";
+
+
+/** The Trendlines Style-tab draft: the resolved style of the instance, every
+ * field present. Persisted back as the sparse extendData keys (see
+ * trendlineExtendOf) so an untouched pane carries none of them. */
+type TrendlineStyleDraft = ReturnType<typeof trendlineStyleOf>;
+
+function trendlineExtendOf(d: TrendlineStyleDraft): Partial<TrendlinesExtend> {
+  const out: Partial<TrendlinesExtend> = {};
+  if (d.color !== TL_LINE_COLOR) out.lineColor = d.color;
+  if (d.width !== 1) out.lineWidth = d.width;
+  if (d.style !== "solid") out.lineStyle = d.style;
+  if (d.opacity !== 1) out.lineOpacity = d.opacity;
+  return out;
+}
+
+/** What Cancel/Escape restores: the instance exactly as it was when the modal
+ * opened. Held by the shell so it survives a form remount (see below). */
+type OriginalSnapshot = {
+  calcParams: number[];
+  visible: boolean;
+  styles: ReturnType<typeof cloneStyles>;
+  /** A deep COPY. klinecharts merges every extendData write into the live
+   * object in place, so a reference would see each edit and Cancel would write
+   * the edited values back onto themselves. Its `mtf` holds only the pin
+   * (timeframe + waitClose): the HTF stash under it is runtime data the
+   * coordinator keeps refreshing while the modal is open, so it is neither
+   * copied nor restored (see pinOf). */
+  extendData: MaExtend | null;
+};
+
+/** The persisted half of `extendData.mtf`: what the user chose, never the
+ * runtime stash the coordinator writes beside it. */
+function pinOf(mtf: unknown): { timeframe: string | null; waitClose?: false } | null {
+  if (!mtf || typeof mtf !== "object") return null;
+  const m = mtf as { timeframe?: unknown; waitClose?: unknown };
+  const timeframe = typeof m.timeframe === "string" && m.timeframe ? m.timeframe : null;
+  return { timeframe, ...(m.waitClose === false ? { waitClose: false as const } : {}) };
+}
+
+/** The open-time snapshot of extendData: a deep copy with `mtf` cut down to
+ * its pin, so opening settings never copies a years-deep HTF stash. */
+function snapshotExtend(ext: unknown): MaExtend | null {
+  if (!ext || typeof ext !== "object") return null;
+  const { mtf, ...rest } = ext as Record<string, unknown>;
+  const copy = deepCopy(rest);
+  const pin = pinOf(mtf);
+  return (pin ? { ...copy, mtf: pin } : copy) as MaExtend;
+}
+
+/** A deep copy that later in-place merges into the source cannot reach.
+ * structuredClone refuses functions; JSON is the fallback, and a value neither
+ * can copy stays shared (the old behaviour) rather than breaking the modal. */
+function deepCopy<T>(v: T): T {
+  try {
+    return structuredClone(v);
+  } catch {
+    try {
+      return JSON.parse(JSON.stringify(v)) as T;
+    } catch {
+      return v;
+    }
+  }
+}
+
+/** The extendData patch that turns `live` back into `orig`: every key whose
+ * value differs, a key the pane did not have set to null. Unchanged keys are
+ * left out. `mtf` is compared by its pin only, so a stash the coordinator
+ * refreshed while the modal was open is left alone; when the pin itself
+ * changed, the patch carries the bare original pin and `repin` asks the
+ * caller to have the coordinator fetch that timeframe's bars again. */
+function extendRestorePatch(
+  orig: Record<string, unknown>,
+  live: Record<string, unknown>,
+): { patch: Record<string, unknown>; repin: boolean } {
+  const patch: Record<string, unknown> = {};
+  let repin = false;
+  for (const k of new Set([...Object.keys(orig), ...Object.keys(live)])) {
+    // A hover or selection glow is the chart's to clear, not Cancel's.
+    if ((SESSION_GESTURE_KEYS as readonly string[]).includes(k)) continue;
+    if (k === "mtf") {
+      const was = pinOf(orig.mtf);
+      if (JSON.stringify(was) !== JSON.stringify(pinOf(live.mtf))) {
+        patch.mtf = was ?? null;
+        repin = true;
+      }
+      continue;
+    }
+    const was = orig[k] ?? null;
+    if (JSON.stringify(was) !== JSON.stringify(live[k] ?? null)) patch[k] = deepCopy(was);
+  }
+  return { patch, repin };
+}
+
+/** The shell around the form. Nothing is persisted until Ok: every edit is a
+ * live preview on the chart, Cancel restores the opening snapshot, and Ok is
+ * the one place the config is written. Applying a preset (or Reset) recreates
+ * the instance from the chosen config, so the ~60 form fields, all seeded from
+ * the live instance at mount, are refreshed by remounting the form (`gen`)
+ * while the snapshot, the stored config and the open tab stay put here. */
+export default function IndicatorSettings(props: Props) {
+  const { chart, paneId: paneId0, name } = props;
+  const ind0 = useMemo(
+    () => getIndicator(chart, paneId0, name) as Indicator | null,
+    [chart, paneId0, name],
+  );
+  // Snapshot the original state once, for an exact revert on Cancel/Escape.
+  const original = useRef<OriginalSnapshot>({
+    calcParams: ((ind0?.calcParams ?? []) as unknown[]).map((v) => Number(v)),
+    visible: ind0?.visible ?? true,
+    // klinecharts mutates an indicator's `.styles` object IN PLACE on
+    // overrideIndicator (verified empirically — see overlays.ts's cloneStyles), and
+    // getIndicator returns that SAME live object. A later Style-tab edit
+    // (apply()/setLine()) would otherwise mutate this "original" snapshot too,
+    // making Cancel just re-apply the already-edited value instead of reverting it.
+    styles: cloneStyles(ind0?.styles ?? null),
+    extendData: snapshotExtend(ind0?.extendData),
+  });
+  const [tab, setTab] = useState<Tab>("inputs");
+  const [gen, setGen] = useState(0);
+  // A recreate can move a sub-pane indicator onto a fresh pane id.
+  const [paneId, setPaneId] = useState(paneId0);
+  return (
+    <IndicatorSettingsForm
+      key={gen}
+      {...props}
+      paneId={paneId}
+      original={original}
+      tab={tab}
+      setTab={setTab}
+      onRecreated={() => {
+        // Look the pane up by name rather than trusting createIndicator's
+        // return: for a candle-pane overlay it hands back a fresh generated id
+        // while the instance actually lands on candle_pane, and a sub-pane
+        // indicator whose pane was torn down comes back on a new one.
+        const live = chart.getIndicators({ name })[0];
+        if (live?.paneId) setPaneId(live.paneId);
+        setGen((g) => g + 1);
+      }}
+    />
+  );
+}
+
+function IndicatorSettingsForm({
+  chart,
+  scope,
+  cellId,
+  epic,
+  brokerId,
+  chartResolution,
+  paneId,
+  name,
+  controller,
+  onClose,
+  original,
+  tab,
+  setTab,
+  onRecreated,
+}: Props & {
+  original: React.MutableRefObject<OriginalSnapshot>;
+  tab: Tab;
+  setTab: (t: Tab) => void;
+  onRecreated: () => void;
+}) {
+  const ind = useMemo(
+    () => getIndicator(chart, paneId, name) as Indicator | null,
+    [chart, paneId, name],
+  );
+  // What the form opens on: the LIVE instance. After a preset recreate this is
+  // the preset's state, while `original` (the shell's) is still what Cancel
+  // restores, so the two must not be confused.
+  const seed = {
+    calcParams: ((ind?.calcParams ?? []) as unknown[]).map((v) => Number(v)),
+    visible: ind?.visible ?? true,
+    extendData: (ind?.extendData ?? null) as MaExtend | null,
+  };
+  // `name` is the instance id (klinecharts name, e.g. "EMA#a1b2"); the real TYPE
+  // (EMA/MA/AVWAP/…) drives which input panels show. Resolve it from extendData.
+  const type = ind ? indTypeOf(ind) : name;
+  const isMa = isMovingAverage(type);
+  const isAvwap = type === "AVWAP";
+  const isRsi = type === "RSI";
+  // Pivot Bands supports MTF (like EMA/MA) but lives on the generic inputs path.
+  const isPivotBands = type === "PIVOT_BANDS";
+  // Slope also supports MTF (like EMA/MA/Pivot Bands) but lives on the generic
+  // inputs path too (maLen/slopeN via calcParams, maType/units/source via extend).
+  const isSlope = type === "SLOPE";
+  // Pivots High/Low: draw-only connector styling (color/width/dash/arrowheads) in
+  // the Style tab — no recompute, just an extendData override.
+  const isPivotAnalysis = type === "PIVOT_ANALYSIS";
+  // S/R Levels: draw-only zone styling (colors + base opacity) in the Style tab;
+  // its two figure lines are draw-suppressed, so the generic line rows are hidden.
+  const isSrLevels = type === "SR_LEVELS";
+  // Fair Value Gaps: same shape as S/R Levels — MTF pin on the Inputs tab, zone
+  // colours + opacity in the Style tab, and its four figure lines are
+  // draw-suppressed, so the generic line rows are hidden.
+  const isFvg = type === "FVG";
+  // Trendlines: same MTF shape as S/R Levels — the pin is on the Inputs tab and
+  // the detector runs on the pinned timeframe's own bars, lines and all.
+  const isTrendlines = type === "TRENDLINES";
+  // Auto Fib: same MTF shape as S/R Levels (pin on the Inputs tab), and its
+  // levels are the fib drawing tool's editor on the Style tab.
+  const isAutoFib = type === "AUTO_FIB";
+  // The pinnable types besides EMA/MA (which has its own panel): one Timeframe
+  // + "Wait for timeframe closes" block, one persistence rule, one apply.
+  const isHtfPinned = isPivotBands || isSlope || isSrLevels || isFvg || isTrendlines || isAutoFib;
+  // Candle Patterns: figure-less main-pane overlay, no numeric calcParams. Its
+  // whole config (pattern toggles, show-labels, colours) is a small extendData
+  // object edited on the Inputs tab (colours included, unlike EMA/MA).
+  const isCandlePatterns = type === "CANDLE_PATTERNS";
+  // Overlay indicators with a multi-line channel get per-line show/hide checkboxes
+  // (+ opacity) in the Style tab, like TradingView's band toggles.
+  const hasLineToggle = isAvwap || type === "LR" || type === "PREV_HL";
+  // Slope-colored main line: gated to the MA family + AVWAP/VWAP (the templates
+  // that carry the custom draw — see lib/indicators/slopeColor.ts).
+  const hasSlopeTab = isMa || isAvwap || type === "VWAP";
+  // Rule-referenceable types (SLOPE/ATR/FVG/TRENDLINES/PIVOT_BANDS/
+  // PIVOT_ANALYSIS/SR_LEVELS)
+  // get a "Reference name" field: the id a rule spells as `<id>.<output>`.
+  // `controller` is only wired for the focused cell, so the field is inert
+  // (accepted but requires a controller to actually commit) for anything else.
+  const isRenameable = EXPR_INSTANCE_TYPES.has(type);
+
+  // WHAT A NUMBER BOX SHOWS WHILE IT HAS FOCUS. The boxes are controlled by
+  // the parsed number, and the text on the way to a number is often not one:
+  // "0" in an unbounded box is the off sentinel (rendered empty), "0." and
+  // "-" are nothing at all, "-0" is 0. Rendering the parse back on each
+  // keystroke ate those, so "0.3" landed as "3" and a negative could not be
+  // typed. The raw text stays here, keyed by input, until the box blurs; the
+  // slot still gets the parse on every keystroke, so the preview tracks it.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const draftProps = (
+    key: string,
+    shown: number | string,
+    commit: (raw: string) => void,
+    baseStep = 1,
+  ) => ({
+    value: drafts[key] ?? shown,
+    // On a fractional field the arrow-key step follows the value shown.
+    step: adaptiveStep(drafts[key] ?? shown, baseStep),
+    onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+      const raw = e.target.value;
+      setDrafts((d) => ({ ...d, [key]: raw }));
+      commit(raw);
+    },
+    onBlur: () =>
+      setDrafts((d) => {
+        if (!(key in d)) return d;
+        const rest = { ...d };
+        delete rest[key];
+        return rest;
+      }),
+  });
+  const [calcParams, setCalcParams] = useState<number[]>(() => {
+    const cp = seed.calcParams;
+    // A Trendlines pane saved before slots 19 to 22 existed migrates its
+    // render-only settings onto them, by the same rules parseTrendlinesConfig
+    // applies for the chart, so each box shows what the pane draws. Only an
+    // ABSENT slot migrates; a present one is what the user set since.
+    if (!isTrendlines) return cp;
+    const ext = seed.extendData;
+    const next = cp.slice();
+    if (cp[19] === undefined && legacyNearPrice(ext)) next[19] = TL_NEAR_PRICE_ATR;
+    if (cp[21] === undefined) {
+      const merge = legacyMergeAtr(ext);
+      if (merge !== undefined) next[21] = merge;
+    }
+    if (cp[22] === undefined && legacyOnePerPivot(ext)) next[22] = 1;
+    return next;
+  });
+  // Intent, not the live effective flag: `ind.visible` can be false merely because
+  // the interval filter (applyIndicatorIntervalVisibility) hid it on this
+  // timeframe. Read the persisted intent (extendData.userVisible) first, falling
+  // back to the legacy `visible` flag only when userVisible is genuinely absent
+  // (fresh/legacy indicator) — mirrors overlays.ts's rehydrate seed.
+  const [visible, setVisible] = useState<boolean>(
+    (seed.extendData as { userVisible?: boolean } | null)?.userVisible ?? seed.visible,
+  );
+  const [showValue, setShowValue] = useState<boolean>(
+    !(seed.extendData as { hideLegendValue?: boolean } | null)?.hideLegendValue,
+  );
+
+  // --- Per-timeframe visibility (TV Visibility tab), shared with drawings ---
+  const visExt0 = (seed.extendData ?? {}) as { visibility?: VisibilityModel };
+  const [vis, setVis] = useState<VisibilityModel>(visExt0.visibility ?? defaultVisibility());
+  // Auto-hide (bar-count) is only wired up for drawings so far — indicators.ts's
+  // applyIndicatorIntervalVisibility never evaluates barsSpanned/autoHide, so
+  // showing this control for AVWAP (an anchored, finite-extent indicator that
+  // conceptually should get it) would expose a toggle that silently does nothing.
+  // TODO: wire indicator bar-span (anchor timestamp -> current bar count) and
+  // flip this back to `isAvwap` once that lands.
+  const showAutoHide = false;
+
+  // --- Reference name (the id a rule spells as `<id>.<output>`) ---
+  const [refNameDraft, setRefNameDraft] = useState(name);
+  const [refNameError, setRefNameError] = useState<RenameInstanceError | null>(null);
+  function commitRefName() {
+    const candidate = refNameDraft.trim();
+    if (!controller || candidate === name) {
+      setRefNameDraft(name);
+      setRefNameError(null);
+      return;
+    }
+    const result = renameInstanceEverywhere(controller, epic, name, candidate);
+    if (!result.ok) {
+      if (result.error === "unchanged") {
+        setRefNameDraft(name);
+        setRefNameError(null);
+        return;
+      }
+      setRefNameError(result.error);
+      return;
+    }
+    // The id this modal was opened for no longer names anything (the pane was
+    // torn down and recreated under `candidate`) — close rather than keep
+    // editing a stale reference. Reopen via the gear icon to continue.
+    toast(`Renamed to ${candidate}`);
+    onClose();
+  }
+
+  // --- RSI divergence config (extendData.divergence), OFF by default ---
+  const rsiExt0 = (ind?.extendData ?? {}) as RsiExtend;
+  const [rsiDiv, setRsiDiv] = useState<RsiDivergenceConfig>(() => ({
+    ...RSI_DIVERGENCE_DEFAULTS,
+    ...(rsiExt0.divergence ?? {}),
+  }));
+  // Write a divergence-config patch onto extendData (merging live extendData to
+  // preserve indType) and let calc re-run so the markers update immediately.
+  // Persistence is handled by the snapshot effect (keyed on rsiDiv).
+  // Reset the divergence TUNING to defaults but keep the master on/off as-is, so a
+  // reset never silently switches the feature off under the user.
+  function resetDivergence() {
+    setRsiDivergence({ ...RSI_DIVERGENCE_DEFAULTS, on: rsiDiv.on });
+  }
+  function setRsiDivergence(patch: Partial<RsiDivergenceConfig>) {
+    const next = { ...rsiDiv, ...patch };
+    setRsiDiv(next);
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    chart.overrideIndicator({ paneId, name, extendData: { ...((live?.extendData as object) ?? {}), divergence: next } });
+  }
+
+  // --- RSI source (price the RSI is computed on) + smoothing MA (extendData) ---
+  const [rsiSource, setRsiSource] = useState<string>(rsiExt0.source ?? "close");
+  const [rsiSmooth, setRsiSmooth] = useState<RsiSmoothing>(() => ({
+    ...RSI_SMOOTHING_DEFAULTS,
+    ...(rsiExt0.smoothing ?? {}),
+  }));
+  // Write a source/smoothing patch onto extendData (merging live extendData to
+  // preserve indType + divergence) and recompute. Persisted by the snapshot effect.
+  function setRsiExtend(patch: { source?: string; smoothing?: RsiSmoothing }) {
+    if (patch.source !== undefined) setRsiSource(patch.source);
+    if (patch.smoothing !== undefined) setRsiSmooth(patch.smoothing);
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    const ext = { ...((live?.extendData as object) ?? {}) } as RsiExtend;
+    if (patch.source !== undefined) ext.source = patch.source as RsiExtend["source"];
+    if (patch.smoothing !== undefined) ext.smoothing = patch.smoothing;
+    chart.overrideIndicator({ paneId, name, extendData: ext });
+  }
+
+  // --- RSI Style-tab colours/levels (extendData.style), resolved over defaults ---
+  const [rsiStyle, setRsiStyle] = useState<RsiStyle>(() => {
+    const s = (rsiExt0.style ?? {}) as Partial<RsiStyle>;
+    return {
+      ...RSI_STYLE_DEFAULTS,
+      ...s,
+      upper: { ...RSI_STYLE_DEFAULTS.upper, ...s.upper },
+      middle: { ...RSI_STYLE_DEFAULTS.middle, ...s.middle },
+      lower: { ...RSI_STYLE_DEFAULTS.lower, ...s.lower },
+    };
+  });
+  function setRsiStylePatch(patch: Partial<RsiStyle>) {
+    const next: RsiStyle = {
+      ...rsiStyle,
+      ...patch,
+      upper: { ...rsiStyle.upper, ...patch.upper },
+      middle: { ...rsiStyle.middle, ...patch.middle },
+      lower: { ...rsiStyle.lower, ...patch.lower },
+    };
+    setRsiStyle(next);
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    chart.overrideIndicator({ paneId, name, extendData: { ...((live?.extendData as object) ?? {}), style: next } });
+  }
+
+  // --- Moving-average (EMA/MA) inputs, sourced from calcParams + extendData ---
+  const ext0 = (ind?.extendData ?? {}) as MaExtend;
+  const [maLength, setMaLength] = useState<number>(seed.calcParams[0] ?? (type === "EMA" ? 9 : 20));
+  const [source, setSource] = useState<string>(ext0.source ?? "close");
+  const [offset, setOffset] = useState<number>(ext0.offset ?? 0);
+  const [smoothType, setSmoothType] = useState<string>(ext0.smoothing?.type ?? "none");
+  const [smoothLen, setSmoothLen] = useState<number>(ext0.smoothing?.length ?? 9);
+  const [timeframe, setTimeframe] = useState<string>(ext0.mtf?.timeframe ?? "chart");
+  // TV's "Wait for timeframe closes": absent/true = closed HTF bars only (the
+  // default); false = fold the forming HTF bar in (see mtfCoordinator).
+  const [waitClose, setWaitClose] = useState<boolean>(ext0.mtf?.waitClose !== false);
+  const [maType, setMaType] = useState<string>(ext0.maType ?? templateMaKind(type));
+  const [envelope, setEnvelope] = useState<boolean>(ext0.envelope === true);
+
+  // --- AVWAP inputs (source + bands), sourced from extendData (AvwapExtend) ---
+  const avwapExt0 = (ind?.extendData ?? {}) as AvwapExtend;
+  const [avwapSource, setAvwapSource] = useState<string>(avwapExt0.source ?? "hlc3");
+  const [bandMode, setBandMode] = useState<BandMode>(avwapExt0.bandMode ?? "stdev");
+  const [bands, setBands] = useState<[BandSetting, BandSetting, BandSetting]>(
+    avwapExt0.bands ?? AVWAP_DEFAULT_BANDS,
+  );
+
+  // --- SLOPE: MA lengths (calcParams, up to 5) + slope period/smoothing/
+  // color-by-direction (extendData). maType/units/source ride the generic
+  // genExtend path above (meta-declared selects); these four don't fit that
+  // fixed schema (a variable list + a nested {type,length} object + a bool
+  // that's meaningful only for one length), so they get dedicated state here.
+  const slopeExt0 = (ind?.extendData ?? {}) as SlopeExtend;
+  const [slopePeriod, setSlopePeriod] = useState<number>(slopeExt0.slopePeriod ?? 3);
+  const [smoothing, setSmoothing] = useState<SlopeSmoothing>(
+    slopeExt0.smoothing ?? { type: "none", length: 9 },
+  );
+  const [colorByDirection, setColorByDirection] = useState<boolean>(
+    slopeExt0.colorByDirection ?? true,
+  );
+  const [threshold, setThreshold] = useState<SlopeThreshold>(
+    slopeExt0.threshold ?? { on: false, level: 0.1, lineStyle: "dotted" },
+  );
+  const [showMa, setShowMa] = useState<boolean>(slopeExt0.showMa ?? false);
+  const [showAccel, setShowAccel] = useState<boolean>(slopeExt0.showAccel ?? false);
+  const [accelPeriod, setAccelPeriod] = useState<number>(slopeExt0.accelPeriod ?? 3);
+  const [accelSmoothing, setAccelSmoothing] = useState<SlopeSmoothing>(
+    slopeExt0.accelSmoothing ?? { type: "none", length: 3 },
+  );
+  // Acceleration is a second derivative, so its magnitudes are much smaller than
+  // the slope's — default the guide level well below the slope threshold's 0.1.
+  const [accelThreshold, setAccelThreshold] = useState<SlopeThreshold>(
+    slopeExt0.accelThreshold ?? { on: false, level: 0.01, lineStyle: "dotted" },
+  );
+  const [accelAbsolute, setAccelAbsolute] = useState<boolean>(slopeExt0.accelAbsolute ?? false);
+
+  // --- PIVOT_ANALYSIS: vertical connector style (draw-only, on extendData) ---
+  // Colors stay price-driven (up/down); width + line style + arrowheads are shared.
+  const pivotConnector0 = resolvePivotConnector(
+    ((ind?.extendData ?? {}) as PivotAnalysisExtend).connector,
+  );
+  const [connector, setConnector] = useState<Required<PivotConnectorStyle>>(pivotConnector0);
+
+  // --- Slope-colored main line (MA/AVWAP/VWAP): color the main line by slope
+  // state, on extendData.slopeColor (see lib/indicators/slopeColor.ts). ---
+  const [slopeColor, setSlopeColor] = useState<SlopeColorConfig>(
+    () =>
+      ((ind?.extendData as Record<string, unknown> | undefined)?.slopeColor as
+        | SlopeColorConfig
+        | undefined) ?? defaultSlopeColor(),
+  );
+
+  // --- SR_LEVELS: zone colors + base opacity (draw-only, on extendData.zoneStyle) ---
+  const [srZone, setSrZone] = useState<SrZoneStyle>(() =>
+    srZoneStyleOf((ind?.extendData ?? {}) as SrLevelsExtend),
+  );
+
+  // --- FVG: zone colors + fill opacity (draw-only, on extendData.zoneStyle) ---
+  const [fvgZone, setFvgZone] = useState<FvgZoneStyle>(() =>
+    fvgZoneStyleOf((ind?.extendData ?? {}) as FvgExtend),
+  );
+
+  // --- AUTO_FIB: fib levels/extend/reverse/labels (draw + operand names, on extendData.fib) ---
+  const [autoFib, setAutoFib] = useState<FibConfig>(() => autoFibFibConfig(ind?.extendData));
+
+  // --- TRENDLINES: line colour / width / dash / opacity (draw-only, on
+  // extendData.lineColor / lineWidth / lineStyle / lineOpacity) ---
+  const [trendlineStyle, setTrendlineStyle] = useState<TrendlineStyleDraft>(() =>
+    trendlineStyleOf(ind?.extendData as TrendlinesExtend | undefined),
+  );
+
+  // --- PREV_HL: per-instance timezone override + per-boundary length/agg (Inputs) ---
+  // "chart" = follow the global chart axis zone; an IANA name buckets this
+  // instance's day/week boundaries in that zone (extendData.tz). Lengths and
+  // aggregation functions are per boundary (rolling/day/week); the rolling boundary
+  // also carries a unit (bars/minute/hour/day/week) and a gap mode.
+  const prevHlExt0 = (ind?.extendData ?? {}) as {
+    tz?: string;
+    lengths?: Partial<Record<PrevHlKind, number>>;
+    aggs?: Partial<Record<PrevHlKind, PrevHlAgg>>;
+    rollingUnit?: string;
+    gapMode?: "trading" | "wallclock";
+    anchorTs?: number;
+  };
+  const [prevHlTz, setPrevHlTz] = useState<string>(prevHlExt0.tz ?? "chart");
+  // anchor uses no length/agg (always max/min since its timestamp) — its record
+  // entries are unused placeholders so the maps stay keyed by PrevHlKind.
+  const [prevHlLengths, setPrevHlLengths] = useState<Record<PrevHlKind, number>>(() => ({
+    rolling: prevHlExt0.lengths?.rolling ?? 1,
+    day: prevHlExt0.lengths?.day ?? 1,
+    week: prevHlExt0.lengths?.week ?? 1,
+    anchor: 1,
+  }));
+  const [prevHlAggs, setPrevHlAggs] = useState<Record<PrevHlKind, PrevHlAgg>>(() => ({
+    rolling: prevHlExt0.aggs?.rolling ?? "extreme",
+    day: prevHlExt0.aggs?.day ?? "extreme",
+    week: prevHlExt0.aggs?.week ?? "extreme",
+    anchor: "extreme",
+  }));
+  const [prevHlRollingUnit, setPrevHlRollingUnit] = useState<string>(
+    prevHlExt0.rollingUnit ?? "hour",
+  );
+  const [prevHlGapMode, setPrevHlGapMode] = useState<"trading" | "wallclock">(
+    prevHlExt0.gapMode ?? "trading",
+  );
+  // Anchor timestamp (epoch ms; 0 = unplaced). The Inputs row shows it as a
+  // datetime-local in the instance's timezone.
+  const [prevHlAnchorTs, setPrevHlAnchorTs] = useState<number>(
+    Number(prevHlExt0.anchorTs) || 0,
+  );
+
+  // --- Curve-end labels (generic; shown for indicators that map a per-curve tag) ---
+  // The pill shown past each curve's end when the indicator is selected/highlighted.
+  // Enabled by DEFAULT — an explicit `false` must persist (so it isn't re-defaulted
+  // to on at reload), hence we always store the full object once the user touches it.
+  const curveLabelExt0 = curveLabelConfig((ind?.extendData ?? {}) as unknown);
+  const [curveLabelEnabled, setCurveLabelEnabled] = useState<boolean>(curveLabelExt0.enabled);
+  // Position is configured separately for High vs Low curves (side + vertical align).
+  const [curveLabelHighSide, setCurveLabelHighSide] = useState<CurveLabelSide>(curveLabelExt0.high.side);
+  const [curveLabelHighAlign, setCurveLabelHighAlign] = useState<CurveLabelAlign>(curveLabelExt0.high.align);
+  const [curveLabelLowSide, setCurveLabelLowSide] = useState<CurveLabelSide>(curveLabelExt0.low.side);
+  const [curveLabelLowAlign, setCurveLabelLowAlign] = useState<CurveLabelAlign>(curveLabelExt0.low.align);
+  // "always" = labels stay visible permanently; false (default) = only when the
+  // indicator is selected/highlighted.
+  const [curveLabelAlways, setCurveLabelAlways] = useState<boolean>(curveLabelExt0.always);
+  // Whether this indicator type has a per-curve key parameter to label. Keep in sync
+  // with curveLabel()'s switch in customIndicators; ones without a case show no pills,
+  // so we hide the controls for them rather than offer a no-op toggle.
+  const hasCurveLabels = CURVE_LABEL_TYPES.has(type);
+  // Only PREV_HL plots High/Low curve PAIRS that benefit from independently-placed
+  // labels; every other type's curves route to the single "high" position slot
+  // (none of their figKeys end in "low"), so they show one "Label position" row.
+  const hasHighLowSplit = type === "PREV_HL";
+  // Whether a high/low position is at its default (right/center) — used both for the
+  // omit-when-default rehydrate guard and to drop a default sub-object from the save.
+  const isPosDefault = (side: CurveLabelSide, align: CurveLabelAlign) =>
+    side === "right" && align === "center";
+  // Build the curve-label config object from the current state, omitting default
+  // sub-positions but ALWAYS keeping enabled (so an explicit `false` persists).
+  function curveLabelObj(next: {
+    enabled: boolean;
+    always: boolean;
+    highSide: CurveLabelSide;
+    highAlign: CurveLabelAlign;
+    lowSide: CurveLabelSide;
+    lowAlign: CurveLabelAlign;
+  }) {
+    const obj: {
+      enabled: boolean;
+      always?: boolean;
+      high?: { side: CurveLabelSide; align: CurveLabelAlign };
+      low?: { side: CurveLabelSide; align: CurveLabelAlign };
+    } = { enabled: next.enabled };
+    if (next.always) obj.always = true;
+    if (!isPosDefault(next.highSide, next.highAlign))
+      obj.high = { side: next.highSide, align: next.highAlign };
+    if (!isPosDefault(next.lowSide, next.lowAlign))
+      obj.low = { side: next.lowSide, align: next.lowAlign };
+    return obj;
+  }
+  // Whether the whole config round-trips to nothing (so we can drop the key entirely).
+  const curveLabelIsDefault = (next: Parameters<typeof curveLabelObj>[0]) =>
+    next.enabled &&
+    !next.always &&
+    isPosDefault(next.highSide, next.highAlign) &&
+    isPosDefault(next.lowSide, next.lowAlign);
+  // Write the curve-label config onto extendData and re-preview (no recompute needed;
+  // labels are drawn in ChartCore's redraw from extendData). Persisted by the snapshot
+  // effect. The whole key is dropped when fully default; otherwise legacy flat side/
+  // align are removed and the high/low form is written.
+  function applyCurveLabels(next: Parameters<typeof curveLabelObj>[0]) {
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    const ext = { ...((live?.extendData as object) ?? {}) } as { curveLabels?: unknown };
+    if (curveLabelIsDefault(next)) delete ext.curveLabels;
+    else ext.curveLabels = curveLabelObj(next);
+    chart.overrideIndicator({ paneId, name, extendData: ext });
+    if (isSlope) requestIndicatorOverlayRepaint();
+  }
+  // The current state as the applyCurveLabels/curveLabelObj argument shape.
+  const curveLabelState = () => ({
+    enabled: curveLabelEnabled,
+    always: curveLabelAlways,
+    highSide: curveLabelHighSide,
+    highAlign: curveLabelHighAlign,
+    lowSide: curveLabelLowSide,
+    lowAlign: curveLabelLowAlign,
+  });
+
+  const inputs = resolveInputs(type, ind?.calcParams as unknown[] | undefined);
+  const debugInputs = inputs.filter((inp) => inp.tab === "debug");
+
+  // --- Generic extendData inputs (e.g. LR's Source select) ---
+  // For non-MA/non-AVWAP indicators whose meta declares `source:"extend"` inputs,
+  // hold each field's value here and write it onto extendData on change.
+  const genExt0 = (ind?.extendData ?? {}) as Record<string, unknown>;
+  const [genExtend, setGenExtend] = useState<Record<string, unknown>>(() => {
+    const init: Record<string, unknown> = {};
+    for (const inp of inputs) {
+      if (inp.source === "extend" && inp.field) {
+        init[inp.field] = genExt0[inp.field] ?? inp.default;
+      }
+    }
+    return init;
+  });
+  function setExtendInput(field: string, value: unknown) {
+    const next = { ...genExtend, [field]: value };
+    setGenExtend(next);
+    // Pivot Bands' Mode/Source change must recompute the HTF series under an
+    // active timeframe (a plain extend write would only re-align the stale one),
+    // so route it through the coordinator instead of the generic override.
+    if (isPivotBands && (field === "mode" || field === "source")) {
+      applyPivotBands(field === "mode" ? { mode: value as string } : { source: value as string });
+      return;
+    }
+    // Slope's MA Type/Units/Source changes must recompute the HTF series under an
+    // active timeframe too (a plain extend write would only re-align the stale
+    // one), so route them through the coordinator instead of the generic override.
+    if (isSlope && (field === "maType" || field === "units" || field === "source")) {
+      applySlope({ [field]: value as string });
+      return;
+    }
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    chart.overrideIndicator({ paneId, name, extendData: { ...((live?.extendData as object) ?? {}), ...next } });
+    // Pivot Bands' "Bars since pivot pane" checkbox is a plain extend write, but
+    // the pane itself is derived state: spawn or tear it down right here.
+    if (isPivotBands && field === "showBarsSince") syncPivotBarsSinceCompanion(chart, name);
+  }
+
+  // Conditional visibility: an input whose showWhen guard is not met by the
+  // current (extend-stored) value of the controlling field is not rendered.
+  // Filtered BEFORE grouping, so a hidden half of a pair leaves the other half
+  // as a normal full-width row rather than an empty grid cell.
+  function visibleInput(inp: IndicatorInputDef): boolean {
+    if (inp.tab) return false; // Style and Debug tabs render their own
+    if (!inp.showWhen) return true;
+    const want = inp.showWhen.field;
+    const ctrl = inputs.find((d) =>
+      d.source === "extend" ? d.field === want : d.key === want,
+    );
+    if (ctrl?.source === "calcParam" && ctrl.index != null) {
+      // A calcParam controller reads its live slot, 0/1 for a boolean, and
+      // the meta default where the saved instance predates the slot.
+      const stored = calcParams[ctrl.index];
+      const cur = Number.isFinite(stored)
+        ? ctrl.type === "boolean"
+          ? (stored as number) >= 1
+            ? 1
+            : 0
+          : stored
+        : ctrl.type === "boolean"
+          ? (ctrl.default ? 1 : 0)
+          : ctrl.default;
+      return inp.showWhen.equals.includes(cur as string | number);
+    }
+    const cur = genExtend[want] ?? ctrl?.default;
+    return inp.showWhen.equals.includes(cur as string | number);
+  }
+
+  // TRENDLINES live readouts (IndicatorInputDef.liveStat): the last result
+  // row's pivot pool. The calc lands asynchronously after a param write, so
+  // each change of the params reads a few times over the next second and
+  // then stops; nothing runs while the form sits idle. Only set when the
+  // numbers change, so a read never re-renders the form on its own.
+  const [tlStats, setTlStats] = useState<{ pivots: number; pairs: number; majors: number } | null>(null);
+  useEffect(() => {
+    if (name !== "TRENDLINES") return;
+    const read = () => {
+      const live = getIndicator(chart, paneId, name) as Indicator | null;
+      const rows = (live?.result ?? []) as Array<{ pivots?: TrendPivots }>;
+      const pv = rows[rows.length - 1]?.pivots;
+      const next = pv
+        ? { pivots: pv.idxs.length, pairs: pv.pairs ?? 0, majors: pv.majorsSeen ?? 0 }
+        : null;
+      setTlStats((cur) =>
+        cur === next ||
+        (cur && next && cur.pivots === next.pivots && cur.pairs === next.pairs && cur.majors === next.majors)
+          ? cur
+          : next,
+      );
+    };
+    read();
+    const timers = [150, 400, 1000, 2500].map((ms) => setTimeout(read, ms));
+    return () => timers.forEach(clearTimeout);
+    // calcParams is the trigger, not an input: a new params array means a
+    // recompute is on its way.
+  }, [chart, paneId, name, calcParams]);
+
+  function statFor(inp: IndicatorInputDef) {
+    if (!inp.liveStat || !tlStats) return null;
+    const text =
+      inp.liveStat === "tlPivots" ? `${tlStats.pivots} pivots`
+      : inp.liveStat === "tlMajors" ? `${tlStats.majors} pivots`
+      : `${tlStats.pairs} pairs`;
+    return <span className="ind-stat">{text}</span>;
+  }
+
+  // The label, with an optional ⓘ info tip beside it (matches the hand-built
+  // panels like PREV_HL). Plain <label> when there is no tip.
+  function labelFor(inp: IndicatorInputDef) {
+    return inp.tip ? (
+      <span className="ind-row-head">
+        <label>{inp.label}</label>
+        <InfoTip title={inp.label} text={inp.tip} />
+      </span>
+    ) : (
+      <label>{inp.label}</label>
+    );
+  }
+
+  // A boolean in a PAIRED row: a plain tick box with its name beside it. The
+  // <label> wraps both, so the name is part of the hit area.
+  function boolChip(
+    inp: IndicatorInputDef,
+    checked: boolean,
+    onChange: (next: boolean) => void,
+  ) {
+    return (
+      <label className="ind-bool-check">
+        <input
+          type="checkbox"
+          aria-label={inp.label}
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span>{inp.label}</span>
+      </label>
+    );
+  }
+
+  // The ⓘ alone, for the rows whose label is inside the control (the paired
+  // checkboxes): the tip has to sit OUTSIDE the hit area, or reading it would
+  // toggle the setting.
+  function tipFor(inp: IndicatorInputDef) {
+    return inp.tip ? <InfoTip title={inp.label} text={inp.tip} /> : null;
+  }
+
+  // Wraps a control with its unit, so the unit reads as part of the field
+  // rather than as part of the label.
+  function withSuffix(inp: IndicatorInputDef, control: React.ReactNode) {
+    if (!inp.suffix) return control;
+    return (
+      <span className="ind-control-row">
+        {control}
+        <span className="ind-suffix">{inp.suffix}</span>
+      </span>
+    );
+  }
+
+  // `chip` is set only by the boolean-PAIR row: a pair of on/off settings
+  // renders as two labeled checkboxes, everything else keeps the tick box it
+  // always had. Scoped that narrowly on purpose — restyling every boolean in
+  // the modal changed panels that never asked for it.
+  function controlFor(inp: IndicatorInputDef, chip = false) {
+    // A BOOLEAN stored in a calcParam slot (0 / 1) — TRENDLINES' Mixed
+    // touches. The number branch below would render it as a spinner.
+    if (inp.source === "calcParam" && inp.index != null && inp.type === "boolean") {
+      const stored = calcParams[inp.index];
+      const checked = Number.isFinite(stored)
+        ? (stored as number) >= 1
+        : ((inp.default as boolean | undefined) ?? false);
+      const set = (next: boolean) => setParam(inp.index!, next ? 1 : 0);
+      return chip ? (
+        boolChip(inp, checked, set)
+      ) : (
+        <input
+          type="checkbox"
+          aria-label={inp.label}
+          checked={checked}
+          onChange={(e) => set(e.target.checked)}
+        />
+      );
+    }
+    if (inp.source === "calcParam" && inp.index != null) {
+      // A slot the saved instance predates reads undefined, which would
+      // render an EMPTY box for a param that does have a default (a chart
+      // created before the param existed keeps its shorter list). Show the
+      // meta's default there; editing writes the slot and the array grows
+      // to the new length.
+      const stored = Number.isFinite(calcParams[inp.index])
+        ? calcParams[inp.index]
+        : ((inp.default as number | undefined) ?? "");
+      return withSuffix(
+        inp,
+        <input
+          type="number"
+          // The visible label is a sibling, not a <label for>, so the control
+          // is unnamed to a screen reader (and to a test) without this.
+          aria-label={inp.label}
+          min={inp.min}
+          max={inp.max}
+          // An `unbounded` param stores 0 for "no limit": the box shows that
+          // state as empty behind an ∞ placeholder, and clearing it writes the
+          // same 0 back — the sentinel never changes, only how it reads.
+          placeholder={inp.unbounded ? (inp.placeholder ?? "∞") : undefined}
+          {...draftProps(
+            inp.key,
+            inp.unbounded && stored === 0 ? "" : stored,
+            (raw) =>
+              setParam(
+                inp.index!,
+                raw === "" && inp.unbounded
+                  ? 0
+                  : // Meta `min` / `max` are hard bounds the calc clamps to anyway
+                    // (Max Trendlines caps at 50): store the clamped value so the
+                    // box shows what the chart does, not a number it ignores.
+                    Math.min(inp.max ?? Infinity, Math.max(inp.min ?? -Infinity, Number(raw))),
+              ),
+            inp.step ?? 1,
+          )}
+        />,
+      );
+    }
+    if (inp.source === "extend" && inp.field && inp.type === "select") {
+      return (
+        <SelectMenu
+          className={inp.wide ? "ind-select-fill" : undefined}
+          ariaLabel={inp.label}
+          value={String(genExtend[inp.field] ?? inp.default ?? "")}
+          options={(inp.options ?? []).map((o) => ({
+            value: String(o.value),
+            label: o.label,
+          }))}
+          onChange={(v) => setExtendInput(inp.field!, v)}
+        />
+      );
+    }
+    // A NUMBER on extendData, which is not the same branch as a calcParam one:
+    // render-only settings (Merge Tolerance) live there because they must not
+    // be able to move an emitted value. Without this the row drew its label and
+    // nothing else.
+    if (inp.source === "extend" && inp.field && inp.type === "number") {
+      return withSuffix(
+        inp,
+        <input
+          type="number"
+          aria-label={inp.label}
+          min={inp.min}
+          max={inp.max}
+          {...draftProps(
+            inp.key,
+            Number.isFinite(genExtend[inp.field] as number)
+              ? (genExtend[inp.field] as number)
+              : ((inp.default as number | undefined) ?? ""),
+            (raw) => setExtendInput(inp.field!, Number(raw)),
+            inp.step ?? 1,
+          )}
+        />,
+      );
+    }
+    if (inp.source === "extend" && inp.field && inp.type === "boolean") {
+      const checked = (genExtend[inp.field] ?? inp.default ?? false) as boolean;
+      const set = (next: boolean) => setExtendInput(inp.field!, next);
+      return chip ? (
+        boolChip(inp, checked, set)
+      ) : (
+        <input
+          type="checkbox"
+          aria-label={inp.label}
+          checked={checked}
+          onChange={(e) => set(e.target.checked)}
+        />
+      );
+    }
+    return null;
+  }
+
+  // Render-only inputs the meta puts on the Style tab (Trendlines' pivot
+  // marks/line stats/dimming, Auto Fib's past-fib opacity): same genExtend
+  // state and row shapes as the Inputs tab. Shared so each caller stays a
+  // one-line hook into the same chunking/rendering rules.
+  function styleTabMetaInputs() {
+    return groupInputs(inputs.filter((inp) => inp.tab === "style")).map((chunk) => (
+      <Fragment key={chunk[0].key}>
+        {chunk[0].section && <div className="ind-group">{chunk[0].section}</div>}
+        {/* Any run of CHECKBOXES shares the beside-the-box row, a grouped
+            lone one too (Debug mode), so it reads like its neighbours; any
+            other chunk renders one row per input so a mixed group never
+            drops its tail. */}
+        {(chunk.length > 1 || chunk[0].group) && chunk.every((inp) => inp.type === "boolean") ? (
+          <div className="ind-pair2-bool">
+            {chunk.map((inp) => (
+              <div className="ind-field" key={inp.key}>
+                {controlFor(inp, true)}
+                {tipFor(inp)}
+              </div>
+            ))}
+          </div>
+        ) : (
+          chunk.map((inp) => (
+            <div key={inp.key} className={inp.wide ? "ind-row" : "ind-row ind-row-cols"}>
+              {labelFor(inp)}
+              {controlFor(inp)}
+            </div>
+          ))
+        )}
+      </Fragment>
+    ));
+  }
+
+  // --- SESSIONS: editable per-session list (extendData.sessions) ---
+  // The whole indicator config is this list. Hours are LOCAL time in each session's
+  // timezone (Inputs tab); colours live in the Style tab. Writes merge live
+  // extendData (preserve indType); persistence is the snapshot effect (keyed on
+  // `sessions`). Writers moved to SessionsPanels.tsx.
+  const sessionsExt0 = (ind?.extendData ?? {}) as SessionsExtend;
+  const [sessions, setSessions] = useState<SessionDef[]>(() =>
+    (sessionsExt0.sessions ?? DEFAULT_SESSIONS).map((s) => ({ ...s })),
+  );
+  const writeSessions = makeWriteSessions(chart, paneId, name, setSessions);
+  const patchSession = makePatchSession(sessions, writeSessions);
+  const addSession = makeAddSession(sessions, writeSessions);
+
+  // --- TIME_HIGHLIGHT: editable per-window list (extendData.windows) ---
+  // Like SESSIONS, the whole indicator config is this list, but times are always
+  // device-local (no per-window zone) and each window carries a visual mode
+  // (band / candles / both). Times live on the Inputs tab, colours on the Style
+  // tab. Writes merge live extendData (preserve indType); persistence is the
+  // snapshot effect (keyed on `windows`). Writers moved to TimeHighlightPanels.tsx.
+  const windowsExt0 = (ind?.extendData ?? {}) as TimeHighlightExtend;
+  const [windows, setWindows] = useState<TimeWindowDef[]>(() =>
+    (windowsExt0.windows ?? DEFAULT_TIME_WINDOWS).map((wn) => ({ ...wn })),
+  );
+  const writeWindows = makeWriteWindows(chart, paneId, name, setWindows);
+  const patchWindow = makePatchWindow(windows, writeWindows);
+  const addWindow = makeAddWindow(windows, writeWindows);
+
+  // --- CANDLE_PATTERNS: pattern toggles + show-labels + colours (extendData) ---
+  // The whole config is this small object. Writes merge the live extendData
+  // (preserve indType) and let calc/draw re-run; persistence is the snapshot
+  // effect (keyed on `candleExt`). `disabled` is deep-copied on init so a later
+  // toggle never mutates the opening snapshot.
+  const candleExt0 = (ind?.extendData ?? {}) as CandlePatternsExtend;
+  const [candleExt, setCandleExt] = useState<CandlePatternsExtend>(() => ({
+    disabled: { ...(candleExt0.disabled ?? {}) },
+    showLabels: candleExt0.showLabels,
+    bullColor: candleExt0.bullColor,
+    bearColor: candleExt0.bearColor,
+    neutralColor: candleExt0.neutralColor,
+  }));
+  function writeCandlePatterns(next: CandlePatternsExtend) {
+    setCandleExt(next);
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    chart.overrideIndicator({ paneId, name, extendData: { ...((live?.extendData as object) ?? {}), ...next } });
+  }
+
+  // PREV_HL family writers (moved to PrevHlPanels.tsx; state stays here since the
+  // persistence effect + currentConfig() read it directly).
+  const setPrevHlTimezone = makeSetPrevHlTimezone(chart, paneId, name, setPrevHlTz);
+  const setPrevHlLength = makeSetPrevHlLength(chart, paneId, name, prevHlLengths, setPrevHlLengths);
+  const setPrevHlAgg = makeSetPrevHlAgg(chart, paneId, name, prevHlAggs, setPrevHlAggs);
+  const setPrevHlRolling = makeSetPrevHlRolling(
+    chart,
+    paneId,
+    name,
+    prevHlRollingUnit,
+    prevHlGapMode,
+    setPrevHlRollingUnit,
+    setPrevHlGapMode,
+  );
+  const setPrevHlAnchorInput = makeSetPrevHlAnchorInput(chart, paneId, name, prevHlTz, setPrevHlAnchorTs);
+
+  // "Chart" follows the active chart timeframe — name it so the menu says which.
+  const chartTfLabel = periodByResolution(chartResolution)?.label;
+  const chartOptionLabel = chartTfLabel ? `Chart (${chartTfLabel})` : "Chart";
+  // Pinnable: the chart's own timeframe or higher. A pin that dropped BELOW the
+  // chart (the chart timeframe was raised past it) isn't offered, but must stay
+  // visible and reselectable-away-from — flagged; it renders on chart bars.
+  const pinnable = pinnableTimeframes(chartResolution, loadCustomResolutions());
+  // A pin on a custom timeframe since deleted from the saved list is neither
+  // below chart nor in `pinnable` (pinnableTimeframes only offers SAVED custom
+  // timeframes) — same "stay visible and reselectable-away-from" treatment as
+  // pinBelowChart above, so the select doesn't silently show the wrong option.
+  const belowChart = pinBelowChart(timeframe, chartResolution);
+  const deletedCustomPin =
+    !belowChart &&
+    timeframe !== "chart" &&
+    !pinnable.some((p) => p.resolution === timeframe) &&
+    periodByResolution(timeframe);
+  const timeframeOptions = [
+    { resolution: "chart", label: chartOptionLabel },
+    ...(belowChart
+      ? [{
+          resolution: timeframe,
+          label: `${periodByResolution(timeframe)?.label ?? timeframe} (below chart)`,
+        }]
+      : []),
+    ...(deletedCustomPin ? [{ resolution: timeframe, label: deletedCustomPin.label }] : []),
+    ...pinnable,
+  ];
+
+  // Line-type figures, paired with their effective default colors so the Style
+  // tab shows the colors actually on screen even when nothing's been overridden.
+  const lineDefs = useMemo<LineDraft[]>(() => {
+    // Through legendFiguresOf, not ind.figures: an inset instance is registered with
+    // an empty figure list (that is what keeps its values out of the price axis), so
+    // reading it directly would leave the Style tab with NO line-color rows and make
+    // an inset indicator unrecolorable. The helper falls back to the base template,
+    // whose line order is exactly the order `styles.lines` (and the band draw's own
+    // paintInsetLines loop) index by.
+    const figures = (ind ? legendFiguresOf(ind) : []).filter((f) => f.type === "line");
+    const globalLines = chart.getStyles().indicator?.lines ?? [];
+    const overrides = ind?.styles?.lines ?? [];
+    // Friendly Style-tab labels for AVWAP's otherwise-untitled band figures
+    // (TradingView wording: VWAP, then Lower/Upper band #N).
+    const AVWAP_LINE_LABELS: Record<string, string> = {
+      vwap: "VWAP",
+      up1: "Upper band #1",
+      dn1: "Lower band #1",
+      up2: "Upper band #2",
+      dn2: "Lower band #2",
+      up3: "Upper band #3",
+      dn3: "Lower band #3",
+    };
+    // Previous-period H/L lines carry no figure title (so the lines don't flood
+    // the legend), so the Style tab names them here — the rolling/day/week
+    // H/L rows the user toggles individually.
+    const PREV_HL_LINE_LABELS: Record<string, string> = {
+      rollingHigh: "Range High",
+      rollingLow: "Range Low",
+      dayHigh: "Day High",
+      dayLow: "Day Low",
+      weekHigh: "Week High",
+      weekLow: "Week Low",
+      anchorHigh: "Anchor High",
+      anchorLow: "Anchor Low",
+    };
+    const hidden = (ind?.extendData as { lineHidden?: Record<string, boolean> } | undefined)?.lineHidden ?? {};
+    return figures.map((f, i) => {
+      const label =
+        (isAvwap && AVWAP_LINE_LABELS[f.key]) ||
+        (type === "PREV_HL" && PREV_HL_LINE_LABELS[f.key]) ||
+        (f.title || f.key || `Line ${i + 1}`).replace(/:\s*$/, "");
+      const raw =
+        overrides[i]?.color ??
+        globalLines[i % (globalLines.length || 1)]?.color ??
+        DEFAULT_LINE_PALETTE[i % DEFAULT_LINE_PALETTE.length];
+      const { hex, alpha } = parseColor(raw);
+      const size = overrides[i]?.size ?? globalLines[i]?.size ?? 1;
+      // Recover the dash style from whichever full style is in effect (override,
+      // else this figure's own default), so the picker opens on the real style.
+      const styleSrc = overrides[i] ?? globalLines[i % (globalLines.length || 1)];
+      const lineStyle = fromKLineStyle(styleSrc?.style, styleSrc?.dashedValue);
+      return { key: f.key, label, color: hex, opacity: alpha, size, lineStyle, visible: !hidden[f.key] };
+    });
+  }, [ind, chart, isAvwap, type]);
+  const [lines, setLines] = useState<LineDraft[]>(lineDefs);
+  // Whether to PERSIST line styles. We must NOT freeze styles just because the
+  // modal was opened — that would pin the current defaults and stop registration
+  // default changes (e.g. AVWAP band colors) from ever taking effect. So persist
+  // styles only when the user actually edits a line (setLine), OR when custom
+  // styles were already saved (so reopening without editing never wipes them).
+  const linesEdited = useRef<boolean>(loadIndicatorConfigs(scope)[name]?.styles != null);
+
+  // Build FULL line-style overrides by merging {color,size} onto the line's
+  // existing FULL style. klinecharts stores indicator.styles as-is (no merge with
+  // defaults) and its line drawer reads dashedValue[0]/style/smooth — a partial
+  // {color,size} override leaves those undefined and crashes the draw. We base
+  // each entry on the indicator's OWN current per-figure style (so a dashed band
+  // stays dashed — AVWAP's band lines), falling back to the global default line
+  // style only when the indicator has no per-figure style. Applies to the live
+  // override AND the persisted snapshot so a restored line never crashes.
+  function lineOverrides(ls: LineDraft[]) {
+    const globalDefaults = chart.getStyles().indicator?.lines ?? [];
+    const indLines = ind?.styles?.lines ?? [];
+    return ls.map((l, i) => ({
+      ...(globalDefaults[i % (globalDefaults.length || 1)] ?? {}),
+      ...(indLines[i] ?? {}), // preserve this figure's own smooth/etc.
+      color: toColor(l.color, l.opacity), // recombine hex + opacity → #hex or rgba
+      size: l.size,
+      ...toKLineStyle(l.lineStyle), // solid/dashed/dotted → {style, dashedValue}
+    }));
+  }
+
+  // Build the full persisted settings snapshot from the modal's current state.
+  // AVWAP's anchor (calcParams[0]) is per-epic, so it's excluded here. Only config
+  // goes into extendData — never the bulky computed MTF series.
+  function currentConfig(): SavedIndicatorConfig {
+    const extendData: Record<string, unknown> = {};
+    if (isMa) {
+      maConfig(extendData, type, source, offset, smoothType, smoothLen, timeframe, maType, envelope, waitClose);
+    }
+    // Every other pinnable type persists only the chosen timeframe and its
+    // waitClose choice (never the bulky HTF series); refreshMtfIndicators
+    // refetches and recomputes it on reload, like EMA/MA.
+    if (isHtfPinned && timeframe !== "chart") extendData.mtf = { timeframe, ...(waitClose ? {} : { waitClose: false }) };
+    if (isSlope) {
+      // slopePeriod/smoothing/colorByDirection don't ride genExtend (they're not
+      // meta-declared selects) — persist them explicitly so they survive reload.
+      extendData.slopePeriod = slopePeriod;
+      if (smoothing.type !== "none") extendData.smoothing = smoothing;
+      extendData.colorByDirection = colorByDirection;
+      extendData.threshold = threshold;
+      extendData.showMa = showMa;
+      extendData.showAccel = showAccel;
+      extendData.accelPeriod = accelPeriod;
+      if (accelSmoothing.type !== "none") extendData.accelSmoothing = accelSmoothing;
+      extendData.accelThreshold = accelThreshold;
+      extendData.accelAbsolute = accelAbsolute;
+    }
+    if (isPivotAnalysis) {
+      // Connector style is draw-only; persist only when it differs from the fixed
+      // default so a plain instance carries no `connector` key.
+      if (JSON.stringify(connector) !== JSON.stringify(PIVOT_CONNECTOR_DEFAULTS)) {
+        extendData.connector = connector;
+      }
+    }
+    if (isSrLevels && JSON.stringify(srZone) !== JSON.stringify(SR_ZONE_STYLE_DEFAULTS)) {
+      // Zone style is draw-only; persist only when it differs from the defaults.
+      extendData.zoneStyle = srZone;
+    }
+    if (isFvg && JSON.stringify(fvgZone) !== JSON.stringify(FVG_ZONE_STYLE_DEFAULTS)) {
+      extendData.zoneStyle = fvgZone;
+    }
+    if (isAutoFib && JSON.stringify(autoFib) !== JSON.stringify(autoFibFibConfig({}))) {
+      // Persist only a customized fib, so a plain pane carries no `fib` key.
+      extendData.fib = autoFib;
+    }
+    if (isTrendlines) {
+      // Draw-only; each key persists only when it differs from the default so
+      // a plain instance carries none of them.
+      Object.assign(extendData, trendlineExtendOf(trendlineStyle));
+    }
+    if (isAvwap) {
+      avwapConfig(extendData, avwapSource, bandMode, bands);
+    }
+    if (!isMa) {
+      // Generic extendData inputs (e.g. LR's Source). For AVWAP, source is set
+      // above; this also catches any future extend-input indicators.
+      Object.assign(extendData, genExtend);
+    }
+    if (type === "PREV_HL") {
+      // Per-instance timezone override + per-boundary lookback lengths/agg
+      // functions + rolling unit/gap mode + anchor timestamp (non-defaults only).
+      prevHlConfig(
+        extendData,
+        prevHlTz,
+        prevHlLengths,
+        prevHlAggs,
+        prevHlRollingUnit,
+        prevHlGapMode,
+        prevHlAnchorTs,
+      );
+    }
+    if (isAvwap || !isMa) {
+      // Per-line visibility (Style tab) → only the hidden lines, by figure key.
+      const lineHidden: Record<string, boolean> = {};
+      for (const l of lines) if (!l.visible) lineHidden[l.key] = true;
+      if (Object.keys(lineHidden).length) extendData.lineHidden = lineHidden;
+    }
+    if (type === "RSI") {
+      // Source + smoothing + divergence: only persist each when it differs from the
+      // defaults, so a plain RSI carries no extra keys.
+      rsiConfig(extendData, rsiSource, rsiSmooth, rsiDiv, rsiStyle);
+    }
+    if (hasCurveLabels) {
+      // Curve-end labels: omit when fully default so a plain instance carries no key;
+      // otherwise store the high/low form (enabled is always kept, so an explicit
+      // `false` stays off on reload).
+      const st = curveLabelState();
+      if (!curveLabelIsDefault(st)) extendData.curveLabels = curveLabelObj(st);
+    }
+    if (type === "SESSIONS") {
+      sessionsConfig(extendData, sessions);
+    }
+    if (type === "TIME_HIGHLIGHT") {
+      timeHighlightConfig(extendData, windows);
+    }
+    if (isCandlePatterns) {
+      candlePatternsConfig(extendData, candleExt);
+    }
+    // Slope-colored main line: persist only when enabled or customized away from
+    // the fixed defaults, so a plain instance carries no slopeColor key.
+    slopeColorConfig(extendData, hasSlopeTab ? slopeColor : null);
+    if (!showValue) extendData.hideLegendValue = true;
+    // Per-timeframe visibility (TV Visibility tab) — model only when non-default,
+    // but userVisible (the intent) is always written once touched, so a later read
+    // of intent never falls back to the interval-filtered effective `visible`.
+    if (JSON.stringify(vis) !== JSON.stringify(defaultVisibility())) extendData.visibility = vis;
+    extendData.userVisible = visible;
+    return {
+      calcParams: isAvwap ? undefined : isMa ? [maLength] : calcParams,
+      visible,
+      styles: linesEdited.current && lines.length ? { lines: lineOverrides(lines) } : undefined,
+      extendData: Object.keys(extendData).length ? extendData : undefined,
+    };
+  }
+
+  // Nothing is persisted while the modal is open: edits preview live on the
+  // chart and the config is written once, by Ok (see `ok` below).
+
+  // Flip the pin's "Wait for timeframe closes" choice: write the flag onto
+  // the live indicator FIRST (every apply* reads it from there), then rebuild
+  // the stash in the new mode via the caller's own apply.
+  function toggleWaitClose(next: boolean, reapply: () => void) {
+    setWaitClose(next);
+    setMtfWaitClose(chart, paneId, name, next);
+    if (timeframe !== "chart") reapply();
+  }
+
+  // MA/EMA apply (moved to MaAvwapPanels.tsx). Also called directly from
+  // setParam's isMa branch below, so it stays a shell-local binding.
+  const applyMa = makeApplyMa(chart, epic, name, paneId, brokerId, type, {
+    maLength,
+    source,
+    offset,
+    smoothType,
+    smoothLen,
+    timeframe,
+    maType,
+    envelope,
+  });
+
+  // Push a Pivot Bands config (chart-TF or MTF) through the coordinator, which
+  // refetches + recomputes both step-lines on the higher timeframe when one is
+  // set. Reads explicit overrides so a param change never races setState; N/K
+  // come from calcParams, mode from genExtend.
+  function applyPivotBands(
+    next: Partial<{ n: number; k: number; mode: string; source: string; timeframe: string }> = {},
+  ) {
+    const n = next.n ?? calcParams[0] ?? 5;
+    const k = next.k ?? calcParams[1] ?? 3;
+    const mode = (next.mode ?? genExtend.mode ?? "last") as PivotBandsMode;
+    const source = (next.source ?? genExtend.source ?? "hl") as PivotBandsSource;
+    const tf = next.timeframe ?? timeframe;
+    void applyPivotBandsTimeframe(
+      chart,
+      epic,
+      name,
+      paneId,
+      { n, k, mode, source },
+      tf === "chart" ? null : tf,
+      brokerId,
+    );
+    // applyPivotBandsTimeframe re-syncs the companion too, but only after its
+    // awaited fetches: this synchronous call makes the bars-since pane appear /
+    // disappear instantly on toggle. Under an active higher timeframe the values
+    // it shows settle once that fetch resolves.
+    syncPivotBarsSinceCompanion(chart, name);
+  }
+
+  // Push an S/R Levels, Auto Fib, FVG or Trendlines config (chart-TF or MTF)
+  // through the coordinator, which re-detects on the higher timeframe's native
+  // bars when one is set. Pivot Bands and Slope route to their own applies
+  // above/below. Params come from the explicit override so a calcParam change
+  // never races setState.
+  function applyPin(next: Partial<{ timeframe: string }> = {}, nextCp?: number[]) {
+    if (isPivotBands) return applyPivotBands(next);
+    if (isSlope) return applySlope(next);
+    const tf = next.timeframe ?? timeframe;
+    const pin = tf === "chart" ? null : tf;
+    const cp = nextCp ?? calcParams;
+    if (isSrLevels) void applySrLevelsTimeframe(chart, epic, name, paneId, parseSrConfig(cp), pin, brokerId);
+    else if (isAutoFib) void applyAutoFibTimeframe(chart, epic, name, paneId, parseAutoFibConfig(cp), pin, brokerId);
+    else if (isFvg) void applyFvgTimeframe(chart, epic, name, paneId, parseFvgConfig(cp), pin, brokerId);
+    else if (isTrendlines)
+      void applyTrendlinesTimeframe(
+        chart,
+        epic,
+        name,
+        paneId,
+        parseTrendlinesConfig(cp, ind?.extendData),
+        pin,
+        brokerId,
+      );
+  }
+
+  // Push a Slope config (chart-TF or MTF) through the coordinator, which refetches
+  // + recomputes the slope on the higher timeframe's native bars when one is set
+  // (mirrors applyPivotBands above). `lengths` is the calcParams LIST (one MA
+  // length per line, up to 5 — mirrors the Pivot Bands N/K pattern but as an
+  // array); slopeN/maType/units/source/smoothing come from extendData
+  // (slopePeriod/genExtend.maType/genExtend.units/genExtend.source/smoothing
+  // state). Reads explicit overrides so a param change never races setState.
+  //
+  // applySlopeTimeframe's `ext` only explicitly sets maType/units/config.options
+  // (source/offset) — slopePeriod/smoothing/colorByDirection ride through ONLY
+  // via its leading `...ind.extendData` spread, i.e. whatever is ALREADY stored
+  // on the live indicator. So a slopePeriod/smoothing edit must land on the live
+  // indicator's extendData BEFORE calling the coordinator, or the coordinator's
+  // recompute (chart-TF included) would use the stale stored value instead of
+  // the just-changed one.
+  function applySlope(
+    next: Partial<{
+      lengths: number[];
+      slopeN: number;
+      maType: string;
+      units: string;
+      source: string;
+      smoothing: SlopeSmoothing;
+      colorByDirection: boolean;
+      threshold: SlopeThreshold;
+      showMa: boolean;
+      showAccel: boolean;
+      accelPeriod: number;
+      accelSmoothing: SlopeSmoothing;
+      accelThreshold: SlopeThreshold;
+      accelAbsolute: boolean;
+      timeframe: string;
+    }> = {},
+  ): void {
+    const tf = next.timeframe ?? timeframe;
+    const nextSlopeN = next.slopeN ?? slopePeriod;
+    const nextSmoothing = next.smoothing ?? smoothing;
+    const nextColorByDirection = next.colorByDirection ?? colorByDirection;
+    const nextThreshold = next.threshold ?? threshold;
+    const nextShowMa = next.showMa ?? showMa;
+    const nextShowAccel = next.showAccel ?? showAccel;
+    const nextAccelPeriod = next.accelPeriod ?? accelPeriod;
+    const nextAccelSmoothing = next.accelSmoothing ?? accelSmoothing;
+    const nextAccelThreshold = next.accelThreshold ?? accelThreshold;
+    const nextAccelAbsolute = next.accelAbsolute ?? accelAbsolute;
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    chart.overrideIndicator({ paneId,
+        name,
+        extendData: {
+          ...((live?.extendData as object) ?? {}),
+          slopePeriod: nextSlopeN,
+          smoothing: nextSmoothing.type === "none" ? undefined : nextSmoothing,
+          colorByDirection: nextColorByDirection,
+          threshold: nextThreshold,
+          showMa: nextShowMa,
+          showAccel: nextShowAccel,
+          accelPeriod: nextAccelPeriod,
+          accelSmoothing:
+            nextAccelSmoothing.type === "none" ? undefined : nextAccelSmoothing,
+          accelThreshold: nextAccelThreshold,
+          accelAbsolute: nextAccelAbsolute,
+        },
+      });
+    void applySlopeTimeframe(
+      chart,
+      epic,
+      name,
+      paneId,
+      {
+        maType: normalizeMaKind(next.maType ?? genExtend.maType),
+        lengths: next.lengths ?? slopeLengths(calcParams),
+        slopeN: nextSlopeN,
+        units: (next.units ?? (genExtend.units as SlopeUnit) ?? "pctHr") as SlopeUnit,
+        smoothing: nextSmoothing.type === "none" ? undefined : nextSmoothing,
+        options: { source: (next.source ?? genExtend.source ?? "close") as PriceSource, offset },
+      },
+      tf === "chart" ? null : tf,
+      brokerId,
+    );
+    // applySlopeTimeframe re-syncs the companion too, but only after its awaited
+    // fetches: this synchronous call makes the pane appear/disappear instantly on
+    // toggle rather than after a network round-trip.
+    syncAccelCompanion(chart, name);
+    requestIndicatorOverlayRepaint();
+  }
+
+  // Slope-colored main line: the extendData override (merged over the live
+  // indicator's) makes klinecharts RECALC the indicator — calc is what attaches
+  // the per-bar slope states — and repaint. Do not "optimize" this to a
+  // draw-only path: without the recalc, enable/len/band edits paint all-flat.
+  // No key inside slopeColor is ever removed, so a plain merge is safe;
+  // slopeColorConfig (in currentConfig()) handles the persisted-side delete.
+  function patchSlopeColor(p: Partial<SlopeColorConfig>): void {
+    const next = { ...slopeColor, ...p };
+    setSlopeColor(next);
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    chart.overrideIndicator({
+      paneId,
+      name,
+      extendData: { ...((live?.extendData as object) ?? {}), slopeColor: next },
+    });
+  }
+
+  // Merge one field into the connector style, push state + live redraw together.
+  function patchConnector(p: Partial<Required<PivotConnectorStyle>>): void {
+    const next = { ...connector, ...p };
+    setConnector(next);
+    applyPivotAnalysis(next);
+  }
+
+  // SR_LEVELS zone style: draw-only, so a plain extendData override (merged over
+  // the live indicator's) is the whole live-update path — no recompute.
+  function patchSrZone(p: Partial<SrZoneStyle>): void {
+    const next = { ...srZone, ...p };
+    setSrZone(next);
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    chart.overrideIndicator({
+      paneId,
+      name,
+      extendData: { ...((live?.extendData as object) ?? {}), zoneStyle: next },
+    });
+  }
+
+  // AUTO_FIB levels: the pairs do not depend on them, so no coordinator
+  // re-walk is needed; a plain extendData override is the whole live-update
+  // path (klinecharts still recalcs on it, which is cheap here).
+  function patchAutoFib(next: FibConfig): void {
+    setAutoFib(next);
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    chart.overrideIndicator({
+      paneId,
+      name,
+      extendData: { ...((live?.extendData as object) ?? {}), fib: next },
+    });
+  }
+
+  // FVG zone style: draw-only, so a plain extendData override (merged over the
+  // live indicator's) is the whole live-update path — no recompute.
+  function patchFvgZone(p: Partial<FvgZoneStyle>): void {
+    const next = { ...fvgZone, ...p };
+    setFvgZone(next);
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    chart.overrideIndicator({
+      paneId,
+      name,
+      extendData: { ...((live?.extendData as object) ?? {}), zoneStyle: next },
+    });
+  }
+
+  // Trendlines line colour: draw-only (strokes, rings, handles, tags, pivot
+  // marks all read it), so a plain extendData override is the whole live-update
+  // path via overrideExtend — never a recompute.
+  function patchTrendlineStyle(patch: Partial<TrendlineStyleDraft>): void {
+    const next = { ...trendlineStyle, ...patch };
+    setTrendlineStyle(next);
+    // Every key goes on the live override, default or not, so that resetting
+    // a field back to its default clears the earlier override too.
+    overrideExtend(chart, paneId, name, {
+      lineColor: next.color,
+      lineWidth: next.width,
+      lineStyle: next.style,
+      lineOpacity: next.opacity,
+    });
+  }
+
+  // Pivots High/Low connector: draw-only, so a plain extendData override (merged
+  // over the live indicator's) is the whole live-update path — no recompute.
+  function applyPivotAnalysis(next: Required<PivotConnectorStyle>): void {
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    chart.overrideIndicator({ paneId,
+        name,
+        extendData: { ...((live?.extendData as object) ?? {}), connector: next },
+      });
+  }
+
+  // AVWAP source/bands apply (moved to MaAvwapPanels.tsx). Also called from
+  // setLineVisible's isAvwap branch below, so it stays a shell-local binding.
+  const applyAvwap = makeApplyAvwap(chart, name, paneId, { avwapSource, bandMode, bands });
+
+  // Generic (non-MA) calcParam apply.
+  function apply(next: { calcParams?: number[]; visible?: boolean; lines?: LineDraft[] }) {
+    const cp = next.calcParams ?? calcParams;
+    const ls = next.lines ?? lines;
+    // Gate the live effective `visible` by the interval model too, so editing
+    // calcParams/lines on an indicator that's currently interval-hidden (e.g. a
+    // "Hours" auto-hide on this timeframe) can't pop it back visible as a
+    // side effect — only the intent (`visible` state) is meant to change here.
+    const eff = (next.visible ?? visible) && isVisibleOnResolution(vis, chartResolution);
+    chart.overrideIndicator({ paneId,
+        name,
+        calcParams: cp,
+        visible: eff,
+        styles: { lines: lineOverrides(ls) },
+      });
+    // Slope color/width edits route setLine -> apply; bump the overlay repaint so
+    // the on-chart MA follows immediately instead of waiting for the 1s tick.
+    if (isSlope) requestIndicatorOverlayRepaint();
+  }
+
+  function setParam(index: number, value: number) {
+    // TRENDLINES only: a saved pane that predates a newer slot (e.g. Extend
+    // Left at 28) has nothing at the slots between its old length and this
+    // one, so a plain `nextCp[index] = value` would leave undefined holes
+    // that JSON.stringify turns into null. Pad those with the values the pane
+    // runs with (legacy extendData migrations included) first.
+    const nextCp = isTrendlines
+      ? padTrendlinesParams(calcParams, index, seed.extendData)
+      : calcParams.slice();
+    nextCp[index] = value;
+    setCalcParams(nextCp);
+    if (isMa && index === 0) {
+      setMaLength(value);
+      applyMa({ length: value });
+    } else if (isPivotBands) {
+      // Strength (0) / Window K (1). Under an active timeframe the HTF series must
+      // be recomputed with the new param, not just re-aligned — route through the
+      // coordinator (which also writes calcParams).
+      apply({ calcParams: nextCp });
+      applyPivotBands({ n: nextCp[0], k: nextCp[1] });
+    } else if ((isFvg || isSrLevels || isAutoFib || isTrendlines) && timeframe !== "chart") {
+      // Same contract as Pivot Bands: every one of these params feeds the
+      // DETECTOR, so under an active timeframe the HTF stash must be computed
+      // again, not just re-aligned.
+      apply({ calcParams: nextCp });
+      applyPin({}, nextCp);
+      // isSlope has no calcParam-sourced input left (MA Lengths is the dedicated
+      // editor below, which writes calcParams + calls applySlope directly), so
+      // this generic setParam path is never reached for SLOPE.
+    } else {
+      apply({ calcParams: nextCp });
+    }
+  }
+
+  // --- Lines slider (only TRENDLINES declares one today) ---
+  // One axis over a few slots, least lines first. Which step is in force is
+  // read by VALUE on the swept slots (so it survives reopen); a manual edit
+  // to any of them reads as Custom, and the thumb then stays where it was.
+  const inputPresets = presetsFor(type);
+  const activeStep = useMemo(
+    () => (inputPresets ? presetStepOf(inputPresets, calcParams) : null),
+    [inputPresets, calcParams],
+  );
+  const [customThumb, setCustomThumb] = useState<number>(() =>
+    inputPresets ? Math.floor((inputPresets.steps.length - 1) / 2) : 0,
+  );
+  const thumb = activeStep ?? customThumb;
+  function applyStep(i: number) {
+    if (!inputPresets) return;
+    setCustomThumb(i);
+    const nextCp = withPresetStep(inputPresets, calcParams, i);
+    setCalcParams(nextCp);
+    apply({ calcParams: nextCp });
+    // Same contract as setParam's per-slot write: every trendline param feeds
+    // the DETECTOR, so under an active timeframe the HTF lines must be found
+    // again, not re-aligned.
+    if (isTrendlines && timeframe !== "chart") applyPin({}, nextCp);
+  }
+
+  // Edit a line's STYLE (color/opacity/width), keyed by figure key so the TV
+  // display reorder can't corrupt which line is edited. Goes through the styles
+  // path (gated by linesEdited).
+  function setLine(key: string, patch: Partial<LineDraft>) {
+    linesEdited.current = true; // a real edit → now persist styles
+    const next = lines.map((l) => (l.key === key ? { ...l, ...patch } : l));
+    setLines(next);
+    apply({ lines: next });
+    // A Slope line's color/width also styles the matching accel line — push the
+    // parent's freshly-overridden styles onto the companion in place.
+    if (isSlope) syncAccelCompanion(chart, name);
+    // Same for a Pivot Bands line's color/width: line N is the same color in the
+    // bars-since pane.
+    if (isPivotBands) syncPivotBarsSinceCompanion(chart, name);
+  }
+
+  // Toggle a line's VISIBILITY (Style tab checkbox). Visibility lives in
+  // extendData.lineHidden (calc-omit), NOT styles — so it must go through the
+  // AVWAP extendData path and is NOT gated by linesEdited.
+  function setLineVisible(key: string, visible: boolean) {
+    const next = lines.map((l) => (l.key === key ? { ...l, visible } : l));
+    setLines(next);
+    const lineHidden: Record<string, boolean> = {};
+    for (const l of next) if (!l.visible) lineHidden[l.key] = true;
+    if (isAvwap) {
+      applyAvwap({ lineHidden });
+    } else {
+      // Generic: write lineHidden onto extendData and let calc re-run (it omits
+      // a hidden figure's key so klinecharts draws nothing). Merge live extend.
+      const live = getIndicator(chart, paneId, name) as Indicator | null;
+      chart.overrideIndicator({ paneId, name, extendData: { ...((live?.extendData as object) ?? {}), lineHidden } });
+    }
+  }
+
+  // PREV_HL: toggle a whole boundary (its High AND Low) from the Inputs-tab row
+  // checkbox. Shares the SAME `lines`/lineHidden source of truth as the Style-tab
+  // per-line checkboxes, so the two stay in sync. Unchecking hides both lines;
+  // checking shows both. (Moved to PrevHlPanels.tsx.)
+  const setBoundaryVisible = makeSetBoundaryVisible(chart, paneId, name, lines, setLines);
+
+  // Toggle the "Show on chart" checkbox: records intent in extendData.userVisible
+  // (never falls back to reading the live effective `visible`) and applies the
+  // interval filter against the model already in state, so a hidden-by-timeframe
+  // indicator isn't accidentally forced visible by this checkbox alone.
+  function toggleVisible(v: boolean) {
+    setVisible(v);
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    const ext = { ...((live?.extendData as object) ?? {}), userVisible: v, visibility: vis };
+    const effVisible = v && isVisibleOnResolution(vis, chartResolution);
+    chart.overrideIndicator({ paneId, name, extendData: ext, visible: effVisible });
+    if (isSlope) mirrorAccelCompanion(chart, name, { extendData: ext, visible: effVisible });
+    if (isPivotBands)
+      mirrorPivotBarsSinceCompanion(chart, name, { extendData: ext, visible: effVisible });
+    // A hidden indicator skips its calc and its HTF fetch, so a visibility change
+    // has to ask the coordinator for the work that was skipped.
+    void refreshMtfOnVisibilityChange(chart);
+  }
+
+  // Per-timeframe visibility grid (VisibilityTab onChange): persists the model AND
+  // re-writes userVisible in the SAME operation (never separately), so a future
+  // read of intent never falls back to the interval-filtered effective `visible`.
+  function applyVisibility(next: VisibilityModel) {
+    setVis(next);
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    const ext = { ...((live?.extendData as object) ?? {}), userVisible: visible, visibility: next };
+    const effVisible = visible && isVisibleOnResolution(next, chartResolution);
+    chart.overrideIndicator({ paneId, name, extendData: ext, visible: effVisible });
+    if (isSlope) mirrorAccelCompanion(chart, name, { extendData: ext, visible: effVisible });
+    if (isPivotBands)
+      mirrorPivotBarsSinceCompanion(chart, name, { extendData: ext, visible: effVisible });
+    // Same catch-up as toggleVisible: this grid can unhide on the current timeframe.
+    void refreshMtfOnVisibilityChange(chart);
+  }
+
+  // Show/hide this indicator's value in the legend. Stored on extendData
+  // (hideLegendValue), read by the shared legendTooltipSource. Merges with the
+  // live extendData so MA/EMA source/offset/MTF settings are preserved.
+  // Persistence is handled by the snapshot effect (keyed on showValue).
+  function toggleShowValue(show: boolean) {
+    setShowValue(show);
+    const live = getIndicator(chart, paneId, name) as Indicator | null;
+    const ext = { ...((live?.extendData as object) ?? {}), hideLegendValue: !show };
+    chart.overrideIndicator({ paneId, name, extendData: ext });
+  }
+
+  function cancel() {
+    // Restore the original snapshot (incl. extendData for MA/MTF), then close.
+    chart.overrideIndicator({ paneId,
+        name,
+        calcParams: original.current.calcParams,
+        visible: original.current.visible,
+        styles: original.current.styles ?? { lines: [] },
+      });
+    // extendData goes back as a DIFF through overrideExtend: klinecharts only
+    // merges, so a key the edit added must be written as null, and a nested
+    // object or array must be cleared first or its old entries survive.
+    const liveExt = ((getIndicator(chart, paneId, name) as Indicator | null)?.extendData ??
+      {}) as Record<string, unknown>;
+    const { patch: restore, repin } = extendRestorePatch(
+      (original.current.extendData ?? {}) as Record<string, unknown>,
+      liveExt,
+    );
+    if (Object.keys(restore).length) overrideExtend(chart, paneId, name, restore);
+    // A reverted pin left a bare `mtf` with no HTF bars: the coordinator's
+    // coverage guard refuses it, so this refetches the original timeframe (and
+    // an unpinned pane simply computes on the chart's own bars).
+    if (repin) void refreshMtfIndicators(chart, epic, brokerId);
+    // The restore rewrites the parent's extendData wholesale (incl. showAccel and
+    // accel params), so re-sync the companion: toggle-accel-then-Cancel must not
+    // leave an orphaned pane (or a missing one).
+    if (isSlope) syncAccelCompanion(chart, name);
+    // Same for the bars-since pane: toggling it on and then cancelling must not
+    // leave an orphan (nor lose one that was already on).
+    if (isPivotBands) syncPivotBarsSinceCompanion(chart, name);
+    // The Type/Envelope live preview retitles shortName/figures, which the
+    // snapshot restore above does not carry: revert them from the original
+    // extendData or a cancelled VWMA preview keeps its label while the curve
+    // computes as an EMA again.
+    if (isMa) {
+      const oext = (original.current.extendData ?? {}) as MaExtend;
+      const label = maLegendLabel(oext.maType, templateMaKind(type));
+      chart.overrideIndicator({
+        paneId,
+        name,
+        shortName: label,
+        figures: maFigures(label, oext.envelope === true && !oext.mtf?.timeframe),
+      });
+    }
+    onClose();
+  }
+  // The ONE write: the form's current values become the stored config, which
+  // the next reload (Toolbar.createIndicatorOn) re-applies.
+  function ok() {
+    const cfg = currentConfig();
+    // Per-line Hide / Highlight marks are not form state: carry them over from
+    // the SAVED config (the source of truth, which another device may have
+    // updated) so Ok never wipes them, and put them back on the live instance
+    // in case a preset apply recreated it without them. Not in currentConfig,
+    // so a saved default or preset never carries one symbol's line keys.
+    if (isTrendlines) {
+      const marks = loadIndicatorConfigs(scope)[name]?.extendData?.lineMarks;
+      if (marks) {
+        cfg.extendData = { ...(cfg.extendData ?? {}), lineMarks: marks };
+        overrideExtend(chart, paneId, name, { lineMarks: marks });
+      }
+    }
+    saveIndicatorConfig(scope, name, cfg);
+    onClose();
+  }
+
+  if (!ind) return null;
+  const shortName = ind.shortName || name;
+
+  // Style-tab rows in TradingView display order for AVWAP (VWAP, then Lower/Upper
+  // for each band); other indicators keep their figure order.
+  const AVWAP_STYLE_ORDER = ["vwap", "dn1", "up1", "dn2", "up2", "dn3", "up3"];
+  const styleRows = isAvwap
+    ? (AVWAP_STYLE_ORDER.map((k) => lines.find((l) => l.key === k)).filter(Boolean) as LineDraft[])
+    : isMa
+      ? // Envelope bands are real style rows only while the envelope draws
+        // (on the chart timeframe): otherwise they'd surface as dead
+        // "bandHi"/"bandLo" controls that edit an always-empty line. Display
+        // filter only: `lines` stays complete, so lineOverrides' positional
+        // mapping onto styles.lines is untouched.
+        lines.filter(
+          (l) => (envelope && timeframe === "chart") || (l.key !== "bandHi" && l.key !== "bandLo"),
+        )
+      : lines;
+
+  // One curve (High or Low) position row: side + align selects. The two curves
+  // differ only in their state cell and which curveLabelState key they patch, so
+  // render this parameterized rather than copy-pasting the markup twice.
+  const curveLabelPosRow = (
+    label: string,
+    side: CurveLabelSide,
+    setSide: (s: CurveLabelSide) => void,
+    align: CurveLabelAlign,
+    setAlign: (a: CurveLabelAlign) => void,
+    sideKey: "highSide" | "lowSide",
+    alignKey: "highAlign" | "lowAlign",
+  ) => (
+    <div className={`ind-row ind-prevhl-grid ind-curvelabel-pos${curveLabelEnabled ? "" : " is-off"}`}>
+      <span className="ind-row-head">
+        <label>{label}</label>
+      </span>
+      <span className="ind-curvelabel-selects">
+        <select
+          value={side}
+          disabled={!curveLabelEnabled}
+          onChange={(e) => {
+            const v = e.target.value as CurveLabelSide;
+            setSide(v);
+            applyCurveLabels({ ...curveLabelState(), [sideKey]: v });
+          }}
+        >
+          <option value="right">Right end</option>
+          <option value="left">Left end</option>
+        </select>
+        <select
+          value={align}
+          disabled={!curveLabelEnabled}
+          onChange={(e) => {
+            const v = e.target.value as CurveLabelAlign;
+            setAlign(v);
+            applyCurveLabels({ ...curveLabelState(), [alignKey]: v });
+          }}
+        >
+          <option value="above">Above line</option>
+          <option value="center">On line</option>
+          <option value="below">Below line</option>
+        </select>
+      </span>
+    </div>
+  );
+
+  // Curve-end labels: a small tag past each curve's end naming its key parameter
+  // (e.g. "1d") while the indicator is selected/highlighted. Purely visual, so it
+  // lives in the Style tab (TradingView convention). Show + Position stay visible
+  // but disabled when the toggle is off, so the section's shape doesn't jump.
+  const renderCurveLabels = () => (
+    <>
+      <div className="ind-row">
+        <label className="ind-check">
+          <input
+            type="checkbox"
+            checked={curveLabelEnabled}
+            onChange={(e) => {
+              setCurveLabelEnabled(e.target.checked);
+              applyCurveLabels({ ...curveLabelState(), enabled: e.target.checked });
+            }}
+          />
+          <span>Curve labels</span>
+        </label>
+        <InfoTip
+          title="Curve labels"
+          text={`Shows each curve's key parameter (e.g. ${
+            hasHighLowSplit ? "3D range high, prev 1D low" : "EMA 20, AVWAP +1σ"
+          }) at its end. By default they appear while the indicator is selected or highlighted; set Show to Always to keep them on permanently.${
+            hasHighLowSplit ? " The High and Low curves can be positioned separately." : ""
+          }`}
+        />
+      </div>
+      <div className={`ind-row ind-prevhl-grid${curveLabelEnabled ? "" : " is-off"}`}>
+        <span className="ind-row-head">
+          <label>Show</label>
+        </span>
+        <select
+          value={curveLabelAlways ? "always" : "selected"}
+          disabled={!curveLabelEnabled}
+          onChange={(e) => {
+            const always = e.target.value === "always";
+            setCurveLabelAlways(always);
+            applyCurveLabels({ ...curveLabelState(), always });
+          }}
+        >
+          <option value="selected">When selected</option>
+          <option value="always">Always</option>
+        </select>
+      </div>
+      {/* Only PREV_HL has High/Low curve pairs worth placing separately. Other
+          types route every curve to the "high" slot, so they get one row. */}
+      {curveLabelPosRow(
+        hasHighLowSplit ? "High position" : "Label position",
+        curveLabelHighSide,
+        setCurveLabelHighSide,
+        curveLabelHighAlign,
+        setCurveLabelHighAlign,
+        "highSide",
+        "highAlign",
+      )}
+      {hasHighLowSplit &&
+        curveLabelPosRow(
+          "Low position",
+          curveLabelLowSide,
+          setCurveLabelLowSide,
+          curveLabelLowAlign,
+          setCurveLabelLowAlign,
+          "lowSide",
+          "lowAlign",
+        )}
+    </>
+  );
+
+  const foot = (
+    <>
+      {/* TradingView-style "Defaults" menu: type default + named presets, all
+          global. Pinned left (margin-right:auto) opposite Cancel/Ok. */}
+      <DefaultsMenu
+        chart={chart}
+        scope={scope}
+        epic={epic}
+        name={name}
+        type={type}
+        currentConfig={currentConfig}
+        onRecreated={onRecreated}
+      />
+      <button className="ghost" onClick={cancel}>
+        Cancel
+      </button>
+      <button onClick={ok}>Ok</button>
+    </>
+  );
+
+  return (
+    <FloatingModal
+      className={`ind-settings${type === "PREV_HL" ? " ind-settings-wide" : type === "TRENDLINES" ? " ind-settings-tl" : type === "AUTO_FIB" ? " ind-settings-fib" : ""}`}
+      title={<strong>{shortName}</strong>}
+      onClose={cancel}
+      closeLabel="Cancel"
+      footer={foot}
+    >
+        <div className="ind-tabs">
+          {([
+            "inputs",
+            ...(isRsi ? ["divergence"] : []),
+            ...(hasSlopeTab ? ["slope"] : []),
+            "style",
+            "visibility",
+            ...(debugInputs.length ? ["debug"] : []),
+          ] as Tab[]).map((t) => (
+            <button
+              key={t}
+              className={`ind-tab ${tab === t ? "on" : ""}`}
+              onClick={() => setTab(t)}
+            >
+              {t === "inputs"
+                ? "Inputs"
+                : t === "divergence"
+                  ? "Divergence"
+                  : t === "slope"
+                    ? "Slope"
+                    : t === "style"
+                      ? "Style"
+                      : t === "debug"
+                        ? "Debug"
+                        : "Visibility"}
+            </button>
+          ))}
+        </div>
+
+        <div
+          className="ind-body"
+          // A wheel over a focused number box would spin its value while the
+          // user only meant to scroll the modal: blur it first, so the scroll
+          // happens and the value stays.
+          onWheelCapture={(e) => {
+            const t = e.target;
+            if (t instanceof HTMLInputElement && t.type === "number" && document.activeElement === t) t.blur();
+          }}
+        >
+          {tab === "inputs" && isRenameable && (
+            <>
+              <div className="ind-row ind-row-cols">
+                <span className="ind-row-head">
+                  <label htmlFor="ind-ref-name">Reference name</label>
+                  <InfoTip
+                    title="Reference name"
+                    text="The id a rule spells as name.output (e.g. PIVOT_ANALYSIS.pivotHigh). Renaming rewrites the current backtest rules that reference it."
+                  />
+                </span>
+                <Tooltip content="Only editable on the focused chart" disabled={!!controller}>
+                  <input
+                    id="ind-ref-name"
+                    type="text"
+                    value={refNameDraft}
+                    onChange={(e) => {
+                      setRefNameDraft(e.target.value);
+                      setRefNameError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                      if (e.key === "Escape") {
+                        setRefNameDraft(name);
+                        setRefNameError(null);
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                    onBlur={commitRefName}
+                    disabled={!controller}
+                  />
+                </Tooltip>
+              </div>
+              {refNameError && (
+                <div className="ind-ref-name-error">
+                  {refNameError === "invalid" &&
+                    "Letters, digits and underscores only, starting with a letter or underscore."}
+                  {refNameError === "taken" && "Already used by another indicator on this chart."}
+                  {refNameError === "reserved" &&
+                    "Reserved — collides with a name in the rule language."}
+                </div>
+              )}
+            </>
+          )}
+
+          {tab === "inputs" && isMa && (
+            <MaInputsPanel
+              maLength={maLength}
+              setMaLength={setMaLength}
+              source={source}
+              setSource={setSource}
+              offset={offset}
+              setOffset={setOffset}
+              smoothType={smoothType}
+              setSmoothType={setSmoothType}
+              smoothLen={smoothLen}
+              setSmoothLen={setSmoothLen}
+              timeframe={timeframe}
+              setTimeframe={setTimeframe}
+              timeframeOptions={timeframeOptions}
+              maType={maType}
+              setMaType={setMaType}
+              envelope={envelope}
+              setEnvelope={setEnvelope}
+              applyMa={applyMa}
+              waitClose={waitClose}
+              onWaitClose={(next) => toggleWaitClose(next, () => applyMa({}))}
+            />
+          )}
+
+          {tab === "inputs" && isAvwap && (
+            <AvwapInputsPanel
+              bandMode={bandMode}
+              setBandMode={setBandMode}
+              bands={bands}
+              setBands={setBands}
+              avwapSource={avwapSource}
+              setAvwapSource={setAvwapSource}
+              applyAvwap={applyAvwap}
+            />
+          )}
+
+          {tab === "inputs" && isRsi && (
+            // TradingView-style RSI inputs: length + source, an optional smoothing MA
+            // (with Bollinger Bands), and divergence detection.
+            <RsiInputsPanel
+              calcParams={calcParams}
+              setParam={setParam}
+              rsiSource={rsiSource}
+              rsiSmooth={rsiSmooth}
+              setRsiExtend={setRsiExtend}
+              chartOptionLabel={chartOptionLabel}
+            />
+          )}
+
+          {tab === "divergence" && isRsi && (
+            <RsiDivergencePanel
+              rsiDiv={rsiDiv}
+              setRsiDivergence={setRsiDivergence}
+              resetDivergence={resetDivergence}
+            />
+          )}
+
+          {tab === "slope" && hasSlopeTab && (
+            <SlopeColorPanel sc={slopeColor} patch={patchSlopeColor} />
+          )}
+
+          {tab === "inputs" && !isMa && !isAvwap && !isRsi && (
+            <>
+              {inputs.length === 0 &&
+                type !== "PREV_HL" &&
+                type !== "SESSIONS" &&
+                type !== "TIME_HIGHLIGHT" &&
+                !isCandlePatterns && (
+                  <p className="ind-note">This indicator has no adjustable inputs.</p>
+                )}
+              {isCandlePatterns && (
+                <CandlePatternsPanel ext={candleExt} onChange={writeCandlePatterns} />
+              )}
+              {type === "SESSIONS" && (
+                <SessionsInputsPanel
+                  sessions={sessions}
+                  patchSession={patchSession}
+                  writeSessions={writeSessions}
+                  addSession={addSession}
+                />
+              )}
+              {type === "TIME_HIGHLIGHT" && (
+                <TimeHighlightInputsPanel
+                  windows={windows}
+                  tz={timeHighlightZone()}
+                  patchWindow={patchWindow}
+                  writeWindows={writeWindows}
+                  addWindow={addWindow}
+                />
+              )}
+              {isSlope && (
+                <div className="slope-lengths">
+                  <label>
+                    MA Lengths{" "}
+                    <InfoTip
+                      title="MA Lengths"
+                      text="One slope line per moving-average length. Add up to 5 to compare fast and slow momentum."
+                    />
+                  </label>
+                  {calcParams.map((len, i) => (
+                    <span className="slope-length-chip" key={i}>
+                      <input
+                        type="number"
+                        min={1}
+                        value={Number.isFinite(len) ? len : ""}
+                        onChange={(e) => {
+                          const nextCp = calcParams.slice();
+                          nextCp[i] = Number(e.target.value);
+                          setCalcParams(nextCp);
+                          applySlope({ lengths: slopeLengths(nextCp) });
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="slope-length-remove"
+                        aria-label={`Remove length ${i + 1}`}
+                        disabled={calcParams.length <= 1}
+                        onClick={() => {
+                          const nextCp = calcParams.filter((_, j) => j !== i);
+                          setCalcParams(nextCp);
+                          applySlope({ lengths: slopeLengths(nextCp) });
+                        }}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  <Tooltip content="Add another MA length">
+                    <button
+                      type="button"
+                      className="slope-length-add"
+                      aria-label="Add MA length"
+                      disabled={calcParams.length >= 5}
+                      onClick={() => {
+                        const nextCp = [...calcParams, 9];
+                        setCalcParams(nextCp);
+                        applySlope({ lengths: slopeLengths(nextCp) });
+                      }}
+                    >
+                      +
+                    </button>
+                  </Tooltip>
+                </div>
+              )}
+              {inputPresets && (
+                // One drag from a couple of strong lines to a busy chart. The
+                // slider sets a few params at once; the rest keep whatever
+                // the user set, and editing one of the swept params reads as
+                // Custom until the thumb moves again.
+                <div className="ind-row ind-row-cols ind-lines-row">
+                  <span className="ind-row-head">
+                    <label>Density</label>
+                    <InfoTip
+                      title="Density"
+                      text={[
+                        "Fewer, stricter lines on the left. More on the right.",
+                        "Each step sets six fields at once. Other fields keep your values.",
+                      ]}
+                    />
+                  </span>
+                  <span className="ind-control-row ind-lines-slider">
+                    <input
+                      type="range"
+                      aria-label="Density"
+                      min={0}
+                      max={inputPresets.steps.length - 1}
+                      step={1}
+                      value={thumb}
+                      onChange={(e) => applyStep(Number(e.target.value))}
+                    />
+                    <span
+                      className={"ind-lines-step" + (activeStep === null ? " is-custom" : "")}
+                      data-testid="lines-step"
+                    >
+                      {activeStep === null ? "Custom" : inputPresets.steps[activeStep].name}
+                    </span>
+                  </span>
+                </div>
+              )}
+              {groupInputs(inputs.filter(visibleInput)).map((chunk) => (
+                <Fragment key={chunk[0].key}>
+                  {/* A heading before the input that opens a section, so a tab
+                      mixing what the indicator COMPUTES with how it is DRAWN
+                      says which is which. Same .ind-group the MA panel uses for
+                      Smoothing and Calculation. */}
+                  {chunk[0].section && (
+                    <div className="ind-group">{chunk[0].section}</div>
+                  )}
+                  {chunk.length === 2 && chunk[0].range ? (
+                    // Min/max of ONE concept (Touches, Span, Slope): a single
+                    // "label [min] – [max] unit" row under one label and one
+                    // merged tip, instead of two labeled fields saying almost
+                    // the same thing. The two inputs keep their own aria
+                    // labels; the shared unit renders once, after the max.
+                    <div className="ind-row ind-row-cols ind-range-row">
+                      <span className="ind-row-head">
+                        <label>{chunk[0].range.label}</label>
+                        <InfoTip
+                          title={chunk[0].range.label}
+                          text={chunk[0].range.tip}
+                        />
+                      </span>
+                      <span className="ind-control-row ind-range">
+                        {chunk[0].range.dual ? (
+                          // One cut measured two ways: each box keeps its own
+                          // unit, and there is no dash between them.
+                          <>
+                            {controlFor(chunk[0])}
+                            {controlFor(chunk[1])}
+                          </>
+                        ) : (
+                          <>
+                            {controlFor({ ...chunk[0], suffix: undefined })}
+                            <span className="ind-range-dash">–</span>
+                            {controlFor({ ...chunk[1], suffix: undefined })}
+                            {chunk[0].suffix && (
+                              <span className="ind-suffix">{chunk[0].suffix}</span>
+                            )}
+                          </>
+                        )}
+                      </span>
+                    </div>
+                  ) : chunk.length === 2 && chunk[0].type === "boolean" ? (
+                    // A pair of CHECKBOXES: two to a row, each label beside its
+                    // own box rather than above it.
+                    <div className="ind-pair2-bool">
+                      {chunk.map((inp) => (
+                        <div className="ind-field" key={inp.key}>
+                          {controlFor(inp, true)}
+                          {tipFor(inp)}
+                        </div>
+                      ))}
+                    </div>
+                  ) : chunk.length > 1 ? (
+                    // Related pair: two to a row, each label stacked above its
+                    // own control. Halves the width a label gets, which is why
+                    // only inputs with short labels carry a `group`.
+                    <div className={chunk.length === 3 ? "ind-pair2 ind-pair3" : "ind-pair2"}>
+                      {chunk.map((inp) => (
+                        <div className="ind-field" key={inp.key}>
+                          {labelFor(inp)}
+                          {controlFor(inp)}
+                          {statFor(inp)}
+                        </div>
+                      ))}
+                    </div>
+                  ) : chunk[0].type === "number" ? (
+                    // A solo NUMBER lines its control up with the right column
+                    // of the paired rows rather than pushing it to the modal's
+                    // edge, so a column of numbers reads as a column. Selects
+                    // and checkboxes keep the label-left/control-right row
+                    // below: a sentence-long select needs the width, and a
+                    // checkbox at the half-way mark reads as unattached to
+                    // either side.
+                    //
+                    // The ⓘ rides beside the label here like on every other
+                    // row (a tip out past the control left the icons scattered
+                    // mid-row while "Reference name" kept its beside the
+                    // label). A long label ellipsises rather than clipping the
+                    // icon; the tooltip carries the full wording.
+                    <div className={chunk[0].halfCol ? "ind-row ind-row-cols ind-row-half" : "ind-row ind-row-cols"}>
+                      {labelFor(chunk[0])}
+                      {controlFor(chunk[0])}
+                    </div>
+                  ) : (
+                    // Checkboxes and selects share the numbers' two columns, so
+                    // the tab reads as ONE column of controls instead of numbers
+                    // at the middle and checkboxes out at the modal's edge. A
+                    // `wide` select is the exception: a sentence-long option
+                    // needs more than half a row, so it keeps the label-left /
+                    // control-right row.
+                    <div className={chunk[0].wide ? "ind-row" : "ind-row ind-row-cols"}>
+                      {labelFor(chunk[0])}
+                      {controlFor(chunk[0])}
+                    </div>
+                  )}
+                </Fragment>
+              ))}
+              {isSlope && (
+                <>
+                  <div className="ind-row">
+                    <span className="ind-row-head">
+                      <label>Slope Period</label>
+                      <InfoTip
+                        title="Slope Period"
+                        text="The number of bars the slope is measured over. Larger is smoother and slower to turn."
+                      />
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={slopePeriod}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        setSlopePeriod(v);
+                        applySlope({ slopeN: v });
+                      }}
+                    />
+                  </div>
+                  <div className="ind-group">Smoothing</div>
+                  <div className="ind-row">
+                    <span className="ind-row-head">
+                      <label>Type</label>
+                      <InfoTip
+                        title="Smoothing"
+                        text="The averaging function for the slope line to cut noise. None keeps the raw slope; SMA/EMA smooth it."
+                      />
+                    </span>
+                    <select
+                      value={smoothing.type}
+                      onChange={(e) => {
+                        const next: SlopeSmoothing = {
+                          type: e.target.value as SlopeSmoothing["type"],
+                          length: smoothing.length,
+                        };
+                        setSmoothing(next);
+                        applySlope({ smoothing: next });
+                      }}
+                    >
+                      {SMOOTHING_TYPES.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {smoothing.type !== "none" && (
+                    <div className="ind-row">
+                      <span className="ind-row-head">
+                        <label>Length</label>
+                        <InfoTip
+                          title="Smoothing Length"
+                          text="The number of bars in the smoothing average. Longer is smoother but adds more lag."
+                        />
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={smoothing.length}
+                        onChange={(e) => {
+                          const next: SlopeSmoothing = {
+                            type: smoothing.type,
+                            length: Number(e.target.value),
+                          };
+                          setSmoothing(next);
+                          applySlope({ smoothing: next });
+                        }}
+                      />
+                    </div>
+                  )}
+                  <span className="ind-row-head">
+                    <label
+                      className={`ind-check${calcParams.length > 1 ? " ind-check-disabled" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={colorByDirection}
+                        disabled={calcParams.length > 1}
+                        onChange={(e) => {
+                          setColorByDirection(e.target.checked);
+                          applySlope({ colorByDirection: e.target.checked });
+                        }}
+                      />
+                      <span>Color by direction</span>
+                    </label>
+                    {calcParams.length > 1 && (
+                      <InfoTip
+                        title="Color by direction"
+                        text="Green when the slope is rising, red when falling. Available only with a single line."
+                      />
+                    )}
+                  </span>
+                  <span className="ind-row-head">
+                    <label className="ind-check">
+                      <input
+                        type="checkbox"
+                        checked={showMa}
+                        onChange={(e) => {
+                          setShowMa(e.target.checked);
+                          applySlope({ showMa: e.target.checked });
+                        }}
+                      />
+                      <span>Show MAs on chart</span>
+                    </label>
+                    <InfoTip
+                      title="Show MAs on chart"
+                      text="Plot each length's moving average on the price chart, colored to match its slope line."
+                    />
+                  </span>
+                  <div className="ind-group">Threshold</div>
+                  <span className="ind-row-head">
+                    <label className="ind-check">
+                      <input
+                        type="checkbox"
+                        checked={threshold.on}
+                        onChange={(e) => {
+                          const next = { ...threshold, on: e.target.checked };
+                          setThreshold(next);
+                          applySlope({ threshold: next });
+                        }}
+                      />
+                      <span>Show threshold</span>
+                    </label>
+                    <InfoTip
+                      title="Threshold"
+                      text="A symmetric visual guide drawn at +level and −level. Drag either line on the chart to adjust, or set the exact level here. Reference only: it doesn't trigger anything."
+                    />
+                  </span>
+                  {threshold.on && (
+                    <>
+                      <div className="ind-row">
+                        <span className="ind-row-head">
+                          <label>Level (±)</label>
+                          <InfoTip
+                            title="Threshold level"
+                            text="The slope magnitude the two lines sit at, in the current slope units. The pane rescales so the lines stay visible."
+                          />
+                        </span>
+                        <input
+                          type="number"
+                          step="any"
+                          value={threshold.level}
+                          onChange={(e) => {
+                            const next = { ...threshold, level: Number(e.target.value) };
+                            setThreshold(next);
+                            applySlope({ threshold: next });
+                          }}
+                        />
+                      </div>
+                      <div className="ind-row">
+                        <span className="ind-row-head">
+                          <label>Line</label>
+                        </span>
+                        <div className="ind-line-controls">
+                          <ColorLineStylePicker
+                            color={threshold.color ?? "#787B86"}
+                            onColor={(hex) => {
+                              const next = { ...threshold, color: hex };
+                              setThreshold(next);
+                              applySlope({ threshold: next });
+                            }}
+                            lineStyle={threshold.lineStyle ?? "dotted"}
+                            onLineStyle={(s) => {
+                              const next = { ...threshold, lineStyle: s };
+                              setThreshold(next);
+                              applySlope({ threshold: next });
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  <div className="ind-group">Acceleration</div>
+                  <span className="ind-row-head">
+                    <label className="ind-check">
+                      <input
+                        type="checkbox"
+                        checked={showAccel}
+                        onChange={(e) => {
+                          setShowAccel(e.target.checked);
+                          applySlope({ showAccel: e.target.checked });
+                        }}
+                      />
+                      <span>Show acceleration pane</span>
+                    </label>
+                    <InfoTip
+                      title="Show acceleration pane"
+                      text={[
+                        "Adds a second pane below showing how fast each MA's slope is changing.",
+                        "Positive means the slope is steepening. Negative means it is flattening.",
+                      ]}
+                    />
+                  </span>
+                  {showAccel && (
+                    <>
+                      <span className="ind-row-head">
+                        <label className="ind-check">
+                          <input
+                            type="checkbox"
+                            checked={accelAbsolute}
+                            onChange={(e) => {
+                              setAccelAbsolute(e.target.checked);
+                              applySlope({ accelAbsolute: e.target.checked });
+                            }}
+                          />
+                          <span>Plot absolute value</span>
+                        </label>
+                        <InfoTip
+                          title="Plot absolute value"
+                          text={[
+                            "Plots the magnitude of the acceleration, |accel|, so the line stays at or above zero.",
+                            "Use it to see how hard the slope is changing without caring whether it is steepening or flattening.",
+                          ]}
+                        />
+                      </span>
+                      <div className="ind-row">
+                        <span className="ind-row-head">
+                          <label>Acceleration Period</label>
+                          <InfoTip
+                            title="Acceleration period"
+                            text={[
+                              "How many bars the slope change is measured over.",
+                              "A larger period gives a smaller, smoother reading.",
+                              "Units follow the slope's units: a %/hr slope gives %/hr per hour, and %/bar or price/bar gives per bar.",
+                            ]}
+                          />
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={accelPeriod}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            setAccelPeriod(v);
+                            applySlope({ accelPeriod: v });
+                          }}
+                        />
+                      </div>
+                      <div className="ind-row">
+                        <span className="ind-row-head">
+                          <label>Smoothing</label>
+                          <InfoTip
+                            title="Acceleration smoothing"
+                            text="Averages the acceleration line to cut noise. Acceleration is a second derivative, so it is noisier than slope."
+                          />
+                        </span>
+                        <select
+                          value={accelSmoothing.type}
+                          onChange={(e) => {
+                            const next: SlopeSmoothing = {
+                              type: e.target.value as SlopeSmoothing["type"],
+                              length: accelSmoothing.length,
+                            };
+                            setAccelSmoothing(next);
+                            applySlope({ accelSmoothing: next });
+                          }}
+                        >
+                          {SMOOTHING_TYPES.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {accelSmoothing.type !== "none" && (
+                        <div className="ind-row">
+                          <span className="ind-row-head">
+                            <label>Length</label>
+                            <InfoTip
+                              title="Smoothing Length"
+                              text="The number of bars in the smoothing average. Longer is smoother but adds more lag."
+                            />
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            value={accelSmoothing.length}
+                            onChange={(e) => {
+                              const next: SlopeSmoothing = {
+                                type: accelSmoothing.type,
+                                length: Number(e.target.value),
+                              };
+                              setAccelSmoothing(next);
+                              applySlope({ accelSmoothing: next });
+                            }}
+                          />
+                        </div>
+                      )}
+                      <span className="ind-row-head">
+                        <label className="ind-check">
+                          <input
+                            type="checkbox"
+                            checked={accelThreshold.on}
+                            onChange={(e) => {
+                              const next = { ...accelThreshold, on: e.target.checked };
+                              setAccelThreshold(next);
+                              applySlope({ accelThreshold: next });
+                            }}
+                          />
+                          <span>Show threshold</span>
+                        </label>
+                        <InfoTip
+                          title="Acceleration threshold"
+                          text="A symmetric visual guide drawn at +level and −level on the acceleration pane. Drag either line on the chart to adjust, or set the exact level here. Reference only: it doesn't trigger anything."
+                        />
+                      </span>
+                      {accelThreshold.on && (
+                        <>
+                          <div className="ind-row">
+                            <span className="ind-row-head">
+                              <label>Level (±)</label>
+                              <InfoTip
+                                title="Acceleration threshold level"
+                                text="The acceleration magnitude the two lines sit at, in the current acceleration units. The pane rescales so the lines stay visible."
+                              />
+                            </span>
+                            <input
+                              type="number"
+                              step="any"
+                              value={accelThreshold.level}
+                              onChange={(e) => {
+                                const next = { ...accelThreshold, level: Number(e.target.value) };
+                                setAccelThreshold(next);
+                                applySlope({ accelThreshold: next });
+                              }}
+                            />
+                          </div>
+                          <div className="ind-row">
+                            <span className="ind-row-head">
+                              <label>Line</label>
+                            </span>
+                            <div className="ind-line-controls">
+                              <ColorLineStylePicker
+                                color={accelThreshold.color ?? "#787B86"}
+                                onColor={(hex) => {
+                                  const next = { ...accelThreshold, color: hex };
+                                  setAccelThreshold(next);
+                                  applySlope({ accelThreshold: next });
+                                }}
+                                lineStyle={accelThreshold.lineStyle ?? "dotted"}
+                                onLineStyle={(s) => {
+                                  const next = { ...accelThreshold, lineStyle: s };
+                                  setAccelThreshold(next);
+                                  applySlope({ accelThreshold: next });
+                                }}
+                              />
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+              {type === "PREV_HL" && (
+                <PrevHlInputsPanel
+                  cellId={cellId}
+                  lines={lines}
+                  prevHlLengths={prevHlLengths}
+                  prevHlAggs={prevHlAggs}
+                  prevHlRollingUnit={prevHlRollingUnit}
+                  prevHlAnchorTs={prevHlAnchorTs}
+                  prevHlTz={prevHlTz}
+                  setBoundaryVisible={setBoundaryVisible}
+                  setPrevHlLength={setPrevHlLength}
+                  setPrevHlRolling={setPrevHlRolling}
+                  setPrevHlAgg={setPrevHlAgg}
+                  setPrevHlAnchorInput={setPrevHlAnchorInput}
+                />
+              )}
+              {type !== "SESSIONS" && type !== "TIME_HIGHLIGHT" && !isCandlePatterns && (
+                <div className="ind-group">Calculation</div>
+              )}
+              {type === "SESSIONS" || type === "TIME_HIGHLIGHT" || isCandlePatterns ? null : type === "PREV_HL" ? (
+                <PrevHlCalculationRows
+                  prevHlGapMode={prevHlGapMode}
+                  prevHlTz={prevHlTz}
+                  setPrevHlRolling={setPrevHlRolling}
+                  setPrevHlTimezone={setPrevHlTimezone}
+                />
+              ) : isHtfPinned ? (
+                // Computed on the pinned timeframe's native bars, aligned onto
+                // the chart bars (no lookahead), same as EMA/MA.
+                <TimeframePinRows
+                  timeframe={timeframe}
+                  options={timeframeOptions}
+                  tip={TIMEFRAME_TIPS[type]}
+                  onTimeframe={(tf) => {
+                    setTimeframe(tf);
+                    applyPin({ timeframe: tf });
+                  }}
+                  waitClose={waitClose}
+                  onWaitClose={(next) => toggleWaitClose(next, () => applyPin())}
+                />
+              ) : (
+                <div className="ind-row ind-row-cols">
+                  <span className="ind-row-head">
+                    <label>Timeframe</label>
+                    <InfoTip title="Timeframe" text="Higher-timeframe mode is only on EMA, MA, Pivot Bands, Slope, S/R Levels, FVG, Trendlines and Auto Fib." />
+                  </span>
+                  <select value="chart" disabled>
+                    <option value="chart">{chartOptionLabel}</option>
+                  </select>
+                </div>
+              )}
+            </>
+          )}
+
+          {tab === "style" && (
+            <>
+              {/* Non-PREV_HL toggles its figure values at the top. PREV_HL shows a
+                  range summary instead, and that toggle lives at the bottom (below). */}
+              {type !== "PREV_HL" && type !== "SESSIONS" && type !== "TIME_HIGHLIGHT" && (
+                <label className="ind-check">
+                  <input
+                    type="checkbox"
+                    checked={showValue}
+                    onChange={(e) => toggleShowValue(e.target.checked)}
+                  />
+                  <span>Show value in legend</span>
+                </label>
+              )}
+              {type === "SESSIONS" && (
+                <SessionsStylePanel sessions={sessions} patchSession={patchSession} />
+              )}
+              {type === "TIME_HIGHLIGHT" && (
+                <TimeHighlightStylePanel windows={windows} tz={timeHighlightZone()} patchWindow={patchWindow} />
+              )}
+              {/* PREV_HL: pair each boundary's High and Low on ONE row —
+                  "Day  High [color][size]  Low [color][size]" — halving the list.
+                  The boundary is greyed when deactivated in the Inputs tab. */}
+              {type === "PREV_HL" && <PrevHlStylePairs lines={lines} setLine={setLine} />}
+              {type !== "PREV_HL" && !isRsi && !isSrLevels && !isFvg &&
+                styleRows.map((l) => {
+                // A band line whose multiplier is OFF in the Inputs tab can't draw,
+                // so disable (grey) its whole row — TV shows it but it does nothing.
+                const bandIdx = isAvwap && l.key !== "vwap" ? Number(l.key.slice(-1)) - 1 : -1;
+                const off = bandIdx >= 0 && !bands[bandIdx]?.on;
+                return (
+                  <div className={`ind-row ind-style-row${off ? " is-off" : ""}`} key={l.key}>
+                    {/* PREV_HL activates each boundary (both lines) from the Inputs
+                        tab, so the Style tab shows no per-line checkbox here — just a
+                        plain label. AVWAP/LR keep their per-line show/hide checkbox. */}
+                    <span className="ind-row-head">
+                      {hasLineToggle && type !== "PREV_HL" ? (
+                        <label className="ind-check ind-check-inline">
+                          <input
+                            type="checkbox"
+                            checked={l.visible}
+                            disabled={off}
+                            onChange={(e) => setLineVisible(l.key, e.target.checked)}
+                          />
+                          <span>{l.label}</span>
+                        </label>
+                      ) : (
+                        <label>{l.label}</label>
+                      )}
+                      {off && hasLineToggle && type !== "PREV_HL" && (
+                        <InfoTip title={l.label} text="Turn this band on in the Inputs tab first." />
+                      )}
+                    </span>
+                    <div className="ind-line-controls">
+                      {/* One TradingView-style swatch: colour grid + opacity +
+                          thickness + line style. Opacity matters most for AVWAP's
+                          bands but is offered on every line now. */}
+                      <ColorLineStylePicker
+                        color={l.color}
+                        onColor={(hex) => setLine(l.key, { color: hex })}
+                        opacity={l.opacity}
+                        onOpacity={(a) => setLine(l.key, { opacity: a })}
+                        size={l.size}
+                        onSize={(s) => setLine(l.key, { size: s })}
+                        lineStyle={l.lineStyle}
+                        onLineStyle={(s) => setLine(l.key, { lineStyle: s })}
+                        disabled={off}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+              {/* Pivots High/Low: the vertical connector between consecutive same-type
+                  pivots. Colors stay price-driven (up when the new pivot is higher,
+                  down when lower) via two swatches; width + line style are shared
+                  (edit either swatch), and arrowheads toggle on/off. */}
+              {isPivotAnalysis && (
+                <>
+                  <div className="ind-group">Connector</div>
+                  <div className="ind-row ind-style-row">
+                    <span className="ind-row-head">
+                      <label>Rising</label>
+                      <InfoTip
+                        title="Rising connector"
+                        text="Links a pivot to the previous same-type pivot when the new one is higher. Width and line style are shared with the falling connector."
+                      />
+                    </span>
+                    <div className="ind-line-controls">
+                      <ColorLineStylePicker
+                        color={connector.upColor}
+                        onColor={(hex) => patchConnector({ upColor: hex })}
+                        size={connector.width}
+                        onSize={(s) => patchConnector({ width: s })}
+                        lineStyle={connector.lineStyle}
+                        onLineStyle={(s) => patchConnector({ lineStyle: s })}
+                      />
+                    </div>
+                  </div>
+                  <div className="ind-row ind-style-row">
+                    <span className="ind-row-head">
+                      <label>Falling</label>
+                    </span>
+                    <div className="ind-line-controls">
+                      <ColorLineStylePicker
+                        color={connector.downColor}
+                        onColor={(hex) => patchConnector({ downColor: hex })}
+                        size={connector.width}
+                        onSize={(s) => patchConnector({ width: s })}
+                        lineStyle={connector.lineStyle}
+                        onLineStyle={(s) => patchConnector({ lineStyle: s })}
+                      />
+                    </div>
+                  </div>
+                  <label className="ind-check">
+                    <input
+                      type="checkbox"
+                      checked={connector.arrows}
+                      onChange={(e) => patchConnector({ arrows: e.target.checked })}
+                    />
+                    <span>Arrowheads</span>
+                  </label>
+                </>
+              )}
+              {/* S/R Levels: zone tint per role + one shared base opacity (the
+                  touch-count ramp builds on it; editing either row's opacity
+                  updates both, like the pivot connector's shared width). */}
+              {isSrLevels && (
+                <>
+                  <div className="ind-group">Zones</div>
+                  <div className="ind-row ind-style-row">
+                    <span className="ind-row-head">
+                      <label>Support</label>
+                      <InfoTip
+                        title="Support zone"
+                        text="Tint for zones at or below the current close. Opacity is the base fill for a minimum-touch zone and is shared with resistance; stronger zones draw darker."
+                      />
+                    </span>
+                    <div className="ind-line-controls">
+                      <ColorLineStylePicker
+                        color={srZone.supColor}
+                        onColor={(hex) => patchSrZone({ supColor: hex })}
+                        opacity={srZone.opacity}
+                        onOpacity={(a) => patchSrZone({ opacity: a })}
+                      />
+                    </div>
+                  </div>
+                  <div className="ind-row ind-style-row">
+                    <span className="ind-row-head">
+                      <label>Resistance</label>
+                    </span>
+                    <div className="ind-line-controls">
+                      <ColorLineStylePicker
+                        color={srZone.resColor}
+                        onColor={(hex) => patchSrZone({ resColor: hex })}
+                        opacity={srZone.opacity}
+                        onOpacity={(a) => patchSrZone({ opacity: a })}
+                      />
+                    </div>
+                  </div>
+                  <span className="ind-row-head">
+                    <label className="ind-check">
+                      <input
+                        type="checkbox"
+                        checked={srZone.dimBroken}
+                        onChange={(e) => patchSrZone({ dimBroken: e.target.checked })}
+                      />
+                      <span>Dim broken levels</span>
+                    </label>
+                    <InfoTip
+                      title="Dim broken levels"
+                      text="Zones price has closed through since their last touch render as ghosts: emptied fill, dashed outline, struck touch count. Off: every zone draws at full strength."
+                    />
+                  </span>
+                </>
+              )}
+              {isAutoFib && (
+                <>
+                  <div className="ind-group">Levels</div>
+                  <FibLevelsEditor
+                    fib={autoFib}
+                    onChange={patchAutoFib}
+                    sharedSize={1}
+                    sharedStyle="solid"
+                    trendLabel="Trend line"
+                    allLevelsStyle
+                  />
+                  {/* Render-only input the meta puts on this tab (past-fib
+                      opacity): same genExtend state and row shapes as the
+                      Inputs tab. */}
+                  {styleTabMetaInputs()}
+                </>
+              )}
+              {/* FVG: zone tint per direction + one shared fill opacity (editing
+                  either row's opacity updates both, like the S/R zones above). */}
+              {isFvg && (
+                <>
+                  <div className="ind-group">Zones</div>
+                  <div className="ind-row ind-style-row">
+                    <span className="ind-row-head">
+                      <label>Bullish</label>
+                      <InfoTip
+                        title="Bullish gap"
+                        text="Tint for gaps below the current close. Opacity is the zone fill and is shared with bearish gaps."
+                      />
+                    </span>
+                    <div className="ind-line-controls">
+                      <ColorLineStylePicker
+                        color={fvgZone.bullColor}
+                        onColor={(hex) => patchFvgZone({ bullColor: hex })}
+                        opacity={fvgZone.opacity}
+                        onOpacity={(a) => patchFvgZone({ opacity: a })}
+                      />
+                    </div>
+                  </div>
+                  <div className="ind-row ind-style-row">
+                    <span className="ind-row-head">
+                      <label>Bearish</label>
+                    </span>
+                    <div className="ind-line-controls">
+                      <ColorLineStylePicker
+                        color={fvgZone.bearColor}
+                        onColor={(hex) => patchFvgZone({ bearColor: hex })}
+                        opacity={fvgZone.opacity}
+                        onOpacity={(a) => patchFvgZone({ opacity: a })}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+              {/* Trendlines: one colour for every line, touch ring, pin handle
+                  and ×N tag (draw-only, extendData.lineColor). No opacity row:
+                  dimming is already a separate control (Dim opacity, Inputs tab). */}
+              {isTrendlines && (
+                <>
+                  <div className="ind-group">Line</div>
+                  <div className="ind-row ind-style-row">
+                    <span className="ind-row-head">
+                      <label>Trendline</label>
+                      <InfoTip
+                        title="Trendline"
+                        text={[
+                          "Colour applies to the lines, touch rings, handles and tags.",
+                          "Width and dash style apply to the line only.",
+                          "Opacity fades the whole line group.",
+                        ]}
+                      />
+                    </span>
+                    <div className="ind-line-controls">
+                      <ColorLineStylePicker
+                        color={trendlineStyle.color}
+                        onColor={(hex) => patchTrendlineStyle({ color: hex })}
+                        opacity={trendlineStyle.opacity}
+                        onOpacity={(a) => patchTrendlineStyle({ opacity: a })}
+                        size={trendlineStyle.width}
+                        onSize={(w) => patchTrendlineStyle({ width: w })}
+                        lineStyle={trendlineStyle.style}
+                        onLineStyle={(st) => patchTrendlineStyle({ style: st })}
+                      />
+                    </div>
+                  </div>
+                  {/* Render-only inputs the meta puts on this tab (pivot
+                      marks, line stats, dimming): same genExtend state and
+                      row shapes as the Inputs tab. */}
+                  {styleTabMetaInputs()}
+                </>
+              )}
+              {/* RSI Style — mirrors TradingView's RSI Style tab. Every row has a
+                  visibility checkbox; line elements add a style (solid/dashed/dotted),
+                  bands add an editable level. The RSI line is the klinecharts figure
+                  (colour/width via setLine); the rest are canvas-drawn (extendData
+                  .style). A box toggles `style.hidden[key]` (unchecked → hidden). */}
+              {isRsi && (
+                <RsiStylePanel
+                  lines={lines}
+                  setLine={setLine}
+                  rsiStyle={rsiStyle}
+                  setRsiStylePatch={setRsiStylePatch}
+                />
+              )}
+              {/* Curve-end labels live on the Style tab — they're presentation, not
+                  a calculation input (TradingView convention). */}
+              {hasCurveLabels && (
+                <>
+                  <div className="ind-group">Labels</div>
+                  {renderCurveLabels()}
+                </>
+              )}
+              {/* PREV_HL shows a range summary in the legend (e.g. "1 day, since …")
+                  instead of per-bar values; this toggle controls that. Kept at the
+                  bottom of the Style tab. */}
+              {type === "PREV_HL" && (
+                <PrevHlLegendToggle showValue={showValue} toggleShowValue={toggleShowValue} />
+              )}
+            </>
+          )}
+
+          {tab === "debug" && debugInputs.length > 0 && (
+            <>
+              {debugInputs.filter((inp) => !(inp.field && inp.field in DEBUG_LAYER_DASH)).map((inp) => (
+                <div className="ind-field ind-debug-toggle" key={inp.key}>
+                  {controlFor(inp, true)}
+                  {tipFor(inp)}
+                </div>
+              ))}
+              {/* No hue anywhere: the line patterns carry every state. */}
+              <div className="ind-group">On the chart</div>
+              <div className="ind-debug-legend">
+                {debugInputs.filter((inp) => inp.field && inp.field in DEBUG_LAYER_DASH).map((inp) => {
+                  const field = inp.field as string;
+                  const checked = (genExtend[field] ?? inp.default ?? true) as boolean;
+                  return (
+                    <div className="ind-field" key={inp.key}>
+                      <label className={`ind-bool-check${genExtend.debug ? "" : " is-off"}`}>
+                        <input
+                          type="checkbox"
+                          aria-label={inp.label}
+                          checked={checked}
+                          onChange={(e) => setExtendInput(field, e.target.checked)}
+                        />
+                        <DebugSwatch dash={DEBUG_LAYER_DASH[field]} />
+                        <span>{inp.label}</span>
+                      </label>
+                      {tipFor(inp)}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="ind-debug-note">
+                Click any line to see what holds it back and the smallest fix.
+                The strip at the chart's foot counts lines per reason.
+                Debug turns off on reload.
+              </div>
+            </>
+          )}
+
+          {tab === "visibility" && (
+            <>
+              <label className="ind-check">
+                <input
+                  type="checkbox"
+                  checked={visible}
+                  onChange={(e) => toggleVisible(e.target.checked)}
+                />
+                <span>Show on chart</span>
+              </label>
+              <VisibilityTab
+                model={vis}
+                onChange={applyVisibility}
+                showAutoHide={showAutoHide}
+                currentResolution={chartResolution}
+              />
+            </>
+          )}
+        </div>
+    </FloatingModal>
+  );
+}
+
+/** Each debug layer's checkbox field and the dash it paints with (null:
+ * the drawn lines' own solid stroke). */
+const DEBUG_LAYER_DASH: Record<string, readonly number[] | null> = {
+  debugShowFailed: DBG_FAILED_DASH,
+  debugShowOutranked: DBG_OUTRANKED_DASH,
+  debugShowForced: DBG_FORCED_DASH,
+  debugShowDrawn: null,
+};
+
+/** A short line in the chart's debug pattern, for the Debug tab's legend. */
+function DebugSwatch({ dash }: { dash: readonly number[] | null }) {
+  return (
+    <svg width="28" height="8" aria-hidden="true" className="ind-debug-swatch">
+      <line
+        x1="0" y1="4" x2="28" y2="4" stroke="currentColor"
+        strokeWidth={dash ? 1.5 : 2} strokeDasharray={dash?.join(" ")}
+      />
+    </svg>
+  );
+}

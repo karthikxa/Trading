@@ -1,0 +1,133 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+
+const mockComputeHostState = vi.fn();
+const mockStartComputeHost = vi.fn();
+const mockStopComputeHost = vi.fn();
+
+vi.mock("./api", async () => {
+  const actual = await vi.importActual<typeof import("./api")>("./api");
+  return {
+    ...actual,
+    computeHostState: (...a: unknown[]) => mockComputeHostState(...a),
+    startComputeHost: (...a: unknown[]) => mockStartComputeHost(...a),
+    stopComputeHost: (...a: unknown[]) => mockStopComputeHost(...a),
+  };
+});
+
+import ComputeHostButton from "./ComputeHostButton";
+import {
+  computeHostStateSignal,
+  computeHostJobsSignal,
+  sweepStateSignal,
+  confirmRequest,
+} from "./lib/signals";
+
+// Drive the component through its own poll: the mocked computeHostState() return
+// value is what the poll writes into the signal, so seed it per test.
+function seed(state: string, activeJobs = 0) {
+  mockComputeHostState.mockResolvedValue({ state, detail: null, activeJobs });
+}
+
+beforeEach(() => {
+  computeHostStateSignal.set("unknown");
+  computeHostJobsSignal.set(0);
+  sweepStateSignal.set(null);
+  confirmRequest.set(null);
+  mockComputeHostState.mockReset();
+  mockStartComputeHost.mockReset();
+  mockStopComputeHost.mockReset();
+  seed("unconfigured");
+});
+
+afterEach(() => cleanup());
+
+describe("ComputeHostButton", () => {
+  it("renders nothing when unconfigured", async () => {
+    render(<ComputeHostButton />);
+    await waitFor(() => expect(mockComputeHostState).toHaveBeenCalled());
+    expect(screen.queryByText(/compute host/i)).toBeNull();
+    expect(screen.queryByText(/host off/i)).toBeNull();
+  });
+
+  it("shows 'Host off' + Start when stopped, and Start calls startComputeHost", async () => {
+    seed("stopped");
+    mockStartComputeHost.mockResolvedValue({ state: "booting" });
+    render(<ComputeHostButton />);
+    const start = await screen.findByRole("button", { name: "Start" });
+    expect(screen.getByText("Host off")).toBeTruthy();
+    fireEvent.click(start);
+    expect(mockStartComputeHost).toHaveBeenCalledOnce();
+  });
+
+  it("shows the loud ON pill + Stop when ready", async () => {
+    seed("ready");
+    render(<ComputeHostButton />);
+    expect(await screen.findByText("Compute host ON")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+  });
+
+  // Stop is deliberately unconfirmed since 9d15438 ("feat(compute): sync sweep
+  // target to host lifecycle, drop stop confirm"): stopping is cheap, reversible
+  // and the thing it saves is money per hour, so a dialog only slowed it down.
+  it("Stop calls stopComputeHost straight away, with no confirmation step", async () => {
+    seed("ready");
+    mockStopComputeHost.mockResolvedValue({ state: "stopped" });
+    render(<ComputeHostButton />);
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(mockStopComputeHost).toHaveBeenCalledOnce());
+    expect(confirmRequest.value).toBeNull();
+  });
+
+  it("a rejected Stop flips back to ON (no false 'off'), not left optimistic", async () => {
+    seed("ready"); // poll + the post-failure refresh both report the box still up
+    mockStopComputeHost.mockRejectedValue(new Error("EC2 error: stop denied"));
+    render(<ComputeHostButton />);
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(mockStopComputeHost).toHaveBeenCalled());
+    // The optimistic "off" is corrected by the refresh() re-read: pill is ON again.
+    expect(await screen.findByText("Compute host ON")).toBeTruthy();
+  });
+
+  it("a stale in-flight poll cannot repaint ON after a Stop", async () => {
+    // The mount poll hangs; we resolve it with a now-wrong "ready" only AFTER the
+    // Stop completes, reproducing the slow-poll-resolves-late race.
+    let resolvePoll!: (v: { state: string; detail: null; activeJobs: number }) => void;
+    const hung = new Promise<{ state: string; detail: null; activeJobs: number }>((r) => {
+      resolvePoll = r;
+    });
+    mockComputeHostState.mockReturnValueOnce(hung);
+    computeHostStateSignal.set("ready"); // pill starts ON so Stop is available
+    mockStopComputeHost.mockResolvedValue({ state: "stopped" });
+    render(<ComputeHostButton />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(mockStopComputeHost).toHaveBeenCalled());
+
+    // The stale poll resolves late with the pre-stop "ready" — must be discarded.
+    resolvePoll({ state: "ready", detail: null, activeJobs: 0 });
+    await waitFor(() => expect(screen.getByText("Host off")).toBeTruthy());
+    expect(screen.queryByText("Compute host ON")).toBeNull();
+  });
+
+  it("stops without ceremony even while a sweep is running", async () => {
+    // The old dialog warned that stopping cancels a running sweep. That warning
+    // went with the confirm; the sweep now follows the host's lifecycle instead,
+    // so a running sweep must not block or divert the Stop.
+    seed("ready");
+    sweepStateSignal.set({ rows: [], done: 1, total: 4, running: true });
+    mockStopComputeHost.mockResolvedValue({ state: "stopped" });
+    render(<ComputeHostButton />);
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(mockStopComputeHost).toHaveBeenCalledOnce());
+    expect(confirmRequest.value).toBeNull();
+  });
+
+  it("spinner while booting, no clickable button", async () => {
+    seed("booting");
+    render(<ComputeHostButton />);
+    expect(await screen.findByText(/starting/i)).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+});

@@ -1,0 +1,939 @@
+// Our TradingView-style toolbar over the klinecharts-core chart we own:
+//  - instrument search   - timeframe bar
+//  - SEARCHABLE indicator menu (built-ins + custom VWAP/AVWAP)
+//  - A/L price-scale toggles
+//
+// Drawing tools, magnet, and measure now live in DrawSidebar; this toolbar
+// mounts the right-click drawing context menu (DrawingContextMenu).
+// Everything drives the Chart instance directly via its public API.
+
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { getSupportedIndicators } from "klinecharts";
+import { type Instrument, type Period } from "./lib/feed";
+import type { PriceSide } from "./theme";
+import { ensureNotifyPermission, primeSound, toast } from "./lib/notify";
+import HeatmapPanel from "./HeatmapPanel";
+import { EQUITY_INDICATOR, isChartReplaying } from "./lib/backtest";
+import {
+  alertModalRequest,
+  backtestPanelOpenSignal,
+  openBacktestSettings,
+  symbolSearchRequest,
+  saveDefaultTemplateRequest,
+  snapshotsGalleryOpen,
+} from "./lib/signals";
+import {
+  saveIndicators,
+  loadFavoriteIndicators,
+  saveFavoriteIndicators,
+  loadSymbolTemplate,
+  saveDefaultTemplate,
+  loadDefaultTemplate,
+  deleteDefaultTemplate,
+  loadIndicators,
+  loadIndicatorConfigs,
+} from "./lib/persist";
+import { saveSnapshotOfChart } from "./lib/snapshotSave";
+import Snackbar from "./Snackbar";
+import { addIndicatorInstance, isSubPaneIndicator, isInternalIndicator, isMintedInstanceId } from "./lib/indicators";
+import {
+  applySymbolTemplate,
+  captureDefaultTemplate,
+  applyDefaultTemplate,
+} from "./lib/templates";
+import { indicatorInfo } from "./lib/indicatorMeta";
+import IndicatorRow from "./IndicatorRow";
+import type { ChartController } from "./lib/chartController";
+import DrawingContextMenu from "./DrawingContextMenu";
+import InfoTip from "./components/InfoTip";
+import Tooltip from "./components/Tooltip";
+import {
+  SimilarSequenceIcon, MenuIcons, ReplayIcon, BacktestIcon, HeatmapIcon, StudyIcon,
+} from "./lib/menuIcons";
+import type { ReactNode } from "react";
+
+// One row of the tight-bar Study menu. `on` marks a mode that is currently
+// active (its panel docked / paint on) with a trailing check.
+function StudyItem({
+  icon, label, hint, on, disabled, disabledReason, onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  hint?: string;
+  on?: boolean;
+  disabled?: boolean;
+  disabledReason?: string;
+  onClick: () => void;
+}) {
+  const row = (
+    <li
+      role="menuitemcheckbox"
+      aria-checked={Boolean(on)}
+      aria-disabled={disabled}
+      className={`study-item${disabled ? " disabled" : ""}${on ? " on" : ""}`}
+      onClick={() => { if (!disabled) onClick(); }}
+    >
+      <span className="tmpl-ic">{icon}</span>
+      <span className="ind-name">{label}</span>
+      {hint && <span className="study-hint">{hint}</span>}
+      {on && <span className="study-check" aria-hidden="true">✓</span>}
+    </li>
+  );
+  return disabled && disabledReason ? (
+    <Tooltip content={disabledReason} placement="left">{row}</Tooltip>
+  ) : row;
+}
+import {
+  Caret,
+  SymbolChip,
+  IntervalControls,
+  ScaleControls,
+  HistoryControls,
+  PanelToggles,
+  MaximizeToggle,
+  toolbarMaximizeDblClick,
+} from "./ToolbarControls";
+import SymbolSearchModal from "./SymbolSearchModal";
+import BacktestButton from "./BacktestButton";
+import ComputeHostButton from "./ComputeHostButton";
+import BrokerSelector from "./BrokerSelector";
+import { isDataOnlyBroker, type BrokerAccount } from "./lib/trading";
+import { isSynthetic } from "./lib/syntheticRegistry";
+import { UserButton } from "@clerk/clerk-react";
+import { CLERK_ENABLED } from "./lib/authToken";
+import { isDemoMode } from "./lib/demoMode";
+import { useIsAdmin } from "./admin/useIsAdmin";
+import {
+  getPatternPanelState,
+  setPatternArmProvider,
+  setPatternSelectArmed,
+  subscribePatternPanel,
+  togglePatternPanel,
+} from "./lib/patternPanelStore";
+
+interface Props {
+  // The FOCUSED cell's controller (its chart + overlays + per-cell signals). The
+  // toolbar is a remote control over whichever cell currently has focus.
+  controller: ChartController | null;
+  // Undefined when no tab/cell is open (blank workspace). All chart-control paths
+  // are gated behind a single guard; only the LayoutManager renders in that case.
+  symbol?: Instrument;
+  period?: Period;
+  onSymbol: (s: Instrument) => void;
+  onPeriod: (p: Period) => void;
+  // Active data broker id ("capital"), derived from the active account. Passed to
+  // the symbol-search modal so it browses the right broker's catalogue. The broker
+  // SELECTOR normally lives in the tab bar (switching broker swaps the whole
+  // workspace — a tab-bar/workspace-scope action), but the tab bar is hidden when
+  // maximized, so we ALSO render the selector here in that case (see below) so the
+  // broker stays switchable. `accounts` + `onSelectBroker` feed that fallback.
+  brokerId: string;
+  // The chart's active price side — forwarded to the backtest so it fetches the
+  // same candle series the chart displays (the cache is per side).
+  priceSide: PriceSide;
+  accounts: BrokerAccount[];
+  onSelectBroker: (broker: string) => void;
+  // Maximized view hides the tab bar; this toggle (the only chrome that survives)
+  // flips it back. Backtest also lives here now so it stays reachable when maxed.
+  maximized: boolean;
+  onToggleMaximize: () => void;
+}
+
+/** 16px sliders glyph for the Admin item in the Clerk account menu. Sized and
+ *  coloured by Clerk's own menu styles (currentColor). */
+function AdminMenuIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+      <path d="M2 4.5h8M12.5 4.5H14M2 11.5h1.5M5.5 11.5H14" />
+      <circle cx="11" cy="4.5" r="1.6" />
+      <circle cx="4.5" cy="11.5" r="1.6" />
+    </svg>
+  );
+}
+
+export default function Toolbar({
+  controller,
+  symbol,
+  period,
+  onSymbol,
+  onPeriod,
+  brokerId,
+  priceSide,
+  accounts,
+  onSelectBroker,
+  maximized,
+  onToggleMaximize,
+}: Props) {
+  // The toolbar drives the focused cell's chart + overlays. (A cell restored
+  // FROM a snapshot never reaches this component — App renders SnapshotToolbar
+  // instead while controller.readOnly is set — so nothing here needs a
+  // read-only gate.)
+  const chart = controller?.chart ?? null;
+
+  // instrument search (TV-style modal, opened by clicking the symbol name)
+  // Adds the Admin entry to the Clerk account menu. Probes only in hosted
+  // mode; a non-admin's 403 leaves it hidden.
+  const isAdmin = useIsAdmin(CLERK_ENABLED);
+  // Heatmap is an admin-only tool: hidden from demo visitors and hosted
+  // non-admin users. Local dev (auth off) reports admin, so it stays visible.
+  const showHeatmap = useIsAdmin(!isDemoMode());
+
+  const [symModalOpen, setSymModalOpen] = useState(false);
+
+  // indicator menu. Add-only (TradingView-style): clicking a type ALWAYS adds a new
+  // instance; there's no checkmark/active state anymore (an indicator can appear any
+  // number of times). Removal is per-instance via the legend ⋯/trash.
+  const [indOpen, setIndOpen] = useState(false);
+  const [snapSavedName, setSnapSavedName] = useState<string | null>(null);
+  const [indFilter, setIndFilter] = useState("");
+  // Starred indicator types (global preference), shown in the menu's Favorites
+  // section. Seeded from localStorage; toggled by the per-row star.
+  const [favIndicators, setFavIndicators] = useState<string[]>(loadFavoriteIndicators);
+
+  // per-symbol template menu (Save / Apply / Delete the symbol's default layout)
+  const [tmplOpen, setTmplOpen] = useState(false);
+
+  // dropdown wrappers (for outside-click close)
+  const indMenuRef = useRef<HTMLDivElement>(null);
+  const tmplMenuRef = useRef<HTMLDivElement>(null);
+  const heatMenuRef = useRef<HTMLDivElement>(null);
+
+  // The two chart study modes, published by the FOCUSED cell (ChartController).
+  // Null while no chart is mounted, which is also how the buttons know to sit
+  // disabled rather than act on a cell that isn't there.
+  const heatmap = useSyncExternalStore(
+    useCallback((cb) => controller?.heatmap.subscribe(cb) ?? (() => {}), [controller]),
+    () => controller?.heatmap.value ?? null,
+  );
+  const replayEntry = useSyncExternalStore(
+    useCallback((cb) => controller?.replayEntry.subscribe(cb) ?? (() => {}), [controller]),
+    () => controller?.replayEntry.value ?? null,
+  );
+  // Whether the pattern panel is open (either view) — the toolbar button's lit
+  // state and click target. Arming the drag itself now lives in the panel's
+  // own "Select range on chart" control (armPatternSelect), wired to the
+  // focused cell below.
+  const patternPanelOpen = useSyncExternalStore(
+    subscribePatternPanel,
+    () => getPatternPanelState().open,
+  );
+  // Registers this cell's arm action with the pattern panel (a level of
+  // indirection so the panel need not know which cell is focused; reading
+  // patternSearchAvailable fresh at call time is how the arm action stays
+  // gated to a searchable chart — no synthetic epic, sub-minute interval or
+  // snapshot — without the panel needing to know that rule) and mirrors the
+  // controller's armed-in-search signal into the store so the panel's header
+  // can reflect it without holding its own state.
+  useEffect(() => {
+    if (!controller) {
+      // No focused cell to arm: the panel's header must not keep showing a
+      // stale "armed" state left over from whichever cell had focus before.
+      setPatternSelectArmed(false);
+      return;
+    }
+    setPatternArmProvider(() => {
+      if (!controller.patternSearchAvailable.value) return;
+      controller.patternRangeMode.set("search");
+      controller.patternRangeArmed.set(true);
+    });
+    const sync = () =>
+      setPatternSelectArmed(
+        controller.patternRangeArmed.value && controller.patternRangeMode.value === "search",
+      );
+    sync();
+    const un = controller.patternRangeArmed.subscribe(sync);
+    return () => {
+      un();
+      setPatternArmProvider(null);
+      // The mirrored signal belongs to the cell that just lost focus/unmounted
+      // — leaving it true would light the panel's header for a drag that can
+      // no longer happen.
+      setPatternSelectArmed(false);
+    };
+  }, [controller]);
+  // Panel open/closed, separate from the heatmap being ON. Turning it on opens
+  // the panel (that was the old behaviour, where the panel WAS the on state);
+  // clicking away closes the panel and leaves the heatmap painting.
+  const [heatOpen, setHeatOpen] = useState(false);
+  // Tight-bar "Study" menu (the four study modes behind one trigger).
+  const [studyOpen, setStudyOpen] = useState(false);
+  const [backtestOpen, setBacktestOpen] = useState(backtestPanelOpenSignal.value);
+  useEffect(() => backtestPanelOpenSignal.subscribe(setBacktestOpen), []);
+
+  // App opens a fresh tab → prompt for its symbol (the new tab starts empty).
+  useEffect(() => symbolSearchRequest.subscribe(() => setSymModalOpen(true)), []);
+
+  // Legend-driven removals are owned by ChartCore (it updates the focused cell's
+  // controller.indicators), and the active-set subscription above reflects them —
+  // so the toolbar needs no separate indicatorRemoved listener anymore.
+
+  // Close dropdowns on click outside. The ref wraps button+dropdown, so clicking
+  // the toggle stays "inside" and doesn't fight the button's own onClick.
+  useEffect(() => {
+    if (!indOpen && !tmplOpen && !heatOpen && !studyOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (indOpen && indMenuRef.current && !indMenuRef.current.contains(t)) setIndOpen(false);
+      if (tmplOpen && tmplMenuRef.current && !tmplMenuRef.current.contains(t))
+        setTmplOpen(false);
+      // Both study-cluster dropdowns share the cluster wrapper as their boundary.
+      if (heatMenuRef.current && !heatMenuRef.current.contains(t)) {
+        if (heatOpen) setHeatOpen(false);
+        if (studyOpen) setStudyOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [indOpen, tmplOpen, heatOpen, studyOpen]);
+
+  // Shared by the inline heatmap face and the Study menu item.
+  const toggleHeatmap = () => {
+    if (!heatmap) return;
+    const next = !heatmap.on;
+    heatmap.setOn(next);
+    setHeatOpen(next);
+  };
+  const replayTip = !replayEntry?.available
+    ? "Bar replay needs a chart with history: not a sub-minute interval, and not a saved snapshot."
+    : replayEntry.active
+      ? "A replay session is already running on this chart."
+      : "Bar replay: play the chart forward from a point in the past";
+  // Which study mode is on, for the collapsed trigger's face. First wins when
+  // several are (replay + heatmap can coexist); the menu shows each one.
+  const activeStudy: "replay" | "patterns" | "backtest" | "heatmap" | null =
+    replayEntry?.active ? "replay"
+      : patternPanelOpen ? "patterns"
+      : backtestOpen ? "backtest"
+      : heatmap?.on ? "heatmap"
+      : null;
+
+  // NOTE: indicator HYDRATION moved to ChartCore (each cell hydrates its own saved
+  // set on mount, even when not focused). The toolbar only TOGGLES on the focused
+  // chart and reflects controller.indicators (see the active-set subscription).
+
+  // Menu lists indicator TYPES (the registered base types), not live instances —
+  // per-instance template names ("FVG2", legacy "EMA#a1b2") also appear in
+  // getSupportedIndicators() and must NOT leak into the menu. Ask the registry
+  // (isMintedInstanceId) rather than reading the NAME: mintInstanceId names the
+  // second instance `${type}2`, so "FVG2" is shape-indistinguishable from a type.
+  // The old "#"-only test predated numeric ids, so every 2nd+ instance leaked in
+  // as an addable "type" — and adding one minted an instance OF it ("FVG22").
+  // Internal names are excluded: EQUITY (driven by the Backtest button), the
+  // SLOPE_ACCEL base type and its "<parent>__accel" companion instances (driven
+  // by the Slope's "Show acceleration pane" toggle, never added directly), and
+  // likewise PIVOT_BARS_SINCE with its "<parent>__barsSince" companions (the
+  // Pivot Bands "Bars since pivot pane" toggle).
+  const allIndicators = getSupportedIndicators()
+    .filter((n) => !isMintedInstanceId(n))
+    .filter(
+      (n) =>
+        n !== EQUITY_INDICATOR
+        && n !== "SLOPE_ACCEL"
+        && n !== "PIVOT_BARS_SINCE"
+        && !isInternalIndicator(n),
+    );
+  const matches = (n: string) => {
+    const q = indFilter.toLowerCase();
+    if (!q) return true;
+    const { title } = indicatorInfo(n);
+    return n.toLowerCase().includes(q) || title.toLowerCase().includes(q);
+  };
+  const filtered = allIndicators.filter(matches).sort();
+  // Favorites section: starred types still present in the catalogue, in star order,
+  // and matching the current search. Starred types ALSO remain in the main list.
+  const favSet = new Set(favIndicators);
+  const favShown = favIndicators.filter(
+    (n) => allIndicators.includes(n) && matches(n),
+  );
+
+  // Star/unstar an indicator type (global preference). stopPropagation in the row
+  // keeps this off the <li>'s add-indicator click.
+  function toggleFavIndicator(type: string) {
+    setFavIndicators((prev) => {
+      const next = prev.includes(type)
+        ? prev.filter((t) => t !== type)
+        : [...prev, type];
+      saveFavoriteIndicators(next);
+      return next;
+    });
+  }
+
+  // Add a fresh instance of `type` on the FOCUSED cell (TradingView-style: clicking
+  // the menu ALWAYS adds another, never toggles off — removal is per-instance via
+  // the legend ⋯/trash). Mirrors controller.indicators + persists per the cell's
+  // scope. The create mechanics live in lib/indicators so ChartCore's hydration
+  // uses the exact same path.
+  function addIndicator(type: string) {
+    if (!chart || !controller || !symbol) return;
+    const inst = addIndicatorInstance(chart, controller.scope, symbol.epic, type, {
+      forceHidden: controller.indicatorsHidden.value,
+      resolution: period?.resolution,
+    });
+    if (!inst) return;
+    // Adding a sub-pane indicator while the bottom panes are collapsed (double-click
+    // "hide sub-panes") auto-expands them — you'd otherwise add an oscillator and see
+    // nothing. Also keeps collapse-capture honest (it must run from an expanded state).
+    if (controller.subPanesHidden.value && isSubPaneIndicator(type))
+      controller.subPanesHidden.set(false);
+    const next = [...controller.indicators.value, inst];
+    controller.indicators.set(next);
+    saveIndicators(controller.scope, next);
+    // A fresh AVWAP is unplaced (no line). Close the menu and enter anchor mode for
+    // THIS instance so the user's next chart click places it (TradingView-style).
+    if (type === "AVWAP") {
+      setIndOpen(false);
+      controller.avwapAnchorMode.set(inst.id);
+    }
+  }
+
+  // --- per-symbol templates (Save / Apply / Delete the symbol's default layout) --
+  // All act on the FOCUSED cell's scope + the current symbol's epic. Save snapshots
+  // the cell's current layout (overwriting the symbol's single default); Apply
+  // MERGES it into the cell — adds what's missing, skips equivalents, never touches existing work;
+  // Delete removes the symbol's default so fresh charts start blank again.
+  function applyTemplate() {
+    if (!chart || !controller || !symbol) return;
+    const t = loadSymbolTemplate(symbol.epic);
+    if (!t) return;
+    applySymbolTemplate(chart, controller, controller.scope, symbol.epic, t);
+    setTmplOpen(false);
+    toast(`Applied ${symbol.epic} template`);
+  }
+
+  // --- global default template (symbol-agnostic) -------------------------------
+  // Opens the selectable picker: the user checks which of this chart's
+  // symbol-agnostic indicators become THE default applied to every fresh chart
+  // (any symbol). Drawings/anchors are stripped at capture (see templates.ts).
+  function saveDefault() {
+    if (!controller) return;
+    const scope = controller.scope;
+    const configs = loadIndicatorConfigs(scope);
+    const candidates = loadIndicators(scope)
+      .filter((inst) => inst.type !== "AVWAP")
+      .map((inst) => {
+        const params = (configs[inst.id]?.calcParams ?? []) as unknown[];
+        return {
+          id: inst.id,
+          label: inst.type,
+          params: params.length ? params.join(", ") : "—",
+        };
+      });
+    setTmplOpen(false);
+    saveDefaultTemplateRequest.set({
+      candidates,
+      onConfirm: (ids) => {
+        saveDefaultTemplate(captureDefaultTemplate(scope, new Set(ids)));
+        toast("Saved default template");
+      },
+    });
+  }
+
+  function applyDefault() {
+    if (!chart || !controller || !symbol) return;
+    const d = loadDefaultTemplate();
+    if (!d) return;
+    applyDefaultTemplate(chart, controller, controller.scope, symbol.epic, d);
+    setTmplOpen(false);
+    toast("Applied default template");
+  }
+
+  function clearDefault() {
+    deleteDefaultTemplate();
+    setTmplOpen(false);
+    toast("Cleared default template");
+  }
+
+  // --- snapshots: instant capture of the focused cell's state ------------------
+  // Camera saves immediately (no dialog); a snackbar anchored under the control
+  // confirms and offers "View" (opens the gallery).
+  const saveSnapshot_ = async () => {
+    if (!chart || !controller || !symbol || !period) return;
+    // Asked before the save so the refusal can say WHICH refusal it is; the
+    // guard itself lives in saveSnapshotOfChart, where neither entry point can
+    // route around it.
+    if (isChartReplaying(chart)) {
+      toast("Chart replay is running: exit the session to snapshot this chart.");
+      return;
+    }
+    const snap = await saveSnapshotOfChart(chart, controller.scope, symbol, period);
+    if (!snap) {
+      toast("Chart not ready — nothing to snapshot");
+      return;
+    }
+    setSnapSavedName(snap.name);
+  };
+
+  // Blank workspace (no open tab/cell): the chart controls have nothing to act on,
+  // so render just the layout manager — the user opens or creates a layout from it.
+  // After this guard TypeScript narrows symbol/period to non-undefined, so the
+  // full toolbar below reads them without churn. The workspace-level controls
+  // (layouts, split, theme, backtest) now live in the tab bar, so a blank
+  // workspace simply has no per-chart toolbar.
+  if (!symbol || !period) {
+    return <header className="toolbar toolbar-empty" />;
+  }
+
+  return (
+    <header className="toolbar" onDoubleClick={toolbarMaximizeDblClick(onToggleMaximize)}>
+      {/* Editable symbol name (TV-style): click to open the symbol-search modal.
+          A resting chip + search icon make the clickability obvious at a glance. */}
+      <SymbolChip
+        symbol={symbol}
+        title="Change symbol"
+        onClick={() => setSymModalOpen(true)}
+      />
+
+      <span className="tb-div" aria-hidden="true" />
+
+      <IntervalControls period={period} onPeriod={onPeriod} />
+
+      <span className="tb-div" aria-hidden="true" />
+
+      {/* Undo / redo for the focused cell (the same stacks Ctrl/Cmd+Z drives). */}
+      <HistoryControls controller={controller} />
+
+      <span className="tb-div" aria-hidden="true" />
+
+      {/* Searchable indicator menu. */}
+      <div className="menu" ref={indMenuRef}>
+        <Tooltip content="Indicators, metrics, and strategies">
+          <button
+            className={indOpen ? "on" : ""}
+            onClick={() => setIndOpen((v) => !v)}
+          >
+            ƒ Indicators<Caret />
+          </button>
+        </Tooltip>
+        {indOpen && (
+          <div className="dropdown dropdown-ind">
+            <div className="ind-search">
+              <Tooltip content="Search indicators">
+                <input
+                  autoFocus
+                  placeholder="search indicators…"
+                  value={indFilter}
+                  onChange={(e) => setIndFilter(e.target.value)}
+                />
+              </Tooltip>
+              {indFilter && (
+                <Tooltip content="Clear">
+                  <button
+                    className="ind-search-clear"
+                    onClick={() => setIndFilter("")}
+                  >
+                    ✕
+                  </button>
+                </Tooltip>
+              )}
+            </div>
+            <ul>
+              {favShown.length > 0 && (
+                <>
+                  <li className="ind-section">Favorites</li>
+                  {favShown.map((name) => (
+                    <IndicatorRow
+                      key={`fav-${name}`}
+                      name={name}
+                      favorite
+                      onAdd={() => addIndicator(name)}
+                      onToggleFavorite={() => toggleFavIndicator(name)}
+                    />
+                  ))}
+                  <li className="ind-section">All</li>
+                </>
+              )}
+              {filtered.map((name) => (
+                <IndicatorRow
+                  key={name}
+                  name={name}
+                  favorite={favSet.has(name)}
+                  onAdd={() => addIndicator(name)}
+                  onToggleFavorite={() => toggleFavIndicator(name)}
+                />
+              ))}
+              {filtered.length === 0 && <li className="empty">no match</li>}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {/* Synthetic charts are alert-free: history-only, so a price alert on them
+          would never fire. Hide the divider along with the button so no orphan
+          separator remains. */}
+      {!isSynthetic(symbol.epic) && !isDemoMode() && (
+        <>
+          <span className="tb-div" aria-hidden="true" />
+
+          {/* Open the TV-style alert modal, prefilled with the last price. The bell is
+              an inline SVG (currentColor) so it stays monochrome, not a colored emoji. */}
+          <Tooltip content="Create a price alert">
+          <button
+            className="anchor-btn icon-btn alert-btn"
+            onClick={() => {
+              // This click is a user gesture: unlock audio so later (programmatic)
+              // pings can sound, and request OS-notification permission. Surface the
+              // outcome so the user knows whether banners will actually appear.
+              primeSound();
+              ensureNotifyPermission().then((perm) => {
+                if (perm === "denied")
+                  toast("OS alerts blocked — alerts will show in this tab only");
+                else if (perm === "unsupported")
+                  toast("OS alerts unsupported here — alerts will show in this tab");
+              });
+              const dl = chart?.getDataList();
+              const last = dl && dl.length ? dl[dl.length - 1].close : 0;
+              alertModalRequest.set({ price: last });
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+              stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+              aria-hidden="true">
+              <path d="M18 8A6 6 0 1 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+              <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+            </svg>
+            Alert
+          </button>
+          </Tooltip>
+        </>
+      )}
+
+      {/* Price-scale A / L / I (auto-fit, logarithmic, invert) */}
+      <ScaleControls controller={controller} />
+
+      {/* Snapshots: ONE split control. The camera face saves instantly; the
+          slim caret on its right edge opens the gallery. Sits just before the
+          Template menu in the right-side cluster. */}
+      <div className="snap-split">
+        <Tooltip content="Save a snapshot of this chart: state, drawings, indicators">
+          <button
+            className="anchor-btn snap-save"
+            disabled={!chart || !symbol || !period}
+            onClick={() => void saveSnapshot_()}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+              <circle cx="12" cy="13" r="4" />
+            </svg>
+          </button>
+        </Tooltip>
+        <Tooltip content="Browse saved snapshots">
+          <button
+            className="anchor-btn snap-gallery"
+            onClick={() => snapshotsGalleryOpen.set(true)}
+          >
+            <Caret />
+          </button>
+        </Tooltip>
+      </div>
+      {snapSavedName && (
+        <Snackbar
+          message={`Snapshot saved — ${snapSavedName}`}
+          actionLabel="View"
+          onAction={() => {
+            setSnapSavedName(null);
+            snapshotsGalleryOpen.set(true);
+          }}
+          onDismiss={() => setSnapSavedName(null)}
+          duration={5000}
+          anchorSelector=".snap-split"
+        />
+      )}
+
+      {/* Per-symbol template: save/apply/delete the symbol's default layout. Labels
+          carry the live epic so it's clear which symbol they act on (TV-style
+          "apply default to <symbol>"). Auto-applies to fresh charts of the symbol.
+          Dropdown right-aligned so it doesn't spill off-screen. */}
+      <div className="menu tmpl-menu" ref={tmplMenuRef}>
+        <Tooltip content={`Save or apply the default layout (indicators, drawings) for ${symbol.epic}`}>
+          <button
+            className={tmplOpen ? "on" : ""}
+            onClick={() => setTmplOpen((v) => !v)}
+          >
+            <span className="tmpl-ic">{MenuIcons.clone}</span>
+            Template
+            <Caret className="tmpl-caret" />
+          </button>
+        </Tooltip>
+        {tmplOpen && (
+          <div className="dropdown dropdown-right tmpl-dropdown">
+            <ul>
+              {loadSymbolTemplate(symbol.epic) ? (
+                <li onClick={applyTemplate}>
+                  <span className="tmpl-ic">{MenuIcons.apply}</span>
+                  <span className="ind-name">Apply {symbol.epic} template</span>
+                  <InfoTip
+                    title={`Apply ${symbol.epic} template`}
+                    text="Adds the template's indicators and drawings that are missing from this chart. What's already here is never changed or removed."
+                  />
+                </li>
+              ) : (
+                <li className="empty">no saved template</li>
+              )}
+              <li className="sep" />
+              {/* Global default: indicators auto-added to every fresh chart,
+                  regardless of symbol (e.g. Volume). The ★ marks it as the
+                  symbol-agnostic default. */}
+              <li onClick={saveDefault}>
+                <span className="tmpl-ic">{MenuIcons.star}</span>
+                <span className="ind-name">Save as default template</span>
+                <InfoTip
+                  title="Save as default template"
+                  text="Saves this chart's indicators (drawings and AVWAPs excluded) as the default for every symbol. Fresh charts without their own template start with it."
+                />
+              </li>
+              {loadDefaultTemplate() ? (
+                <>
+                  <li onClick={applyDefault}>
+                    <span className="tmpl-ic">{MenuIcons.apply}</span>
+                    <span className="ind-name">Apply default template</span>
+                    <InfoTip
+                      title="Apply default template"
+                      text="Adds the default indicators that are missing from this chart. Existing indicators and drawings are untouched."
+                    />
+                  </li>
+                  <li onClick={clearDefault}>
+                    <span className="tmpl-ic">{MenuIcons.remove}</span>
+                    <span className="ind-name">Clear default template</span>
+                    <InfoTip
+                      title="Clear default template"
+                      text="Removes the shared default. Fresh charts start blank unless their symbol has its own template."
+                    />
+                  </li>
+                </>
+              ) : (
+                <li className="empty">no default template</li>
+              )}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {/* Broker selector — ONLY when maximized. It normally lives in the tab bar
+          (a workspace-scope control), but maximizing hides the tab bar, so we
+          surface it here (the surviving chrome) so the broker stays switchable.
+          Omitted in normal view to avoid two selectors. */}
+      {maximized && (
+        <BrokerSelector
+          accounts={accounts}
+          activeBroker={brokerId}
+          onChange={onSelectBroker}
+        />
+      )}
+
+      {/* Managed EC2 compute host: a loud "ON" pill while it's running so its
+          hourly cost stays visible, with manual Start/Stop. Renders nothing on
+          non-EC2 installs. Self-contained (owns its own polling + state). */}
+      <ComputeHostButton />
+
+      <span className="tb-div" aria-hidden="true" />
+
+      {/* The four STUDY MODES (Replay, Patterns, Backtest, Heatmap): ways of
+          studying the strategy rather than of drawing on the chart. There is
+          ONE of each, acting on whichever cell has focus. Together they are the
+          right-hand cluster: the wrapper carries the slack-soaking auto margin.
+
+          Two renderings share this wrapper and CSS picks one by toolbar width:
+          the inline buttons, and (tight bars) a single "Study" menu listing the
+          same four actions. The heatmap settings dropdown hangs off the wrapper
+          rather than off the inline split control, so it opens in both modes.
+          The wrapper is also the outside-click boundary for both dropdowns. */}
+      {/* Visible in demo too: the panel inside shows the published canned
+          results, and every Run control in there is a sign-up CTA. In demo the
+          clerk-user block below (whose auto margin normally owns the right
+          edge) is skipped, so the slack-soaking spacer sits here instead and
+          pins this tail cluster to the far right. */}
+      {isDemoMode() && <span style={{ marginLeft: "auto" }} aria-hidden="true" />}
+      <div className="menu study-modes" ref={heatMenuRef}>
+
+      {/* Bar replay: play the chart forward from a point in the past. Disabled
+          rather than hidden — the toolbar is stable chrome, and a control that
+          vanishes reads as a bug. The two refusals are different facts, so they
+          say different things. */}
+      <Tooltip content={replayTip}>
+        <button
+          type="button"
+          className="anchor-btn replay-toggle study-inline"
+          disabled={!replayEntry?.available || replayEntry.active}
+          onClick={() => replayEntry?.enter()}
+        >
+          <ReplayIcon />
+          <span className="tb-label">Replay</span>
+        </button>
+      </Tooltip>
+
+      {/* Similarity + preset pattern search, docked as a panel: this toggles
+          it open/closed. Never disabled — the Presets view works without any
+          eligible chart; only the panel's own "Select range on chart" action
+          (armPatternSelect, wired above) is gated by patternAvailable. */}
+      <Tooltip content="Pattern search: find similar shapes on your charts, or scan for preset patterns">
+        <button
+          className={`anchor-btn pattern-range-toggle study-inline${patternPanelOpen ? " seg-on" : ""}`}
+          aria-pressed={patternPanelOpen}
+          aria-label="Pattern search"
+          onClick={togglePatternPanel}
+        >
+          <SimilarSequenceIcon />
+          <span className="tb-label">Patterns</span>
+        </button>
+      </Tooltip>
+
+      {/* Backtest + Live sit together here (kept off the tab bar so they survive
+          maximized view): backtest a rule strategy, then arm the same strategy
+          live against a broker account. controller/period/symbol are in scope. */}
+      <BacktestButton
+        controller={controller}
+        period={period}
+        epic={symbol.epic}
+        brokerId={brokerId}
+        priceSide={priceSide}
+      />
+
+      {/* Rule-proximity heatmap: a split control. The face toggles the paint on
+          and off; the caret opens its settings. Turning it ON opens the settings
+          too, which is what the old chart-pinned control did (there the panel WAS
+          the on state) — the difference is that clicking away now closes the
+          panel and leaves the heatmap painting. Admin-only, so it sits LAST:
+          its presence must not shift the three everyone sees. */}
+      {showHeatmap && (
+      <div className="heatmap-split study-inline">
+        <Tooltip content="Rule proximity heatmap">
+          <button
+            className={`anchor-btn heatmap-toggle${heatmap?.on ? " seg-on" : ""}`}
+            aria-pressed={Boolean(heatmap?.on)}
+            disabled={!heatmap}
+            onClick={toggleHeatmap}
+          >
+            {/* Cell-grid icon: only shown when the tight-toolbar rules hide the
+                labels, so this button keeps a face. */}
+            <HeatmapIcon className="heatmap-ic" />
+            <span className="tb-label">Heatmap</span>
+          </button>
+        </Tooltip>
+        <Tooltip content="Heatmap settings">
+          <button
+            className="anchor-btn heatmap-caret"
+            disabled={!heatmap}
+            onClick={() => setHeatOpen((v) => !v)}
+          >
+            <Caret />
+          </button>
+        </Tooltip>
+      </div>
+      )}
+
+      {/* Tight bars: the same four actions behind one trigger. The trigger's
+          face is the mode currently on (or the generic study glyph), so the
+          collapsed bar still says what is running. */}
+      <Tooltip content="Study tools: Replay, Patterns, Backtest, Heatmap">
+        <button
+          className={`anchor-btn study-menu-btn${activeStudy ? " on" : ""}`}
+          aria-haspopup="menu"
+          aria-expanded={studyOpen}
+          onClick={() => setStudyOpen((v) => !v)}
+        >
+          {activeStudy === "replay" ? <ReplayIcon />
+            : activeStudy === "patterns" ? <SimilarSequenceIcon />
+            : activeStudy === "backtest" ? <BacktestIcon />
+            : activeStudy === "heatmap" ? <HeatmapIcon />
+            : <StudyIcon />}
+          <span className="tb-label">Study</span>
+          <Caret />
+        </button>
+      </Tooltip>
+      {studyOpen && (
+        <div className="dropdown dropdown-right study-dropdown" role="menu">
+          <ul>
+            <StudyItem
+              icon={<ReplayIcon />}
+              label="Replay"
+              hint={replayEntry?.active ? "running" : undefined}
+              disabled={!replayEntry?.available || Boolean(replayEntry?.active)}
+              disabledReason={replayTip}
+              onClick={() => { replayEntry?.enter(); setStudyOpen(false); }}
+            />
+            <StudyItem
+              icon={<SimilarSequenceIcon />}
+              label="Patterns"
+              on={patternPanelOpen}
+              onClick={() => { togglePatternPanel(); setStudyOpen(false); }}
+            />
+            <StudyItem
+              icon={<BacktestIcon />}
+              label="Backtest"
+              on={backtestOpen}
+              onClick={() => { openBacktestSettings(); setStudyOpen(false); }}
+            />
+            {showHeatmap && (
+              <>
+                <li className="sep" />
+                <StudyItem
+                  icon={<HeatmapIcon />}
+                  label="Heatmap"
+                  on={Boolean(heatmap?.on)}
+                  disabled={!heatmap}
+                  onClick={() => { toggleHeatmap(); setStudyOpen(false); }}
+                />
+                <StudyItem
+                  icon={MenuIcons.settings}
+                  label="Heatmap settings"
+                  disabled={!heatmap}
+                  onClick={() => { setStudyOpen(false); setHeatOpen(true); }}
+                />
+              </>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {heatOpen && heatmap && (
+        <div className="dropdown dropdown-right heatmap-dropdown">
+          <HeatmapPanel
+            view={heatmap.view}
+            onChange={heatmap.setView}
+            belowBase={heatmap.belowBase}
+          />
+        </div>
+      )}
+      </div>
+
+      {/* Side-panel toggles: a distinct group from the study modes before them,
+          hence the divider. */}
+      <span className="tb-div" aria-hidden="true" />
+      <PanelToggles dataOnly={isDataOnlyBroker(brokerId)} />
+
+      {symModalOpen && (
+        <SymbolSearchModal
+          current={symbol}
+          brokerId={brokerId}
+          onPick={onSymbol}
+          onClose={() => setSymModalOpen(false)}
+        />
+      )}
+
+      <DrawingContextMenu controller={controller} />
+
+      {CLERK_ENABLED && !isDemoMode() && (
+        <div className="clerk-user" style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>
+          <UserButton>
+            {/* Operator console. Only rendered for an account the backend
+                confirms as admin; the page itself is gated server-side too. */}
+            {isAdmin && (
+              <UserButton.MenuItems>
+                <UserButton.Link
+                  label="Admin"
+                  labelIcon={<AdminMenuIcon />}
+                  href="/admin"
+                />
+              </UserButton.MenuItems>
+            )}
+          </UserButton>
+        </div>
+      )}
+
+      {/* Maximize is a VIEW control, not a feature: it lives at the bar's far
+          edge, past the account avatar, so it never reads as a fifth panel. */}
+      <span className="tb-div" aria-hidden="true" />
+      <MaximizeToggle maximized={maximized} onToggleMaximize={onToggleMaximize} />
+    </header>
+  );
+}

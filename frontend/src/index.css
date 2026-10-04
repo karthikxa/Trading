@@ -1,0 +1,263 @@
+/* Material Symbols subset (offline woff2: visibility E8F4, visibility_off E8F5,
+   settings E8B8, delete E872) — used for the TradingView-style indicator legend
+   icons, which klinecharts draws as font glyphs onto the canvas. font-display:
+   block avoids a flash of fallback boxes before it loads. */
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('/fonts/material-symbols-subset.woff2') format('woff2');
+}
+
+* { box-sizing: border-box; }
+html, body, #root { 
+  margin: 0; 
+  height: 100%; 
+}
+
+/* Universal common font style across all elements: buttons, selects, inputs */
+html, body, #root, button, input, select, textarea, optgroup {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+#root { display: flex; flex-direction: column; }
+
+/* Theme variables. Dark is the default; [data-theme="light"] overrides. */
+:root {
+  --font-common: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  --bg: #101418;
+  --surface: #161a1f;
+  --surface-2: #1c2127;
+  --input-bg: #0d1014;
+  --border: #2a2f36;
+  --text: #d1d4dc;
+  --text-dim: #8a93a0;
+  --text-faint: #6b7480;
+  --accent: #f0f3fa;
+  --accent-text: #131722;
+  --pos: #26a69a;
+  --neg: #ef5350;
+  --danger: #c62828;
+  --shadow: rgba(0,0,0,0.45);
+  /* TradingView-style subtle gray highlight for borderless toolbar buttons. */
+  --hover: rgba(255, 255, 255, 0.08);
+  --hover-strong: rgba(255, 255, 255, 0.14);
+  /* Common font with tabular numeral support for prices / P&L / sizes */
+  --mono: var(--font-common);
+}
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --surface: #f5f7fa;
+  --surface-2: #ffffff;
+  --input-bg: #ffffff;
+  --border: #cfd6df;
+  --text: #1f2933;
+  --text-dim: #5a6573;
+  --text-faint: #8a93a0;
+  --accent: #131722;
+  --accent-text: #ffffff;
+  --pos: #0f9d8a;
+  --neg: #e53935;
+  --danger: #c62828;
+  --shadow: rgba(0,0,0,0.18);
+  --hover: rgba(19, 23, 34, 0.08);
+  --hover-strong: rgba(19, 23, 34, 0.14);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-common);
+}
+
+/* Quick date-range bar — a glass instrument readout that floats over the live
+   chart. Hover-revealed; tabular-mono labels; one accent for the active range.
+   All colour derives from the app theme tokens so it tracks dark/light. */
+.chart-range-bar {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 11; /* above klinecharts canvases (z2) and bracket/sel overlays (z9/10) */
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 3px 4px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  opacity: 0;
+  transform: translateY(2px);
+  pointer-events: none;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+/* Revealed only when the cursor is near the cell's bottom edge (.peek, set by a
+   pointer-proximity listener in ChartRangeBar), or pinned while the calendar
+   popover is up (.cal-open) so it doesn't vanish if the cursor drifts off mid-
+   date-entry. NOT .chart-wrap:hover — that kept it up across the whole chart; NOT
+   :focus-within — a clicked range button keeps focus and would pin it after leave. */
+.chart-range-bar.peek,
+.chart-range-bar.cal-open {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.crb-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.1s ease, background-color 0.1s ease;
+}
+.crb-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--hover);
+}
+.crb-btn.active {
+  color: var(--accent);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.crb-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+.crb-btn:disabled { color: var(--text-faint); cursor: default; }
+/* Divider: separates the window/interval presets from the calendar (a distinct
+   "navigate to any date" action) — structural, not decorative. */
+.crb-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 3px;
+  background: var(--border);
+}
+.crb-cal { display: inline-flex; align-items: center; padding: 4px 6px; }
+.crb-cal svg { display: block; }
+.crb-cal-pop {
+  position: absolute;
+  right: 4px;
+  bottom: 32px;
+  display: flex;
+  gap: 5px;
+  padding: 6px;
+  border-radius: 7px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.crb-cal-pop input[type="datetime-local"] {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 6px;
+}
+.crb-cal-pop input[type="datetime-local"]:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chart-range-bar { transition: opacity 0.14s ease; transform: none; }
+}
+
+/* Detached-view pill: the cell's top-right badge while a deep Go-to-date jump
+   has it parked on a standalone window with the live stream shut. Same surface
+   language as the calendar popover above (--surface on --border, radius 7), so
+   it reads as chrome of the range bar that put the chart here rather than as an
+   alert. z-index 11 puts it in the same layer as the live-edge pill: above the
+   overlay canvases, which are click-through, so its button is reachable. */
+.chart-detached {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 11;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 5px 4px 9px;
+  border-radius: 7px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.chart-detached-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chart-detached-btn {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.1s ease, background-color 0.1s ease, border-color 0.1s ease;
+}
+.chart-detached-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.chart-detached-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Admin impersonation. Deliberately loud: this is a safety affordance, not a
+   preference toggle, and the one thing worse than not knowing you are
+   impersonating is thinking you are not. */
+.impersonation-banner {
+  position: sticky;
+  top: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 6px 12px;
+  font-size: 13px;
+  background: #b45309;
+  color: #fff;
+}
+
+.impersonation-banner button {
+  padding: 2px 10px;
+  font: inherit;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.impersonation-banner button:hover {
+  background: rgba(255, 255, 255, 0.3);
+}

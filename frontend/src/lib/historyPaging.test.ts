@@ -1,0 +1,658 @@
+import { describe, it, expect, vi } from "vitest";
+import {
+  pageHistoryBack,
+  coverHistoryRangeParallel,
+  scrollbackLoadOlder,
+  type PageHistoryBackArgs,
+  type CoverRangeParallelArgs,
+  type ScrollbackLoadArgs,
+  fetchSpanParallel,
+} from "./historyPaging";
+
+// Minimal bar factory — pageHistoryBack only reads `.timestamp`.
+const bar = (timestamp: number): { timestamp: number } => ({ timestamp });
+const SEC = 1000;
+const MIN = 60 * SEC;
+
+// A small harness: an in-memory bar list that fetchOlder feeds from a fixed
+// "server" history, mirroring how the chart prepends older pages.
+function harness(opts: {
+  fromTs: number;
+  toTs: number;
+  server: number[]; // older bar timestamps (ms) the broker can return, any order
+  initial?: number[]; // bars already loaded (ms), ascending
+  stale?: () => boolean;
+  maxEmpty?: number; // override the default consecutive-empty budget
+}) {
+  const data = (opts.initial ?? []).map((t) => bar(t));
+  const exhausted = { value: false };
+  const applied: number[][] = [];
+  const cursors: number[] = [];
+  const args: PageHistoryBackArgs<ReturnType<typeof bar>> = {
+    fromTs: opts.fromTs,
+    toTs: opts.toTs,
+    resSec: 60,
+    pageBars: 5,
+    maxPages: 20,
+    maxEmpty: opts.maxEmpty ?? 3,
+    isStale: opts.stale ?? (() => false),
+    getData: () => data,
+    fetchOlder: vi.fn(async (fromSec: number, toSec: number) => {
+      const fromMs = fromSec * SEC;
+      const toMs = toSec * SEC;
+      return opts.server.filter((t) => t >= fromMs && t <= toMs).map((t) => bar(t));
+    }),
+    applyData: (merged) => {
+      data.length = 0;
+      data.push(...merged);
+      applied.push(merged.map((b) => b.timestamp));
+    },
+    onCursor: (sec) => {
+      cursors.push(sec);
+    },
+    onExhausted: () => {
+      exhausted.value = true;
+    },
+  };
+  return { args, data, exhausted, applied, cursors };
+}
+
+describe("pageHistoryBack", () => {
+  it("walks older bars back until coverage reaches fromTs, then returns 'reached'", async () => {
+    const now = 100 * MIN;
+    // Loaded: bars at 96..100 min. Want coverage back to 90 min. Server has 90..95.
+    const server = [90, 91, 92, 93, 94, 95].map((m) => m * MIN);
+    const h = harness({
+      fromTs: 90 * MIN,
+      toTs: now,
+      server,
+      initial: [96, 97, 98, 99, 100].map((m) => m * MIN),
+    });
+    const res = await pageHistoryBack(h.args);
+    expect(res).toBe("reached");
+    // Oldest loaded bar now reaches the period start.
+    expect(h.data[0].timestamp).toBeLessThanOrEqual(90 * MIN);
+  });
+
+  it("never re-applies bars at or newer than the current oldest (no duplicates)", async () => {
+    const h = harness({
+      fromTs: 90 * MIN,
+      toTs: 100 * MIN,
+      // Server overlaps the loaded range (96,97) plus genuinely older (94,95).
+      server: [94, 95, 96, 97].map((m) => m * MIN),
+      initial: [96, 97, 98].map((m) => m * MIN),
+    });
+    await pageHistoryBack(h.args);
+    const timestamps = h.data.map((b) => b.timestamp);
+    expect(timestamps).toEqual([...new Set(timestamps)].sort((a, b) => a - b));
+    // 96 and 97 were already loaded; only 94 and 95 get prepended.
+    expect(timestamps).toContain(94 * MIN);
+    expect(timestamps).toContain(95 * MIN);
+  });
+
+  it("declares exhausted after maxEmpty consecutive empty windows", async () => {
+    const h = harness({
+      fromTs: 0, // unreachable target so it walks until exhausted
+      toTs: 100 * MIN,
+      server: [], // broker has no older history
+      initial: [100 * MIN],
+    });
+    const res = await pageHistoryBack(h.args);
+    expect(res).toBe("exhausted");
+    expect(h.exhausted.value).toBe(true);
+  });
+
+  // The "jump to a backtest trade" pager (coverBacktestTradeTo) walks 1m history
+  // back to a KNOWN trade timestamp, so real data provably exists at fromTs and
+  // any empty windows en route are interior gaps (a weekend the instrument is
+  // closed), never end-of-history. A window is pageBars*resSec = 5min wide here;
+  // maxEmpty=3 means a 15min+ gap trips false exhaustion. The weekend gap on a
+  // real 1m chart (~49h) dwarfs maxEmpty*window (~33h), so empty-exhaustion quits
+  // at the weekend and never reaches a trade just on the far side of it.
+  it("with the default empty budget, an interior gap wider than maxEmpty falsely exhausts", async () => {
+    // Loaded [100]. Target 70 has real data. Gap at 74..99 (26min > 15min budget).
+    const server = [70, 71, 72, 73].map((m) => m * MIN);
+    const h = harness({
+      fromTs: 70 * MIN,
+      toTs: 100 * MIN,
+      server,
+      initial: [100 * MIN],
+    });
+    const res = await pageHistoryBack(h.args);
+    // Quits at the gap before reaching the (real, present) target — the bug.
+    expect(res).toBe("exhausted");
+    expect(h.data[0].timestamp).toBeGreaterThan(70 * MIN);
+  });
+
+  it("crosses an interior gap to reach a known target when empty-exhaustion is disabled", async () => {
+    const server = [70, 71, 72, 73].map((m) => m * MIN);
+    const h = harness({
+      fromTs: 70 * MIN,
+      toTs: 100 * MIN,
+      server,
+      initial: [100 * MIN],
+      maxEmpty: Infinity, // cover-trade policy: let maxPages be the sole bound
+    });
+    const res = await pageHistoryBack(h.args);
+    expect(res).toBe("reached");
+    // The cursor marched through the empty gap (line 80) and picked up the far bars.
+    expect(h.data[0].timestamp).toBeLessThanOrEqual(70 * MIN);
+    expect(h.exhausted.value).toBe(false);
+  });
+
+  it("aborts without applying when isStale() flips true mid-walk", async () => {
+    let stale = false;
+    const h = harness({
+      fromTs: 0,
+      toTs: 100 * MIN,
+      server: [80, 85, 90, 95].map((m) => m * MIN),
+      initial: [100 * MIN],
+      stale: () => stale,
+    });
+    // Flip stale right after the first fetch resolves.
+    const realFetch = h.args.fetchOlder;
+    h.args.fetchOlder = vi.fn(async (a: number, b: number) => {
+      const r = await realFetch(a, b);
+      stale = true;
+      return r;
+    });
+    const res = await pageHistoryBack(h.args);
+    expect(res).toBe("aborted");
+    // The post-fetch staleness check fires before applyData, so nothing landed.
+    expect(h.applied.length).toBe(0);
+  });
+
+  // The walk applies ONCE, when it settles. Every apply is a full chart re-init
+  // (setBars -> resetData) that snaps the view to the live edge — per-page
+  // applies turned a deep walk into N pages of visible thrashing plus a
+  // quadratic re-serve of the growing array. Accumulating keeps the chart
+  // untouched until the walk finishes, so the follow-up scroll is one jump.
+  it("applies exactly once, with the fully merged data, after a multi-page walk", async () => {
+    // Two page windows' worth of history (page = 5 min here).
+    const server = [88, 89, 90, 91, 92, 93, 94, 95].map((m) => m * MIN);
+    const h = harness({
+      fromTs: 88 * MIN,
+      toTs: 100 * MIN,
+      server,
+      initial: [96, 97, 98, 99, 100].map((m) => m * MIN),
+    });
+    const res = await pageHistoryBack(h.args);
+    expect(res).toBe("reached");
+    expect(h.applied).toHaveLength(1);
+    const timestamps = h.applied[0];
+    expect(timestamps[0]).toBeLessThanOrEqual(88 * MIN);
+    expect(timestamps).toEqual([...new Set(timestamps)].sort((a, b) => a - b));
+  });
+
+  it("applies what it accumulated before declaring exhaustion", async () => {
+    // One real page (95 min), then nothing older — the walk exhausts, but the
+    // page it DID fetch must still land (partial coverage beats none).
+    const h = harness({
+      fromTs: 0,
+      toTs: 100 * MIN,
+      server: [95 * MIN],
+      initial: [96, 100].map((m) => m * MIN),
+    });
+    const res = await pageHistoryBack(h.args);
+    expect(res).toBe("exhausted");
+    expect(h.applied).toHaveLength(1);
+    expect(h.applied[0]).toContain(95 * MIN);
+  });
+
+  it("applies nothing and fires no onCursor when the walk aborts", async () => {
+    let stale = false;
+    const h = harness({
+      fromTs: 0,
+      toTs: 100 * MIN,
+      server: [80, 85, 90, 95].map((m) => m * MIN),
+      initial: [100 * MIN],
+      stale: () => stale,
+    });
+    const realFetch = h.args.fetchOlder;
+    h.args.fetchOlder = vi.fn(async (a: number, b: number) => {
+      const r = await realFetch(a, b);
+      stale = true;
+      return r;
+    });
+    const res = await pageHistoryBack(h.args);
+    expect(res).toBe("aborted");
+    expect(h.applied).toHaveLength(0);
+    // An aborted walk must not advance the shared scroll-back cursor either:
+    // data it fetched was discarded, so a cursor pointing past it would make
+    // the next native scroll-back page fetch beyond a never-applied span and
+    // prepend bars with a permanent hole behind them.
+    expect(h.cursors).toHaveLength(0);
+  });
+
+  it("settles with the oldest APPLIED bar as the cursor", async () => {
+    const server = [88, 89, 90, 91, 92, 93, 94, 95].map((m) => m * MIN);
+    const h = harness({
+      fromTs: 88 * MIN,
+      toTs: 100 * MIN,
+      server,
+      initial: [96, 97, 98, 99, 100].map((m) => m * MIN),
+    });
+    await pageHistoryBack(h.args);
+    expect(h.cursors).toEqual([(88 * MIN) / SEC]);
+  });
+
+  // The walk takes real wall time (sequential fetches); on a live market the
+  // stream keeps appending newer bars to the chart meanwhile. The settle-time
+  // apply must merge against the CURRENT data, not a walk-start snapshot —
+  // otherwise the full re-init silently deletes every bar appended mid-walk.
+  it("keeps bars appended to the dataset during the walk", async () => {
+    const h = harness({
+      fromTs: 90 * MIN,
+      toTs: 100 * MIN,
+      server: [90, 91, 92, 93, 94, 95].map((m) => m * MIN),
+      initial: [96, 97, 98, 99, 100].map((m) => m * MIN),
+    });
+    // Simulate a live tick landing while a page fetch is in flight.
+    const realFetch = h.args.fetchOlder;
+    let appended = false;
+    h.args.fetchOlder = vi.fn(async (a: number, b: number) => {
+      const r = await realFetch(a, b);
+      if (!appended) {
+        appended = true;
+        h.data.push(bar(101 * MIN));
+      }
+      return r;
+    });
+    const res = await pageHistoryBack(h.args);
+    expect(res).toBe("reached");
+    const timestamps = h.data.map((b) => b.timestamp);
+    expect(timestamps).toContain(101 * MIN); // the live append survived
+    expect(timestamps).toEqual([...new Set(timestamps)].sort((a, b) => a - b));
+  });
+
+  it("returns 'aborted' immediately when stale before the first fetch", async () => {
+    const h = harness({
+      fromTs: 0,
+      toTs: 100 * MIN,
+      server: [90 * MIN],
+      initial: [100 * MIN],
+      stale: () => true,
+    });
+    const res = await pageHistoryBack(h.args);
+    expect(res).toBe("aborted");
+    expect(h.args.fetchOlder).not.toHaveBeenCalled();
+  });
+});
+
+// Harness for the interactive scroll-back loader (klinecharts DataLoader answer).
+// Boundary = oldest loaded bar (100 min); the cursor starts there.
+function sbHarness(opts: {
+  server: number[]; // older bar timestamps (ms) the broker can return
+  maxEmpty?: number;
+  stale?: () => boolean;
+  fetchOlder?: ScrollbackLoadArgs<{ timestamp: number }>["fetchOlder"];
+}) {
+  const doneCalls: Array<{ bars: number[]; more: boolean; loadingAtDone: boolean }> = [];
+  const loading = { current: false };
+  const args: ScrollbackLoadArgs<ReturnType<typeof bar>> = {
+    boundary: 100 * MIN,
+    resSec: 60,
+    pageBars: 5, // page window = 5 min
+    maxPageSpanSec: 10_000_000,
+    maxEmpty: opts.maxEmpty ?? 3,
+    cursorSec: { current: (100 * MIN) / SEC },
+    emptyStreak: { current: 0 },
+    exhausted: { current: false },
+    loading,
+    isStale: opts.stale ?? (() => false),
+    fetchOlder:
+      opts.fetchOlder ??
+      (async (fromSec, toSec) =>
+        opts.server.filter((t) => t >= fromSec * SEC && t <= toSec * SEC).map((t) => bar(t))),
+    done: (bars, more) =>
+      doneCalls.push({ bars: bars.map((b) => b.timestamp), more, loadingAtDone: loading.current }),
+  };
+  return { args, doneCalls };
+}
+
+describe("scrollbackLoadOlder", () => {
+  it("answers one page of fresh older bars with more=true", async () => {
+    const h = sbHarness({ server: [96, 97, 98, 99].map((m) => m * MIN) });
+    await scrollbackLoadOlder(h.args);
+    expect(h.doneCalls).toHaveLength(1);
+    expect(h.doneCalls[0].bars).toEqual([96, 97, 98, 99].map((m) => m * MIN));
+    expect(h.doneCalls[0].more).toBe(true);
+  });
+
+  it("frees the loading mutex BEFORE done() so klinecharts' synchronous re-ask can start the next page", async () => {
+    // done() re-enters the loader synchronously in production (adjustVisibleRange
+    // fires the next forward load from inside the callback). If the mutex is
+    // still held there, the chain dies after one page per user gesture.
+    const h = sbHarness({ server: [99 * MIN] });
+    await scrollbackLoadOlder(h.args);
+    expect(h.doneCalls[0].loadingAtDone).toBe(false);
+  });
+
+  it("crosses interior empty gap windows inside ONE load instead of answering empty", async () => {
+    // Gap: nothing in [90,100). Bars exist at 85..89 min, two page windows back.
+    // An empty done() would stall the fill until the next user gesture, so the
+    // walk must continue internally and answer with the far-side bars.
+    const h = sbHarness({ server: [85, 86, 87, 88, 89].map((m) => m * MIN) });
+    await scrollbackLoadOlder(h.args);
+    expect(h.doneCalls).toHaveLength(1);
+    expect(h.doneCalls[0].bars.length).toBeGreaterThan(0);
+    expect(h.doneCalls[0].more).toBe(true);
+    expect(h.args.cursorSec.current).toBeLessThan((90 * MIN) / SEC);
+  });
+
+  it("latches exhaustion (done([], false)) after maxEmpty consecutive empty windows", async () => {
+    const h = sbHarness({ server: [], maxEmpty: 3 });
+    await scrollbackLoadOlder(h.args);
+    expect(h.doneCalls).toHaveLength(1);
+    expect(h.doneCalls[0]).toMatchObject({ bars: [], more: false });
+    expect(h.args.exhausted.current).toBe(true);
+    expect(h.args.loading.current).toBe(false);
+  });
+
+  it("a transient fetch failure answers more=true WITHOUT advancing the cursor or the empty streak", async () => {
+    const h = sbHarness({
+      server: [],
+      fetchOlder: async () => {
+        throw new Error("503");
+      },
+    });
+    const cursorBefore = h.args.cursorSec.current;
+    await scrollbackLoadOlder(h.args);
+    expect(h.doneCalls).toHaveLength(1);
+    expect(h.doneCalls[0]).toMatchObject({ bars: [], more: true });
+    expect(h.args.cursorSec.current).toBe(cursorBefore);
+    expect(h.args.emptyStreak.current).toBe(0);
+    expect(h.args.exhausted.current).toBe(false);
+    expect(h.args.loading.current).toBe(false);
+  });
+
+  it("contains a throwing done() (disposed chart): promise resolves, mutex stays free", async () => {
+    const h = sbHarness({ server: [99 * MIN] });
+    h.args.done = () => {
+      throw new Error("chart disposed");
+    };
+    // Must not reject (a floating rejection would surface as a console error)
+    // and must not touch the mutex after freeing it (a catch-side reset would
+    // stomp a re-entrant page's ownership in production).
+    await expect(scrollbackLoadOlder(h.args)).resolves.toBeUndefined();
+    expect(h.args.loading.current).toBe(false);
+  });
+
+  it("bails with more=true when the series goes stale mid-flight, applying nothing", async () => {
+    let stale = false;
+    const h = sbHarness({
+      server: [99 * MIN],
+      stale: () => stale,
+      fetchOlder: async (fromSec, toSec) => {
+        stale = true;
+        return [99 * MIN].filter((t) => t >= fromSec * SEC && t <= toSec * SEC).map((t) => bar(t));
+      },
+    });
+    await scrollbackLoadOlder(h.args);
+    expect(h.doneCalls).toHaveLength(1);
+    expect(h.doneCalls[0]).toMatchObject({ bars: [], more: true });
+    expect(h.args.loading.current).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// coverHistoryRangeParallel — the jump-to-trade cover (known target, windows
+// computed up front, fetched concurrently, one settle-time apply).
+// ---------------------------------------------------------------------------
+function parallelHarness(opts: {
+  fromTs: number;
+  toTs: number;
+  server: number[]; // bar timestamps (ms) the broker can return
+  initial?: number[]; // bars already loaded (ms), ascending
+  stale?: () => boolean;
+  maxWindows?: number;
+  concurrency?: number;
+  failWindow?: (fromSec: number, toSec: number) => boolean; // throw for matching windows
+}) {
+  const data = (opts.initial ?? []).map((t) => bar(t));
+  const applied: number[][] = [];
+  const cursors: number[] = [];
+  const fetches: [number, number][] = [];
+  const args: CoverRangeParallelArgs<ReturnType<typeof bar>> = {
+    fromTs: opts.fromTs,
+    toTs: opts.toTs,
+    resSec: 60,
+    pageBars: 5,
+    maxWindows: opts.maxWindows ?? 20,
+    concurrency: opts.concurrency ?? 3,
+    isStale: opts.stale ?? (() => false),
+    getData: () => data,
+    fetchOlder: vi.fn(async (fromSec: number, toSec: number) => {
+      fetches.push([fromSec, toSec]);
+      if (opts.failWindow?.(fromSec, toSec)) throw new Error("transient");
+      const fromMs = fromSec * SEC;
+      const toMs = toSec * SEC;
+      return opts.server.filter((t) => t >= fromMs && t <= toMs).map((t) => bar(t));
+    }),
+    applyData: (merged) => {
+      data.length = 0;
+      data.push(...merged);
+      applied.push(merged.map((b) => b.timestamp));
+    },
+    onCursor: (sec) => {
+      cursors.push(sec);
+    },
+  };
+  return { args, data, applied, cursors, fetches };
+}
+
+describe("coverHistoryRangeParallel", () => {
+  it("covers to fromTs with one ascending, deduped apply", async () => {
+    const server = [88, 89, 90, 91, 92, 93, 94, 95, 96, 97].map((m) => m * MIN);
+    const h = parallelHarness({
+      fromTs: 88 * MIN,
+      toTs: 100 * MIN,
+      server,
+      initial: [96, 97, 98, 99, 100].map((m) => m * MIN),
+    });
+    const res = await coverHistoryRangeParallel(h.args);
+    expect(res).toBe("reached");
+    expect(h.applied).toHaveLength(1);
+    const timestamps = h.applied[0];
+    expect(timestamps[0]).toBeLessThanOrEqual(88 * MIN);
+    // Ascending, no duplicates, and the already-loaded 96/97 not re-prepended.
+    expect(timestamps).toEqual([...new Set(timestamps)].sort((a, b) => a - b));
+    expect(timestamps.filter((t) => t === 96 * MIN)).toHaveLength(1);
+    // Cursor points at the oldest applied bar.
+    expect(h.cursors).toEqual([Math.floor((88 * MIN) / 1000)]);
+  });
+
+  it("is a no-op returning 'reached' when already covered", async () => {
+    const h = parallelHarness({
+      fromTs: 96 * MIN,
+      toTs: 100 * MIN,
+      server: [90 * MIN],
+      initial: [96, 100].map((m) => m * MIN),
+    });
+    const res = await coverHistoryRangeParallel(h.args);
+    expect(res).toBe("reached");
+    expect(h.applied).toHaveLength(0);
+    expect(h.fetches).toHaveLength(0);
+  });
+
+  it("crosses interior empty windows (closed market) without stopping", async () => {
+    // Loaded [100]. Real bars only at 70..73; everything between is a gap.
+    const server = [70, 71, 72, 73].map((m) => m * MIN);
+    const h = parallelHarness({
+      fromTs: 70 * MIN,
+      toTs: 100 * MIN,
+      server,
+      initial: [100 * MIN],
+    });
+    const res = await coverHistoryRangeParallel(h.args);
+    expect(res).toBe("reached");
+    expect(h.data[0].timestamp).toBeLessThanOrEqual(70 * MIN);
+  });
+
+  it("a thrown window breaks contiguity: newer windows apply, older ones do not", async () => {
+    // Windows are 5min wide. Fail the window containing 85min; bars older than
+    // the failed window must NOT land (a hole would glue distant bars together).
+    const server = [75, 76, 80, 84, 90, 95].map((m) => m * MIN);
+    const h = parallelHarness({
+      fromTs: 75 * MIN,
+      toTs: 100 * MIN,
+      server,
+      initial: [100 * MIN],
+      failWindow: (fromSec, toSec) => fromSec * SEC <= 85 * MIN && 85 * MIN <= toSec * SEC,
+    });
+    const res = await coverHistoryRangeParallel(h.args);
+    expect(res).toBe("reached"); // settled — the caller re-checks coverage itself
+    const timestamps = h.data.map((b) => b.timestamp);
+    expect(timestamps).toContain(90 * MIN);
+    expect(timestamps).toContain(95 * MIN);
+    expect(timestamps).not.toContain(80 * MIN);
+    expect(timestamps).not.toContain(75 * MIN);
+  });
+
+  it("reports a thrown window, so the caller can tell a failure from a history edge", async () => {
+    // Same truncation as above, but the caller needs to know WHY it fell short:
+    // "the broker has nothing older" and "that fetch timed out" look identical
+    // in the applied bars, and they get opposite advice.
+    const errors: number[] = [];
+    const h = parallelHarness({
+      fromTs: 75 * MIN,
+      toTs: 100 * MIN,
+      server: [75, 80, 90, 95].map((m) => m * MIN),
+      initial: [100 * MIN],
+      failWindow: (fromSec, toSec) => fromSec * SEC <= 85 * MIN && 85 * MIN <= toSec * SEC,
+    });
+    await coverHistoryRangeParallel({ ...h.args, onWindowError: () => errors.push(1) });
+    expect(errors).toHaveLength(1);
+  });
+
+  it("does not report an error for a genuinely empty window", async () => {
+    const errors: number[] = [];
+    const h = parallelHarness({
+      fromTs: 70 * MIN,
+      toTs: 100 * MIN,
+      server: [70, 71, 72, 73].map((m) => m * MIN),
+      initial: [100 * MIN],
+    });
+    await coverHistoryRangeParallel({ ...h.args, onWindowError: () => errors.push(1) });
+    expect(errors).toHaveLength(0);
+  });
+
+  it("aborts without applying when isStale() flips true mid-run", async () => {
+    let stale = false;
+    const h = parallelHarness({
+      fromTs: 80 * MIN,
+      toTs: 100 * MIN,
+      server: [80, 85, 90, 95].map((m) => m * MIN),
+      initial: [100 * MIN],
+      stale: () => stale,
+    });
+    const realFetch = h.args.fetchOlder;
+    h.args.fetchOlder = vi.fn(async (a: number, b: number) => {
+      const r = await realFetch(a, b);
+      stale = true;
+      return r;
+    });
+    const res = await coverHistoryRangeParallel(h.args);
+    expect(res).toBe("aborted");
+    expect(h.applied).toHaveLength(0);
+    expect(h.cursors).toHaveLength(0);
+  });
+
+  it("caps the window count at maxWindows and still applies the contiguous newest span", async () => {
+    // 2 windows of 5min each reach back to ~90min; the target at 70min is past
+    // the budget. The fetched newest span still lands (partial beats none).
+    const server = [70, 91, 92, 95].map((m) => m * MIN);
+    const h = parallelHarness({
+      fromTs: 70 * MIN,
+      toTs: 100 * MIN,
+      server,
+      initial: [100 * MIN],
+      maxWindows: 2,
+    });
+    const res = await coverHistoryRangeParallel(h.args);
+    expect(res).toBe("reached");
+    const timestamps = h.data.map((b) => b.timestamp);
+    expect(timestamps).toContain(95 * MIN);
+    expect(timestamps).toContain(91 * MIN);
+    expect(timestamps).not.toContain(70 * MIN); // past the cap — caller shows the notice
+    expect(h.data[0].timestamp).toBeGreaterThan(70 * MIN);
+  });
+});
+
+describe("fetchSpanParallel", () => {
+  const spanArgs = (
+    fetchWindow: (f: number, t: number) => Promise<{ timestamp: number }[]>,
+  ) => ({
+    fromMs: 0,
+    toMs: 30_000,
+    resSec: 1,
+    pageBars: 10,
+    maxWindows: 10,
+    concurrency: 3,
+    fetchWindow,
+  });
+
+  it("fetches every window and returns ascending deduped bars", async () => {
+    const calls: Array<[number, number]> = [];
+    const r = await fetchSpanParallel(
+      spanArgs(async (f, t) => {
+        calls.push([f, t]);
+        const out: { timestamp: number }[] = [];
+        for (let s = f; s <= t; s++) out.push(bar(s * 1000));
+        return out;
+      }),
+    );
+    expect(r.failed).toBe(false);
+    expect(calls.length).toBeGreaterThan(1);
+    for (let i = 1; i < r.bars.length; i++)
+      expect(r.bars[i].timestamp).toBeGreaterThan(r.bars[i - 1].timestamp);
+    expect(r.bars[0].timestamp).toBe(0);
+    expect(r.bars[r.bars.length - 1].timestamp).toBe(30_000);
+  });
+
+  it("a thrown window keeps only the contiguous newest-side prefix and flags failed", async () => {
+    const r = await fetchSpanParallel(
+      spanArgs(async (f, t) => {
+        if (f < 10) throw new Error("boom"); // the oldest window fails
+        const out: { timestamp: number }[] = [];
+        for (let s = f; s <= t; s++) out.push(bar(s * 1000));
+        return out;
+      }),
+    );
+    expect(r.failed).toBe(true);
+    expect(r.bars.length).toBeGreaterThan(0);
+    expect(r.bars[0].timestamp).toBeGreaterThanOrEqual(10_000);
+  });
+
+  it("empty windows do not break contiguity or flag failure", async () => {
+    const r = await fetchSpanParallel(
+      spanArgs(async (f, t) => {
+        if (f < 10) return []; // history edge: nothing older
+        const out: { timestamp: number }[] = [];
+        for (let s = f; s <= t; s++) out.push(bar(s * 1000));
+        return out;
+      }),
+    );
+    expect(r.failed).toBe(false);
+    expect(r.bars[0].timestamp).toBeGreaterThanOrEqual(10_000);
+  });
+
+  it("an empty span (toMs <= fromMs) returns nothing without fetching", async () => {
+    const calls: Array<[number, number]> = [];
+    const r = await fetchSpanParallel({
+      fromMs: 30_000,
+      toMs: 30_000,
+      resSec: 1,
+      pageBars: 10,
+      maxWindows: 10,
+      concurrency: 3,
+      fetchWindow: async (f, t) => {
+        calls.push([f, t]);
+        return [];
+      },
+    });
+    expect(r.bars).toEqual([]);
+    expect(r.failed).toBe(false);
+    expect(calls).toEqual([]);
+  });
+});

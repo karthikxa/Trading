@@ -1,0 +1,1145 @@
+// Typed client for the Chartkar backend.
+
+import type { Costs, SlippageModel, RiskConfig, ScalingConfig, RecurrenceMask } from "./lib/backtestConfig";
+import { API_BASE as BASE, apiFetch, errorDetail } from "./lib/http";
+import type { EvaluateRequest, EvaluateResult } from "./lib/liveTypes";
+import type { ExprInstancePayload } from "./lib/exprInstances";
+
+export interface Candle {
+  time: number; // unix seconds (UTC)
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+// One passing rule's comparison at the signal bar (mirrors the backend TermDTO).
+// `left`/`right` are human labels WITHOUT the timeframe; `leftTf`/`rightTf` are the
+// operand's effective Resolution string (null for a timeframe-less operand), which
+// the popover prettifies to `@15m`.
+export interface Term {
+  left: string;
+  lval: number | null;
+  op: string;
+  right: string;
+  rval: number | null;
+  leftTf: string | null;
+  rightTf: string | null;
+}
+
+export interface Marker {
+  time: number;
+  side: "buy" | "sell";
+  price: number;
+  reason: string;
+  leg: "long" | "short";
+  // Signal-candle provenance (rule-based fills only). `signal_time` is the bar the
+  // signal fired on (unix seconds); `terms` the passing rules' captured values.
+  // Absent/empty for a mechanical stop/target/session/range-end fill.
+  signal_time?: number | null;
+  terms?: Term[];
+  combine?: string | null; // firing group's "AND"/"OR" (how to read the passing-only terms)
+}
+
+// A time×price rectangle the strategy attached to the entry (the structure that
+// justified the trade, e.g. a broken consolidation range). Times are unix
+// seconds (bar times); shaded on the chart when the trade is highlighted.
+export interface TradeZone {
+  from_time: number;
+  to_time: number;
+  top: number;
+  bottom: number;
+  label: string;
+}
+
+interface Trade {
+  side: string;
+  quantity: number;
+  entry_time: number;
+  entry_price: number;
+  exit_time: number;
+  exit_price: number;
+  pnl: number;
+  // Overnight financing allocated to this trade, engine convention positive =
+  // cost (paid), negative = credit. Zero/absent when financing is off or the
+  // trade held no overnight. The panel negates it for display (P&L impact).
+  financing?: number;
+  leg: "long" | "short";
+  reason: string;
+  stop_initial: number | null;
+  stop_final: number | null;
+  target: number | null;
+  // Canonical sub-bar exit time (epoch seconds) for an intra-bar stop/target,
+  // resolved server-side. Null/absent -> use exit_time. Display only.
+  exit_time_exact?: number | null;
+  mae: number;
+  mfe: number;
+  mae_r: number | null;
+  mfe_r: number | null;
+  context: Record<string, string | number | null> | null;
+  whatif?: Record<string, unknown> | null;
+  // Chart zones from the opening signal; absent/empty for strategies without any.
+  zones?: TradeZone[];
+}
+
+export interface EquityPoint {
+  time: number;
+  value: number;
+}
+
+// Trade-list metrics for one direction (long or short). Mirrors the backend's
+// leg_metrics() dict; powers the LONG/SHORT rows of the TRADES panel table.
+export interface LegMetrics {
+  n_trades: number;
+  win_rate: number;
+  net_pnl: number;
+  profit_factor: number | null;
+  avg_win: number;
+  avg_loss: number;
+  avg_win_loss_ratio: number | null;
+  largest_win: number;
+  largest_loss: number;
+  max_consec_losses: number;
+  expectancy: number;
+  max_consec_wins: number;
+  avg_duration_bars: number;
+}
+
+export interface AnalysisHist {
+  edges: number[];
+  counts: number[];
+}
+
+export interface AnalysisRow {
+  bucket: string;
+  n: number;
+  win_rate: number;
+  expectancy: number;
+  net_pnl: number;
+  low_sample: boolean;
+}
+
+export interface WhatifRuleExitRow {
+  reason: string;
+  n: number;
+  would_have_won: number;
+  would_have_lost: number;
+  undecided: number;
+  net_delta_r: number;
+}
+
+export interface BacktestWhatif {
+  rule_exit: {
+    by_reason: WhatifRuleExitRow[];
+    totals: Omit<WhatifRuleExitRow, "reason">;
+  } | null;
+  no_target: {
+    n: number;
+    would_have_stopped: number;
+    survived: number;
+    net_saved_r: number;
+  } | null;
+  stop_curve:
+    | { frac: number; winners_killed: number; losers_cheapened: number; net_delta_r: number }[]
+    | null;
+  target_curve: { target_r: number; n_reached: number; pct_reached: number }[] | null;
+  fill_delay: { n: number; avg_r: number; total_r: number } | null;
+  limit_entry: {
+    n: number;
+    fill_rate: number;
+    filled_net_delta_r: number;
+    undecided: number;
+    unfilled_foregone_r: number;
+    unfilled_winners: number;
+    net_verdict_r: number;
+  } | null;
+  breakeven_curve:
+    | {
+        frac: number;
+        n_armed: number;
+        n_fired: number;
+        losers_rescued: number;
+        winners_cut: number;
+        net_delta_r: number;
+      }[]
+    | null;
+}
+
+export interface BarDynamicsMetrics {
+  bars_held: number | null;
+  bars_in_profit: number | null;
+  bars_in_loss: number | null;
+  body_through: number | null;
+  wick_from_profit: number | null;
+  wick_from_loss: number | null;
+  longest_profit_streak: number | null;
+  longest_loss_streak: number | null;
+  bars_to_mfe: number | null;
+  bars_to_mae: number | null;
+  entry_crossings: number | null;
+}
+
+export interface LegAnalysis {
+  n_trades: number;
+  sl: {
+    winners_mae_hist: AnalysisHist;
+    losers_mae_hist: AnalysisHist;
+    winners_near_stop_pct: number | null;
+    n_with_r: number;
+  };
+  tp: {
+    avg_winner_mfe_r: number | null;
+    avg_winner_realized_r: number | null;
+    median_left_on_table_r: number | null;
+    pct_nontarget_exits_reached_target: number | null;
+  };
+  exit_reasons: AnalysisRow[];
+  r_hist: AnalysisHist;
+  context: Record<string, AnalysisRow[]>;
+  hour_stats?: { hour: number; n: number; wins: number; sum_pnl: number }[];
+  month_stats?: AnalysisRow[];
+  bar_dynamics?: {
+    n_winners: number;
+    n_losers: number;
+    n_total: number;
+    winners: BarDynamicsMetrics;
+    losers: BarDynamicsMetrics;
+    total: BarDynamicsMetrics;
+  };
+  // Winner/loser trade counts bucketed by hold duration. bar_width is the bars
+  // per bucket; bucket i spans held-bar counts [i*bar_width, (i+1)*bar_width).
+  // Null for runs without bar stats.
+  duration_hist?: {
+    bar_width: number;
+    winners: number[];
+    losers: number[];
+  } | null;
+  whatif?: BacktestWhatif;
+}
+
+export interface BacktestAnalysis extends LegAnalysis {
+  by_leg?: { long: LegAnalysis; short: LegAnalysis };
+  // Rolling per-trade expectancy over an adaptive window, ordered by entry
+  // time. Null when the run has too few trades to be meaningful.
+  rolling?: { window: number; points: { t: number; expectancy: number }[] } | null;
+}
+
+// --- baseline comparison -----------------------------------------------------
+// Reference strategies the backend re-runs over the same window/costs so a
+// result can be read against them:
+// "null" replaces entries with 1==1, all other settings identical (always in,
+// same structure); "hold" opens one position from window start to end, no
+// stops, exits or session windows. Both run ONCE PER ACTIVE SIDE
+// (null_long, hold_short, ...): a both-sides always-in run is a long+short
+// hedge worth exactly minus the costs, useless as a market reference.
+// "reversed" is the mirror-image strategy (every long decision taken short and
+// vice versa, each side's risk/exits riding along) — if it beats the real run,
+// the signal is anti-predictive.
+// Each blob is the full compute_metrics payload MERGED with
+// summary(), so it carries net_pnl /
+// n_trades / win_rate alongside return_pct / sharpe / max_drawdown_pct. Any
+// slot is null when that baseline could not be synthesized for the run (or
+// that side never ran).
+// "oracle_entries" reuses the run's own entry times with direction and exit
+// corrected by hindsight (exit never later than the real one), replayed
+// through the same engine and cost model. A single run, not a per-side pair.
+export type BaselineKind = "null" | "hold" | "reversed" | "oracle_entries";
+/** What a single run asks for when the panel's Baselines toggle is on (all
+ * kinds; the toggle is off by default, and the request then omits the field
+ * entirely); the backend expands null/hold into per-side runs. */
+export const BASELINE_KINDS: BaselineKind[] = [
+  "null", "hold", "reversed", "oracle_entries",
+];
+/** WFO folds keep the classic kinds: the WFO baseline worker has no oracle
+ * planner (per-fold plans are follow-up work), and an unknown kind there
+ * degrades to an error row. */
+export const WFO_BASELINE_KINDS: BaselineKind[] = ["null", "hold", "reversed"];
+export type BaselineMetrics = Record<string, number | null>;
+export interface Baselines {
+  null_long?: BaselineMetrics | null;
+  null_short?: BaselineMetrics | null;
+  hold_long?: BaselineMetrics | null;
+  hold_short?: BaselineMetrics | null;
+  reversed?: BaselineMetrics | null;
+  oracle_entries?: BaselineMetrics | null;
+}
+
+export interface BacktestResult {
+  epic: string;
+  resolution: string;
+  candles: Candle[];
+  markers: Marker[];
+  trades: Trade[];
+  equity: EquityPoint[];
+  summary: {
+    net_pnl: number;
+    n_trades: number;
+    win_rate: number;
+    max_drawdown: number;
+  };
+  metrics: {
+    return_pct: number;
+    profit_factor: number | null;
+    expectancy: number;
+    avg_win: number;
+    avg_loss: number;
+    avg_win_loss_ratio: number | null;
+    largest_win: number;
+    largest_loss: number;
+    max_drawdown_pct: number;
+    avg_duration_bars: number;
+    max_consec_wins: number;
+    max_consec_losses: number;
+    sharpe?: number | null;
+    sortino?: number | null;
+    calmar?: number | null;
+    cagr_pct?: number | null;
+    sqn?: number | null;
+    exposure_pct?: number | null;
+    // Total overnight financing across the run, engine convention positive =
+    // cost (paid), negative = credit. Absent on pre-financing cached payloads;
+    // already folded into net P&L. The panel negates it for display.
+    financing_total?: number;
+  };
+  // Per-direction trade-list breakdown for the TRADES panel table. Absent on
+  // older cached payloads; the table zeroes the LONG/SHORT rows when missing.
+  by_leg?: { long: LegMetrics; short: LegMetrics };
+  // True when a coded strategy's own ctx.stop/target calls overrode the panel's
+  // longRisk/shortRisk bracket for this run (Strategy tab transparency).
+  fileBracketsOverridden?: boolean;
+  // Strategy-analysis payload (SL/TP efficiency, exit reasons, R distribution,
+  // context breakdowns), all computed server-side. Absent on older cached runs.
+  run_id?: string | null;
+  analysis?: BacktestAnalysis | null;
+  // Cost-sensitivity summary (single runs that opted in). net_pnl is the run's
+  // net P&L at each cost multiple; breakeven_multiple is the interpolated
+  // multiple where net crosses zero (null when still profitable at 3x).
+  cost_sensitivity?: {
+    multiples: number[];
+    net_pnl: number[];
+    breakeven_multiple: number | null;
+  } | null;
+  // Reference baselines over the same window/costs. Absent on cached payloads
+  // predating the feature and on surfaces that don't request them (see
+  // ExprBacktestRequest.baselines).
+  baselines?: Baselines | null;
+  // Strategy-declared viz regions (a coded module's chart_regions hook — e.g.
+  // BB Regime's squeeze windows, resolved or not), run-scoped rather than
+  // per-trade. Absent on older cached payloads and non-declaring strategies.
+  regions?: TradeZone[];
+}
+
+export interface BacktestRequest {
+  epic: string;
+  resolution: string;
+  candles: Candle[];
+  series: Record<string, Array<number | null>>;
+  longEnabled: boolean; // per-side master switch (a disabled side never trades)
+  shortEnabled: boolean;
+  longRisk?: RiskConfig; // optional price-level exits (stop/target/trailing)
+  shortRisk?: RiskConfig;
+  longScaling?: ScalingConfig;
+  shortScaling?: ScalingConfig;
+  costs: Costs;
+  tradeFromTime: number; // unix seconds — the window's start (D6)
+  mask?: RecurrenceMask; // recurrence/activity mask (resolved: no `session` field)
+  codedStrategy?: string; // coded strategy filename — when set, rule groups are ignored (Strategy tab)
+  // Broker/price side for backend-side HTF fetches (coded strategies' tf= calls).
+  broker?: string;
+  priceSide?: string;
+  codedParams?: ParamValues; // panel-tuned ctx.param() overrides for `codedStrategy`
+  costSensitivity?: boolean; // opt into the 0x/2x/3x cost re-runs (cost_sensitivity on the result)
+  // Coded runs send panel exits as expressions here (parallel to the structured
+  // longExit/shortExit, which coded no longer reads).
+  exprLongExit?: ExprRow[];
+  exprShortExit?: ExprRow[];
+  // How those exit rows combine — the panel's per-group AND/OR switch. Omitted
+  // means AND (the backend's default), so a preset predating the field runs as
+  // it always did.
+  exprLongExitCombine?: "AND" | "OR";
+  exprShortExitCombine?: "AND" | "OR";
+  // Chart-indicator panes those expression exits reference (see the same field on
+  // ExprBacktestRequest for the shape and why the rule can't carry the settings).
+  indicators?: Record<string, ExprInstancePayload>;
+  // Opt into the reference baselines on the result (BacktestResult.baselines).
+  // Single runs only, exactly as on ExprBacktestRequest: sweep and walk-forward
+  // submissions share this same body and must not carry it.
+  baselines?: BaselineKind[] | null;
+  progressId?: string; // opt into the live-progress side-channel (see fetchBacktestProgress)
+}
+
+// --- expression backtest surface (/api/expr/backtest) ------------------------
+// Task 13 Stage A: the coexisting expression-native run. Each rule group is a
+// list of raw expression strings the backend parses/compiles; the structured
+// BacktestRequest above still serves coded runs and sweeps/wfo during cutover.
+export interface ExprRow {
+  expr: string;
+  enabled: boolean;
+}
+
+export interface ExprBacktestRequest {
+  epic: string;
+  resolution: string;
+  candles: Candle[];
+  htfCandles?: Record<string, Candle[]>;
+  // @tf rows: the backend fetches the referenced higher-timeframe candles when
+  // htfCandles is absent — over THIS broker/side so they match the shipped base
+  // candles' source (defaults "capital"/"mid" backend-side; see baseReq's note).
+  broker?: string;
+  priceSide?: string;
+  longEntry: ExprRow[];
+  longExit: ExprRow[];
+  shortEntry: ExprRow[];
+  shortExit: ExprRow[];
+  // Per-group AND/OR (the section-header switch): whether every row in the group
+  // must be true or just one. Omitted = AND, matching the backend's default.
+  longEntryCombine?: "AND" | "OR";
+  longExitCombine?: "AND" | "OR";
+  shortEntryCombine?: "AND" | "OR";
+  shortExitCombine?: "AND" | "OR";
+  longEnabled: boolean;
+  shortEnabled: boolean;
+  longRisk?: RiskConfig;
+  shortRisk?: RiskConfig;
+  longScaling?: ScalingConfig;
+  shortScaling?: ScalingConfig;
+  costs: Costs;
+  tradeFromTime: number;
+  mask?: RecurrenceMask;
+  // The chart-indicator panes the rows reference, keyed by instance id. A rule
+  // names an instance's OUTPUT ("SLOPE.9") and restates none of its
+  // settings, so this map is how the backend learns them — and it must be the
+  // pane's LIVE config, since the run window routinely exceeds the loaded bars.
+  // Shared by /api/expr/backtest, /api/expr/sweep/jobs and
+  // /api/expr/walkforward/jobs, which all post this body.
+  indicators?: Record<string, ExprInstancePayload>;
+  // Parameter/literal sweep body: mirrors the structured submitSweepJob body
+  // ({ combos, windows }). Set when submitting POST /api/expr/sweep/jobs.
+  sweep?: {
+    combos: Array<Record<string, number | boolean | string>>;
+    windows?: number[] | null;
+  };
+  // Opt into the reference baselines on the result (BacktestResult.baselines).
+  // Single runs only: sweep/walk-forward submissions share this same body and
+  // must not carry it (the sweep endpoint ignores it).
+  baselines?: BaselineKind[] | null;
+  progressId?: string; // opt into the live-progress side-channel (see fetchBacktestProgress)
+}
+
+export async function runExprBacktest(req: ExprBacktestRequest, signal?: AbortSignal): Promise<BacktestResult> {
+  const res = await apiFetch(`${BASE}/api/expr/backtest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+    signal,
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `request failed (${res.status})`));
+  return res.json();
+}
+
+export type ClosenessNorm = {
+  basis: "volatility" | "atr";
+  width: number;
+  window: number;
+  atrLength: number;
+};
+export type ClosenessAgg = "max" | "avg" | "last";
+export interface ClosenessRequest {
+  broker: string;
+  epic: string;
+  priceSide: string;
+  rows: string[];
+  combine: "AND" | "OR";
+  baseResolution: string;
+  displayResolution: string;
+  fromTime: number;
+  toTime: number;
+  norm: ClosenessNorm;
+  agg: ClosenessAgg;
+  // Same instance map as ExprBacktestRequest: the heatmap evaluates the same
+  // rows, so a row referencing a chart pane needs that pane's settings here too.
+  indicators?: Record<string, ExprInstancePayload>;
+}
+
+export async function fetchClosenessHeatmap(
+  req: ClosenessRequest,
+): Promise<{ times: number[]; values: (number | null)[] }> {
+  const res = await apiFetch(`${BASE}/api/expr/closeness`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `closeness request failed (${res.status})`));
+  return res.json();
+}
+
+export async function runBacktest(req: BacktestRequest, signal?: AbortSignal): Promise<BacktestResult> {
+  // Temporary phase timing (perf investigation): split serialize / backend / parse.
+  const t0 = performance.now();
+  const body = JSON.stringify(req);
+  const t1 = performance.now();
+  const res = await apiFetch(`${BASE}/api/backtest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+    signal,
+  });
+  const t2 = performance.now();
+  if (!res.ok) throw new Error(await errorDetail(res, `request failed (${res.status})`));
+  const json = await res.json();
+  const t3 = performance.now();
+  console.info(
+    `[backtest perf] request: serialize ${(t1 - t0).toFixed(0)}ms (${(body.length / 1048576).toFixed(2)} MB), ` +
+      `backend+network ${(t2 - t1).toFixed(0)}ms, parse ${(t3 - t2).toFixed(0)}ms`,
+  );
+  return json;
+}
+
+// --- per-instrument cost profiles --------------------------------------------
+// Broker-prefilled (spread only), user-editable spread/slippage/financing tied to
+// an epic. The Costs tab prefetches this once per epic, writes the values into the
+// run config, and mirrors edits back with putCostProfile. `source` says where the
+// current values came from; `updatedAt` is epoch SECONDS of the last write (0 when
+// never set).
+export interface CostProfile {
+  epic: string;
+  spread: number;
+  slippage: SlippageModel;
+  finLongDailyPct: number;
+  finShortDailyPct: number;
+  source: "broker" | "manual";
+  updatedAt: number;
+}
+
+// Fetch the stored profile, prefilling from the broker on first read for the epic.
+export async function getCostProfile(epic: string, broker: string): Promise<CostProfile> {
+  const res = await apiFetch(`${BASE}/api/costs/${encodeURIComponent(epic)}?broker=${encodeURIComponent(broker)}`);
+  if (!res.ok) throw new Error(await errorDetail(res, `cost profile failed (${res.status})`));
+  return res.json();
+}
+
+// Partially patch the stored profile (only the fields present are written); the
+// server marks the result source "manual" and returns the merged profile.
+export async function putCostProfile(epic: string, patch: Partial<CostProfile>): Promise<CostProfile> {
+  const res = await apiFetch(`${BASE}/api/costs/${encodeURIComponent(epic)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `cost profile save failed (${res.status})`));
+  return res.json();
+}
+
+// Re-pull the spread from the broker, overwriting the stored profile; returns
+// the previous and new profiles so the caller can show what changed.
+export async function refetchCostProfile(
+  epic: string,
+  broker: string,
+): Promise<{ old: CostProfile | null; new: CostProfile }> {
+  const res = await apiFetch(
+    `${BASE}/api/costs/${encodeURIComponent(epic)}/refetch?broker=${encodeURIComponent(broker)}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(await errorDetail(res, `cost profile refetch failed (${res.status})`));
+  return res.json();
+}
+
+export async function evaluateStrategy(req: EvaluateRequest): Promise<EvaluateResult> {
+  const res = await apiFetch(`${BASE}/api/strategy/evaluate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `evaluate failed (${res.status})`));
+  return res.json();
+}
+
+// --- coded strategies (backend/strategies/*.py) ------------------------------
+
+// A coded strategy's ctx.param()-declared tunable, as exposed by the panel
+// (mirrors the backend ParamSpecDTO). min/max/step/options/help are null when
+// not applicable to the param's type.
+export interface ParamSpec {
+  name: string;
+  label: string;
+  type: "int" | "float" | "bool" | "choice";
+  default: number | boolean | string;
+  min: number | null;
+  max: number | null;
+  step: number | null;
+  options: string[] | null;
+  help: string | null;
+}
+
+export type ParamValues = Record<string, number | boolean | string>;
+
+// A chart indicator the UI keeps in sync with a coded strategy's params:
+// each calc_params entry names a strategy param whose value feeds the
+// indicator, in the indicator's own calcParams order.
+export interface ChartOverlaySpec {
+  indicator: string;
+  calc_params: string[];
+}
+
+export interface StrategyInfo {
+  filename: string;
+  name: string;
+  description: string;
+  hedged: boolean;
+  error: string | null;
+  params: ParamSpec[];
+  chart_overlays?: ChartOverlaySpec[];
+}
+
+export async function fetchStrategies(): Promise<StrategyInfo[]> {
+  const res = await apiFetch(`${BASE}/api/strategies`);
+  if (!res.ok) throw new Error(await errorDetail(res, `strategies failed (${res.status})`));
+  return res.json();
+}
+
+export async function fetchStrategySource(filename: string): Promise<string> {
+  const res = await apiFetch(`${BASE}/api/strategies/${encodeURIComponent(filename)}/source`);
+  if (!res.ok) throw new Error(await errorDetail(res, `source failed (${res.status})`));
+  const body = await res.json();
+  return body.source;
+}
+
+// --- param sweeps -------------------------------------------------------------
+
+// Type-only import (erased at compile time, so no runtime cycle with lib/sweep).
+import type { SweepAxis } from "./lib/sweep";
+
+export interface SweepRow {
+  combo: Record<string, number | boolean | string>;
+  metrics: {
+    net_pnl: number;
+    n_trades: number;
+    win_rate: number;
+    max_drawdown: number;
+    profit_factor: number | null;
+    avg_win_loss_ratio: number | null;
+    return_pct: number;
+    sharpe?: number | null;
+    sqn?: number | null;
+    // Skew and raw kurtosis (normal = 3) of the trade P&L list, the
+    // non-normality inputs to the deflated Sharpe; null under 2 trades or
+    // zero variance, absent on old cached rows.
+    trade_skew?: number | null;
+    trade_kurtosis?: number | null;
+    // Injected client-side by withPlateau (lib/sweepPlateau.ts); never sent by
+    // the backend. Null when the sweep has no numeric range axes.
+    plateau_score?: number | null;
+    // Injected client-side by withDsr (lib/deflatedSharpe.ts); never sent by
+    // the backend. Null when sqn or the trade moments are missing.
+    dsr?: number | null;
+    // Sub-window robustness aggregates: present only when the sweep ran with
+    // windows and the combo does not patch its own period.
+    worst_window_pnl?: number;
+    median_window_pnl?: number;
+    pct_windows_profitable?: number;
+    mean_window_pnl_minus_std?: number;
+  } | null;
+  // Per-window slice of this combo's run (entry-time attribution); null when
+  // windows were not requested or the combo patches its own period.
+  windows: { from: number; to: number; pnl: number; trades: number }[] | null;
+  error: string | null;
+}
+
+// Where the sweep runs: "local" is the backend process serving the UI;
+// "remote" tags the request so the backend forwards it to remote compute.
+export type SweepTarget = "local" | "remote";
+
+// One poll of a running sweep job. `rows` are the SweepRow-shaped results the
+// backend has produced past the requested cursor (completion order); `done` is
+// the cumulative count so far, `total` the combo count. `running` false means
+// the job finished: check `cancelled`/`error` for how.
+export interface SweepJobStatus {
+  rows: SweepRow[];
+  done: number;
+  total: number;
+  running: boolean;
+  cancelled: boolean;
+  error: string | null;
+  etaSeconds: number | null;
+}
+
+const sweepJobsBase = (target: SweepTarget) =>
+  `${BASE}/api/backtest/sweep/jobs${target === "remote" ? "?target=remote" : ""}`;
+
+// Submit a whole sweep as one job; returns its id and combo total. The backend
+// runs it asynchronously: poll with pollSweepJob.
+export async function submitSweepJob(
+  req: BacktestRequest,
+  combos: Array<Record<string, number | boolean | string>>,
+  // Sub-window robustness bounds (epoch seconds, ascending) or undefined.
+  windows: number[] | undefined,
+  target: SweepTarget,
+): Promise<{ jobId: string; total: number }> {
+  const res = await apiFetch(sweepJobsBase(target), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...req, sweep: { combos, windows } }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `sweep submit failed (${res.status})`));
+  return res.json();
+}
+
+// Submit an EXPRESSION sweep as one job to the expr route; polls via the SAME
+// GET /api/backtest/sweep/jobs/{id} (shared JOBS store). Local target only.
+export async function submitExprSweepJob(
+  req: ExprBacktestRequest,
+  combos: Array<Record<string, number | boolean | string>>,
+  windows: number[] | undefined,
+): Promise<{ jobId: string; total: number }> {
+  const res = await apiFetch(`${BASE}/api/expr/sweep/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...req, sweep: { combos, windows } }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `expr sweep submit failed (${res.status})`));
+  return res.json();
+}
+
+// Fetch a job's progress since `cursor` (the count of rows already consumed).
+export async function pollSweepJob(
+  jobId: string,
+  cursor: number,
+  target: SweepTarget,
+): Promise<SweepJobStatus> {
+  const res = await apiFetch(
+    `${BASE}/api/backtest/sweep/jobs/${jobId}?cursor=${cursor}${target === "remote" ? "&target=remote" : ""}`,
+  );
+  if (!res.ok) throw new Error(await errorDetail(res, `sweep poll failed (${res.status})`));
+  return res.json();
+}
+
+// Best-effort cancel of an in-flight single backtest (structured or expr),
+// keyed by the run's progressId. The engine stops at its next progress beat
+// and the POST /api/backtest returns 499. A 404 means the run already
+// finished (its progress entry is cleared in a finally) — not an error.
+export async function cancelBacktestRun(progressId: string): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/backtest/cancel/${progressId}`, { method: "POST" });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(await errorDetail(res, `backtest cancel failed (${res.status})`));
+  }
+}
+
+// Ask the backend to stop a running job (best effort).
+export async function cancelSweepJob(jobId: string, target: SweepTarget): Promise<void> {
+  const res = await apiFetch(
+    `${BASE}/api/backtest/sweep/jobs/${jobId}/cancel${target === "remote" ? "?target=remote" : ""}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(await errorDetail(res, `sweep cancel failed (${res.status})`));
+}
+
+// Whether remote compute is configured server-side. The endpoint may not exist
+// yet; any fetch error or non-ok response reads as "not configured", which is
+// the safe default the UI falls back to.
+export interface ComputeStatus {
+  remoteConfigured: boolean;
+}
+
+export async function computeStatus(): Promise<ComputeStatus> {
+  try {
+    const res = await apiFetch(`${BASE}/api/compute/status`);
+    if (!res.ok) return { remoteConfigured: false };
+    return await res.json();
+  } catch {
+    return { remoteConfigured: false };
+  }
+}
+
+// Managed-compute host lifecycle (EC2-era installs only). The host reports one of
+// four states; `detail` carries a human-readable note (e.g. an AWS error) or null.
+export type ComputeHostState = "unconfigured" | "stopped" | "booting" | "ready";
+
+export async function computeHostState(): Promise<{
+  state: ComputeHostState;
+  detail: string | null;
+  activeJobs: number;
+}> {
+  const res = await apiFetch(`${BASE}/api/compute/host`);
+  if (!res.ok) throw new Error(`host state: ${res.status}`);
+  return res.json();
+}
+
+// Boot the host. AWS/lifecycle errors surface as HTTP 502 with a `detail` body;
+// unwrap that into the thrown Error so the caller can toast it verbatim.
+export async function startComputeHost(): Promise<{ state: ComputeHostState }> {
+  const res = await apiFetch(`${BASE}/api/compute/host/start`, { method: "POST" });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail ?? `start: ${res.status}`);
+  return res.json();
+}
+
+// Stop the host (manual toolbar button). Same 502-detail unwrap as start.
+export async function stopComputeHost(): Promise<{ state: ComputeHostState }> {
+  const res = await apiFetch(`${BASE}/api/compute/host/stop`, { method: "POST" });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail ?? `stop: ${res.status}`);
+  return res.json();
+}
+
+// --- MetaApi (MT5) deploy toggle ------------------------------------------------
+// Undeployed MetaApi accounts don't bill; the account record survives and a
+// redeploy takes ~1-2 minutes. "unconfigured" (no MetaApi env vars) hides the pill.
+export type Mt5DeployState = "unconfigured" | "off" | "turning-on" | "turning-off" | "on";
+
+export async function mt5DeployState(): Promise<{
+  state: Mt5DeployState;
+  detail: string | null;
+  idle_seconds_remaining: number | null;
+}> {
+  const res = await apiFetch(`${BASE}/api/mt5/deploy-state`);
+  if (!res.ok) throw new Error(`mt5 deploy state: ${res.status}`);
+  return res.json();
+}
+
+// Deploy (turn on). MetaApi errors surface as HTTP 502 with a `detail` body;
+// unwrap that into the thrown Error so the caller can toast it verbatim.
+export async function deployMt5(): Promise<{ state: Mt5DeployState }> {
+  const res = await apiFetch(`${BASE}/api/mt5/deploy`, { method: "POST" });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail ?? `deploy: ${res.status}`);
+  return res.json();
+}
+
+// Undeploy (turn off / pause billing). Same 502-detail unwrap as deploy.
+export async function undeployMt5(): Promise<{ state: Mt5DeployState }> {
+  const res = await apiFetch(`${BASE}/api/mt5/undeploy`, { method: "POST" });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail ?? `undeploy: ${res.status}`);
+  return res.json();
+}
+
+// --- sweep archive ------------------------------------------------------------
+// Completed sweeps persisted server-side so past runs can be listed and reopened.
+
+export interface SweepArchiveSummary {
+  id: string;
+  created_at: number;
+  epic: string;
+  timeframe: string;
+  name: string | null;
+  n_rows: number;
+  best_net_pnl: number | null;
+}
+
+export interface SweepArchive extends Omit<SweepArchiveSummary, "n_rows" | "best_net_pnl"> {
+  axes: SweepAxis[];
+  rows: SweepRow[];
+  windows: number[] | null;
+}
+
+export interface SweepArchiveIn {
+  epic: string;
+  timeframe: string;
+  name: string | null;
+  axes: SweepAxis[];
+  rows: SweepRow[];
+  windows: number[] | null;
+}
+
+// Archive a completed sweep (axes verbatim + rows + optional windows).
+export async function saveSweepArchive(rec: SweepArchiveIn): Promise<{ id: string }> {
+  const res = await apiFetch(`${BASE}/api/backtest/sweeps`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(rec),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `sweep archive failed (${res.status})`));
+  return res.json();
+}
+
+// Recent archived sweeps, newest first (summaries only).
+export async function listSweepArchives(epic?: string): Promise<SweepArchiveSummary[]> {
+  const qs = epic ? `?epic=${encodeURIComponent(epic)}` : "";
+  const res = await apiFetch(`${BASE}/api/backtest/sweeps${qs}`);
+  if (!res.ok) throw new Error(await errorDetail(res, `sweep list failed (${res.status})`));
+  return res.json();
+}
+
+// One archived sweep: axes + rows + windows, ready to reopen.
+export async function getSweepArchive(id: string): Promise<SweepArchive> {
+  const res = await apiFetch(`${BASE}/api/backtest/sweeps/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(await errorDetail(res, `sweep fetch failed (${res.status})`));
+  return res.json();
+}
+
+// Remove one archived sweep.
+export async function deleteSweepArchive(id: string): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/backtest/sweeps/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `sweep delete failed (${res.status})`));
+}
+
+// --- walk-forward optimization ------------------------------------------------
+
+export interface WfoAxis {
+  kind: "range" | "list";
+  targets: string[];
+  values?: number[];               // ordered swept values, range axes only
+  // The SweepAxis this WFO axis was built from, carried verbatim through the
+  // backend (opaque there) and echoed in the result/archive so fold tables can
+  // label combos like sweep results. `unknown` to avoid an api -> lib/sweep
+  // import cycle; uiAxesFromResult (lib/wfo) narrows it back to SweepAxis.
+  ui?: unknown;
+}
+
+export interface WfoSchedule {
+  mode: "rolling" | "anchored";
+  trainSpan: string;               // backend token grammar: 10d, 2w, 3m, 500b
+  testSpan: string;
+  step?: string | null;
+  minTrainTrades?: number;
+  minTestTrades?: number;
+}
+
+export interface WfoObjective {
+  metric: string;
+  selection: "best" | "plateau";
+  composite?: Record<string, number> | null;
+}
+
+export interface WalkForwardPayload {
+  combos: Array<Record<string, number | boolean | string>>;
+  axes: WfoAxis[];
+  schedule: WfoSchedule;
+  objective?: WfoObjective;
+  matrixTrainSpans?: string[];
+  // "exact" scores each train window as a real flat-start run (default);
+  // "fast" is the one-run-sliced approximation. Omitted defaults to exact.
+  evalMode?: "exact" | "fast";
+  // Reference baselines to re-run per fold (see BacktestResult.baselines).
+  // Honoured by the expr walk-forward route; the structured route accepts and
+  // ignores it. Always on for walk-forward — see buildWalkForwardPayload.
+  baselines?: BaselineKind[];
+}
+
+export interface WfoFoldRow {       // streamed winner row (job status foldRows)
+  key: string;                      // "s0/f2"
+  combo: Record<string, number | boolean | string> | null;
+  oos_metrics: Record<string, number | null> | null;
+  error: string | null;
+}
+
+export interface WfoFold {          // result payload, snake_case
+  train_from: number; train_to: number; test_from: number; test_to: number;
+  combo: Record<string, number | boolean | string> | null;
+  is_metrics: Record<string, number | null> | null;
+  oos_metrics: Record<string, number | null> | null;
+  wfe: number | null;
+  low_sample: boolean;
+  error: string | null;
+  // Baselines re-run over this fold's TEST window (same shape as
+  // BacktestResult.baselines' sides), and the fold's OOS return_pct minus the
+  // null baseline's. Null when the baseline could not be synthesized; absent on
+  // archived results predating the feature.
+  null_long_metrics?: BaselineMetrics | null;
+  null_short_metrics?: BaselineMetrics | null;
+  hold_long_metrics?: BaselineMetrics | null;
+  hold_short_metrics?: BaselineMetrics | null;
+  reversed_metrics?: BaselineMetrics | null;
+  // Combined-null fields from archives predating the per-side split.
+  null_metrics?: BaselineMetrics | null;
+  hold_metrics?: BaselineMetrics | null;
+  excess_return_pct?: number | null;
+}
+
+export interface WfoScheme {
+  train_span: string;
+  folds: WfoFold[];
+  stitched: {
+    equity: Array<[number, number]>;         // summed, [unix s, equity]
+    equity_scaled: Array<[number, number]>;  // compounded
+    trades: Array<{ entry_time: number; exit_time: number; pnl: number; side: string; fold: number }>;
+    metrics: Record<string, number | null>;
+  };
+  stability: {
+    per_axis: Record<string, { stability: number; adjacency: number; values: Array<number | string | null> }>;
+    overall: number | null;
+    adjacency: number | null;
+  };
+  // wfe_median, robustness_score, ... plus the baseline aggregates (median of
+  // the folds' excess_return_pct, and the share of folds beating the null
+  // baseline). Both null when no fold produced an excess; absent on archived
+  // results predating the feature.
+  robustness: Record<string, number | null> & {
+    median_fold_excess_pct?: number | null;
+    pct_folds_beating_null?: number | null;
+  };
+}
+
+export interface WfoResult {
+  eval_mode: string;
+  objective: WfoObjective;
+  schedule: Record<string, unknown>;
+  axes: WfoAxis[];
+  schemes: WfoScheme[];
+  grid_errors?: { failed: number; total: number; sample: string | null };
+}
+
+export interface WfoJobStatus {
+  phase: "grid" | "test" | "aggregate" | "done";
+  done: number; total: number;
+  running: boolean; cancelled: boolean;
+  error: string | null;
+  etaSeconds: number | null;
+  foldRows: WfoFoldRow[];
+  result: WfoResult | null;
+}
+
+export interface WfoArchiveSummary {
+  id: string; created_at: number; epic: string; timeframe: string;
+  name: string | null; n_schemes: number | null;
+  robustness_score: number | null; wfe_median: number | null;
+}
+
+const wfoJobsBase = (target: SweepTarget) =>
+  `${BASE}/api/backtest/walkforward/jobs${target === "remote" ? "?target=remote" : ""}`;
+
+const exprWfoJobsBase = (target: SweepTarget) =>
+  `${BASE}/api/expr/walkforward/jobs${target === "remote" ? "?target=remote" : ""}`;
+
+export async function submitWfoJob(
+  req: BacktestRequest | ExprBacktestRequest, wf: WalkForwardPayload, target: SweepTarget, expr = false,
+): Promise<{ jobId: string; total: number; schemes: Array<{ trainSpan: string; folds: Array<Record<string, number>> }> }> {
+  const res = await apiFetch(expr ? exprWfoJobsBase(target) : wfoJobsBase(target), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...req, walkforward: wf }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `walk-forward submit failed (${res.status})`));
+  return res.json();
+}
+
+export async function pollWfoJob(jobId: string, cursor: number, target: SweepTarget): Promise<WfoJobStatus> {
+  const res = await apiFetch(
+    `${BASE}/api/backtest/walkforward/jobs/${jobId}?cursor=${cursor}${target === "remote" ? "&target=remote" : ""}`,
+  );
+  if (!res.ok) throw new Error(await errorDetail(res, `walk-forward poll failed (${res.status})`));
+  return res.json();
+}
+
+export async function cancelWfoJob(jobId: string, target: SweepTarget): Promise<void> {
+  const res = await apiFetch(
+    `${BASE}/api/backtest/walkforward/jobs/${jobId}/cancel${target === "remote" ? "?target=remote" : ""}`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error(await errorDetail(res, `walk-forward cancel failed (${res.status})`));
+}
+
+export async function getWfoFoldTable(jobId: string, key: string, target: SweepTarget): Promise<{ rows: SweepRow[] }> {
+  const res = await apiFetch(
+    `${BASE}/api/backtest/walkforward/jobs/${jobId}/fold?key=${encodeURIComponent(key)}${target === "remote" ? "&target=remote" : ""}`,
+  );
+  if (!res.ok) throw new Error(await errorDetail(res, `fold table fetch failed (${res.status})`));
+  return res.json();
+}
+
+export async function listWfoArchives(epic?: string): Promise<WfoArchiveSummary[]> {
+  const qs = epic ? `?epic=${encodeURIComponent(epic)}` : "";
+  const res = await apiFetch(`${BASE}/api/backtest/walkforward/archive${qs}`);
+  if (!res.ok) throw new Error(await errorDetail(res, `walk-forward list failed (${res.status})`));
+  return res.json();
+}
+
+export async function getWfoArchive(id: string): Promise<{ id: string; created_at: number; epic: string; timeframe: string; name: string | null; request: unknown; result: WfoResult }> {
+  const res = await apiFetch(`${BASE}/api/backtest/walkforward/archive/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(await errorDetail(res, `walk-forward fetch failed (${res.status})`));
+  return res.json();
+}
+
+export async function getWfoArchiveTables(id: string): Promise<Record<string, SweepRow[]>> {
+  const res = await apiFetch(`${BASE}/api/backtest/walkforward/archive/${encodeURIComponent(id)}/tables`);
+  if (!res.ok) throw new Error(await errorDetail(res, `walk-forward tables fetch failed (${res.status})`));
+  return res.json();
+}
+
+export async function deleteWfoArchive(id: string): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/backtest/walkforward/archive/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `walk-forward delete failed (${res.status})`));
+}
+
+// --- backtest progress side-channel ------------------------------------------
+// Both fetchers are best-effort: progress is cosmetic, so ANY failure (network,
+// 404, non-JSON) resolves to an empty/null result rather than throwing.
+export type BackfillProgress = {
+  label: string; doneChunks: number; totalChunks: number;
+  bars: number; elapsedS: number; etaS: number | null; at: string;
+};
+
+export async function fetchActiveBackfills(): Promise<BackfillProgress[]> {
+  try {
+    const res = await apiFetch(`${BASE}/api/candle-cache/backfill/active`);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+// --- admin history download ---------------------------------------------------
+// Deep cache-warm for one series, admin-only (the backend 403s everyone else).
+// The job's `resolution` is the BASE series actually downloaded: a MONTH chart
+// reports DAY, so match jobs to a chart by broker+epic, not by resolution.
+export type HistoryJob = {
+  broker: string; epic: string; resolution: string; priceSide: string;
+  status: "running" | "done" | "error" | "cancelled";
+  result: string | null; error: string | null;
+  pct: number | null; oldestTs: number | null; targetOldestTs: number;
+  bars: number; elapsedS: number;
+};
+
+export async function startHistoryDownload(req: {
+  broker: string; epic: string; resolution: string; priceSide?: string;
+  years: number | null;
+}): Promise<HistoryJob> {
+  const res = await apiFetch(
+    `${BASE}/api/candle-cache/backfill?broker=${encodeURIComponent(req.broker)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        epic: req.epic, resolution: req.resolution,
+        priceSide: req.priceSide ?? "mid", years: req.years,
+      }),
+    },
+  );
+  if (!res.ok) throw new Error(await errorDetail(res, `history download failed (${res.status})`));
+  return res.json();
+}
+
+export async function fetchHistoryJobs(): Promise<HistoryJob[]> {
+  try {
+    const res = await apiFetch(`${BASE}/api/candle-cache/backfill/jobs`);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function cancelHistoryDownload(req: {
+  broker: string; epic: string; resolution: string; priceSide?: string;
+}): Promise<void> {
+  const qs = new URLSearchParams({
+    broker: req.broker, epic: req.epic, resolution: req.resolution,
+    priceSide: req.priceSide ?? "mid",
+  });
+  const res = await apiFetch(`${BASE}/api/candle-cache/backfill?${qs}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await errorDetail(res, `cancel failed (${res.status})`));
+}
+
+export async function fetchBacktestProgress(
+  id: string,
+): Promise<{ stage: string; done: number; total: number } | null> {
+  try {
+    const res = await apiFetch(`${BASE}/api/backtest/progress/${encodeURIComponent(id)}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}

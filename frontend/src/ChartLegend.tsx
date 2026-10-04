@@ -1,0 +1,1289 @@
+// TradingView-style top-left chart legend, rendered as DOM (not klinecharts'
+// canvas legend, whose text was blurry vs TV). It layers over the candle pane:
+// row 0 is the symbol · interval · source + O/H/L/C + change; each row below is a
+// candle-pane indicator with its name(params), figure values in their plot color,
+// and the eye/gear/trash action icons.
+//
+// Performance: which ROWS exist is React state (driven by ChartCore, gated on a
+// shallow signature so it only re-renders on add/remove/visibility change). The
+// VALUES update imperatively via refs (textContent) on every crosshair move and
+// live tick — like ChartCore's live-price pill — so React doesn't re-render per
+// crosshair pixel. ChartCore subscribes OnCrosshairChange and calls our
+// updateValues(dataIndex|null); null = no crosshair → fall back to the last bar.
+
+import { createContext, useContext, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type Ref, type RefObject } from "react";
+import { type Chart, type Indicator, type KLineData } from "klinecharts";
+import type { ChartController } from "./lib/chartController";
+import InfoTip from "./components/InfoTip";
+import Tooltip from "./components/Tooltip";
+import { isDemoMode } from "./lib/demoMode";
+import { requestConfirm } from "./lib/signals";
+import {
+  indTypeOf,
+  prevHlDegenerateInfo,
+  prevHlLegendSummary,
+  type PrevHlExtend,
+} from "./lib/customIndicators";
+// Sub-pane indicators that are app-internal (not user-added) and so get NO legend
+// card — the user must not be able to remove/edit them via a card. Shared with the
+// reorder engine so the legend's card index and the engine's reorderable order stay
+// in lockstep (see isInternalIndicator in ./lib/indicators).
+import { WarnTriangleIcon } from "./lib/menuIcons";
+import { isInternalIndicator, getIndicatorsByPane } from "./lib/indicators";
+// An inset instance carries an empty `figures` and a neutralised `precision` on
+// purpose (that is what keeps its values out of the price axis and its tick
+// precision), so both legend reads go through these helpers, which fall back to
+// the base template.
+import {
+  insetBandBox,
+  isInsetInstance,
+  legendFiguresOf,
+  legendPrecisionOf,
+} from "./lib/indicators/inset";
+import { periodByResolution } from "./lib/feed";
+import { trendlineStyleOf, type TrendlinesExtend } from "./lib/indicators/trendlines";
+import { fmtPrice } from "./lib/priceFormat";
+import { isIndicatorBusy, subscribeIndicatorBusy } from "./lib/indicatorBusy";
+
+const UP = "#26a69a";
+const DOWN = "#ef5350";
+
+// One candle-pane indicator figure shown in the legend (a "title value" pair).
+interface LegendFigure {
+  key: string; // result key, for the imperative value lookup
+  title: string; // e.g. "EMA: " / "Value: "
+  color: string; // plot color (line figures) or the legend text color
+}
+
+// One indicator row. `sig` is the shallow signature ChartCore diffs on to decide
+// whether the row list changed (so we only setState on real structural changes).
+export interface LegendRow {
+  name: string;
+  shortName: string;
+  calcParamsText: string; // "(9)" etc., already formatted (AVWAP hides its anchor)
+  visible: boolean;
+  hideValue: boolean; // "show value in legend" toggle off
+  figures: LegendFigure[];
+  // The indicator's real TYPE (e.g. "FVG", "TRENDLINES"), independent of `name`
+  // (unique per instance). Used to group same-type instances in the legend.
+  indType: string;
+  // A ⚠ badge tooltip when some of the indicator's lines draw nothing at the current
+  // timeframe (PREV_HL degenerate boundaries). Absent = no badge.
+  warn?: string;
+  // A dimmed summary shown after the name (PREV_HL lookbacks, e.g. "1 day, since …").
+  // Absent when off or empty.
+  summary?: string;
+  // Paints the name(params) in the indicator's own draw color. Set only for types
+  // with no figure readouts to carry a color (TRENDLINES), so several instances on
+  // one chart can be told apart. Absent = the theme's legend text color.
+  nameColor?: string;
+}
+
+// One sub-pane's legend: its paneId, its indicator rows, and the y-pixel (relative
+// to the chart root) where that pane's main area begins — so ChartCore can position
+// a DOM card at the top-left of the pane, the same place klinecharts drew its canvas
+// legend. `sig` folds in the rows' signature AND the top, so a separator drag (which
+// only moves `top`) still re-renders the card to the new position.
+export interface SubPaneLegendData {
+  paneId: string;
+  top: number;
+  rows: LegendRow[];
+}
+
+interface LegendCtx {
+  symbol: string;
+  period: string;
+  precision: number;
+  live: boolean;
+  // The socket is up but no ticks have arrived for a while on an open market — a
+  // silently-wedged upstream. Shown as an amber dot in place of the green live one
+  // (never both; ChartCore makes them mutually exclusive).
+  stale: boolean;
+  broker: string; // display name of the data source ("Capital.com", "IG (demo)"); "" hides it (compact/mobile)
+}
+
+// Imperative handle ChartCore drives on the live tick / crosshair change.
+export interface ChartLegendHandle {
+  updateValues: (dataIndex: number | null) => void;
+}
+
+export interface Props {
+  getChart: () => Chart | null;
+  // The owning cell's controller — for its per-cell legend-hover signals (these
+  // were module globals; per-cell so two cells don't share a crosshair-hide).
+  controller: ChartController;
+  ctx: LegendCtx;
+  rows: LegendRow[];
+  // TV-style chevron: collapsed hides the candle-pane indicator rows (the symbol/
+  // OHLC row stays). The chevron itself hover-reveals while expanded and stays
+  // visible while collapsed (it's the only way back).
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  // TV-style "hide main series": when true the candlesticks are painted transparent
+  // (indicators/drawings/price marks stay). The eye toggle lives in the symbol row.
+  candleHidden: boolean;
+  onToggleCandle: () => void;
+  // Sub-pane indicator legends (Volume/MACD/RSI…), one per pane below the chart.
+  // Rendered here (not in ChartCore) so they share this component's figureValuesRef
+  // and hover signal — their values fill on the same imperative crosshair/tick path.
+  subPanes: SubPaneLegendData[];
+  // The inset band's card: the same card as a sub-pane's, positioned at the band's
+  // top edge inside the candle pane. Its own prop rather than one more entry in
+  // `subPanes` because the band is not a pane — putting it in that array would feed
+  // a fake paneId to the reorder engine, which indexes real panes by position.
+  insetLegend: SubPaneLegendData | null;
+  // Name of the selected indicator (drives the blue row highlight) — its name is
+  // unique across panes, so one prop covers the candle legend AND the sub-panes.
+  // A prop, not the signal, so React re-renders the highlight on selection change.
+  selectedName: string | null;
+  // Name of the indicator whose CURVE the cursor is over (any pane), or null. Drives
+  // the same highlighted look as a row hover, so hovering a curve lights its card.
+  highlightedName: string | null;
+  // Action-icon handlers (mirror ChartCore's OnTooltipIconClick routing). Each takes
+  // the indicator name; ChartCore resolves the owning pane (name is globally unique).
+  onToggleVisible: (name: string) => void;
+  onOpenSettings: (name: string) => void;
+  onRemove: (name: string) => void;
+  // Copy a same-type GROUP's members (all their live configs) to the clipboard
+  // as one payload, so paste recreates the whole group.
+  onCopyGroup: (names: string[]) => void;
+  // Click a row body to select the indicator (TradingView-style), like a curve click.
+  onSelectRow: (name: string, figureKey?: string) => void;
+  // Click the ⓘ button to open the instrument-details modal (TradingView-style).
+  // Open the market-info popover, anchored at the ⓘ button (viewport coords).
+  onOpenDetails: (x: number, y: number) => void;
+  // Click the symbol name itself to change the instrument on this chart (opens the
+  // symbol-search modal, TradingView-style).
+  onChangeSymbol: () => void;
+  // Candle-cache stats badge (coverage/hit-rate/freshness at a glance) — null
+  // hides the badge entirely (e.g. before the first stats poll resolves).
+  cacheBadge: {
+    label: string;
+    title: string;
+    state: "fresh" | "stale" | "none";
+  } | null;
+  // Click the cache badge to open the cache-stats popover.
+  onOpenCacheStats: () => void;
+  // Open the indicator context menu (anchored at the ⋯ button) — TradingView's
+  // "more" affordance at the end of the legend row.
+  onOpenMenu: (name: string, x: number, y: number) => void;
+  // Sub-pane reorder: move a pane to a new slot (Task 2's engine) and start a
+  // drag-to-reorder session from the legend card's grip handle.
+  onMove: (name: string, targetIndex: number) => void;
+  onStartReorder: (paneId: string, name: string) => void;
+  handleRef?: Ref<ChartLegendHandle>;
+}
+
+// Same grouping as the axis labels (lib/priceFormat) — the legend's OHLC and
+// the tags on the y-axis must read the same number the same way.
+const fmtNum = fmtPrice;
+
+const ICON_EYE = "\uE8F4"; // visibility
+const ICON_EYE_OFF = "\uE8F5"; // visibility_off (crossed eye)
+const ICON_GEAR = "\uE8B8"; // settings
+const ICON_TRASH = "\uE872"; // delete
+
+const ICON_ARROW_UP = (
+  <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+    <path d="M12 19V6M6 12l6-6 6 6" />
+  </svg>
+);
+const ICON_ARROW_DOWN = (
+  <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+    <path d="M12 5v13M6 12l6 6 6-6" />
+  </svg>
+);
+// Collapse chevron (up = "hide the rows"). The collapsed state renders the SAME
+// icon rotated 180° via CSS (.cl-collapse.cl-collapsed svg) — one path, no
+// hand-maintained mirror twin.
+const ICON_CHEVRON_UP = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M6 15l6-6 6 6" />
+  </svg>
+);
+// Copy (two offset sheets) — SVG like the ⋯ button (the Material Symbols subset
+// lacks content_copy); same paths as MenuIcons.copy so the menus and the legend
+// agree on what "copy" looks like.
+const ICON_COPY = (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="9" y="9" width="11" height="11" rx="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+  </svg>
+);
+
+// Same-type candle-pane rows (e.g. three FVGs) collapse into one group so a chart
+// with several instances of the same indicator doesn't scroll the whole legend.
+// A type with only one instance stays a plain row — no group chrome for the common
+// case. Grouped by first appearance, not sorted, so the legend order stays stable
+// as indicators are added/removed.
+type LegendEntry = { kind: "row"; row: LegendRow } | { kind: "group"; indType: string; rows: LegendRow[] };
+
+function groupRows(rows: LegendRow[]): LegendEntry[] {
+  const order: string[] = [];
+  const byType = new Map<string, LegendRow[]>();
+  for (const row of rows) {
+    let list = byType.get(row.indType);
+    if (!list) {
+      list = [];
+      byType.set(row.indType, list);
+      order.push(row.indType);
+    }
+    list.push(row);
+  }
+  return order.map((indType) => {
+    const list = byType.get(indType)!;
+    return list.length > 1 ? { kind: "group", indType, rows: list } : { kind: "row", row: list[0] };
+  });
+}
+
+// Which groups are collapsed, per symbol — so switching instruments doesn't carry
+// one symbol's collapsed FVG group onto another that has none. A single localStorage
+// key holds every symbol's set to avoid one key per symbol piling up over time.
+const GROUP_COLLAPSE_KEY = "cl-collapsed-groups";
+
+function loadCollapsedGroups(symbol: string): Set<string> {
+  try {
+    const all = JSON.parse(localStorage.getItem(GROUP_COLLAPSE_KEY) ?? "{}") as Record<
+      string,
+      string[]
+    >;
+    return new Set(all[symbol] ?? []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedGroups(symbol: string, groups: Set<string>): void {
+  try {
+    const all = JSON.parse(localStorage.getItem(GROUP_COLLAPSE_KEY) ?? "{}") as Record<
+      string,
+      string[]
+    >;
+    if (groups.size) all[symbol] = [...groups];
+    else delete all[symbol];
+    localStorage.setItem(GROUP_COLLAPSE_KEY, JSON.stringify(all));
+  } catch {
+    // localStorage unavailable (private mode, quota) — collapse state just won't persist.
+  }
+}
+
+export default function ChartLegend({
+  getChart,
+  controller,
+  ctx,
+  rows,
+  collapsed,
+  onToggleCollapsed,
+  candleHidden,
+  onToggleCandle,
+  subPanes,
+  insetLegend,
+  selectedName,
+  highlightedName,
+  onToggleVisible,
+  onOpenSettings,
+  onRemove,
+  onCopyGroup,
+  onSelectRow,
+  onOpenMenu,
+  onOpenDetails,
+  onChangeSymbol,
+  cacheBadge,
+  onOpenCacheStats,
+  onMove,
+  onStartReorder,
+  handleRef,
+}: Props) {
+  const { legendHovered, legendHoverName } = controller;
+  // Imperative value targets, keyed so updateValues can find them without React.
+  // OHLC + change live on the candle row; each indicator figure has its own span.
+  const ohlcRef = useRef<Record<"O" | "H" | "L" | "C", HTMLSpanElement | null>>({
+    O: null,
+    H: null,
+    L: null,
+    C: null,
+  });
+  const changeRef = useRef<HTMLSpanElement | null>(null);
+  // figureValues[`${name}|${key}`] -> the span showing that figure's value.
+  const figureValuesRef = useRef<Map<string, HTMLSpanElement>>(new Map());
+
+  // Which same-type groups are collapsed, for THIS symbol. Reloaded whenever the
+  // symbol changes (a symbol switch doesn't remount ChartLegend, so a plain
+  // useState initializer would only run once, for the first symbol).
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() =>
+    loadCollapsedGroups(ctx.symbol),
+  );
+  useEffect(() => {
+    setCollapsedGroups(loadCollapsedGroups(ctx.symbol));
+  }, [ctx.symbol]);
+  const toggleGroupCollapsed = (indType: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(indType)) next.delete(indType);
+      else next.add(indType);
+      saveCollapsedGroups(ctx.symbol, next);
+      return next;
+    });
+  };
+  // Group-wide hide/unhide: if any member is visible, hide the rest; once every
+  // member is hidden, one click shows them all again.
+  const toggleGroupVisible = (rows: LegendRow[]) => {
+    const anyVisible = rows.some((r) => r.visible);
+    for (const row of rows) {
+      if (row.visible === anyVisible) onToggleVisible(row.name);
+    }
+  };
+  // Remove every member of a group, behind a confirm: one click wipes several
+  // configured instances at once, unlike the per-row trash.
+  const removeGroup = (rows: LegendRow[]) => {
+    requestConfirm({
+      title: "Remove indicators",
+      message: `Remove all ${rows.length} ${rows[0].shortName} indicators from this chart?`,
+      confirmLabel: "Remove",
+      onConfirm: () => {
+        for (const row of rows) onRemove(row.name);
+      },
+    });
+  };
+  // One clipboard write for the whole group — per-row onCopy calls would each
+  // overwrite the previous member, leaving only the last one copied.
+  const copyGroup = (rows: LegendRow[]) => onCopyGroup(rows.map((r) => r.name));
+
+  // Imperatively set the displayed values for the bar at dataIndex (or the last
+  // bar when null/out of range). Mirrors candleLegend's old formula: change is vs
+  // the PREVIOUS close (TV convention), falling back to this bar's open.
+  const updateValues = (dataIndex: number | null) => {
+    const chart = getChart();
+    if (!chart) return;
+    const dl = chart.getDataList();
+    if (!dl.length) return;
+    const idx =
+      dataIndex != null && dataIndex >= 0 && dataIndex < dl.length
+        ? dataIndex
+        : dl.length - 1;
+    const cur = dl[idx];
+    const prev = idx > 0 ? dl[idx - 1] : undefined;
+    const prec = ctx.precision;
+
+    const o = ohlcRef.current;
+    if (o.O) o.O.textContent = fmtNum(cur.open, prec);
+    if (o.H) o.H.textContent = fmtNum(cur.high, prec);
+    if (o.L) o.L.textContent = fmtNum(cur.low, prec);
+    if (o.C) o.C.textContent = fmtNum(cur.close, prec);
+    const bodyColor = cur.close >= cur.open ? UP : DOWN;
+    for (const k of ["O", "H", "L", "C"] as const) {
+      if (o[k]) o[k]!.style.color = bodyColor;
+    }
+    if (changeRef.current) {
+      const ref = prev?.close ?? cur.open;
+      const change = cur.close - ref;
+      const pct = ref !== 0 ? (change / ref) * 100 : 0;
+      const sign = change >= 0 ? "+" : "";
+      changeRef.current.textContent = `${sign}${fmtNum(change, prec)} (${sign}${pct.toFixed(2)}%)`;
+      changeRef.current.style.color = change > 0 ? UP : change < 0 ? DOWN : "var(--text)";
+    }
+
+    // Indicator figure values for this bar, in each figure's plot color. Covers
+    // EVERY pane (candle + sub-panes like Volume/MACD/RSI): the value spans are
+    // keyed by the indicator's unique instance name, which never collides across
+    // panes, so one flat loop over all panes fills both legends' values.
+    const allPanes = getIndicatorsByPane(chart);
+    for (const inds of allPanes?.values() ?? []) {
+      for (const [name, ind] of inds) {
+        // A HIDDEN indicator stopped computing when it left the screen (see
+        // indicators/hiddenCalc.ts), so its rows end wherever the eye click did:
+        // printing them would show a correct number on old bars and "n/a" at the
+        // live edge. Blank the readout instead -- the row keeps its name and
+        // params, and the values come back with the indicator.
+        const hidden = ind.visible === false;
+        const result = ind.result as Array<Record<string, number | undefined>> | undefined;
+        const row = hidden ? undefined : result?.[idx];
+        for (const fig of legendFiguresOf(ind)) {
+          const span = figureValuesRef.current.get(`${name}|${fig.key}`);
+          if (!span) continue;
+          const v = row?.[fig.key];
+          // Optional unit suffix a figure can carry (e.g. ATR%'s "%").
+          const suffix = (fig as { suffix?: string }).suffix ?? "";
+          span.textContent = hidden
+            ? ""
+            : typeof v === "number" && Number.isFinite(v)
+              ? fmtNum(v, legendPrecisionOf(ind) ?? prec) + suffix
+              : "n/a";
+        }
+      }
+    }
+  };
+
+  useImperativeHandle(handleRef, () => ({ updateValues }));
+
+  // Refresh values whenever the row set changes (a newly-added indicator needs its
+  // initial values painted; ChartCore also calls updateValues on tick/crosshair).
+  useEffect(() => {
+    updateValues(null);
+    // collapsedGroups for the same reason as `collapsed`: expanding a group
+    // re-mounts its member rows (fresh, empty value spans) without changing
+    // `rows`, so nothing would fill them until the next tick or crosshair move.
+    // updateValues is rebuilt each render; the run that matters sees the fresh one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, subPanes, insetLegend, ctx.symbol, ctx.precision, collapsed, collapsedGroups]);
+
+  // Hovering a row drives BOTH the gray border + icon reveal (CSS, via this
+  // signal) so they appear together on the exact row (matches the old behavior).
+  const setRowHover = (name: string | null) => {
+    if (legendHoverName.value !== name) legendHoverName.set(name);
+  };
+  // Entering/leaving the whole legend strip hides the crosshair (TV-style).
+  const setBandHover = (over: boolean) => {
+    if (legendHovered.value !== over) {
+      legendHovered.set(over);
+      getChart()?.setStyles({ crosshair: { show: !over } });
+    }
+  };
+
+  return (
+    <LegendChartContext.Provider value={getChart}>
+    <>
+    <div
+      className="chart-legend"
+      onMouseEnter={() => setBandHover(true)}
+      onMouseLeave={() => {
+        setBandHover(false);
+        setRowHover(null);
+      }}
+    >
+      {/* Row 0: symbol · interval · source + OHLC + change. */}
+      <div className="cl-row cl-ohlc">
+        {/* Live "ping" dot — signals streaming without overloading the symbol with the
+            UP/green color (green on a down bar reads as a mixed signal). */}
+        {ctx.stale ? (
+          <Tooltip content="No recent data: the feed is connected but not receiving ticks">
+            <span className="cl-live-dot cl-stale" />
+          </Tooltip>
+        ) : (
+          ctx.live && (
+            <Tooltip content="Live">
+              <span className="cl-live-dot" aria-hidden="true" />
+            </Tooltip>
+          )
+        )}
+        <Tooltip content="Change instrument">
+          <span
+            className="cl-sym cl-sym-clickable"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChangeSymbol();
+            }}
+          >
+            {ctx.symbol}
+          </span>
+        </Tooltip>
+        {/* The symbol name now changes the instrument (symbol search); the ⓘ button
+            is the affordance for the instrument-details modal. */}
+        <Tooltip content="Instrument details">
+          <button
+            className="cl-info"
+            aria-label="Instrument details"
+            onClick={(e) => {
+              e.stopPropagation();
+              const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              onOpenDetails(r.left, r.bottom + 6);
+            }}
+          >
+            {/* A rounded-square accent chip with a serif "i" — non-round so it never
+                competes with the circular chart markers, and avoids the old "bullseye"
+                (a ringed ⓘ glyph inside a ringed circle). */}
+            <span aria-hidden="true">i</span>
+          </button>
+        </Tooltip>
+        {/* Hide/show the candlesticks only (indicators/drawings/price marks stay).
+            Always visible — when candles are hidden the user needs an obvious way
+            back — so it's not hover-gated like the indicator-row icons. */}
+        <Tooltip content={candleHidden ? "Show candles" : "Hide candles"}>
+          <button
+            className={`cl-icon cl-sym-eye${candleHidden ? " cl-hidden" : ""}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleCandle();
+            }}
+          >
+            {candleHidden ? ICON_EYE_OFF : ICON_EYE}
+          </button>
+        </Tooltip>
+        <span className="cl-meta">
+          · {ctx.period}
+          {ctx.broker && isDemoMode() ? (
+            // Demo visitors chart free Yahoo Finance data; make the source and
+            // its limits discoverable right where the source is named.
+            <Tooltip
+              title="Data source"
+              content={[
+                "Yahoo Finance: free historical prices.",
+                "Quotes can be delayed; prices are split and dividend adjusted.",
+                "Intraday history is capped (1m about 29 days, 1h about 2 years).",
+              ]}
+            >
+              <span className="cl-demo-src"> · {ctx.broker}</span>
+            </Tooltip>
+          ) : ctx.broker ? (
+            ` · ${ctx.broker}`
+          ) : (
+            ""
+          )}
+        </span>
+        {(["O", "H", "L", "C"] as const).map((k) => (
+          <span className="cl-ohlc-item" key={k}>
+            <span className="cl-ohlc-label">{k}</span>
+            <span
+              className="cl-ohlc-val"
+              ref={(el) => {
+                ohlcRef.current[k] = el;
+              }}
+            />
+          </span>
+        ))}
+        <span
+          className="cl-change"
+          ref={(el) => {
+            changeRef.current = el;
+          }}
+        />
+      </div>
+
+      {/* One row per candle-pane indicator (hidden entirely while collapsed).
+          Same-type instances (e.g. three FVGs) fold into a collapsible group;
+          a type with only one instance stays a plain row. */}
+      {!collapsed &&
+        groupRows(rows).map((entry) =>
+          entry.kind === "row" ? (
+            <IndicatorRow
+              key={entry.row.name}
+              row={entry.row}
+              selected={selectedName === entry.row.name}
+              highlighted={highlightedName === entry.row.name}
+              figureValuesRef={figureValuesRef}
+              setRowHover={setRowHover}
+              onSelectRow={onSelectRow}
+              onToggleVisible={onToggleVisible}
+              onOpenSettings={onOpenSettings}
+              onRemove={onRemove}
+              onOpenMenu={onOpenMenu}
+            />
+          ) : (
+            <IndicatorGroup
+              key={`group:${entry.indType}`}
+              indType={entry.indType}
+              rows={entry.rows}
+              collapsed={collapsedGroups.has(entry.indType)}
+              onToggleCollapsed={() => toggleGroupCollapsed(entry.indType)}
+              onToggleGroupVisible={() => toggleGroupVisible(entry.rows)}
+              onRemoveGroup={() => removeGroup(entry.rows)}
+              onCopyGroup={() => copyGroup(entry.rows)}
+              selectedName={selectedName}
+              highlightedName={highlightedName}
+              figureValuesRef={figureValuesRef}
+              setRowHover={setRowHover}
+              onSelectRow={onSelectRow}
+              onToggleVisible={onToggleVisible}
+              onOpenSettings={onOpenSettings}
+              onRemove={onRemove}
+              onOpenMenu={onOpenMenu}
+            />
+          ),
+        )}
+
+      {/* TV-style collapse chevron: its own mini-row under the indicator rows.
+          Hover-revealed while expanded (CSS); always visible while collapsed. Only
+          rendered when there are rows to collapse. */}
+      {rows.length > 0 && (
+        <div className="cl-row cl-collapse-row">
+          <Tooltip content={collapsed ? "Show indicator legend" : "Hide indicator legend"}>
+            <button
+              className={`cl-icon cl-icon-svg cl-icon-stroke cl-collapse${
+                collapsed ? " cl-collapsed" : ""
+              }`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleCollapsed();
+              }}
+            >
+              {ICON_CHEVRON_UP}
+            </button>
+          </Tooltip>
+        </div>
+      )}
+
+      {/* Candle-cache stats badge — last legend row at the top-LEFT. It used to
+          dock at the pane's top-right, but that corner now belongs to the cell
+          controls (detach/maximize), which would cover it while hovered. */}
+      {cacheBadge && (
+        <Tooltip content={cacheBadge.title}>
+          <button
+            className="cl-cache-corner-badge"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenCacheStats();
+            }}
+          >
+            <span className={`cl-cache-dot cl-cache-${cacheBadge.state}`} aria-hidden="true" />
+            {cacheBadge.label}
+          </button>
+        </Tooltip>
+      )}
+    </div>
+
+    {/* One DOM legend card per sub-pane (Volume/MACD/RSI…), positioned by ChartCore
+        at the top-left of each pane. Outside the candle-legend strip so each can
+        sit at its own `top`; they share figureValuesRef/setRowHover so values fill
+        on the same imperative path and hovering reveals the same gray card. */}
+    {insetLegend && (
+      /* The inset band's card. No grip and no move arrows: the band is a region of
+         the candle pane, so there is nothing above or below it to swap with. */
+      <SubPaneLegend
+        key={insetLegend.paneId}
+        data={insetLegend}
+        selectedName={selectedName}
+        highlightedName={highlightedName}
+        figureValuesRef={figureValuesRef}
+        setRowHover={setRowHover}
+        onSelectRow={onSelectRow}
+        onToggleVisible={onToggleVisible}
+        onOpenSettings={onOpenSettings}
+        onRemove={onRemove}
+        onOpenMenu={onOpenMenu}
+      />
+    )}
+
+    {subPanes.map((sp, i) => (
+      <SubPaneLegend
+        key={sp.paneId}
+        data={sp}
+        reorder={{ index: i, count: subPanes.length, onMove, onStartReorder }}
+        selectedName={selectedName}
+        highlightedName={highlightedName}
+        figureValuesRef={figureValuesRef}
+        setRowHover={setRowHover}
+        onSelectRow={onSelectRow}
+        onToggleVisible={onToggleVisible}
+        onOpenSettings={onOpenSettings}
+        onRemove={onRemove}
+        onOpenMenu={onOpenMenu}
+      />
+    ))}
+    </>
+    </LegendChartContext.Provider>
+  );
+}
+
+// A single interactive indicator legend row (name(params) · figure values · the
+// eye/gear/trash/⋯ action icons). Shared by the candle-pane <ChartLegend> and the
+// per-pane <SubPaneLegend>, so both cards look and behave identically. The figure
+// value spans register into figureValuesRef so updateValues can fill them without
+// a React re-render (same imperative path as the OHLC row).
+// The legend's chart getter, for rows that look up their live indicator object
+// (the busy mark is keyed by it). A context rather than one more prop threaded
+// through IndicatorGroup and SubPaneLegend.
+const LegendChartContext = createContext<() => Chart | null>(() => null);
+
+/** True while the named indicator is mid-compute (see lib/indicatorBusy). */
+function useIndicatorBusy(name: string): boolean {
+  const getChart = useContext(LegendChartContext);
+  return useSyncExternalStore(subscribeIndicatorBusy, () =>
+    isIndicatorBusy(getChart()?.getIndicators({ name })[0]),
+  );
+}
+
+function IndicatorRow({
+  row,
+  selected,
+  highlighted,
+  figureValuesRef,
+  setRowHover,
+  onSelectRow,
+  onToggleVisible,
+  onOpenSettings,
+  onRemove,
+  onOpenMenu,
+  onMoveUp,
+  onMoveDown,
+}: {
+  row: LegendRow;
+  selected: boolean;
+  highlighted: boolean;
+  figureValuesRef: RefObject<Map<string, HTMLSpanElement>>;
+  setRowHover: (name: string | null) => void;
+  onSelectRow: (name: string, figureKey?: string) => void;
+  onToggleVisible: (name: string) => void;
+  onOpenSettings: (name: string) => void;
+  onRemove: (name: string) => void;
+  onOpenMenu: (name: string, x: number, y: number) => void;
+  // Sub-pane reorder arrows. Present only for sub-pane rows; undefined for candle-pane
+  // rows (no arrows) and omitted individually at the top/bottom ends.
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+}) {
+  const busy = useIndicatorBusy(row.name);
+  return (
+    <div
+      className={`cl-row cl-ind${selected ? " cl-selected" : ""}${
+        highlighted ? " cl-curve-hover" : ""
+      }${row.visible ? "" : " cl-hidden"}`}
+      onMouseEnter={() => setRowHover(row.name)}
+      onMouseLeave={() => setRowHover(null)}
+      onClick={() => onSelectRow(row.name)}
+      onDoubleClick={() => onOpenSettings(row.name)}
+    >
+      <span className="cl-name" style={row.nameColor ? { color: row.nameColor } : undefined}>
+        {row.shortName}
+        {row.calcParamsText}
+      </span>
+      {busy && (
+        <Tooltip content="Computing">
+          <span className="cl-busy" aria-label="Computing" />
+        </Tooltip>
+      )}
+      {row.warn && (
+        <InfoTip text={row.warn} className="cl-warn">
+          <WarnTriangleIcon />
+        </InfoTip>
+      )}
+      {row.summary && <span className="cl-summary">{row.summary}</span>}
+      {!row.hideValue &&
+        row.figures.map((fig) =>
+          fig.title ? (
+            <span
+              className="cl-fig"
+              key={fig.key}
+              style={{ color: fig.color }}
+              // Names the clicked FIGURE so an armed pick can target a legend
+              // readout (ATR% -> the pane's .to% output). stopPropagation keeps
+              // the row's own onClick from firing a second, figure-less pick;
+              // unarmed, the handler treats this exactly like a row click.
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelectRow(row.name, fig.key);
+              }}
+            >
+              <span className="cl-fig-title">{fig.title}</span>
+              <span
+                className="cl-fig-val"
+                ref={(el) => {
+                  const map = figureValuesRef.current;
+                  const mapKey = `${row.name}|${fig.key}`;
+                  if (el) map.set(mapKey, el);
+                  else map.delete(mapKey);
+                }}
+              />
+            </span>
+          ) : null,
+        )}
+      {/* Action icons. A hidden indicator always keeps its unhide eye even when
+          idle; the rest reveal on row hover/selection (CSS .cl-icons). */}
+      <span
+        className={`cl-icons${row.visible ? "" : " cl-icons-hidden-eye"}`}
+        onDoubleClick={(e) => e.stopPropagation()}
+      >
+        <Tooltip asChild content={row.visible ? "Hide" : "Show"}>
+          <button
+            className="cl-icon"
+            aria-label={row.visible ? "Hide" : "Show"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleVisible(row.name);
+            }}
+          >
+            {row.visible ? ICON_EYE : ICON_EYE_OFF}
+          </button>
+        </Tooltip>
+        <Tooltip asChild content="Settings">
+          <button
+            className="cl-icon"
+            aria-label="Settings"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenSettings(row.name);
+            }}
+          >
+            {ICON_GEAR}
+          </button>
+        </Tooltip>
+        <Tooltip asChild content="Remove">
+          <button
+            className="cl-icon"
+            aria-label="Remove"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(row.name);
+            }}
+          >
+            {ICON_TRASH}
+          </button>
+        </Tooltip>
+        {/* TradingView-style "more" (⋯): opens the context menu, anchored
+            just below the button. SVG (not the Material Symbols subset, which
+            doesn't include more_horiz) so it's crisp without re-subsetting. */}
+        <Tooltip asChild content="More">
+          <button
+            className="cl-icon cl-icon-svg"
+            aria-label="More"
+            onClick={(e) => {
+              e.stopPropagation();
+              const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              onOpenMenu(row.name, r.left, r.bottom + 4);
+            }}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="5" cy="12" r="1.6" />
+              <circle cx="12" cy="12" r="1.6" />
+              <circle cx="19" cy="12" r="1.6" />
+            </svg>
+          </button>
+        </Tooltip>
+        {onMoveUp && (
+          <Tooltip asChild content="Move up">
+            <button
+              className="cl-icon cl-icon-svg cl-icon-stroke sp-move-up"
+              aria-label="Move up"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMoveUp();
+              }}
+            >
+              {ICON_ARROW_UP}
+            </button>
+          </Tooltip>
+        )}
+        {onMoveDown && (
+          <Tooltip asChild content="Move down">
+            <button
+              className="cl-icon cl-icon-svg cl-icon-stroke sp-move-down"
+              aria-label="Move down"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMoveDown();
+              }}
+            >
+              {ICON_ARROW_DOWN}
+            </button>
+          </Tooltip>
+        )}
+      </span>
+    </div>
+  );
+}
+
+// A collapsible header for same-type candle-pane indicators (e.g. three FVGs),
+// followed by their rows when expanded. Mirrors the legend's own TV-style collapse
+// chevron (ICON_CHEVRON_UP, rotated via CSS) plus a hover-revealed eye that hides/
+// shows every member at once — the same `.cl-icons` reveal-on-hover the member
+// rows use, so it doesn't compete visually with them when idle.
+function IndicatorGroup({
+  rows,
+  collapsed,
+  onToggleCollapsed,
+  onToggleGroupVisible,
+  onRemoveGroup,
+  onCopyGroup,
+  selectedName,
+  highlightedName,
+  figureValuesRef,
+  setRowHover,
+  onSelectRow,
+  onToggleVisible,
+  onOpenSettings,
+  onRemove,
+  onOpenMenu,
+}: {
+  indType: string;
+  rows: LegendRow[];
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  onToggleGroupVisible: () => void;
+  onRemoveGroup: () => void;
+  onCopyGroup: () => void;
+  selectedName: string | null;
+  highlightedName: string | null;
+  figureValuesRef: RefObject<Map<string, HTMLSpanElement>>;
+  setRowHover: (name: string | null) => void;
+  onSelectRow: (name: string, figureKey?: string) => void;
+  onToggleVisible: (name: string) => void;
+  onOpenSettings: (name: string) => void;
+  onRemove: (name: string) => void;
+  onOpenMenu: (name: string, x: number, y: number) => void;
+}) {
+  const anyVisible = rows.some((r) => r.visible);
+  return (
+    <div className="cl-group">
+      <div
+        className={`cl-row cl-ind cl-group-header${anyVisible ? "" : " cl-hidden"}`}
+        onClick={onToggleCollapsed}
+      >
+        <button
+          className={`cl-icon cl-icon-svg cl-icon-stroke cl-group-chevron${
+            collapsed ? " cl-collapsed" : ""
+          }`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleCollapsed();
+          }}
+        >
+          {ICON_CHEVRON_UP}
+        </button>
+        <span className="cl-name">
+          {rows[0].shortName}
+          <span className="cl-group-count"> · {rows.length}</span>
+        </span>
+        <span className={`cl-icons${anyVisible ? "" : " cl-icons-hidden-eye"}`}>
+          <Tooltip content={anyVisible ? "Hide all" : "Show all"}>
+            <button
+              className="cl-icon"
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleGroupVisible();
+              }}
+            >
+              {anyVisible ? ICON_EYE : ICON_EYE_OFF}
+            </button>
+          </Tooltip>
+          <Tooltip content={`Copy all ${rows.length}`}>
+            <button
+              className="cl-icon cl-icon-svg cl-icon-stroke"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCopyGroup();
+              }}
+            >
+              {ICON_COPY}
+            </button>
+          </Tooltip>
+          <Tooltip content={`Remove all ${rows.length}`}>
+            <button
+              className="cl-icon"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRemoveGroup();
+              }}
+            >
+              {ICON_TRASH}
+            </button>
+          </Tooltip>
+        </span>
+      </div>
+      {!collapsed && (
+        <div className="cl-group-rows">
+          {rows.map((row) => (
+            <IndicatorRow
+              key={row.name}
+              row={row}
+              selected={selectedName === row.name}
+              highlighted={highlightedName === row.name}
+              figureValuesRef={figureValuesRef}
+              setRowHover={setRowHover}
+              onSelectRow={onSelectRow}
+              onToggleVisible={onToggleVisible}
+              onOpenSettings={onOpenSettings}
+              onRemove={onRemove}
+              onOpenMenu={onOpenMenu}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// A sub-pane indicator legend: the rows for ONE pane below the chart (Volume, MACD,
+// RSI…), positioned by ChartCore at the top-left of that pane (where klinecharts
+// used to draw its blurry canvas legend). No symbol/OHLC row — just the indicator
+// rows, reusing <IndicatorRow> so the look/behavior matches the candle legend.
+// Values fill imperatively through the SAME figureValuesRef as the candle legend
+// (the parent <ChartLegend>'s handle loops all panes), so these stay live on the
+// crosshair/tick with no extra wiring. selectedName drives the same blue highlight.
+function SubPaneLegend({
+  data,
+  reorder,
+  selectedName,
+  highlightedName,
+  figureValuesRef,
+  setRowHover,
+  onSelectRow,
+  onToggleVisible,
+  onOpenSettings,
+  onRemove,
+  onOpenMenu,
+}: {
+  data: SubPaneLegendData;
+  // Where this card sits in the reorderable sub-pane list, and how to move it.
+  // Absent for the inset band's card: it is a region of the candle pane, not a pane
+  // in the order, so it gets neither the grip nor the move arrows.
+  reorder?: {
+    index: number; // this pane's position within the reorderable sub-pane list
+    count: number; // total reorderable sub-panes
+    onMove: (name: string, targetIndex: number) => void;
+    onStartReorder: (paneId: string, name: string) => void;
+  };
+  selectedName: string | null;
+  highlightedName: string | null;
+  figureValuesRef: RefObject<Map<string, HTMLSpanElement>>;
+  setRowHover: (name: string | null) => void;
+  onSelectRow: (name: string, figureKey?: string) => void;
+  onToggleVisible: (name: string) => void;
+  onOpenSettings: (name: string) => void;
+  onRemove: (name: string) => void;
+  onOpenMenu: (name: string, x: number, y: number) => void;
+}) {
+  return (
+    <div className="chart-legend sub-pane-legend" style={{ top: data.top }}>
+      {reorder && (
+      <Tooltip content="Drag to reorder">
+        <button
+          className="sp-drag-handle"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => {
+            if (e.button !== 0) return; // primary button only — no right-click drags
+            e.stopPropagation();
+            e.preventDefault();
+            reorder.onStartReorder(data.paneId, data.rows[0]?.name ?? "");
+          }}
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+            <circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" />
+            <circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" />
+            <circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" />
+          </svg>
+        </button>
+      </Tooltip>
+      )}
+      {/* Rows in their own column so the grip sits to their LEFT (the card lays out
+          as a row: [grip | rows]), not stacked above the first row. */}
+      <div className="sp-rows">
+        {data.rows.map((row) => (
+          <IndicatorRow
+            key={row.name}
+            row={row}
+            selected={selectedName === row.name}
+            highlighted={highlightedName === row.name}
+            figureValuesRef={figureValuesRef}
+            setRowHover={setRowHover}
+            onSelectRow={onSelectRow}
+            onToggleVisible={onToggleVisible}
+            onOpenSettings={onOpenSettings}
+            onRemove={onRemove}
+            onOpenMenu={onOpenMenu}
+            onMoveUp={
+              reorder && reorder.index > 0
+                ? () => reorder.onMove(row.name, reorder.index - 1)
+                : undefined
+            }
+            onMoveDown={
+              reorder && reorder.index < reorder.count - 1
+                ? () => reorder.onMove(row.name, reorder.index + 1)
+                : undefined
+            }
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Build the LegendRow list for ONE pane's indicator map. Figure colors resolve from
+// per-line style overrides, falling back to the theme's line palette — the same
+// resolution the selection-dot cache uses. Shared by the candle pane and sub-panes.
+function rowsForPane(
+  inds: Map<string, Indicator> | null | undefined,
+  lineStyles: { color: string }[],
+  legendTextColor: string,
+  dataList?: KLineData[],
+  tfLabel?: string,
+): LegendRow[] {
+  const rows: LegendRow[] = [];
+  for (const [name, ind] of inds ?? []) {
+    const indType = indTypeOf(ind);
+    const hideValue =
+      (ind.extendData as { hideLegendValue?: boolean } | undefined)?.hideLegendValue ?? false;
+    // Indicators pinned to a timeframe (the chart's own or higher) show its short
+    // label after the params (TV-style "EMA(50,1D)"), so the legend says which bars
+    // the values are from.
+    const mtfRes = (ind.extendData as { mtf?: { timeframe?: string | null } } | undefined)?.mtf
+      ?.timeframe;
+    const mtfTf = mtfRes && mtfRes !== "chart" ? periodByResolution(mtfRes)?.label ?? mtfRes : "";
+    // A pinned timeframe is not a param: it says which bars the values are FROM,
+    // so it survives where the params don't (the toggle below drops them on a
+    // figure-less pane). AVWAP has no Timeframe control, so it never has one.
+    const mtfOnlyText = mtfTf ? `(${mtfTf})` : "";
+    const paramsText =
+      indType === "AVWAP"
+        ? ""
+        : ind.calcParams?.length
+          ? `(${[...ind.calcParams, ...(mtfTf ? [mtfTf] : [])].join(",")})`
+          : mtfOnlyText;
+    let lineIdx = 0;
+    const figures: LegendFigure[] = [];
+    for (const fig of legendFiguresOf(ind)) {
+      const isLine = fig.type === "line";
+      const color = isLine
+        ? ind.styles?.lines?.[lineIdx]?.color ??
+          lineStyles[lineIdx % lineStyles.length]?.color ??
+          legendTextColor
+        : legendTextColor;
+      if (isLine) lineIdx++;
+      if (typeof fig.title !== "string" || fig.title === "") continue;
+      figures.push({ key: fig.key, title: fig.title, color });
+    }
+    // "Show value in legend" hides the figure READOUTS. A pane with no figures
+    // has none to hide (TRENDLINES declares `figures: []` and paints its own
+    // canvas), so the toggle did nothing at all there and read as broken. For
+    // those panes it hides the PARAMS instead, which is the only thing the
+    // legend carries past the name — and on TRENDLINES that is sixteen numbers.
+    //
+    // Not for a pane that HAS figures: there "EMA(50)" is the setting and
+    // "433.36" is the value, and hiding the setting is not what was asked for.
+    const calcParamsText = hideValue && figures.length === 0 ? mtfOnlyText : paramsText;
+    // PREV_HL: warn when an active boundary draws nothing at this timeframe (its
+    // window is shorter than one bar). The fix is the same for any boundary — make
+    // the lookback at least one bar — so the message states that minimum.
+    let warn: string | undefined;
+    let summary: string | undefined;
+    if (indType === "PREV_HL") {
+      const ext = (ind.extendData ?? {}) as PrevHlExtend;
+      if (dataList?.length) {
+        const { degenerate, minDuration } = prevHlDegenerateInfo(dataList, ext);
+        if (degenerate) {
+          const inTf = tfLabel ? ` in the ${tfLabel} timeframe` : "";
+          warn = `Lookback must be at least ${minDuration}${inTf}.`;
+        }
+      }
+      // The lookback summary (e.g. "1 day, since …"), gated by the "Show lookback in
+      // legend" toggle (hideLegendValue). Empty when no boundary is active.
+      if (!hideValue) summary = prevHlLegendSummary(ext) || undefined;
+    }
+    rows.push({
+      name,
+      shortName: ind.shortName ?? ind.name,
+      calcParamsText,
+      visible: ind.visible !== false,
+      hideValue,
+      figures,
+      warn,
+      summary,
+      indType,
+      nameColor:
+        indType === "TRENDLINES"
+          ? trendlineStyleOf(ind.extendData as TrendlinesExtend | undefined).color
+          : undefined,
+    });
+  }
+  return rows;
+}
+
+// Shallow signature ChartCore diffs to decide whether a row list changed (so it
+// only setState's on real structural changes — add/remove/visibility/recolor).
+function rowsSig(rows: LegendRow[]): string {
+  return rows
+    .map(
+      (r) =>
+        `${r.name}:${r.shortName}${r.calcParamsText}:${r.visible ? 1 : 0}:${r.hideValue ? 1 : 0}:${
+          r.warn ?? ""
+        }:${r.summary ?? ""}:${r.nameColor ?? ""}:${r.figures.map((f) => f.key + f.title + f.color).join(",")}`,
+    )
+    .join("|");
+}
+
+// Build the candle-pane LegendRow list + its signature. ChartCore calls this on the
+// 1s tick / indicatorRemoved and only setState's when the signature changes.
+export function buildLegendRows(chart: Chart, tfLabel?: string): { rows: LegendRow[]; sig: string } {
+  // Inset instances live on candle_pane but read as their own pane on screen, so
+  // their rows belong to the band's card (buildInsetLegend), not to this strip —
+  // exactly as a sub-pane's rows are not in the candle legend.
+  const panes = candlePaneOwn(chart);
+  const lineStyles = chart.getStyles().indicator.lines;
+  const legendTextColor = chart.getStyles().indicator.tooltip.legend.color;
+  const rows = rowsForPane(panes, lineStyles, legendTextColor, chart.getDataList(), tfLabel);
+  return { rows, sig: rowsSig(rows) };
+}
+
+/** candle_pane's indicators split into the ones that draw on the candles and the
+ *  ones that draw in the inset band. */
+function candlePaneSplit(chart: Chart): {
+  own: Map<string, Indicator>;
+  inset: Map<string, Indicator>;
+} {
+  const own = new Map<string, Indicator>();
+  const inset = new Map<string, Indicator>();
+  for (const [name, ind] of getIndicatorsByPane(chart).get("candle_pane") ?? []) {
+    (isInsetInstance(ind) ? inset : own).set(name, ind);
+  }
+  return { own, inset };
+}
+
+function candlePaneOwn(chart: Chart): Map<string, Indicator> {
+  return candlePaneSplit(chart).own;
+}
+
+// The inset band's card is addressed by a paneId that no pane has, so a stray
+// lookup fails loudly instead of silently landing on the candle pane.
+const INSET_LEGEND_PANE_ID = "candle_pane:inset";
+
+/** The inset band's legend card: the same card a sub-pane gets, positioned at the
+ *  band's top edge. Null when this chart has no inset instance (or the band has been
+ *  dragged down to a sliver, mirroring the collapsed-sub-pane rule).
+ *
+ *  HIDDEN inset instances keep their row, dimmed, the way a sub-pane's do — the eye
+ *  icon on that row is the only way back, and the band itself paints nothing while
+ *  its only occupant is hidden. */
+export function buildInsetLegend(chart: Chart): { data: SubPaneLegendData | null; sig: string } {
+  const { inset } = candlePaneSplit(chart);
+  const box = inset.size ? insetBandBox(chart) : null;
+  if (!box || box.height <= COLLAPSED_SUBPANE_MAX_H) return { data: null, sig: "" };
+  const lineStyles = chart.getStyles().indicator.lines;
+  const legendTextColor = chart.getStyles().indicator.tooltip.legend.color;
+  const rows = rowsForPane(inset, lineStyles, legendTextColor).filter(
+    (r) => !isInternalIndicator(r.name),
+  );
+  if (!rows.length) return { data: null, sig: "" };
+  const data: SubPaneLegendData = { paneId: INSET_LEGEND_PANE_ID, top: box.top, rows };
+  return { data, sig: `${box.top}#${rowsSig(rows)}` };
+}
+
+// A sub-pane at/below this height (px) has been collapsed by the double-click
+// "hide bottom sub-panes" gesture (its height is forced to 1px); a real sub-pane is
+// ≥30px. Used to drop the collapsed pane's legend card.
+const COLLAPSED_SUBPANE_MAX_H = 12;
+
+// Build the sub-pane legend list (every pane EXCEPT candle_pane), each positioned at
+// its pane's main-area top via getSize. Returns the data array + a combined signature
+// that folds in each pane's rows AND its `top` — so a separator drag (which only
+// moves `top`) still re-renders the cards to their new positions, not just on
+// add/remove. ChartCore gates setState on this signature like the candle rows.
+export function buildSubPaneLegends(chart: Chart): {
+  subPanes: SubPaneLegendData[];
+  sig: string;
+} {
+  const all = getIndicatorsByPane(chart);
+  const lineStyles = chart.getStyles().indicator.lines;
+  const legendTextColor = chart.getStyles().indicator.tooltip.legend.color;
+  const subPanes: SubPaneLegendData[] = [];
+  for (const [paneId, inds] of all ?? []) {
+    if (paneId === "candle_pane") continue;
+    const rows = rowsForPane(inds, lineStyles, legendTextColor).filter(
+      (r) => !isInternalIndicator(r.name),
+    );
+    // No card for a pane holding only internal indicators (e.g. the backtest equity
+    // curve) — it would otherwise get a removable/editable card it shouldn't have,
+    // and its canvas legend (which we don't blank for internals) would duplicate.
+    if (!rows.length) continue;
+    // getSize(paneId, "main").top is the pane's main-area y relative to the chart
+    // root — exactly where klinecharts drew its canvas legend. Round to whole pixels
+    // so the card text lands on the pixel grid (crisp, no half-pixel blur).
+    const size = chart.getSize(paneId, 'main');
+    // No card for a pane the double-click gesture collapsed to ~1px (its indicators
+    // still exist, but the pane is a sliver) — the card would otherwise render over the
+    // reclaimed candle area. A real sub-pane is ≥30px (klinecharts' min height), so any
+    // pane below COLLAPSED_SUBPANE_MAX_H is collapsed, not merely short.
+    if ((size?.height ?? 0) <= COLLAPSED_SUBPANE_MAX_H) continue;
+    const top = Math.round(size?.top ?? 0);
+    subPanes.push({ paneId, top, rows });
+  }
+  const sig = subPanes.map((sp) => `${sp.paneId}@${sp.top}#${rowsSig(sp.rows)}`).join("||");
+  return { subPanes, sig };
+}

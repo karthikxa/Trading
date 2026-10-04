@@ -1,0 +1,217 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
+import Tooltip from "./Tooltip";
+
+afterEach(cleanup);
+beforeEach(() => { vi.useRealTimers(); });
+
+describe("Tooltip", () => {
+  it("shows after the delay on hover, hides on mouse leave", () => {
+    vi.useFakeTimers();
+    render(<Tooltip content="Close book"><button>x</button></Tooltip>);
+    // expire any grace window left by a previous test
+    act(() => { vi.advanceTimersByTime(600); });
+
+    fireEvent.mouseEnter(screen.getByText("x").parentElement!);
+    expect(screen.queryByRole("tooltip")).toBeNull();      // still within delay
+    act(() => { vi.advanceTimersByTime(100); });
+    expect(screen.getByRole("tooltip").textContent).toContain("Close book");
+
+    fireEvent.mouseLeave(screen.getByText("x").parentElement!);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("shows instantly on keyboard focus", () => {
+    render(<Tooltip content="Hi"><button>btn</button></Tooltip>);
+    fireEvent.focus(screen.getByText("btn").parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toContain("Hi");
+  });
+
+  it("renders a string array as separate description lines, plus a title", () => {
+    render(
+      <Tooltip title="Margin" content={["Line one.", "Line two."]}>
+        <span>m</span>
+      </Tooltip>,
+    );
+    fireEvent.focus(screen.getByText("m").parentElement!);
+    const tip = screen.getByRole("tooltip");
+    expect(tip.querySelector(".tooltip-title")?.textContent).toBe("Margin");
+    expect(tip.querySelectorAll(".tooltip-desc").length).toBe(2);
+  });
+
+  it("sets a note apart from the description, and only warns when asked", () => {
+    render(
+      <Tooltip content="Invert scale" note="Session only (resets on reload)" noteWarn>
+        <span>i</span>
+      </Tooltip>,
+    );
+    fireEvent.focus(screen.getByText("i").parentElement!);
+    const tip = screen.getByRole("tooltip");
+    const note = tip.querySelector(".tooltip-note");
+    // The note must NOT land among the description lines — its whole job is to
+    // read as secondary rather than as one more line of the explanation.
+    expect(tip.querySelectorAll(".tooltip-desc").length).toBe(1);
+    expect(note?.textContent).toBe("Session only (resets on reload)");
+    expect(note?.classList.contains("warn")).toBe(true);
+    expect(note?.querySelector("svg")).not.toBeNull();
+
+    cleanup();
+    render(
+      <Tooltip content="Stretch" note="Double-click the price axis to cycle">
+        <span>s</span>
+      </Tooltip>,
+    );
+    fireEvent.focus(screen.getByText("s").parentElement!);
+    const plain = screen.getByRole("tooltip").querySelector(".tooltip-note");
+    expect(plain?.classList.contains("warn")).toBe(false);
+    expect(plain?.querySelector("svg")).toBeNull();
+  });
+
+  it("renders nothing and stays inert when content is empty", () => {
+    render(<Tooltip content=""><button>bare</button></Tooltip>);
+    fireEvent.focus(screen.getByText("bare").parentElement!);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("does not show when disabled", () => {
+    render(<Tooltip content="nope" disabled><button>d</button></Tooltip>);
+    fireEvent.focus(screen.getByText("d").parentElement!);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("stands down when it is disabled while showing, and stays down", () => {
+    // A menu trigger's tooltip: hovering opens the bubble, clicking opens the
+    // flyout in the same spot. The bubble has to go, and it must not pop back
+    // when the menu closes without the pointer moving.
+    const { rerender } = render(
+      <Tooltip content="Pattern clipboard"><button>menu</button></Tooltip>,
+    );
+    fireEvent.focus(screen.getByText("menu").parentElement!);
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+
+    rerender(<Tooltip content="Pattern clipboard" disabled><button>menu</button></Tooltip>);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    rerender(<Tooltip content="Pattern clipboard"><button>menu</button></Tooltip>);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("skips the delay for a different trigger hovered within the grace window", () => {
+    vi.useFakeTimers();
+    render(
+      <>
+        <Tooltip content="First"><button>one</button></Tooltip>
+        <Tooltip content="Second"><button>two</button></Tooltip>
+      </>,
+    );
+    // expire any grace window left by a previous test
+    act(() => { vi.advanceTimersByTime(600); });
+
+    const first = screen.getByText("one").parentElement!;
+    const second = screen.getByText("two").parentElement!;
+
+    fireEvent.mouseEnter(first);
+    act(() => { vi.advanceTimersByTime(100); });
+    expect(screen.getByRole("tooltip").textContent).toContain("First");
+
+    fireEvent.mouseLeave(first);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    // Within the grace window: hovering a different trigger shows it instantly,
+    // with zero further timer advancement.
+    fireEvent.mouseEnter(second);
+    expect(screen.getByRole("tooltip").textContent).toContain("Second");
+  });
+});
+
+describe("touch input", () => {
+  it("opens on tap, ignores the synthetic hover, and closes on a tap elsewhere", () => {
+    vi.useFakeTimers();
+    render(
+      <Tooltip content="tip">
+        <button>t</button>
+      </Tooltip>,
+    );
+    const btn = screen.getByText("t");
+    // The compat mouseenter a tap emits must not open anything on its own.
+    fireEvent.pointerDown(document.body, { pointerType: "touch" });
+    fireEvent.mouseEnter(btn.parentElement!);
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    // A tap on the trigger opens it.
+    fireEvent.pointerDown(btn, { pointerType: "touch" });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    // A tap elsewhere closes it.
+    fireEvent.pointerDown(document.body, { pointerType: "touch" });
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    // A real mouse restores hover opens.
+    fireEvent.pointerDown(document.body, { pointerType: "mouse" });
+    fireEvent.focus(btn.parentElement!);
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+  });
+  describe("asChild", () => {
+    it("renders no wrapper span and anchors on the child itself", () => {
+      vi.useFakeTimers();
+      render(
+        <table><tbody>
+          <Tooltip asChild content="Open chart"><tr data-testid="row"><td>r</td></tr></Tooltip>
+        </tbody></table>,
+      );
+      act(() => { vi.advanceTimersByTime(600); });
+      const row = screen.getByTestId("row");
+      expect(row.parentElement!.tagName).toBe("TBODY");
+      expect(document.querySelector(".tooltip-trigger")).toBeNull();
+      fireEvent.mouseEnter(row);
+      act(() => { vi.advanceTimersByTime(100); });
+      const tip = screen.getByRole("tooltip");
+      expect(tip.textContent).toContain("Open chart");
+      expect(row.getAttribute("aria-describedby")).toBe(tip.id);
+      fireEvent.mouseLeave(row);
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    });
+
+    it("still runs the child's own handlers and ref", () => {
+      const enter = vi.fn();
+      const leave = vi.fn();
+      const focus = vi.fn();
+      const ref = { current: null as HTMLButtonElement | null };
+      render(
+        <Tooltip asChild content="Hi">
+          <button ref={ref} onMouseEnter={enter} onMouseLeave={leave} onFocus={focus}>b</button>
+        </Tooltip>,
+      );
+      const btn = screen.getByText("b");
+      expect(ref.current).toBe(btn);
+      fireEvent.mouseEnter(btn);
+      fireEvent.mouseLeave(btn);
+      fireEvent.focus(btn);
+      expect(enter).toHaveBeenCalledTimes(1);
+      expect(leave).toHaveBeenCalledTimes(1);
+      expect(focus).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("tooltip").textContent).toContain("Hi");
+    });
+  });
+  it("never stacks bubbles for nested triggers: the inner one wins", () => {
+    render(
+      <Tooltip asChild content="Row hint">
+        <div data-testid="row">
+          <Tooltip content="Button hint"><button>b</button></Tooltip>
+        </div>
+      </Tooltip>,
+    );
+    const row = screen.getByTestId("row");
+    fireEvent.focus(row);
+    expect(screen.getByRole("tooltip").textContent).toContain("Row hint");
+    fireEvent.focus(screen.getByText("b").parentElement!);
+    const tips = screen.getAllByRole("tooltip");
+    expect(tips).toHaveLength(1);
+    expect(tips[0].textContent).toContain("Button hint");
+    // The outer opening late (its hover delay) stands down for the inner.
+    fireEvent.focus(row);
+    expect(screen.getAllByRole("tooltip")).toHaveLength(1);
+    expect(screen.getByRole("tooltip").textContent).toContain("Button hint");
+  });
+});

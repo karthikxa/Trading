@@ -1,0 +1,1366 @@
+// The master redraw loop for a ChartCore cell + the two self-drawn painters it
+// drives (paintBracket, paintSeparator/fmtSeparatorLabel), extracted verbatim
+// from ChartCore. `redraw` recomputes every axis/canvas overlay from the chart's
+// current geometry (price/bid/ask pills, alert tags, trade pills, selection
+// handles, crosshair link, backtest/exit aggregate pills, legend rows) and is
+// wired to the 1s tick, scroll/zoom, live ticks and overlay changes.
+//
+// It is `(handle, deps)`-shaped: EVERY value the originals read from ChartCore's
+// closure is supplied here via `handle.*` (identity-stable for the mount), a
+// module import, or an explicit `deps` field (all refs — never value snapshots —
+// so the memoized bodies keep the ORIGINAL dependency arrays: `paintBracket` is
+// `[]`, `redraw` is `[paintBracket]`, correct only because every read is a ref).
+//
+// The three functions publish onto their bridge refs in render (before any effect
+// runs) so the one-time init effect + other cross-boundary callers keep working:
+// `handle.paintBracketRef.current = paintBracket`, `handle.paintSeparatorRef`,
+// `handle.redrawRef` — the same staleness-proof ref-bridge as the other hooks.
+import { useCallback, useRef } from "react";
+import {
+  first,
+  paintSelectionDots,
+  paintCrossingDots,
+  buildCurveLabelPills,
+  buildSlopeMaPills,
+  paintAnchorHandle,
+  paintPivotDeltaLabels,
+  fmtCountdown,
+} from "./chartPainters";
+import { crossingsForSelection } from "./curveCrossings";
+import { stableValue, stableArray } from "./renderStability";
+import {
+  type LineCache,
+  buildLineCache,
+  avwapAnchorPixel,
+  selectedAvwapId,
+  buildPivotDeltaLabels,
+  pivotDeltaLabelAt,
+} from "./chartGeometry";
+import { buildLegendRows, buildSubPaneLegends, buildInsetLegend, type LegendRow, type SubPaneLegendData, type ChartLegendHandle } from "../ChartLegend";
+import { insetBandBox, type InsetBandBox } from "../lib/indicators/inset";
+import { slopeMaLines } from "../lib/indicators/slope";
+import { getIndicatorsByPane } from "../lib/indicators";
+import { indTypeOf } from "../lib/customIndicators";
+import { dashSliceBounds, getBacktestAggregate, tradeDashes } from "../lib/backtest";
+import { type AggPill } from "../BacktestAggMarkers";
+import { type ProjectedDash } from "../BacktestTradeDashes";
+import { type ExitPill } from "../TradeExitAggMarkers";
+import { mergeTradeLevels, isBreakeven, isBreakevenTarget, getLivePrice, type OrderSide } from "../lib/trading";
+import { type TradeLineField } from "../lib/signals";
+import { bracketLabels } from "../lib/positionLines";
+import { hexToRgba, DASH_DASHED, DASH_DOTTED } from "../lib/lineStyle";
+import { UP, DOWN } from "../lib/chartTheme";
+import { isSynthetic } from "../lib/syntheticRegistry";
+import { chartColors, type BidAskStyle, type Theme } from "../theme";
+import { RESOLUTION_SECONDS, type LiveStatus } from "../lib/feed";
+import { maxBarMs, projectSplitMarkers } from "../lib/splits";
+import { barEndMs } from "../lib/timeframe";
+import { type AlertCondition, type AlertTrigger } from "../lib/persist";
+import { type ExitCluster } from "../lib/tradeMarkers";
+import type { CurveLabelsHandle } from "../CurveLabels";
+import type { ChartHandle } from "./chartHandle";
+import { priceRowY, tradeSpineX } from "./chartGeometry";
+
+// Module-const from ChartCore (.ba-tag height; stacks bid/ask clear of the price pill).
+const BA_TAG_H = 18;
+// Module-const from ChartCore: the trade-line handle radius. The spine's x is no
+// longer a constant — it tracks the axis-docked pill column (see tradeSpineX).
+const TRADE_HANDLE_R = 4.5;
+
+// The alert-tag element type (mirrors ChartCore's setAlertTags state element).
+type AlertTag = {
+  id: string;
+  y: number;
+  level: number;
+  condition: AlertCondition;
+  trigger: AlertTrigger;
+  expiresAt: number | null;
+  hovered: boolean;
+  active: boolean;
+  selected: boolean;
+};
+
+// The trade-pill element type (mirrors ChartCore's setTradePills state element).
+// `redraw` reads `typeof tradePills` in ChartCore — that state value doesn't exist
+// here, so the local `const pills` is typed against this explicit alias instead.
+type TradePill = {
+  tradeId: string;
+  field: TradeLineField;
+  y: number;
+  kind: "position" | "order";
+  side: OrderSide;
+  qty: number;
+  level: number;
+  pl: number | null;
+  pct: number | null; // SL/TP: side-aware % price move entry → level; null on entry pills
+  changed: boolean;
+  expiresAt: number | null; // resting order good-till-date epoch ms; null = GTC/position
+  breakevenField?: "stop" | "takeProfit";
+};
+
+type PriceTag = {
+  y: number;
+  price: number;
+  countdown: string | null;
+  w: number;
+  dir: "up" | "down";
+} | null;
+type BaTag = { y: number; price: number; w: number } | null;
+
+export interface ChartPaintDeps {
+  // State setters the redraw loop writes.
+  setPriceTag: React.Dispatch<React.SetStateAction<PriceTag>>;
+  setBidTag: React.Dispatch<React.SetStateAction<BaTag>>;
+  setAskTag: React.Dispatch<React.SetStateAction<BaTag>>;
+  setAlertTags: React.Dispatch<React.SetStateAction<AlertTag[]>>;
+  setTradePills: React.Dispatch<React.SetStateAction<TradePill[]>>;
+  /** Width of the price-axis column — the trade pills dock against its left edge. */
+  setAxisW: React.Dispatch<React.SetStateAction<number>>;
+  setLegendRows: React.Dispatch<React.SetStateAction<LegendRow[]>>;
+  setSubPaneLegends: React.Dispatch<React.SetStateAction<SubPaneLegendData[]>>;
+  // The inset band's legend card and its geometry (the card's position, and where
+  // the resize handle sits). Both move together, so one signature gates both.
+  setInsetLegend: React.Dispatch<React.SetStateAction<SubPaneLegendData | null>>;
+  setInsetBand: React.Dispatch<React.SetStateAction<InsetBandBox | null>>;
+  // Props / value the painters read (fmtSeparatorLabel/paintSeparator dep on these).
+  timezone: string;
+  theme: Theme;
+  // ChartCore-local refs the moved bodies read (never value snapshots — so the
+  // original memo dep arrays stay correct).
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  wrapRef: React.RefObject<HTMLDivElement | null>;
+  // Wrapper around the candle-pane DOM overlays (alert tags/pills, trade pills);
+  // redraw sizes its height to the candle pane so its overflow:hidden clips a
+  // level below the visible range off the pane edge, not into the sub-panes.
+  pillClipRef: React.RefObject<HTMLDivElement | null>;
+  // Live trade-pill DOM nodes keyed "tradeId:field" — paintBracket measures the
+  // subject trade's rendered faces to place the spine just left of them.
+  tradePillNodesRef: React.MutableRefObject<Map<string, HTMLDivElement>>;
+  bracketCanvasRef: React.RefObject<HTMLCanvasElement | null>;
+  sepCanvasRef: React.RefObject<HTMLCanvasElement | null>;
+  selCanvasRef: React.RefObject<HTMLCanvasElement | null>;
+  maCanvasRef: React.RefObject<HTMLCanvasElement | null>;
+  bracketShownRef: React.MutableRefObject<boolean>;
+  draggingTradeRef: React.MutableRefObject<string | null>;
+  hoveredFieldRef: React.MutableRefObject<TradeLineField | null>;
+  marketClosedRef: React.MutableRefObject<boolean>;
+  // The cell's replay handle (null when it has never replayed). Read live: a
+  // replaying cell has no stream, so the bar countdown and the bid/ask pills
+  // would otherwise paint from stale live state.
+  replayRef: React.MutableRefObject<import("./chartHandle").ReplayHandle | null>;
+  statusRef: React.MutableRefObject<LiveStatus>;
+  bidAskRef: React.MutableRefObject<import("../theme").BidAsk>;
+  bidAskStyleRef: React.MutableRefObject<BidAskStyle>;
+  lastPriceHiddenRef: React.MutableRefObject<boolean>;
+  lastActivePillIdRef: React.MutableRefObject<string | null>;
+  positionsHiddenRef: React.MutableRefObject<boolean>;
+  snapViewRef: React.MutableRefObject<boolean>;
+  sepCacheRef: React.MutableRefObject<{ ts: number; tz: string; theme: string; label: string; accent: string } | null>;
+  lineCacheRef: React.MutableRefObject<LineCache[]>;
+  // Cursor position in container pixels (null when off the chart) — drives the
+  // Pivots-High/Low Δ-label hover-enlarge pixel hit-test. Set/cleared in
+  // usePointerCrosshair's onMove/onLeave.
+  pointerPxRef: React.MutableRefObject<{ x: number; y: number } | null>;
+  plusCrosshairYRef: React.MutableRefObject<number | null>;
+  syncCrosshairRef: React.MutableRefObject<boolean>;
+  syncedTsRef: React.MutableRefObject<number | null>;
+  crosshairLabelFmtRef: React.MutableRefObject<(ts: number) => string>;
+  curveLabelsRef: React.RefObject<CurveLabelsHandle | null>;
+  legendRowsSigRef: React.MutableRefObject<string>;
+  subPaneLegendsSigRef: React.MutableRefObject<string>;
+  insetLegendSigRef: React.MutableRefObject<string>;
+  legendHandleRef: React.RefObject<ChartLegendHandle | null>;
+  legendBarIdxRef: React.MutableRefObject<() => number | null>;
+  exitClustersRef: React.MutableRefObject<ExitCluster[]>;
+  precisionRef: React.MutableRefObject<number>;
+  themeRef: React.MutableRefObject<Theme>;
+  anchorPxRef: React.MutableRefObject<{ x: number; y: number; ts: number; color: string } | null>;
+  // Chart period (redraw reads period.label for the legend rows).
+  period: { label: string };
+}
+
+export function useChartPaint(handle: ChartHandle, deps: ChartPaintDeps) {
+  const {
+    setPriceTag,
+    setBidTag,
+    setAskTag,
+    setAlertTags,
+    setTradePills,
+    setAxisW,
+    setLegendRows,
+    setSubPaneLegends,
+    setInsetLegend,
+    setInsetBand,
+    timezone,
+    theme,
+    containerRef,
+    wrapRef,
+    pillClipRef,
+    tradePillNodesRef,
+    bracketCanvasRef,
+    sepCanvasRef,
+    selCanvasRef,
+    maCanvasRef,
+    bracketShownRef,
+    draggingTradeRef,
+    hoveredFieldRef,
+    marketClosedRef,
+    replayRef,
+    statusRef,
+    bidAskRef,
+    bidAskStyleRef,
+    lastPriceHiddenRef,
+    lastActivePillIdRef,
+    positionsHiddenRef,
+    snapViewRef,
+    sepCacheRef,
+    lineCacheRef,
+    pointerPxRef,
+    plusCrosshairYRef,
+    syncCrosshairRef,
+    syncedTsRef,
+    crosshairLabelFmtRef,
+    curveLabelsRef,
+    legendRowsSigRef,
+    subPaneLegendsSigRef,
+    insetLegendSigRef,
+    legendHandleRef,
+    legendBarIdxRef,
+    exitClustersRef,
+    precisionRef,
+    themeRef,
+    anchorPxRef,
+    period,
+  } = deps;
+
+  const {
+    chartRef,
+    epicRef,
+    draftRef,
+    tradeUiRef,
+    tradesRef,
+    pendingRef,
+    resRef,
+    priceSideRef,
+    bidRef,
+    askRef,
+    separatorTsRef,
+    overlays,
+    controller,
+    aggMarkersRef,
+    exitAggMarkersRef,
+    splitMarkersRef,
+    splitsRef,
+    tradeDashesRef,
+  } = handle;
+
+  const { selectedIndicator, legendHoverName, curveHover } = controller;
+  // redraw is built once, so it reads the timeframe label through a ref: a
+  // captured period.label would name the mount-time timeframe forever.
+  const periodLabelRef = useRef(period.label);
+  periodLabelRef.current = period.label;
+
+  // tradeDashes memo for the redraw loop below — recomputed only when the
+  // aggregate clusters or the loaded-bar window change (see use site).
+  const dashCacheRef = useRef<{
+    clusters: NonNullable<ReturnType<typeof getBacktestAggregate>>["clusters"];
+    sig: string;
+    dashes: ReturnType<typeof tradeDashes>;
+  } | null>(null);
+
+  const paintBracket = useCallback(() => {
+    if (isSynthetic(epicRef.current)) return; // analysis-only: no position connector
+    const chart = chartRef.current;
+    const canvas = bracketCanvasRef.current;
+    const wrap = wrapRef.current;
+    if (!chart || !canvas || !wrap) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+
+    // Resolve the subject: the staged draft (this epic) first, else the click-selected
+    // trade, else the hovered trade. Selection paints in the side colour with the focused
+    // handle filled; a mere hover paints grey with just the hovered handle outlined.
+    const epic = epicRef.current;
+    // No REAL draft bracket on a replaying cell — and note what the market-draft
+    // branch below anchors on: getLivePrice(epic), i.e. today's price, painted
+    // across a chart whose whole purpose is that the user cannot see it.
+    const draft = (handle.replayRef.current?.isActive() ?? false) ? null : draftRef.current;
+    let entry: number | null = null, stop: number | null = null, tp: number | null = null;
+    let selectMode = false; // neutral-coloured (selected/draft) vs grey (hover)
+    let activeField: TradeLineField | null = null; // filled (select) / outlined (hover) handle
+    // Whose pills the spine must clear. Stays null for a draft: it has no DOM pill,
+    // so the spine falls back to the default inset from the axis.
+    let subjectId: string | null = null;
+    if (draft && draft.epic === epic) {
+      stop = draft.stop ?? null;
+      tp = draft.takeProfit ?? null;
+      entry = draft.type === "limit" ? draft.price ?? null : getLivePrice(epic) ?? null;
+      selectMode = true;
+    } else {
+      const selId = tradeUiRef.current.selected;
+      const hovId = tradeUiRef.current.hovered;
+      // An active drag reveals the bracket too — in no-confirm mode a drag sets neither
+      // selection nor hover. A drag is the live gesture, so it takes PRECEDENCE: dragging
+      // trade B while trade A is selected must paint B's spine (which its now-full-width
+      // line needs), not A's.
+      const dragId = draggingTradeRef.current;
+      const id = dragId ?? selId ?? hovId;
+      const t = id ? tradesRef.current.find((x) => x.id === id && x.epic === epic) : null;
+      if (t) {
+        subjectId = t.id;
+        const merged = mergeTradeLevels(t, pendingRef.current[t.id] ?? {});
+        entry = merged.price ?? t.priceLevel;
+        stop = merged.stop;
+        tp = merged.takeProfit;
+        selectMode = id === dragId || id === selId;
+        activeField = selId != null ? tradeUiRef.current.selectedField : hoveredFieldRef.current;
+      }
+    }
+
+    // Nothing active (no entry anchor) → clear once and bail. The clientWidth/Height reads
+    // below force a reflow, so the common nothing-active mousemove bails HERE first (cheap
+    // ref reads) and only touches the canvas if it had drawn something that needs clearing.
+    if (entry == null) {
+      if (bracketShownRef.current) {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, wrap.clientWidth, wrap.clientHeight);
+        bracketShownRef.current = false;
+      }
+      return;
+    }
+    const w = wrap.clientWidth;
+    const h = wrap.clientHeight;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    bracketShownRef.current = true;
+    // Clip to the candle pane so a selected/hovered position whose SL/TP is priced
+    // below the visible range draws its spine/handles/badges off the pane edge
+    // rather than over the indicator sub-panes. Restored at the end of the draw.
+    // getSize can transiently report height 0 (pre-layout / mid-collapse); a 0-tall
+    // clip would erase the whole bracket, so fall back to the full canvas height.
+    const measuredPaneH = chart.getSize("candle_pane", 'main')?.height;
+    const paneH = measuredPaneH && measuredPaneH > 0 ? measuredPaneH : h;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, w, paneH);
+    ctx.clip();
+
+    const yOf = (v: number | null): number | null => (v == null ? null : priceRowY(chart, v) ?? null);
+    // Colour carries ONE meaning here — profit/loss: green = target leg, red = stop leg.
+    // The position itself is de-hued to a neutral slate (it holds no direction the P/L
+    // number doesn't already show), so the two accent colours read as accents, not blocks.
+    const GREY = "#8a93a0", NEUTRAL = "#6b7280", SIDE = NEUTRAL;
+    const roleOf = (f: TradeLineField) => (f === "stop" ? "#f23645" : f === "tp" ? "#089981" : NEUTRAL);
+    // The spine tracks the axis-docked pill column: measure the subject trade's
+    // rendered faces (compact at rest, wider once expanded) and sit a gap to their
+    // left, so the caliper and its badges never draw under their own pills.
+    const mainW = chart.getSize("candle_pane", "main")?.width ?? 0;
+    const pillWidths: number[] = [];
+    if (subjectId != null) {
+      for (const [key, node] of tradePillNodesRef.current) {
+        if (key.slice(0, key.lastIndexOf(":")) === subjectId) pillWidths.push(node.offsetWidth);
+      }
+    }
+    const spineX = tradeSpineX({ paneWidth: mainW || w, pillWidths });
+    if (spineX == null) {
+      ctx.restore(); // release the candle-pane clip
+      return;
+    }
+    const bx = spineX + 0.5; // crisp 1.5px stroke
+    const lines = ([
+      ["price", yOf(entry)],
+      ["stop", yOf(stop)],
+      ["tp", yOf(tp)],
+    ] as [TradeLineField, number | null][]).filter((l): l is [TradeLineField, number] => l[1] != null);
+
+    // Spine as a thin caliper linking the levels — a hairline stem with short tick end-caps,
+    // which reads as the measurement the %/R:R badges describe. Only meaningful with ≥2 lines;
+    // grey on hover, neutral on select.
+    if (lines.length >= 2) {
+      const ys = lines.map((l) => l[1]);
+      const top = Math.min(...ys), bot = Math.max(...ys);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = selectMode ? SIDE : GREY;
+      ctx.beginPath();
+      ctx.moveTo(bx, top);
+      ctx.lineTo(bx, bot);
+      ctx.moveTo(bx - 3, top); ctx.lineTo(bx + 3, top); // end-caps
+      ctx.moveTo(bx - 3, bot); ctx.lineTo(bx + 3, bot);
+      ctx.stroke();
+    }
+    // %/R:R badges to the LEFT of the spine (unsigned magnitudes — colour carries meaning).
+    const labels = bracketLabels({ entry, stop, tp });
+    // Chip backdrop so the badge text reads over gridlines/candles.
+    const surfaceBg = getComputedStyle(wrap).getPropertyValue("--surface").trim() || "#161a1f";
+    // A quiet, BORDERLESS mono tag: surface backdrop + role-coloured text, right-aligned so it
+    // ENDS just left of the spine. Borderless (a tier below the bordered pills) so the badges
+    // read as annotation on the caliper, not objects competing with the readout.
+    const badge = (y: number, text: string, color: string) => {
+      ctx.save();
+      ctx.font = '600 10px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+      const pw = Math.round(ctx.measureText(text).width) + 10, ph = 15;
+      const left = Math.round(spineX - 10 - pw), top = Math.round(y - ph / 2);
+      ctx.beginPath();
+      if (typeof ctx.roundRect === "function") ctx.roundRect(left, top, pw, ph, 3);
+      else ctx.rect(left, top, pw, ph);
+      ctx.fillStyle = surfaceBg;
+      ctx.fill();
+      ctx.fillStyle = color;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, left + 5, y + 0.5);
+      ctx.restore();
+    };
+    const badgeFor = (f: TradeLineField, y: number) => {
+      const txt = f === "stop" ? (labels.slPct != null ? `SL ${labels.slPct.toFixed(2)}%` : null)
+        : f === "tp" ? (labels.tpPct != null ? `TP ${labels.tpPct.toFixed(2)}%` : null)
+        : (labels.rr != null ? `1:${labels.rr.toFixed(1)}` : null);
+      if (txt == null) return;
+      badge(y, txt, roleOf(f)); // price → neutral, stop → red, tp → green
+    };
+    // Handles — hover: only the hovered handle takes its role colour, rest grey; select:
+    // all side colour, the focused one filled. Drawn after the spine so they sit on top.
+    // The ACTIVE field's handle is drawn LAST: at breakeven the merged SL/TP shares the
+    // entry's exact y, and drawn in list order its hollow handle would overpaint the
+    // filled selected one (the fill seemed to vanish for a BE trade).
+    const handleOrder = [...lines].sort(
+      (a, b) => (a[0] === activeField ? 1 : 0) - (b[0] === activeField ? 1 : 0),
+    );
+    for (const [field, y] of lines) badgeFor(field, y);
+    for (const [field, y] of handleOrder) {
+      const outline = selectMode ? SIDE : field === activeField ? roleOf(field) : GREY;
+      ctx.beginPath();
+      ctx.arc(spineX, y, TRADE_HANDLE_R, 0, Math.PI * 2);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = outline;
+      // Hollow (surface backdrop) at rest; the selected/focused handle fills solid neutral.
+      ctx.fillStyle = selectMode && field === activeField ? SIDE : surfaceBg;
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore(); // release the candle-pane clip
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- omitted deps are refs, handle members or controller signals, stable for the mount
+  }, []);
+  handle.paintBracketRef.current = paintBracket;
+
+  // Slope "Show MAs on chart": draw each SLOPE indicator's underlying MA lines on
+  // the candle pane (our own canvas, above klinecharts' candles). Reads the live
+  // Slope config every frame via slopeMaLines, so the curves match the slope lines
+  // (same lengths / maSeries / colors) and update on any slope edit. Not participating
+  // in the candle pane's y-scale is accepted: a far MA can clip on tight zoom.
+  const paintSlopeMa = useCallback(() => {
+    const chart = chartRef.current;
+    const canvas = maCanvasRef.current;
+    const wrap = wrapRef.current;
+    if (!chart || !canvas || !wrap) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = wrap.clientWidth;
+    const h = wrap.clientHeight;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // Collect every SLOPE indicator across all panes (SLOPE lives in a sub-pane;
+    // its MAs draw on the candle pane).
+    const panes = getIndicatorsByPane(chart) as unknown as Map<
+      string,
+      Map<string, { calcParams?: unknown[]; extendData?: unknown; visible?: boolean; styles?: { lines?: Array<{ color?: string }> } }>
+    >;
+    if (!panes) return;
+    const dl = chart.getDataList();
+    const vr = chart.getVisibleRange();
+    if (!dl.length) return;
+
+    // Clip to the candle pane so curves priced off-screen don't paint over sub-panes.
+    const measuredPaneH = chart.getSize("candle_pane", 'main')?.height;
+    const paneH = measuredPaneH && measuredPaneH > 0 ? measuredPaneH : h;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, w, paneH);
+    ctx.clip();
+
+    for (const inds of panes.values()) {
+      for (const ind of inds.values()) {
+        if (indTypeOf(ind as never) !== "SLOPE") continue;
+        const lines = slopeMaLines(ind, dl);
+        for (const line of lines) {
+          // Pixel-resolve the visible run of defined points, then stroke a polyline.
+          const pts: Array<{ timestamp: number; value: number }> = [];
+          for (let i = vr.from; i < vr.to; i++) {
+            const v = line.values[i];
+            const k = dl[i];
+            if (k && typeof v === "number" && Number.isFinite(v)) {
+              pts.push({ timestamp: k.timestamp, value: v });
+            }
+          }
+          if (pts.length < 2) continue;
+          const px = chart.convertToPixel(pts, { paneId: "candle_pane", absolute: true }) as Array<{
+            x: number;
+            y: number;
+          }>;
+          ctx.strokeStyle = line.color;
+          ctx.lineWidth = line.width;
+          ctx.beginPath();
+          px.forEach((c, k) => (k === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y)));
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- omitted deps are refs, handle members or controller signals, stable for the mount
+  }, []);
+
+  // Recompute the axis overlays (live price+countdown pill, alert label pills)
+  // from the chart's current geometry. Stable (reads refs), so it can be wired to
+  // the 1s tick, scroll/zoom, live ticks, and overlay changes without churn.
+  // Format the separator's pill in the chart's timezone (so it matches the time
+  // axis): always date + "HH:mm", e.g. "1 Jun 00:00".
+  const fmtSeparatorLabel = useCallback(
+    (ts: number): string =>
+      new Intl.DateTimeFormat("en-GB", {
+        timeZone: timezone || undefined,
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      })
+        .format(ts)
+        .replace(",", ""),
+    [timezone],
+  );
+
+  // Paint (or clear) the period-start separator on its own canvas.
+  const paintSeparator = useCallback(() => {
+    const chart = chartRef.current;
+    const canvas = sepCanvasRef.current;
+    const wrap = wrapRef.current;
+    if (!canvas || !wrap) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = wrap.clientWidth;
+    const h = wrap.clientHeight;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    // A replaying cell never paints the period-start pill: it carries a real
+    // calendar date ("1 Jun 00:00"), which a masked session exists to hide.
+    // Structural, not a one-time clear — the quick-range bar is hidden during a
+    // session but useRangeNavigation still owns separatorTsRef, so gating the
+    // PAINT is the only guard a future re-arm cannot slip past.
+    if (replayRef.current?.isActive()) return;
+    const ts = separatorTsRef.current;
+    if (ts == null || !chart) return;
+    // Don't draw a boundary the loaded history doesn't actually reach: klinecharts
+    // clamps an out-of-range timestamp to the OLDEST bar's x (it doesn't extrapolate),
+    // which would plant the line on the wrong bar with the true period date — a
+    // confident-looking lie. Allow up to one bar of slack for exact-edge snapping.
+    const data = chart.getDataList();
+    const oldest = data?.[0]?.timestamp;
+    const resMs = (RESOLUTION_SECONDS[resRef.current] ?? 60) * 1000;
+    if (oldest != null && ts < oldest - resMs) return;
+    const x = first(
+      chart.convertToPixel([{ timestamp: ts }], { paneId: "candle_pane", absolute: true }),
+    )?.x;
+    if (x == null || !Number.isFinite(x) || x < 0 || x > w) return; // off-screen / unmappable
+    const xr = Math.round(x as number) + 0.5;
+    // Stop the line at the bottom of the candle pane (above the time axis), so the
+    // pill sits in the axis gutter like a TradingView session marker.
+    const mainH = chart.getSize("candle_pane", 'main')?.height ?? h;
+
+    // Label + accent are derived from (ts, tz, theme) only — cache so a live-ticking
+    // chart doesn't rebuild an Intl formatter / flush style on every frame.
+    if (
+      !sepCacheRef.current ||
+      sepCacheRef.current.ts !== ts ||
+      sepCacheRef.current.tz !== timezone ||
+      sepCacheRef.current.theme !== theme
+    ) {
+      sepCacheRef.current = {
+        ts,
+        tz: timezone,
+        theme,
+        label: fmtSeparatorLabel(ts),
+        accent: getComputedStyle(wrap).getPropertyValue("--accent").trim() || "#2962ff",
+      };
+    }
+    const { label, accent } = sepCacheRef.current;
+
+    ctx.save();
+    ctx.strokeStyle = accent;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(xr, 0);
+    ctx.lineTo(xr, mainH);
+    ctx.stroke();
+    ctx.restore();
+
+    // Date pill anchored at the boundary, just above the time axis.
+    ctx.save();
+    ctx.font = '10px ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+    const tw = ctx.measureText(label).width;
+    const padX = 5;
+    const pillH = 15;
+    const pillW = tw + padX * 2;
+    let pillX = xr - pillW / 2;
+    pillX = Math.max(2, Math.min(pillX, w - pillW - 2)); // keep on-screen
+    const pillY = mainH - pillH - 3;
+    ctx.fillStyle = accent;
+    if (ctx.roundRect) {
+      ctx.beginPath();
+      ctx.roundRect(pillX, pillY, pillW, pillH, 3);
+      ctx.fill();
+    } else {
+      ctx.fillRect(pillX, pillY, pillW, pillH);
+    }
+    ctx.fillStyle = "#ffffff";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, pillX + padX, pillY + pillH / 2 + 0.5);
+    ctx.restore();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- omitted deps are refs, handle members or controller signals, stable for the mount
+  }, [fmtSeparatorLabel, timezone, theme]);
+  handle.paintSeparatorRef.current = paintSeparator;
+
+  const redraw = useCallback(() => {
+    const chart = chartRef.current;
+    // Read live (never a value snapshot, so this callback's dep array stays
+    // correct): a replaying cell has no stream, so every piece of live-only
+    // chrome below — the next-bar countdown, the bid/ask axis pills and their
+    // dashed lines — must stay off however stale live state happens to look.
+    const replaying = replayRef.current?.isActive() ?? false;
+    if (!chart) {
+      setPriceTag(null);
+      // Identity-preserving (stableArray/stableValue) everywhere a fresh
+      // object/array is built per redraw: the redraw runs on every pan frame,
+      // and a fresh-but-equal identity would re-render the whole cell tree.
+      setAlertTags((prev) => stableArray(prev, []));
+      handle.paintSeparatorRef.current();
+      return;
+    }
+    // Clip the candle-pane DOM overlays to the candle pane: sizing the wrapper to
+    // the pane height (overflow:hidden) keeps a tag/pill whose price is below the
+    // visible range from spilling over the indicator sub-panes. Falls back to the
+    // full wrap height (no clip) if the pane size isn't measurable yet.
+    const clip = pillClipRef.current;
+    if (clip) {
+      // getSize can transiently report height 0 (pre-layout / mid-collapse); a 0-tall
+      // clip would hide every pill/tag, so fall back to 100% (full height, no clip).
+      const paneH = chart.getSize("candle_pane", 'main')?.height;
+      clip.style.height = paneH && paneH > 0 ? `${paneH}px` : "100%";
+    }
+    // Gap from the candle pane's foot to the cell's bottom (sub-panes plus the
+    // time axis), as a CSS var on the cell so DOM chrome pinned to the candle
+    // pane's foot (the trendline debug strip) clears any sub-pane.
+    {
+      const cont = containerRef.current;
+      const cb = chart.getSize("candle_pane", "root");
+      if (cont?.parentElement && cb && cb.height > 0) {
+        const foot = Math.max(0, Math.round(cont.clientHeight - cb.top - cb.height));
+        const v = `${foot}px`;
+        if (cont.parentElement.style.getPropertyValue("--candle-foot") !== v)
+          cont.parentElement.style.setProperty("--candle-foot", v);
+      }
+    }
+    // Price-axis column width, for the axis-docked trade pills. getSize can
+    // transiently report 0 pre-layout; keep the last good value then.
+    {
+      const mainW = chart.getSize("candle_pane", "main")?.width ?? 0;
+      const totalW = containerRef.current?.clientWidth ?? 0;
+      if (mainW > 0 && totalW > mainW) setAxisW(totalW - mainW);
+    }
+    // Rounded, and undefined off a zero-height (background) pane: see priceRowY.
+    const yOf = (value: number): number | undefined => priceRowY(chart, value);
+
+    // Last-price pill y + height, captured so the bid/ask pills below can stack
+    // around it instead of hiding behind it on a tight spread (TradingView does
+    // the same). Height matches .price-tag CSS: 40px with countdown, else 20px.
+    let lastPriceY: number | null = null;
+    let priceTagHeight = 20;
+    const dl = chart.getDataList();
+    if (dl.length) {
+      const last = dl[dl.length - 1];
+      const y = yOf(last.close);
+      if (y == null) {
+        setPriceTag(null);
+      } else {
+        let countdown: string | null = null;
+        if (replaying) {
+          // No stream, no next-bar clock: a countdown here would tick against
+          // real time while the chart sits in the past.
+          countdown = null;
+        } else if (marketClosedRef.current) {
+          // Closed market: the WS still connects (status "live"), so the timer
+          // would otherwise tick to 0:00 and freeze. Show "closed" in its place.
+          countdown = "closed";
+        } else if (statusRef.current === "live") {
+          // barEndMs: a custom intraday bar that ends the day is short.
+          const endMs =
+            barEndMs(resRef.current, last.timestamp) ??
+            last.timestamp + (RESOLUTION_SECONDS[resRef.current] ?? 60) * 1000;
+          const rem = Math.max(0, Math.floor((endMs - Date.now()) / 1000));
+          countdown = fmtCountdown(rem);
+        }
+        // Width of the price-axis column, so the pill fills it exactly (its left
+        // edge lands on the column border) instead of spilling into the chart.
+        const mainW = chart.getSize("candle_pane", 'main')?.width ?? 0;
+        const totalW = containerRef.current?.clientWidth ?? mainW;
+        const dir = last.close >= last.open ? "up" : "down";
+        const nextTag: PriceTag = { y, price: last.close, countdown, w: Math.max(0, totalW - mainW), dir };
+        setPriceTag((prev) => stableValue(prev, nextTag));
+        lastPriceY = y;
+        priceTagHeight = countdown ? 40 : 20;
+      }
+    } else {
+      setPriceTag(null);
+    }
+
+    // Live bid & ask axis pills. Shown only when enabled, the feed is live, and the
+    // side is known (the lines themselves are painted on the overlay canvas below).
+    const showBidAsk = bidAskRef.current !== "off" && statusRef.current === "live" && !replaying;
+    const bidV = bidRef.current;
+    const askV = askRef.current;
+    if (showBidAsk && (bidV != null || askV != null)) {
+      const mainW = chart.getSize("candle_pane", 'main')?.width ?? 0;
+      const totalW = containerRef.current?.clientWidth ?? mainW;
+      const w = Math.max(0, totalW - mainW);
+      let by = bidV != null ? yOf(bidV) : undefined;
+      let ay = askV != null ? yOf(askV) : undefined;
+      // bid <= close <= ask always, so on the axis ask sits at/above the last-price
+      // pill and bid at/below it. When the spread is tighter than the pills are
+      // tall they'd overlap the last-price pill; push ask up / bid down just enough
+      // to clear it (BA_TAG_H matches .ba-tag height) so all three stay readable.
+      if (lastPriceY != null) {
+        const gap = priceTagHeight / 2 + BA_TAG_H / 2;
+        if (ay != null) ay = Math.min(ay, lastPriceY - gap);
+        if (by != null) by = Math.max(by, lastPriceY + gap);
+      }
+      // Suppress the side the main price line already IS: when candles use the bid
+      // (priceSide "bid"), the last-price pill is the bid, so a separate Bid label
+      // is redundant — hide it (same for "ask").
+      const side = priceSideRef.current;
+      setBidTag((prev) =>
+        stableValue(prev, side !== "bid" && bidV != null && by != null ? { y: by, price: bidV, w } : null),
+      );
+      setAskTag((prev) =>
+        stableValue(prev, side !== "ask" && askV != null && ay != null ? { y: ay, price: askV, w } : null),
+      );
+    } else {
+      setBidTag(null);
+      setAskTag(null);
+    }
+
+    const tags: Array<{
+      id: string;
+      y: number;
+      level: number;
+      condition: AlertCondition;
+      trigger: AlertTrigger;
+      expiresAt: number | null;
+      hovered: boolean;
+      active: boolean;
+      selected: boolean;
+    }> = [];
+    // Eye menu "Hide alert lines": the DOM axis tags drop with the lines.
+    for (const a of overlays.getAlertsHidden() ? [] : overlays.getAlerts()) {
+      const y = yOf(a.level);
+      if (y != null)
+        tags.push({
+          id: a.id,
+          y,
+          level: a.level,
+          condition: a.condition,
+          trigger: a.trigger,
+          expiresAt: a.expiresAt,
+          hovered: a.hovered,
+          active: a.active,
+          selected: a.selected,
+        });
+    }
+    // When a click-SELECTED alert sits ON the live-price row, the live price line and
+    // its axis pill step aside so the selected alert owns that row unobstructed
+    // (TV-style). This is SCOPED to overlap: selecting an alert on a different row
+    // must NOT hide the live price (you still want the live read) — only the alert
+    // the user is actively working at the price level does. Hover never counts —
+    // only selection — so a passing cursor never hides the live price. The overlap
+    // band is half the price pill plus half an alert tag (~20px): within it the two
+    // axis pills visually collide. Suppress the dotted last-price line via klinecharts
+    // styles (guarded by a ref so we only setStyles on a transition) and drop the DOM
+    // price pill here.
+    const ALERT_TAG_HALF = 10; // .alert-tag is 20px tall (App.css)
+    const priceObscured =
+      lastPriceY != null &&
+      tags.some((t) => t.selected && Math.abs(t.y - lastPriceY!) <= priceTagHeight / 2 + ALERT_TAG_HALF);
+    if (priceObscured !== lastPriceHiddenRef.current) {
+      lastPriceHiddenRef.current = priceObscured;
+      chart.setStyles({ candle: { priceMark: { last: { line: { show: !priceObscured } } } } });
+    }
+    if (priceObscured) setPriceTag(null);
+    setAlertTags((prev) => stableArray(prev, tags));
+    const act = tags.find((t) => t.active);
+    if (act) lastActivePillIdRef.current = act.id;
+
+    // Always-on clean pills: one per line (entry always; SL/TP when set) for EVERY
+    // position/order on this cell's epic — identical whether selected or not. Levels
+    // merge pending over server (so a dragged line is tracked); recomputed here so pills
+    // follow their lines through scroll/zoom/live ticks. Hidden trades (eye icon) are
+    // skipped unless hovered/selected; the master-hide toggle drops them all.
+    const uiSel = tradeUiRef.current.selected;
+    const uiHov = tradeUiRef.current.hovered;
+    const hiddenSet = new Set(tradeUiRef.current.hidden);
+    const pills: TradePill[] = [];
+    if (!positionsHiddenRef.current && !snapViewRef.current) {
+      for (const t of tradesRef.current) {
+        if (t.epic !== epicRef.current) continue;
+        if (hiddenSet.has(t.id) && t.id !== uiHov && t.id !== uiSel) continue;
+        const pend = pendingRef.current[t.id] ?? {};
+        const merged = mergeTradeLevels(t, pend);
+        const priceLvl = merged.price ?? t.priceLevel;
+        // A position's SL or TP sitting at entry merges into the entry line (stop wins
+        // if both compute true — they can't validly). The merged field drives the "BE"
+        // chip and which pending edit its Apply/Discard commits/clears.
+        const stopBE = t.kind === "position" && isBreakeven(priceLvl, merged.stop, precisionRef.current);
+        const tpBE = t.kind === "position" && isBreakevenTarget(priceLvl, merged.takeProfit, precisionRef.current);
+        const beField = stopBE ? "stop" : tpBE ? "takeProfit" : undefined;
+        const dir = t.side === "buy" ? 1 : -1;
+        // P/L a level would realise if price reached it (from the fixed open level).
+        const plAt = (lvl: number) => dir * t.quantity * (lvl - t.priceLevel);
+        // Side-aware % price move from entry to a level (a profitable TP is positive
+        // for both sides). Quantity- and leverage-independent by design — the compact
+        // pill answers "how far is this level", not "what does it pay".
+        const pctAt = (lvl: number) => (t.priceLevel !== 0 ? (dir * (lvl - t.priceLevel)) / t.priceLevel * 100 : null);
+        const common = { tradeId: t.id, kind: t.kind, side: t.side, qty: t.quantity, expiresAt: t.expiresAt };
+        const yP = yOf(priceLvl);
+        // Entry pill carries live uPnL for an open position; a resting order has none.
+        // `changed` also lights up when a breakeven-staged SL/TP is pending (drag path):
+        // the merged level's own pill is suppressed at breakeven, so its Apply/Discard
+        // affordance must surface here, or a dragged-to-entry SL/TP would strand un-commit-able.
+        if (yP != null)
+          pills.push({ ...common, field: "price", y: yP, level: priceLvl, pl: t.kind === "position" ? t.upnl : null, pct: null, changed: pend.price !== undefined || (beField != null && pend[beField] !== undefined), breakevenField: beField });
+        if (merged.stop != null && !stopBE) {
+          const y = yOf(merged.stop);
+          if (y != null) pills.push({ ...common, field: "stop", y, level: merged.stop, pl: plAt(merged.stop), pct: pctAt(merged.stop), changed: pend.stop !== undefined });
+        }
+        if (merged.takeProfit != null && !tpBE) {
+          const y = yOf(merged.takeProfit);
+          if (y != null) pills.push({ ...common, field: "tp", y, level: merged.takeProfit, pl: plAt(merged.takeProfit), pct: pctAt(merged.takeProfit), changed: pend.takeProfit !== undefined });
+        }
+      }
+    }
+    setTradePills((prev) => stableArray(prev, pills));
+
+    // Indicator-selection overlay (one canvas above klinecharts'): the hollow
+    // selection handles on the curve, plus the white legend CARDS for hovered/
+    // selected candle-pane rows (opaque, so they cover the grid/candles behind
+    // them and read as solid in any theme).
+    lineCacheRef.current = buildLineCache(chart);
+    const canvas = selCanvasRef.current;
+    const wrap = wrapRef.current;
+    if (canvas && wrap) {
+      const dpr = window.devicePixelRatio || 1;
+      const w = wrap.clientWidth;
+      const h = wrap.clientHeight;
+      if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        canvas.style.width = `${w}px`;
+        canvas.style.height = `${h}px`;
+      }
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        // Self-drawn horizontal crosshair: only when the cursor is parked over the "+"
+        // and NOT snapped (klinecharts dropped its own there, and we don't want a line
+        // doubling an alert/trade line under a snap). Mirrors the chart's crosshair line style.
+        // We gate only on the top-level show flags, NOT hl.show — that flag is what
+        // setSuppressNativeLine writes to hide the native line, so reading it here would
+        // cancel our own draw. cs.show / cs.horizontal.show still honor user preference.
+        const py = plusCrosshairYRef.current;
+        if (py != null) {
+          const cs = chart.getStyles().crosshair;
+          const hl = cs.horizontal.line;
+          if (cs.show !== false && cs.horizontal.show !== false) {
+            const mainW = chart.getSize("candle_pane", 'main')?.width ?? w;
+            ctx.save();
+            ctx.strokeStyle = hl.color;
+            ctx.lineWidth = hl.size || 1;
+            if (hl.style === "dashed") ctx.setLineDash(hl.dashedValue ?? [4, 2]);
+            const yy = Math.round(py) + 0.5;
+            ctx.beginPath();
+            ctx.moveTo(0, yy);
+            ctx.lineTo(mainW, yy);
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+        // Crosshair link: a vertical time guide AND its x-axis time label at a
+        // sibling cell's hovered bar — so every linked chart shows the matching
+        // timestamp pill, TradingView-style, not just the chart under the cursor.
+        // Never while replaying: this cell sits at a different moment in time, so
+        // a sibling's timestamp is meaningless here — and under a masked session
+        // it is worse than meaningless. makeMaskedFormatDate is unclamped and
+        // signed, so a live timestamp (a guide stranded by the session's start)
+        // labels as "Day 1832 14:30", the day count from the hidden start to
+        // today; the pill is then clamped back into the plot below, parking that
+        // disclosure at the cell's right edge. Structural, like the period-start
+        // pill above: gating the PAINT is the guard no future path that manages
+        // to set syncedTsRef can slip past. ChartCore also clears the ref on the
+        // transition, so the pill goes at once rather than on the next repaint.
+        const syncTs = syncCrosshairRef.current && !replaying ? syncedTsRef.current : null;
+        if (syncTs != null) {
+          const cs = chart.getStyles().crosshair;
+          if (cs.show !== false && cs.vertical.show !== false) {
+            const sx = first(
+              chart.convertToPixel([{ timestamp: syncTs }], {
+                paneId: "candle_pane",
+                absolute: true,
+              }),
+            ).x;
+            if (sx != null) {
+              const vl = cs.vertical.line;
+              if (vl.show !== false) {
+                ctx.save();
+                ctx.strokeStyle = vl.color;
+                ctx.lineWidth = vl.size || 1;
+                if (vl.style === "dashed") ctx.setLineDash(vl.dashedValue ?? [4, 2]);
+                const xx = Math.round(sx) + 0.5;
+                ctx.beginPath();
+                ctx.moveTo(xx, 0);
+                ctx.lineTo(xx, h);
+                ctx.stroke();
+                ctx.restore();
+              }
+              // The x-axis time label pill, mirroring klinecharts' own crosshair
+              // label (read the resolved style + reuse the same formatter). The
+              // x-axis is the bottom strip; its height comes from its own pane.
+              const txt = cs.vertical.text;
+              const label = txt.show !== false ? crosshairLabelFmtRef.current(syncTs) : "";
+              const xAxisH = chart.getSize("x_axis_pane", 'root')?.height ?? 0;
+              if (label && xAxisH > 1) {
+                ctx.save();
+                ctx.font = `${txt.weight} ${txt.size}px ${txt.family}`;
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                const boxW = ctx.measureText(label).width + txt.paddingLeft + txt.paddingRight;
+                const boxH = txt.size + txt.paddingTop + txt.paddingBottom;
+                // Center on the guide x, clamped to stay within the plot width. The
+                // upper bound is floored at boxW/2 so a label wider than the pane
+                // (very narrow cell + long timestamp) pins to the left edge rather
+                // than overflowing off it (w - boxW/2 would otherwise go negative).
+                const cx = Math.min(Math.max(sx, boxW / 2), Math.max(boxW / 2, w - boxW / 2));
+                const cy = h - xAxisH / 2; // vertically centered in the x-axis strip
+                const left = cx - boxW / 2;
+                const top = cy - boxH / 2;
+                // v10 widened borderRadius to number | number[] (per-corner); our
+                // axis label uses a single radius, so collapse an array to its first.
+                const borderRadius = Array.isArray(txt.borderRadius)
+                  ? (txt.borderRadius[0] ?? 0)
+                  : txt.borderRadius;
+                const r = Math.min(borderRadius, boxH / 2);
+                ctx.beginPath();
+                ctx.moveTo(left + r, top);
+                ctx.arcTo(left + boxW, top, left + boxW, top + boxH, r);
+                ctx.arcTo(left + boxW, top + boxH, left, top + boxH, r);
+                ctx.arcTo(left, top + boxH, left, top, r);
+                ctx.arcTo(left, top, left + boxW, top, r);
+                ctx.closePath();
+                ctx.fillStyle = txt.backgroundColor as string;
+                ctx.fill();
+                if (txt.borderSize > 0) {
+                  ctx.lineWidth = txt.borderSize;
+                  ctx.strokeStyle = txt.borderColor;
+                  ctx.stroke();
+                }
+                ctx.fillStyle = txt.color;
+                ctx.fillText(label, cx, cy);
+                ctx.restore();
+              }
+            }
+          }
+        }
+        // Bid & ask price lines (TradingView style): dashed horizontals across the
+        // main pane at the live bid (blue) and ask (red). Labels are DOM pills; this
+        // draws only the lines, and only in "lines" mode while the feed is live.
+        if (bidAskRef.current === "lines" && statusRef.current === "live" && !replaying) {
+          const mainW = chart.getSize("candle_pane", 'main')?.width ?? w;
+          const st = bidAskStyleRef.current;
+          // opacity + dash apply to the lines (the labels stay opaque). hexToRgba
+          // folds the opacity into the stroke since canvas has no line-alpha field.
+          const dash =
+            st.lineStyle === "solid" ? [] : st.lineStyle === "dotted" ? DASH_DOTTED : DASH_DASHED;
+          const drawLevel = (value: number | null, hex: string) => {
+            if (value == null) return;
+            const ly = first(
+              chart.convertToPixel([{ value }], { paneId: "candle_pane", absolute: true }),
+            ).y;
+            if (ly == null) return;
+            ctx.save();
+            ctx.strokeStyle = hexToRgba(hex, st.opacity);
+            ctx.lineWidth = 1;
+            ctx.setLineDash(dash);
+            const yy = Math.round(ly) + 0.5;
+            ctx.beginPath();
+            ctx.moveTo(0, yy);
+            ctx.lineTo(mainW, yy);
+            ctx.stroke();
+            ctx.restore();
+          };
+          // Skip the side the main price line already coincides with (see pills).
+          const side = priceSideRef.current;
+          if (side !== "ask") drawLevel(askRef.current, st.askColor);
+          if (side !== "bid") drawLevel(bidRef.current, st.bidColor);
+        }
+        const sel = selectedIndicator.value;
+        // The chart's nominal bar width for the dot phase (see paintSelectionDots).
+        const selBarMs = (RESOLUTION_SECONDS[resRef.current] ?? 0) * 1000 || null;
+        if (sel) {
+          paintSelectionDots(
+            ctx,
+            lineCacheRef.current,
+            sel,
+            chartColors[themeRef.current].bg,
+            chart.getBarSpace().bar,
+            selBarMs,
+          );
+          // Crossing dots: where the selected curve crosses every other
+          // candle-pane curve, painted after the handles so they sit on top.
+          paintCrossingDots(
+            ctx,
+            crossingsForSelection(lineCacheRef.current, sel),
+            UP,
+            DOWN,
+            chartColors[themeRef.current].bg,
+          );
+        }
+        // Hovering a candle-pane indicator's legend row also shows its curve in
+        // selected mode (handles), unless it's already the selected one (no double
+        // paint). Driven by the legendHoverName signal (set by <ChartLegend>).
+        const hovName = legendHoverName.value;
+        if (hovName && !(sel?.paneId === "candle_pane" && sel.name === hovName)) {
+          paintSelectionDots(
+            ctx,
+            lineCacheRef.current,
+            { paneId: "candle_pane", name: hovName },
+            chartColors[themeRef.current].bg,
+            chart.getBarSpace().bar,
+            selBarMs,
+          );
+        }
+        // Hovering an indicator's CURVE (any pane) shows it in selected mode too —
+        // the inverse of the legend-row hover above, but pane-exact (curveHover
+        // carries paneId), so sub-pane curves (RSI/MACD/Volume) get handles as well.
+        // Skip when it's already the selected indicator (no double paint).
+        const curveHov = curveHover.value;
+        if (curveHov && !(sel?.paneId === curveHov.paneId && sel.name === curveHov.name)) {
+          paintSelectionDots(
+            ctx,
+            lineCacheRef.current,
+            curveHov,
+            chartColors[themeRef.current].bg,
+            chart.getBarSpace().bar,
+            selBarMs,
+          );
+        }
+        // AVWAP anchor grab handle — only while AVWAP is selected and its anchor
+        // bar is on-screen. anchorPxRef is read by the drag hit-test and the
+        // grab-cursor check, so refresh it every redraw (null otherwise).
+        const avwapId = selectedAvwapId(chart, sel);
+        const anchor = avwapId ? avwapAnchorPixel(chart, avwapId) : null;
+        anchorPxRef.current = anchor;
+        if (anchor) {
+          paintAnchorHandle(ctx, anchor.x, anchor.y, anchor.color, chartColors[themeRef.current].bg);
+        }
+        // Curve-end key-parameter labels for the SAME active indicators that show
+        // selection handles (selected + legend-hover candle row + curve-hover any
+        // pane). DOM pills, pushed imperatively — see <CurveLabels>.
+        const labelTargets: Array<{ paneId: string; name: string }> = [];
+        if (sel) labelTargets.push(sel);
+        if (hovName && !(sel?.paneId === "candle_pane" && sel.name === hovName)) {
+          labelTargets.push({ paneId: "candle_pane", name: hovName });
+        }
+        if (curveHov && !(sel?.paneId === curveHov.paneId && sel.name === curveHov.name)) {
+          labelTargets.push(curveHov);
+        }
+        // Always rebuild — pills can show with no selection at all (an "always"
+        // indicator) or for the selected/hovered targets. buildCurveLabelPills
+        // returns [] when nothing qualifies, clearing the overlay.
+        const maxX = chart.getSize("candle_pane", 'main')?.width ?? w;
+        curveLabelsRef.current?.setPills([
+          ...buildCurveLabelPills(lineCacheRef.current, labelTargets, maxX),
+          ...buildSlopeMaPills(chart, labelTargets, maxX),
+        ]);
+        // Draw every Pivots-High/Low Δ%/Δt label here (the indicator no longer draws
+        // them itself), each small at rest, enlarging in place the one the cursor is
+        // genuinely over — a real pixel hit-test, so it works at any zoom. Re-hit-tested
+        // every redraw, so it stays correct through scroll/zoom. pointerPxRef is null
+        // when the cursor is off the chart → nothing enlarged. Painted last → on top.
+        const pivotLabels = buildPivotDeltaLabels(chart);
+        if (pivotLabels.length) {
+          paintPivotDeltaLabels(ctx, pivotLabels, pivotDeltaLabelAt(pivotLabels, pointerPxRef.current));
+        }
+      }
+    }
+
+    // Refresh the DOM legend: re-derive the candle-pane indicator rows and only
+    // setState when the shallow signature changes (add/remove/visibility/recolor),
+    // then push the latest values imperatively (for the crosshair bar, or the last
+    // bar when no crosshair) — never a React re-render per crosshair pixel.
+    const { rows, sig } = buildLegendRows(chart, periodLabelRef.current);
+    if (sig !== legendRowsSigRef.current) {
+      legendRowsSigRef.current = sig;
+      setLegendRows(rows);
+    }
+    // Same for the sub-pane legends (Volume/MACD/RSI…); the signature folds in each
+    // pane's top so a separator drag repositions the cards (see buildSubPaneLegends).
+    const sub = buildSubPaneLegends(chart);
+    if (sub.sig !== subPaneLegendsSigRef.current) {
+      subPaneLegendsSigRef.current = sub.sig;
+      setSubPaneLegends(sub.subPanes);
+    }
+    // The inset band's card + resize handle. The band is part of the candle pane, so
+    // nothing in klinecharts moves it: it follows a band drag, a pane resize and the
+    // arrival/removal of an inset instance through this same redraw.
+    const insetBox = insetBandBox(chart);
+    const insetLeg = buildInsetLegend(chart);
+    const insetSig = `${insetBox ? `${insetBox.top}/${insetBox.left}/${insetBox.width}/${insetBox.height}` : "-"}|${insetLeg.sig}`;
+    if (insetSig !== insetLegendSigRef.current) {
+      insetLegendSigRef.current = insetSig;
+      setInsetBand(insetBox);
+      setInsetLegend(insetLeg.data);
+    }
+    legendHandleRef.current?.updateValues(legendBarIdxRef.current());
+    // Higher-timeframe backtest markers: project each aggregate cluster's bar-high
+    // anchor to a pixel and feed the DOM pill layer. Runs every redraw so the pills
+    // track scroll/zoom/tick; getBacktestAggregate returns null (→ []) unless this
+    // cell's backtest is being viewed on a coarser timeframe. Off-screen pills are
+    // culled by x; y is clamped so a pill whose bar-high sits above the pane still
+    // shows just inside the top.
+    const agg = getBacktestAggregate(chart);
+    if (agg) {
+      const paneW = chart.getSize("candle_pane", 'main')?.width ?? Infinity;
+      // Project EVERY cluster (on- and off-screen) in one batch call. Grouping
+      // below must see the full set: it bins by pixel *differences* between
+      // clusters, which are invariant under pan (a pan translates all clusters by
+      // the same delta), so the windowing stays stable while scrolling. Culling
+      // off-screen clusters here instead would move the first-in-view anchor as
+      // bars scroll off the edge, reshuffling every window and making the pills
+      // jump on tiny pans. We cull per merged pill (by centroid) after grouping.
+      const pts = agg.clusters.map((cl) => ({ timestamp: cl.barTs, value: cl.high }));
+      const pxArr = pts.length
+        ? (chart.convertToPixel(pts, { paneId: "candle_pane", absolute: true }) as Array<{
+            x: number | null;
+            y: number | null;
+          }>)
+        : [];
+      const proj: { x: number; y: number; cl: (typeof agg.clusters)[number] }[] = [];
+      for (let i = 0; i < agg.clusters.length; i++) {
+        const px = pxArr[i];
+        if (!px || px.x == null || px.y == null) continue;
+        proj.push({ x: px.x, y: px.y, cl: agg.clusters[i] });
+      }
+      // Pixel re-aggregation: on a much coarser timeframe the per-bar pills pack
+      // together and overlap. Walk x-ascending and bin consecutive clusters into
+      // fixed-width windows (each ≤ MERGE_GAP px, measured from the window's first
+      // cluster), emitting one merged pill per window. Capping the window width —
+      // rather than greedily chaining by running centroid — keeps pills
+      // positionally faithful: a dense stretch becomes several pills that mark
+      // *where* trades clustered, not one giant pill. Consecutive window starts sit
+      // ≥ MERGE_GAP apart and each pill anchors at its window centroid (which stays
+      // inside the window), so neighbours are well clear at ~one-pill-width in
+      // practice. Each merged pill sums count/net, concatenates trades, and spans
+      // min→max for drill-in, anchored above the tallest bar. A window whose
+      // centroid falls off-screen is dropped. A lone cluster in a window is
+      // unchanged, so native-TF and sparse views look exactly as before. proj is
+      // x-ascending (clusters arrive sorted by barTs, monotonic in x).
+      const MERGE_GAP = 84; // px, ~one pill's width (covers 3-digit count + net)
+      const pills: AggPill[] = [];
+      let g: typeof proj = [];
+      const flush = () => {
+        if (g.length === 0) return;
+        const cx = g.reduce((s, p) => s + p.x, 0) / g.length;
+        if (cx >= 0 && cx <= paneW) {
+          const trades = g.flatMap((p) => p.cl.trades);
+          pills.push({
+            key: `agg:${g[0].cl.barTs}-${g[g.length - 1].cl.barTs}`,
+            x: cx,
+            y: Math.max(Math.min(...g.map((p) => p.y)), 14),
+            count: trades.length,
+            net: g.reduce((s, p) => s + p.cl.net, 0),
+            trades,
+            result: agg.result,
+            resolution: agg.result.resolution,
+            fromMs: Math.min(...g.map((p) => p.cl.fromTs)),
+            toMs: Math.max(...g.map((p) => p.cl.toTs)),
+          });
+        }
+        g = [];
+      };
+      for (const p of proj) {
+        if (g.length > 0 && p.x - g[0].x >= MERGE_GAP) flush();
+        g.push(p);
+      }
+      flush();
+      aggMarkersRef.current?.setPills(pills);
+      // Per-trade entry dashes: one tiny tick per trade at (entry price, entry
+      // time within its display candle). tradeDashes gives the containing bar +
+      // the 0..1 fraction through it; the bar center pixel comes from the same
+      // batch projection API as the pills, then the fraction offsets across the
+      // candle's width (frac 0.5 = center). Culled by x AND y — a dash belongs
+      // ON the candle, so one scrolled/priced out of the pane just disappears.
+      // Below ~3px of bar width the within-candle offset is sub-pixel noise and
+      // the DOM span count explodes (one per visible trade) — drop the layer,
+      // the pills still mark the trades.
+      const barW = chart.getBarSpace().bar;
+      if (barW < 3) {
+        tradeDashesRef.current?.setDashes([]);
+      } else {
+        // Memoized per (clusters identity, loaded-bar window): the redraw loop
+        // runs per scroll/zoom/tick frame — recompute the anchors only when the
+        // clusters change (markers redrawn) or bars load/prepend, and just
+        // re-project otherwise, matching how the pills reuse their cached
+        // clusters. The display interval comes from the resolution table (the
+        // min-gap fallback inside tradeDashes is poisoned by DST-short
+        // sessions and calendar bars).
+        const dl = chart.getDataList();
+        const dashSig = `${dl.length}:${dl[0]?.timestamp ?? 0}:${dl[dl.length - 1]?.timestamp ?? 0}`;
+        const cache = dashCacheRef.current;
+        const resSec = RESOLUTION_SECONDS[resRef.current];
+        const dashes =
+          cache && cache.clusters === agg.clusters && cache.sig === dashSig
+            ? cache.dashes
+            : (dashCacheRef.current = {
+                clusters: agg.clusters,
+                sig: dashSig,
+                dashes: tradeDashes(agg.clusters, dl, resSec ? resSec * 1000 : undefined),
+              }).dashes;
+        // Project only the dashes whose bar is in (or within one bar of) the
+        // visible range — dashes are barTs-ascending, so two binary searches
+        // bound the slice; a 10k-trade run costs O(log n + visible) per frame,
+        // not O(n) allocations for mostly off-screen points.
+        const vr = chart.getVisibleRange();
+        const fromTs = dl[Math.max(vr.from, 0)]?.timestamp ?? -Infinity;
+        const toTs = dl[Math.min(vr.to, dl.length - 1)]?.timestamp ?? Infinity;
+        const [sliceStart, sliceEnd] = dashSliceBounds(dashes, fromTs, toTs);
+        const slice = dashes.slice(sliceStart, sliceEnd);
+        const paneH = chart.getSize("candle_pane", 'main')?.height ?? Infinity;
+        // A run dense enough to fill the view with markers stops being readable
+        // as individual dashes — cap the layer rather than drown the DOM.
+        const dashPx =
+          slice.length > 0 && slice.length <= 800
+            ? (chart.convertToPixel(
+                slice.map((d) => ({ timestamp: d.barTs, value: d.price })),
+                { paneId: "candle_pane", absolute: true },
+              ) as Array<{ x: number | null; y: number | null }>)
+            : [];
+        const projDashes: ProjectedDash[] = [];
+        for (let i = 0; i < dashPx.length; i++) {
+          const d = slice[i];
+          const px = dashPx[i];
+          if (!px || px.x == null || px.y == null) continue;
+          const x = px.x + (d.frac - 0.5) * barW;
+          if (x < 0 || x > paneW || px.y < 0 || px.y > paneH) continue;
+          projDashes.push({
+            key: `dash:${d.index}`,
+            x,
+            y: px.y,
+            index: d.index,
+            trade: d.trade,
+            spanBars: d.spanBars,
+            result: agg.result,
+            fromMs: d.trade.entry_time * 1000,
+            toMs: (d.trade.exit_time_exact ?? d.trade.exit_time) * 1000,
+          });
+        }
+        tradeDashesRef.current?.setDashes(projDashes);
+      }
+    } else {
+      aggMarkersRef.current?.setPills([]);
+      tradeDashesRef.current?.setDashes([]);
+      dashCacheRef.current = null; // don't retain a cleared run's trade graph
+    }
+    // Coarse-timeframe LIVE exit pills: project each per-bar cluster's bar-high
+    // anchor to a pixel and feed the DOM pill layer, same as the backtest aggregate
+    // above. exitClustersRef is non-empty only when this cell's journaled exits
+    // collide on the current (coarser) timeframe (see drawTradeMarkers).
+    const exitClusters = exitClustersRef.current;
+    if (exitClusters.length > 0) {
+      const paneW = chart.getSize("candle_pane", 'main')?.width ?? Infinity;
+      const exitPills: ExitPill[] = [];
+      for (const cl of exitClusters) {
+        const px = first(
+          chart.convertToPixel([{ timestamp: cl.barTs, value: cl.high }], {
+            paneId: "candle_pane",
+            absolute: true,
+          }),
+        );
+        if (px.x == null || px.y == null || px.x < 0 || px.x > paneW) continue;
+        exitPills.push({
+          key: `exit-agg:${cl.barTs}`,
+          x: px.x,
+          y: Math.max(px.y, 14),
+          count: cl.exits.length,
+          net: cl.net,
+          exits: cl.exits,
+        });
+      }
+      exitAggMarkersRef.current?.setPills(exitPills);
+    } else {
+      exitAggMarkersRef.current?.setPills([]);
+    }
+    // Stock split chips: one per split on a visible bar, on the candle pane's
+    // bottom edge. splitsRef is [] for non-equities, so this is a no-op there.
+    const splits = splitsRef.current;
+    if (splits.length > 0) {
+      const size = chart.getSize("candle_pane", "main");
+      const toX = (timestamp: number): number | null =>
+        first(
+          chart.convertToPixel([{ timestamp, value: 0 }], { paneId: "candle_pane", absolute: true }),
+        ).x ?? null;
+      splitMarkersRef.current?.setMarkers(
+        projectSplitMarkers(
+          splits,
+          chart.getDataList(),
+          maxBarMs(resRef.current),
+          chart.getVisibleRange(),
+          toX,
+          size?.width ?? Infinity,
+        ),
+        (size?.top ?? 0) + (size?.height ?? 0),
+      );
+    } else {
+      splitMarkersRef.current?.setMarkers([], 0);
+    }
+    // Keep the position bracket glued to its lines as geometry shifts (scroll/zoom/
+    // tick/drag) — the cursor needn't move for the lines to.
+    paintBracket();
+    paintSlopeMa();
+    // Period-start separator follows the same geometry (via ref so it isn't a dep).
+    handle.paintSeparatorRef.current();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- omitted deps are refs, handle members or controller signals, stable for the mount
+  }, [paintBracket, paintSlopeMa]);
+  handle.redrawRef.current = redraw;
+
+  return { paintBracket, paintSeparator, fmtSeparatorLabel, redraw };
+}

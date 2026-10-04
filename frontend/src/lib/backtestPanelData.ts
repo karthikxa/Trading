@@ -1,0 +1,642 @@
+import type { BacktestResult, LegMetrics } from "../api";
+import { bootstrapPnl, type BootstrapSummary } from "./bootstrapStats";
+
+// The panel reads trades/metrics/equity only, never the candle array, so it
+// accepts the slimmed persisted result (StoredBacktestResult = BacktestResult
+// without `candles`) as well as a fresh full result.
+type PanelResult = Omit<BacktestResult, "candles">;
+
+export interface MetricRow {
+  label: string;
+  value: string;
+  tone: "pos" | "neg" | "";
+  verdict?: MetricVerdict;
+}
+
+export type VerdictTone = "good" | "mid" | "bad" | "muted";
+
+export interface MetricVerdict {
+  label: string;
+  tone: VerdictTone;
+}
+
+// One band of a metric's interpretation scale: applies while value < upTo (the
+// last band uses Infinity). Bands double as the source for the tooltip's
+// threshold lines, so display and verdict can't drift apart. desc is the
+// tooltip's one-phrase reading of the band.
+interface ScaleBand {
+  upTo: number;
+  label: string;
+  tone: VerdictTone;
+  desc: string;
+}
+
+// Conventional interpretation scales for the metrics where a single number has
+// an accepted reading (Sharpe/Sortino/Calmar from common practitioner rules of
+// thumb, SQN from Van Tharp's scale). Drawdown % is inverted: small is good.
+const METRIC_SCALES: Record<string, ScaleBand[]> = {
+  "Sharpe": [
+    { upTo: 0, label: "poor", tone: "bad", desc: "loses money on average" },
+    { upTo: 1, label: "weak", tone: "mid", desc: "yearly return below its volatility" },
+    { upTo: 2, label: "good", tone: "good", desc: "earns 1–2x its volatility" },
+    { upTo: 3, label: "very good", tone: "good", desc: "earns 2–3x its volatility" },
+    { upTo: Infinity, label: "excellent", tone: "good", desc: "earns 3x+ its volatility; check for overfit" },
+  ],
+  "Sortino": [
+    { upTo: 0, label: "poor", tone: "bad", desc: "loses money on average" },
+    { upTo: 1, label: "weak", tone: "mid", desc: "return below its downside volatility" },
+    { upTo: 2, label: "fair", tone: "mid", desc: "earns 1–2x its downside volatility" },
+    { upTo: 3, label: "good", tone: "good", desc: "earns 2–3x its downside volatility" },
+    { upTo: Infinity, label: "excellent", tone: "good", desc: "earns 3x+ its downside; check for overfit" },
+  ],
+  "Calmar": [
+    { upTo: 0, label: "poor", tone: "bad", desc: "shrinks over the period" },
+    { upTo: 0.5, label: "weak", tone: "mid", desc: "2+ years of growth to regain the worst drop" },
+    { upTo: 1, label: "fair", tone: "mid", desc: "1–2 years of growth to regain the worst drop" },
+    { upTo: 3, label: "good", tone: "good", desc: "a year's growth covers the worst drop" },
+    { upTo: Infinity, label: "excellent", tone: "good", desc: "worst drop regained in months" },
+  ],
+  "SQN": [
+    { upTo: 1.6, label: "poor", tone: "bad", desc: "edge indistinguishable from luck" },
+    { upTo: 2.5, label: "average", tone: "mid", desc: "edge visible but noisy" },
+    { upTo: 3, label: "good", tone: "good", desc: "edge clearly beats randomness" },
+    { upTo: 5, label: "excellent", tone: "good", desc: "steady edge, little luck dependence" },
+    { upTo: Infinity, label: "superb", tone: "good", desc: "this uniform is rarely real; verify" },
+  ],
+  // P(profit) is the bootstrap's share of trade-list resamples that end
+  // profitable, so the bands read as confidence the edge is not arrangement luck.
+  "P(profit)": [
+    { upTo: 0.5, label: "losing", tone: "bad", desc: "a redraw of these trades loses more often than it wins" },
+    { upTo: 0.8, label: "fragile", tone: "mid", desc: "an unlucky redraw of the trades erases the profit" },
+    { upTo: 0.95, label: "leaning", tone: "mid", desc: "most redraws profit, but bad luck still bites" },
+    { upTo: Infinity, label: "robust", tone: "good", desc: "profit survives nearly every redraw of the trades" },
+  ],
+  // DSR is a probability that the true Sharpe is above zero after the
+  // best-of-N deflation, so the bands read as confidence levels.
+  "DSR": [
+    { upTo: 0.5, label: "likely luck", tone: "bad", desc: "picking the best of many combos explains this Sharpe" },
+    { upTo: 0.9, label: "inconclusive", tone: "mid", desc: "edge and selection luck are hard to tell apart" },
+    { upTo: 0.95, label: "leaning real", tone: "mid", desc: "edge is likely but below the usual 95% bar" },
+    { upTo: Infinity, label: "likely real", tone: "good", desc: "true Sharpe above zero at 95%+ confidence" },
+  ],
+  "Profit factor": [
+    { upTo: 1, label: "losing", tone: "bad", desc: "wins don't cover the losses" },
+    { upTo: 1.25, label: "thin", tone: "mid", desc: "under $1.25 won per $1 lost" },
+    { upTo: 1.75, label: "decent", tone: "mid", desc: "$1.25–1.75 won per $1 lost" },
+    { upTo: 2.5, label: "good", tone: "good", desc: "about $2 won per $1 lost" },
+    { upTo: Infinity, label: "strong", tone: "good", desc: "$2.50+ won per $1 lost" },
+  ],
+  "Drawdown %": [
+    { upTo: 10, label: "mild", tone: "good", desc: "under +11% gain to recover" },
+    { upTo: 20, label: "moderate", tone: "mid", desc: "+11–25% gain to recover" },
+    { upTo: 30, label: "deep", tone: "bad", desc: "+25–43% gain to recover" },
+    { upTo: Infinity, label: "severe", tone: "bad", desc: "+43% or more just to break even" },
+  ],
+};
+
+export function verdictFor(label: string, value: number | null | undefined): MetricVerdict | undefined {
+  if (value == null || !isFinite(value)) return undefined;
+  const bands = METRIC_SCALES[label];
+  if (!bands) return undefined;
+  const band = bands.find((b) => value < b.upTo) ?? bands[bands.length - 1];
+  return { label: band.label, tone: band.tone };
+}
+
+// Below this many trades the statistical ratios (Sharpe, Sortino, SQN) are
+// t-statistics with almost no degrees of freedom: two trades that both hit the
+// same fixed take-profit have near-zero P&L deviation, so SQN prints 100+ and
+// "superb" on pure noise. The conventional floor for reading them is ~30.
+export const MIN_SAMPLE_TRADES = 30;
+
+// Verdict for the sample-size-sensitive ratios: under MIN_SAMPLE_TRADES the
+// band words would lend authority the number doesn't have, so the verdict
+// becomes a muted "low sample" flag instead. The value itself still shows.
+export function sampledVerdictFor(
+  label: string,
+  value: number | null | undefined,
+  nTrades: number,
+): MetricVerdict | undefined {
+  if (value == null || !isFinite(value)) return undefined;
+  if (nTrades < MIN_SAMPLE_TRADES) return { label: "low sample", tone: "muted" };
+  return verdictFor(label, value);
+}
+
+export interface ScaleLine {
+  range: string;
+  label: string;
+  tone: VerdictTone;
+  desc: string;
+}
+
+// The tooltip's threshold table, derived from the same bands the verdict uses
+// so display and verdict can't drift apart: "< 0 poor", "0 – 1 weak", ...,
+// "> 3 excellent". Null for metrics without a scale.
+export function metricScale(label: string): ScaleLine[] | null {
+  const bands = METRIC_SCALES[label];
+  if (!bands) return null;
+  return bands.map((b, i) => {
+    const lo = i === 0 ? null : bands[i - 1].upTo;
+    const range = lo === null ? `< ${b.upTo}` : b.upTo === Infinity ? `> ${lo}` : `${lo} – ${b.upTo}`;
+    return { range, label: b.label, tone: b.tone, desc: b.desc };
+  });
+}
+
+export interface MetricGroup {
+  title: string;
+  rows: MetricRow[];
+}
+
+export interface TradeRow {
+  i: number;
+  side: string;
+  leg: string;
+  entryTime: number;
+  entryPrice: number;
+  exitTime: number;
+  exitPrice: number;
+  pnl: number;
+  pnlPct: number;
+  durationBars: number;
+  reason: string;
+  financing: number; // overnight financing on this trade (0 when off / no overnight)
+}
+
+function formatSignedMoney(value: number): string {
+  const sign = value >= 0 ? "+" : "−";
+  return sign + Math.abs(value).toFixed(2);
+}
+
+function getTone(value: number | null): "pos" | "neg" | "" {
+  if (value === null) return "";
+  if (value > 0) return "pos";
+  if (value < 0) return "neg";
+  return "";
+}
+
+// metricRows is called on every render of the panel; the resample loop is a
+// few million adds, so cache per result object (results are immutable once
+// received).
+const bootstrapCache = new WeakMap<object, BootstrapSummary | null>();
+function bootstrapFor(res: PanelResult): BootstrapSummary | null {
+  if (!bootstrapCache.has(res)) {
+    bootstrapCache.set(res, bootstrapPnl(res.trades.map((t) => t.pnl)));
+  }
+  return bootstrapCache.get(res) ?? null;
+}
+
+export function metricRows(res: PanelResult): MetricRow[] {
+  const rows: MetricRow[] = [];
+
+  // Net P&L
+  rows.push({
+    label: "Net P&L",
+    value: formatSignedMoney(res.summary.net_pnl),
+    tone: getTone(res.summary.net_pnl),
+  });
+
+  // Return %
+  rows.push({
+    label: "Return %",
+    value: res.metrics.return_pct.toFixed(2) + "%",
+    tone: getTone(res.metrics.return_pct),
+  });
+
+  // Trades
+  rows.push({
+    label: "Trades",
+    value: String(res.summary.n_trades),
+    tone: "",
+  });
+
+  // Win rate
+  rows.push({
+    label: "Win rate",
+    value: Math.round(res.summary.win_rate * 100) + "%",
+    tone: "",
+  });
+
+  // Profit factor — magnitude-only (always ≥0); >1 is good but sign vs 0 tells
+  // nothing, so leave it uncoloured rather than always-green.
+  rows.push({
+    label: "Profit factor",
+    value: res.metrics.profit_factor !== null ? res.metrics.profit_factor.toFixed(2) : "—",
+    tone: "",
+    verdict: verdictFor("Profit factor", res.metrics.profit_factor),
+  });
+
+  // Expectancy
+  rows.push({
+    label: "Expectancy",
+    value: res.metrics.expectancy.toFixed(2),
+    tone: getTone(res.metrics.expectancy),
+    verdict: res.metrics.expectancy > 0
+      ? { label: "positive", tone: "good" }
+      : res.metrics.expectancy < 0
+        ? { label: "negative", tone: "bad" }
+        : undefined,
+  });
+
+  // Bootstrap luck-vs-edge rows: what a redraw of the same trade list would
+  // have produced. Dashes under 2 trades (nothing to resample); the P(profit)
+  // verdict mutes below the sample floor like the other sample statistics.
+  const boot = bootstrapFor(res);
+  rows.push({
+    label: "P(profit)",
+    value: boot ? Math.round(boot.probProfit * 100) + "%" : "-",
+    tone: "",
+    verdict: boot
+      ? sampledVerdictFor("P(profit)", boot.probProfit, res.summary.n_trades)
+      : undefined,
+  });
+  rows.push({
+    label: "P5 net P&L",
+    value: boot ? formatSignedMoney(boot.p5Net) : "-",
+    tone: boot ? getTone(boot.p5Net) : "",
+  });
+  rows.push({
+    label: "P95 drawdown",
+    value: boot ? boot.ddP95.toFixed(2) : "-",
+    tone: "",
+  });
+
+  // Per-trade magnitudes below are sign-fixed (a win is always ≥0, a loss ≤0),
+  // so colouring them by sign is decoration, not information — leave them plain
+  // and reserve tone for the metrics whose sign is a verdict (P&L, return,
+  // expectancy). Drawdown especially must not read green just for being stored
+  // positive — a drawdown is never good news.
+
+  // Avg win
+  rows.push({
+    label: "Avg win",
+    value: res.metrics.avg_win.toFixed(2),
+    tone: "",
+  });
+
+  // Avg loss
+  rows.push({
+    label: "Avg loss",
+    value: res.metrics.avg_loss.toFixed(2),
+    tone: "",
+  });
+
+  // Avg win/loss
+  rows.push({
+    label: "Avg win/loss",
+    value: res.metrics.avg_win_loss_ratio !== null ? res.metrics.avg_win_loss_ratio.toFixed(2) : "—",
+    tone: "",
+  });
+
+  // Largest win
+  rows.push({
+    label: "Largest win",
+    value: res.metrics.largest_win.toFixed(2),
+    tone: "",
+  });
+
+  // Largest loss
+  rows.push({
+    label: "Largest loss",
+    value: res.metrics.largest_loss.toFixed(2),
+    tone: "",
+  });
+
+  // Drawdown — the run's max peak-to-trough equity drop (the tooltip spells this
+  // out; the shorter label keeps the stat grid tidy).
+  rows.push({
+    label: "Drawdown",
+    value: res.summary.max_drawdown.toFixed(2),
+    tone: "",
+  });
+
+  // Drawdown %
+  rows.push({
+    label: "Drawdown %",
+    value: res.metrics.max_drawdown_pct.toFixed(2) + "%",
+    tone: "",
+    verdict: verdictFor("Drawdown %", res.metrics.max_drawdown_pct),
+  });
+
+  // Avg duration
+  rows.push({
+    label: "Avg duration",
+    value: res.metrics.avg_duration_bars.toFixed(1) + " bars",
+    tone: "",
+  });
+
+  // Win streak — the longest run of consecutive winning trades.
+  rows.push({
+    label: "Win streak",
+    value: String(res.metrics.max_consec_wins),
+    tone: "",
+  });
+
+  // Loss streak — the longest run of consecutive losing trades.
+  rows.push({
+    label: "Loss streak",
+    value: String(res.metrics.max_consec_losses),
+    tone: "",
+  });
+
+  // Risk-adjusted quality ratios: magnitude/quality reads, left plain like
+  // profit factor. A missing value ("-") means the run lacked the daily-equity
+  // or trade-count basis needed to compute it.
+  rows.push({
+    label: "Sharpe",
+    value: res.metrics.sharpe == null ? "-" : res.metrics.sharpe.toFixed(2),
+    tone: "",
+    verdict: sampledVerdictFor("Sharpe", res.metrics.sharpe, res.summary.n_trades),
+  });
+  rows.push({
+    label: "Sortino",
+    value: res.metrics.sortino == null ? "-" : res.metrics.sortino.toFixed(2),
+    tone: "",
+    verdict: sampledVerdictFor("Sortino", res.metrics.sortino, res.summary.n_trades),
+  });
+  rows.push({
+    label: "Calmar",
+    value: res.metrics.calmar == null ? "-" : res.metrics.calmar.toFixed(2),
+    tone: "",
+    verdict: verdictFor("Calmar", res.metrics.calmar),
+  });
+  rows.push({
+    label: "CAGR %",
+    value: res.metrics.cagr_pct == null ? "-" : res.metrics.cagr_pct.toFixed(2) + "%",
+    tone: "",
+  });
+  rows.push({
+    label: "SQN",
+    value: res.metrics.sqn == null ? "-" : res.metrics.sqn.toFixed(2),
+    tone: "",
+    verdict: sampledVerdictFor("SQN", res.metrics.sqn, res.summary.n_trades),
+  });
+  rows.push({
+    label: "Exposure %",
+    value: res.metrics.exposure_pct == null ? "-" : res.metrics.exposure_pct.toFixed(2) + "%",
+    tone: "",
+  });
+
+  // Financing — only when the run actually used it (nonzero). Truthy guard also
+  // skips pre-financing cached payloads (undefined). Already inside net P&L, so
+  // it's an explanatory line, not additive. The engine convention is positive =
+  // cost (paid), so NEGATE to show its P&L impact: a paid fee reads as a red
+  // negative amount, a credit as green positive.
+  if (res.metrics.financing_total) {
+    rows.push({
+      label: "Financing",
+      value: formatSignedMoney(-res.metrics.financing_total),
+      tone: getTone(-res.metrics.financing_total),
+    });
+  }
+
+  return rows;
+}
+
+// The same metrics as metricRows(), arranged into the three questions a reader
+// actually asks of a backtest — did it make money (Performance), how did the
+// individual trades behave (Trades), and what would it have put you through
+// (Risk & extremes). Grouping is the hierarchy the flat grid was missing; order
+// within each group leads with the metric you'd read first.
+const METRIC_GROUPS: { title: string; labels: string[] }[] = [
+  { title: "Performance", labels: ["Net P&L", "Financing", "Return %", "CAGR %", "Profit factor", "Expectancy", "P(profit)", "P5 net P&L", "Sharpe", "Sortino", "Calmar", "SQN"] },
+  { title: "Trades", labels: ["Trades", "Win rate", "Avg win", "Avg loss", "Avg win/loss", "Avg duration"] },
+  { title: "Risk & extremes", labels: ["Drawdown", "Drawdown %", "P95 drawdown", "Exposure %", "Largest win", "Largest loss", "Win streak", "Loss streak"] },
+];
+
+// One brief line per metric — plain language, keyed by the metric's label.
+// Kept as static copy (not derived) so the tooltip text lives beside the group
+// definitions, away from the value/tone computation.
+export const METRIC_INFO: Record<string, string> = {
+  "Net P&L": "Total profit after costs, across all trades.",
+  "Financing": "Total overnight financing across the run, shown as its P&L impact: negative means paid, positive received. Already included in net P&L.",
+  "Return %": "Net profit as a % of starting capital.",
+  "Profit factor": "Gross profit divided by gross loss; above 1 is profitable.",
+  "Expectancy": "Average profit or loss per trade.",
+  "Trades": "Number of closed trades.",
+  "Win rate": "Share of trades that closed in profit. No good or bad number on its own: 40% is fine with big winners, 70% can lose with big losers. Read it against avg win/loss; breakeven is 1/(1+R).",
+  "Avg win": "Average size of a winning trade.",
+  "Avg loss": "Average size of a losing trade.",
+  "Avg win/loss": "Average win divided by average loss (R). Only meaningful next to win rate: a low ratio needs a high win rate to profit, and vice versa.",
+  "Avg duration": "Average time a trade stayed open.",
+  "Drawdown": "Largest equity drop from a high to a low.",
+  "Drawdown %": "That drop as a % of the equity high.",
+  "Largest win": "Biggest single winning trade. If it dominates net P&L, the edge may be one lucky outlier rather than repeatable.",
+  "Largest loss": "Biggest single losing trade. If it dwarfs the average loss, the stop discipline failed at least once; expect it to happen again live.",
+  "Win streak": "Longest run of wins in a row. Mostly a psychology read; long streaks in a short run can also mean the entry only works in one regime.",
+  "Loss streak": "Longest run of losses in a row. Ask: could you sit through this many losses live without abandoning the system?",
+  "P(profit)": "Share of a few thousand bootstrap redraws of the trade list that end profitable. Near 100% means the profit does not hinge on a few lucky trades.",
+  "P5 net P&L": "Pessimistic 5th percentile of net P&L across bootstrap redraws of the trades. Above zero means even an unlucky redraw stays profitable.",
+  "P95 drawdown": "95th percentile of max drawdown across bootstrap redraws of the trades. A realistic worst case if the same trades had arrived in a different order.",
+  "Sharpe": "Annualized Sharpe ratio from daily equity returns. Unrated under 30 trades: too little evidence to read.",
+  "Sortino": "Like Sharpe but only penalizes downside volatility. Unrated under 30 trades: with no losing stretches in the sample the downside estimate collapses and the ratio explodes.",
+  "Calmar": "CAGR divided by max drawdown; return earned per unit of worst-case loss.",
+  "CAGR %": "Compound annual growth rate of the equity curve. No universal good number: judge it against the drawdown taken to earn it (that's Calmar) and what buy-and-hold returned.",
+  "SQN": "System Quality Number: sqrt(trades) times expectancy over trade P&L deviation. Unrated under 30 trades: near-identical outcomes (like a fixed take-profit hit twice) shrink the deviation and inflate SQN on pure luck.",
+  "Exposure %": "Share of the backtest period spent holding a position. Neither good nor bad alone: low exposure with the same return means capital was used efficiently; high exposure means returns lean on staying in the market.",
+};
+
+export function metricGroups(res: PanelResult): MetricGroup[] {
+  const byLabel = new Map(metricRows(res).map((r) => [r.label, r]));
+  return METRIC_GROUPS.map((g) => ({
+    title: g.title,
+    rows: g.labels.map((label) => byLabel.get(label)).filter((r): r is MetricRow => r != null),
+  }));
+}
+
+// --- Long/Short breakdown table --------------------------------------------
+
+export interface LegCell {
+  value: string;
+  tone: "pos" | "neg" | "";
+}
+
+export interface LegColumn {
+  label: string;
+  info: string;
+}
+
+export interface LegTableRow {
+  leg: string; // "ALL" | "LONG" | "SHORT"
+  cells: LegCell[]; // aligned to columns by index
+}
+
+export interface LegTable {
+  columns: LegColumn[];
+  rows: LegTableRow[];
+}
+
+const ZERO_LEG: LegMetrics = {
+  n_trades: 0, win_rate: 0, net_pnl: 0, expectancy: 0, profit_factor: null,
+  avg_win: 0, avg_loss: 0, avg_win_loss_ratio: null,
+  largest_win: 0, largest_loss: 0, max_consec_losses: 0, max_consec_wins: 0,
+  avg_duration_bars: 0,
+};
+
+// The ALL row reuses the run-wide summary/metrics the panel already receives,
+// reshaped into a LegMetrics so all three rows go through the identical
+// formatters below.
+function allLeg(res: PanelResult): LegMetrics {
+  return {
+    n_trades: res.summary.n_trades,
+    win_rate: res.summary.win_rate,
+    net_pnl: res.summary.net_pnl,
+    expectancy: res.metrics.expectancy,
+    profit_factor: res.metrics.profit_factor,
+    avg_win: res.metrics.avg_win,
+    avg_loss: res.metrics.avg_loss,
+    avg_win_loss_ratio: res.metrics.avg_win_loss_ratio,
+    largest_win: res.metrics.largest_win,
+    largest_loss: res.metrics.largest_loss,
+    max_consec_losses: res.metrics.max_consec_losses,
+    max_consec_wins: res.metrics.max_consec_wins,
+    avg_duration_bars: res.metrics.avg_duration_bars,
+  };
+}
+
+// Win rate and avg win/loss have no meaning alone — only the pair does. Both
+// cells share one verdict: green when the win rate clears the breakeven rate
+// implied by the payoff ratio (w > 1/(1+R)), red when it doesn't. Skipped for
+// legs without both inputs (no trades, or no losses so R is null).
+function breakevenTone(m: LegMetrics): "pos" | "neg" | "" {
+  if (m.n_trades === 0 || m.avg_win_loss_ratio === null) return "";
+  const breakeven = 1 / (1 + m.avg_win_loss_ratio);
+  if (m.win_rate === breakeven) return "";
+  return m.win_rate > breakeven ? "pos" : "neg";
+}
+
+// One column per metric: label, tooltip, and how to render a LegMetrics into a
+// cell. Sign tone is reserved for cells whose colour is a verdict: Net P&L,
+// expectancy, and the breakeven pair above. The per-trade magnitudes are
+// sign-fixed (a win is always ≥0, a loss ≤0), so colouring them is decoration.
+const LEG_COLUMNS: { label: string; info: string; cell: (m: LegMetrics) => LegCell }[] = [
+  { label: "Trades", info: "Number of closed trades.",
+    cell: (m) => ({ value: String(m.n_trades), tone: "" }) },
+  { label: "Win rate", info: "Share of trades that closed in profit. Green when above the breakeven rate implied by this leg's avg win/loss (1/(1+R)), red when below — a win rate means nothing on its own.",
+    cell: (m) => ({ value: Math.round(m.win_rate * 100) + "%", tone: breakevenTone(m) }) },
+  { label: "Net P&L", info: "Total profit after costs, across these trades.",
+    cell: (m) => ({ value: formatSignedMoney(m.net_pnl), tone: getTone(m.net_pnl) }) },
+  { label: "Expectancy", info: "Average profit per trade, winners and losers together.",
+    cell: (m) => ({ value: m.expectancy.toFixed(2), tone: getTone(m.expectancy) }) },
+  { label: "Profit factor", info: "Gross profit divided by gross loss; above 1 is profitable.",
+    cell: (m) => ({ value: m.profit_factor !== null ? m.profit_factor.toFixed(2) : "—", tone: "" }) },
+  { label: "Avg win", info: "Average size of a winning trade.",
+    cell: (m) => ({ value: m.avg_win.toFixed(2), tone: "" }) },
+  { label: "Avg loss", info: "Average size of a losing trade.",
+    cell: (m) => ({ value: m.avg_loss.toFixed(2), tone: "" }) },
+  { label: "Avg win/loss", info: "Average win divided by average loss (R). Only meaningful next to win rate: green when the pair clears breakeven (win rate above 1/(1+R)), red when it doesn't.",
+    cell: (m) => ({ value: m.avg_win_loss_ratio !== null ? m.avg_win_loss_ratio.toFixed(2) : "—", tone: breakevenTone(m) }) },
+  { label: "Largest win", info: "Biggest single winning trade.",
+    cell: (m) => ({ value: m.largest_win.toFixed(2), tone: "" }) },
+  { label: "Largest loss", info: "Biggest single losing trade.",
+    cell: (m) => ({ value: m.largest_loss.toFixed(2), tone: "" }) },
+  { label: "Win streak", info: "Longest run of consecutive winning trades. LONG and SHORT count only their own side, so one side's streak can exceed ALL.",
+    cell: (m) => ({ value: String(m.max_consec_wins), tone: "" }) },
+  { label: "Loss streak", info: "Longest run of consecutive losing trades. LONG and SHORT count only their own side (ignoring the other side's trades in between), so one side's streak can exceed ALL.",
+    cell: (m) => ({ value: String(m.max_consec_losses), tone: "" }) },
+  { label: "Avg duration", info: "Average time a trade stayed open.",
+    cell: (m) => ({ value: m.avg_duration_bars.toFixed(1) + " bars", tone: "" }) },
+];
+
+// The TRADES panel table: ALL / LONG / SHORT rows sharing one set of metric
+// columns, so the reader can compare each direction's contribution down a
+// column. LONG/SHORT come from the backend's by_leg breakdown (zeroed if a run
+// has no trades on that side, or on older payloads without by_leg).
+export function legTable(res: PanelResult): LegTable {
+  // Spread over ZERO_LEG so any key missing from a leg is backfilled. A run with
+  // no trades on a side has no by_leg entry at all; and a result cached before a
+  // metric was added (e.g. expectancy, win streak) carries a partial leg object.
+  // Both cases must render as zeros, not crash on a missing field.
+  const legs: { leg: string; m: LegMetrics }[] = [
+    { leg: "ALL", m: allLeg(res) },
+    { leg: "LONG", m: { ...ZERO_LEG, ...res.by_leg?.long } },
+    { leg: "SHORT", m: { ...ZERO_LEG, ...res.by_leg?.short } },
+  ];
+  return {
+    columns: LEG_COLUMNS.map((c) => ({ label: c.label, info: c.info })),
+    rows: legs.map(({ leg, m }) => ({ leg, cells: LEG_COLUMNS.map((c) => c.cell(m)) })),
+  };
+}
+
+export function tradeRows(res: PanelResult, resSeconds: number): TradeRow[] {
+  return res.trades.map((trade, i) => {
+    const pnlPct = trade.entry_price * trade.quantity === 0
+      ? 0
+      : (trade.pnl / (trade.entry_price * trade.quantity)) * 100;
+
+    const durationBars = resSeconds === 0
+      ? 0
+      : (trade.exit_time - trade.entry_time) / resSeconds;
+
+    return {
+      i,
+      side: trade.side,
+      leg: trade.leg,
+      entryTime: trade.entry_time,
+      entryPrice: trade.entry_price,
+      exitTime: trade.exit_time_exact ?? trade.exit_time,
+      exitPrice: trade.exit_price,
+      pnl: trade.pnl,
+      pnlPct,
+      durationBars,
+      reason: trade.reason,
+      financing: trade.financing ?? 0,
+    };
+  });
+}
+
+// Windowed-rendering maths for the trades table: which slice of rows to put in
+// the DOM for the current scroll position, plus spacer heights that keep the
+// scrollbar sized for the full list. rowH <= 0 means "not measured yet" and
+// disables windowing rather than rendering a wrong slice.
+export interface RowWindow {
+  start: number;
+  end: number; // exclusive
+  padTop: number;
+  padBottom: number;
+}
+
+export function rowWindow(
+  scrollTop: number,
+  viewportH: number,
+  rowH: number,
+  total: number,
+  overscan = 10,
+): RowWindow {
+  if (rowH <= 0 || total <= 0) return { start: 0, end: Math.max(0, total), padTop: 0, padBottom: 0 };
+  // Clamp to the real content range: a stale scrollTop left over from a longer
+  // list (e.g. a re-run with far fewer trades) would otherwise point past the
+  // end and produce an all-spacer window with no rows in it.
+  const maxScroll = Math.max(0, total * rowH - viewportH);
+  const first = Math.floor(Math.min(Math.max(0, scrollTop), maxScroll) / rowH);
+  const visible = Math.ceil(viewportH / rowH) + 1;
+  const start = Math.max(0, first - overscan);
+  const end = Math.min(total, first + visible + overscan);
+  return { start, end, padTop: start * rowH, padBottom: (total - end) * rowH };
+}
+
+export function sortTradeRows(
+  rows: TradeRow[],
+  key: keyof TradeRow,
+  dir: "asc" | "desc"
+): TradeRow[] {
+  const copy = [...rows];
+  copy.sort((a, b) => {
+    const aVal = a[key];
+    const bVal = b[key];
+
+    // Compare the key values
+    let cmp = 0;
+    if (aVal < bVal) cmp = -1;
+    else if (aVal > bVal) cmp = 1;
+
+    // Apply direction
+    if (dir === "desc") cmp = -cmp;
+
+    // Tiebreak by index
+    if (cmp === 0) {
+      cmp = a.i < b.i ? -1 : a.i > b.i ? 1 : 0;
+    }
+
+    return cmp;
+  });
+  return copy;
+}

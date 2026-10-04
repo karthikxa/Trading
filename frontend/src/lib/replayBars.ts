@@ -1,0 +1,232 @@
+// Pure bar math for chart replay. Everything here is a function of (bars,
+// cursor) — no chart, no fetch, no state — so the closed-bar rule that keeps a
+// replay session BLIND is unit-testable on its own.
+//
+// `cursorMs` is "the market is known through this instant": the CLOSE time of
+// the newest revealed bar, never a bar's timestamp. That definition is what
+// makes a timeframe switch exact — the cursor carries across unchanged and each
+// resolution re-derives its own visible set from it.
+import type { KLineData } from "klinecharts";
+import { RESOLUTION_SECONDS } from "./feed";
+import { barEndMs } from "./timeframe";
+
+/** Nominal bar width in ms. Only ever a FALLBACK for the newest loaded bar (see
+ * barCloseMs): RESOLUTION_SECONDS' derived entries (WEEK_2, MONTH_*, YEAR) are
+ * approximate by its own documentation, so a real next-bar timestamp always wins. */
+export function nominalMsFor(resolution: string): number {
+  return (RESOLUTION_SECONDS[resolution] ?? 60) * 1000;
+}
+
+/** When bar `i` closes. The next bar's timestamp is the truth (correct for the
+ * calendar-bucketed derived timeframes the backend folds, where a nominal width
+ * is wrong by days); the nominal width covers the newest loaded bar, which has
+ * no successor yet. Given `resolution`, that newest bar ends where the grammar
+ * says (barEndMs): a custom intraday bucket resets at 00:00 UTC, so the day's
+ * last 5H bar (20:00) closes at midnight, not 01:00.
+ *
+ * Every helper below takes the same optional trailing `resolution` and passes it
+ * down, so the step guard and the refill check keep reading one predicate. */
+export function barCloseMs(
+  bars: readonly KLineData[],
+  i: number,
+  nominalMs: number,
+  resolution?: string,
+): number {
+  const next = bars[i + 1];
+  if (next) return next.timestamp;
+  const ts = bars[i].timestamp;
+  return (resolution != null ? barEndMs(resolution, ts) : null) ?? ts + nominalMs;
+}
+
+/** How many bars are CLOSED at or before the cursor. Bars are ascending, so this
+ * is a binary search on a monotone predicate. */
+export function revealedCount(
+  bars: readonly KLineData[],
+  cursorMs: number,
+  nominalMs: number,
+  resolution?: string,
+): number {
+  let lo = 0;
+  let hi = bars.length; // count of revealed bars, in [0, length]
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (barCloseMs(bars, mid, nominalMs, resolution) <= cursorMs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** The bars a replaying chart may paint at this cursor. */
+export function revealedBars(
+  bars: readonly KLineData[],
+  cursorMs: number,
+  nominalMs: number,
+  resolution?: string,
+): KLineData[] {
+  return bars.slice(0, revealedCount(bars, cursorMs, nominalMs, resolution));
+}
+
+/** Cursor after one step forward, or null when the loaded bars are exhausted
+ * (the caller refills the forward buffer or declares the end of history). */
+export function nextCursorMs(
+  bars: readonly KLineData[],
+  cursorMs: number,
+  nominalMs: number,
+  resolution?: string,
+): number | null {
+  const n = revealedCount(bars, cursorMs, nominalMs, resolution);
+  return n < bars.length ? barCloseMs(bars, n, nominalMs, resolution) : null;
+}
+
+/** Cursor after one step back, or null when a step would leave the chart blank
+ * (one revealed bar is the floor). */
+export function prevCursorMs(
+  bars: readonly KLineData[],
+  cursorMs: number,
+  nominalMs: number,
+  resolution?: string,
+): number | null {
+  const n = revealedCount(bars, cursorMs, nominalMs, resolution);
+  return n >= 2 ? barCloseMs(bars, n - 2, nominalMs, resolution) : null;
+}
+
+/** Cursor for a chosen START timestamp: the close of the bar that CONTAINS it,
+ * so a pick anywhere inside a bar reveals that bar and nothing after it. null
+ * when no loaded bar covers the timestamp (dead zone — the caller re-rolls). */
+export function cursorForStartTs(
+  bars: readonly KLineData[],
+  startTs: number,
+  nominalMs: number,
+  resolution?: string,
+): number | null {
+  for (let i = bars.length - 1; i >= 0; i--) {
+    if (bars[i].timestamp <= startTs) {
+      return barCloseMs(bars, i, nominalMs, resolution) > startTs ? barCloseMs(bars, i, nominalMs, resolution) : null;
+    }
+  }
+  return null;
+}
+
+/** Splice the replay slice onto whatever OLDER history the chart already holds.
+ * Scroll-back paging prepends bars through the same facade, and a later slice
+ * apply would otherwise drop them; anything at or after the slice's first bar is
+ * dropped instead, since the slice is authoritative from there on. */
+export function mergeOlder(
+  existing: readonly KLineData[],
+  revealed: readonly KLineData[],
+): KLineData[] {
+  if (!revealed.length) return [...revealed];
+  const firstTs = revealed[0].timestamp;
+  const older: KLineData[] = [];
+  for (const b of existing) {
+    if (b.timestamp >= firstTs) break;
+    older.push(b);
+  }
+  return [...older, ...revealed];
+}
+
+/** Merge a freshly fetched window into the replay bar store.
+ *
+ * A refill CANNOT be treated as a superset of the store: bufferWindowSec spans a
+ * fixed duration, so re-centring it on an advanced cursor returns a window of the
+ * same width shifted right — on continuous data (crypto, synthetic epics) that is
+ * the same bar COUNT, gaining bars on the right and losing them on the left.
+ * Keeping "whichever array is longer" would therefore never adopt the refill at
+ * all and the session would stall at the end of its first buffer.
+ *
+ * So: never shrink, never drop either end. Both inputs are ascending; the result
+ * is ascending and unique by timestamp, with `fetched` winning a collision (it is
+ * the fresher read of the same bar). An empty `fetched` leaves the store as it is,
+ * which matters because fetchRange reports a failed page as an empty one. */
+export function mergeForward(
+  store: readonly KLineData[],
+  fetched: readonly KLineData[],
+): KLineData[] {
+  if (!fetched.length) return store.slice();
+  if (!store.length) return fetched.slice();
+  const out: KLineData[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < store.length && j < fetched.length) {
+    if (store[i].timestamp < fetched[j].timestamp) out.push(store[i++]);
+    else if (store[i].timestamp > fetched[j].timestamp) out.push(fetched[j++]);
+    else {
+      out.push(fetched[j++]); // same bar, fresher read
+      i++;
+    }
+  }
+  while (i < store.length) out.push(store[i++]);
+  while (j < fetched.length) out.push(fetched[j++]);
+  return out;
+}
+
+/** Whether one more step forward is safe: the bar the cursor would step ONTO
+ * already has a loaded successor, so its close is a real next-bar timestamp
+ * rather than barCloseMs's nominal-width fallback.
+ *
+ * This is the whole no-lookahead/no-un-reveal rule in one place. Stepping onto
+ * the last loaded bar would (a) reveal the still-forming bar at the live edge and
+ * (b) let a later refill that appends across a session gap — a Friday daily bar
+ * whose close jumps from F+1d to Monday — push that bar's close PAST the cursor,
+ * un-revealing a bar the user has already seen. Both the step guard and the
+ * end-of-session check read this predicate so they cannot disagree. */
+export function hasLoadedSuccessor(
+  bars: readonly KLineData[],
+  cursorMs: number,
+  nominalMs: number,
+  resolution?: string,
+): boolean {
+  return revealedCount(bars, cursorMs, nominalMs, resolution) + 1 < bars.length;
+}
+
+/** The next window to probe when a refill window came back with no bar past the
+ * cursor. That silence is ambiguous: it is the live edge, OR a market-closure
+ * gap wider than the window (a crude-oil weekend is ~49h; MINUTE_5's forward
+ * buffer is ~17h) — and only reaching `nowSec` can tell them apart. Probes are
+ * CONTIGUOUS with the window they extend (a jumped-over region would leave a
+ * hole in the bar store, and stepping would silently skip real trading days)
+ * and DOUBLE in width so a multi-day gap costs log probes — capped at
+ * `maxWidthSec` (the probe that finally lands past a gap fetches its whole span
+ * of real bars, so an uncapped width could request years of them), clamped at
+ * `nowSec`. null once the previous window already reached `nowSec`: that is the
+ * true end. */
+export function nextProbeWindowSec(
+  prev: { fromSec: number; toSec: number },
+  nowSec: number,
+  maxWidthSec: number = Infinity,
+): { fromSec: number; toSec: number } | null {
+  if (prev.toSec >= nowSec) return null;
+  const width = Math.min(2 * (prev.toSec - prev.fromSec), maxWidthSec);
+  return { fromSec: prev.toSec, toSec: Math.min(prev.toSec + width, nowSec) };
+}
+
+/** True when the cursor is within `margin` bars of the end of the store, so the
+ * forward buffer should be refilled before stepping can block on the network. */
+export function needsBuffer(
+  bars: readonly KLineData[],
+  cursorMs: number,
+  nominalMs: number,
+  margin: number,
+  resolution?: string,
+): boolean {
+  return bars.length - revealedCount(bars, cursorMs, nominalMs, resolution) <= margin;
+}
+
+/** The [from, to] SECOND window a replay load asks the candles API for: enough
+ * history left of the cursor to fill the screen, plus a forward buffer so
+ * stepping never blocks on the network. Clamped at `nowMs` — replay never
+ * crosses the live edge, which is why the backend cache's no-forward-fetch
+ * limitation is irrelevant here. */
+export function bufferWindowSec(args: {
+  centerMs: number;
+  resSec: number;
+  contextBars: number;
+  forwardBars: number;
+  nowMs: number;
+}): { fromSec: number; toSec: number } {
+  const centerSec = Math.floor(args.centerMs / 1000);
+  return {
+    fromSec: centerSec - args.contextBars * args.resSec,
+    toSec: Math.min(centerSec + args.forwardBars * args.resSec, Math.floor(args.nowMs / 1000)),
+  };
+}

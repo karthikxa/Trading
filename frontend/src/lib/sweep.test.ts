@@ -1,0 +1,396 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { axisColumnLabel, axisOptionFor, comboAxisLabel, comboAxisText, comboCount, enumerateCombos, getLastSweepJob, materializePeriodAxes, mirrorRiskAxes, robustWindowBounds, runSweep, sweepCatchState, SWEEP_WARN_COMBOS } from "./sweep";
+import * as api from "../api";
+
+const axis = (target: string, from: number, to: number, step: number) =>
+  ({ kind: "range" as const, target, label: target, from, to, step });
+
+const listAxis = (target: string, options: { label: string; patch: Record<string, number | string> }[]) =>
+  ({ kind: "list" as const, target, label: target, options });
+
+describe("enumerateCombos", () => {
+  it("walks one axis inclusively", () => {
+    expect(enumerateCombos([axis("param:n", 1, 2, 0.5)])).toEqual([
+      { "param:n": 1 }, { "param:n": 1.5 }, { "param:n": 2 },
+    ]);
+  });
+
+  it("builds the cartesian product for two axes", () => {
+    const combos = enumerateCombos([axis("param:a", 1, 2, 1), axis("param:b", 10, 30, 10)]);
+    expect(combos).toHaveLength(6);
+    expect(combos[0]).toEqual({ "param:a": 1, "param:b": 10 });
+    expect(comboCount([axis("param:a", 1, 2, 1), axis("param:b", 10, 30, 10)])).toBe(6);
+  });
+
+  it("walks negative and descending ranges", () => {
+    expect(enumerateCombos([axis("param:n", -1, 0, 0.5)])).toEqual([
+      { "param:n": -1 }, { "param:n": -0.5 }, { "param:n": 0 },
+    ]);
+    // Descending endpoints (0 → -1) enumerate downward instead of returning empty.
+    expect(enumerateCombos([axis("param:n", 0, -1, 0.5)])).toEqual([
+      { "param:n": 0 }, { "param:n": -0.5 }, { "param:n": -1 },
+    ]);
+    expect(comboCount([axis("param:n", 0, -1, 0.5)])).toBe(3);
+  });
+
+  it("guards degenerate steps", () => {
+    expect(comboCount([axis("param:a", 1, 10, 0)])).toBe(Infinity);   // Run stays disabled
+    expect(enumerateCombos([axis("param:a", 5, 5, 1)])).toEqual([{ "param:a": 5 }]);
+  });
+
+  it("writes a mirrored target with the same value into every combo", () => {
+    const a = { ...axis("risk:long.stop.value", 1, 2, 1), mirrorTarget: "risk:short.stop.value" };
+    expect(enumerateCombos([a])).toEqual([
+      { "risk:long.stop.value": 1, "risk:short.stop.value": 1 },
+      { "risk:long.stop.value": 2, "risk:short.stop.value": 2 },
+    ]);
+    expect(comboCount([a])).toBe(2);                 // a mirror never multiplies combos
+  });
+
+  it("crosses three axes: first axis varies fastest, count multiplies", () => {
+    const axes = [axis("param:a", 1, 2, 1), axis("param:b", 10, 20, 10), axis("param:c", 0, 1, 1)];
+    const combos = enumerateCombos(axes);
+    expect(combos).toHaveLength(8);
+    expect(combos[0]).toEqual({ "param:a": 1, "param:b": 10, "param:c": 0 });
+    expect(combos[7]).toEqual({ "param:a": 2, "param:b": 20, "param:c": 1 });
+    expect(comboCount(axes)).toBe(8);
+  });
+
+  it("snaps float-noise near-zeros to exactly 0", () => {
+    // -0.15 + 6*0.025 = 2.7755575615628914e-17 in doubles; toPrecision alone
+    // can't clean it (relative precision), the zero-snap must.
+    const vals = enumerateCombos([axis("param:n", -0.15, 0.05, 0.025)])
+      .map((c) => c["param:n"]);
+    expect(vals).toContain(0);
+    expect(vals.every((v) => v === 0 || Math.abs(v as number) > 1e-9)).toBe(true);
+  });
+
+  it("SWEEP_WARN_COMBOS is 1000", () => {
+    expect(SWEEP_WARN_COMBOS).toBe(1000);
+  });
+
+  it("enumerates past 1000 combos without throwing (warn, not cap)", () => {
+    // 40 * 40 = 1600 combos > SWEEP_WARN_COMBOS: still enumerates.
+    const big = enumerateCombos([axis("param:a", 1, 40, 1), axis("param:b", 1, 40, 1)]);
+    expect(big).toHaveLength(1600);
+    expect(comboCount([axis("param:a", 1, 40, 1), axis("param:b", 1, 40, 1)])).toBe(1600);
+  });
+});
+
+describe("mirrorRiskAxes", () => {
+  it("stamps long-side risk axes with their short mirror, passes others through", () => {
+    const risk = axis("risk:long.target.mult", 1, 3, 1);
+    const param = axis("param:n", 1, 2, 1);
+    const [m, p] = mirrorRiskAxes([risk, param]);
+    if (m.kind !== "range") throw new Error("expected range axis");
+    expect(m.mirrorTarget).toBe("risk:short.target.mult");
+    expect(p).toEqual(param);
+  });
+});
+
+describe("runSweep", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const row = (n: number): api.SweepRow =>
+    ({ combo: { "param:n": n }, metrics: null, error: null, windows: null });
+
+  // Stubs submit + poll to replay `rowBatches` one batch per poll (respecting
+  // the caller's cursor), then returns the cancelSweepJob spy for assertions.
+  function mockJob(rowBatches: api.SweepRow[][], opts: { cancelled?: boolean; error?: string } = {}) {
+    vi.spyOn(api, "submitSweepJob").mockResolvedValue({ jobId: "j1", total: rowBatches.flat().length });
+    let call = 0;
+    vi.spyOn(api, "pollSweepJob").mockImplementation(async (_id, cursor) => {
+      const all = rowBatches.slice(0, ++call).flat();
+      const running = call < rowBatches.length && !opts.cancelled && !opts.error;
+      return {
+        rows: all.slice(cursor), done: all.length, total: rowBatches.flat().length,
+        running, cancelled: !!opts.cancelled && !running, error: opts.error ?? null, etaSeconds: null,
+      };
+    });
+    return vi.spyOn(api, "cancelSweepJob").mockResolvedValue(undefined);
+  }
+
+  it("streams rows through onRows incrementally and resolves the full set", async () => {
+    mockJob([[row(1), row(2)], [row(3)], [row(4), row(5)]]);
+    const seen: Array<{ rows: number; done: number; total: number }> = [];
+    const p = runSweep({} as never, [axis("param:n", 1, 5, 1)], {
+      onRows: (rows, done, total) => seen.push({ rows: rows.length, done, total }),
+    });
+    await vi.advanceTimersByTimeAsync(700 * 3);
+    const rows = await p;
+    expect(rows).toHaveLength(5);
+    expect(rows.map((r) => r.combo["param:n"])).toEqual([1, 2, 3, 4, 5]);
+    // Each poll's NEW rows only; done is the cumulative count after appending.
+    expect(seen).toEqual([
+      { rows: 2, done: 2, total: 5 },
+      { rows: 1, done: 3, total: 5 },
+      { rows: 2, done: 5, total: 5 },
+    ]);
+  });
+
+  it("does not submit when the signal is already aborted", async () => {
+    const submit = vi.spyOn(api, "submitSweepJob").mockResolvedValue({ jobId: "j1", total: 0 });
+    const ctl = new AbortController();
+    ctl.abort();
+    await expect(
+      runSweep({} as never, [axis("param:n", 1, 2, 1)], { onRows: () => {}, signal: ctl.signal }),
+    ).rejects.toThrow(/aborted/i);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("aborts mid-poll: cancels the job and rejects", async () => {
+    const cancel = mockJob([[row(1)], [row(2)], [row(3)]]);
+    const ctl = new AbortController();
+    const p = runSweep({} as never, [axis("param:n", 1, 3, 1)], {
+      onRows: () => ctl.abort(), signal: ctl.signal,
+    });
+    const assertion = expect(p).rejects.toThrow(/aborted/i);
+    await vi.advanceTimersByTimeAsync(700 * 3);
+    await assertion;
+    expect(cancel).toHaveBeenCalledWith("j1", "local");
+  });
+
+  it("retries the cancel POST when it fails transiently", async () => {
+    const cancel = mockJob([[row(1)], [row(2)], [row(3)]]);
+    cancel.mockRejectedValueOnce(new Error("502")).mockResolvedValueOnce(undefined);
+    const ctl = new AbortController();
+    const p = runSweep({} as never, [axis("param:n", 1, 3, 1)], {
+      onRows: () => ctl.abort(), signal: ctl.signal,
+    });
+    const assertion = expect(p).rejects.toThrow(/aborted/i);
+    await vi.advanceTimersByTimeAsync(700 * 3);
+    await assertion;
+    // First attempt failed with a transient error; a retry follows after backoff.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(cancel).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cancel the server job on a detach abort (shouldCancelServer false)", async () => {
+    const cancel = mockJob([[row(1)], [row(2)], [row(3)]]);
+    const ctl = new AbortController();
+    const p = runSweep({} as never, [axis("param:n", 1, 3, 1)], {
+      onRows: () => ctl.abort(), signal: ctl.signal, shouldCancelServer: () => false,
+    });
+    const assertion = expect(p).rejects.toThrow(/aborted/i);
+    await vi.advanceTimersByTimeAsync(700 * 3);
+    await assertion;
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("rejects with 'sweep aborted' when the backend reports cancelled", async () => {
+    mockJob([[row(1)], [row(2)]], { cancelled: true });
+    const p = runSweep({} as never, [axis("param:n", 1, 2, 1)], { onRows: () => {} });
+    const assertion = expect(p).rejects.toThrow(/aborted/i);
+    await vi.advanceTimersByTimeAsync(700 * 2);
+    await assertion;
+  });
+
+  it("rejects with the backend error message", async () => {
+    mockJob([[row(1)]], { error: "boom on the backend" });
+    const p = runSweep({} as never, [axis("param:n", 1, 1, 1)], { onRows: () => {} });
+    const assertion = expect(p).rejects.toThrow("boom on the backend");
+    await vi.advanceTimersByTimeAsync(700);
+    await assertion;
+  });
+
+  it("retries a transient poll rejection and completes without cancelling", async () => {
+    // A proxy 502 twice, then the real terminal poll: the run must recover and
+    // resolve, never surfacing the transient failure or killing the job.
+    vi.spyOn(api, "submitSweepJob").mockResolvedValue({ jobId: "j1", total: 1 });
+    const cancel = vi.spyOn(api, "cancelSweepJob").mockResolvedValue(undefined);
+    let calls = 0;
+    vi.spyOn(api, "pollSweepJob").mockImplementation(async () => {
+      calls++;
+      if (calls <= 2) throw new Error("proxy 502");
+      return { rows: [row(1)], done: 1, total: 1, running: false, cancelled: false, error: null, etaSeconds: null };
+    });
+    const p = runSweep({} as never, [axis("param:n", 1, 1, 1)], { onRows: () => {} });
+    // 3 poll attempts (2 failing + 1 terminal), each preceded by a 700ms sleep.
+    await vi.advanceTimersByTimeAsync(700 * 3);
+    const rows = await p;
+    expect(rows.map((r) => r.combo["param:n"])).toEqual([1]);
+    expect(calls).toBe(3);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("propagates the error after 5 consecutive poll failures", async () => {
+    vi.spyOn(api, "submitSweepJob").mockResolvedValue({ jobId: "j1", total: 1 });
+    vi.spyOn(api, "cancelSweepJob").mockResolvedValue(undefined);
+    let calls = 0;
+    vi.spyOn(api, "pollSweepJob").mockImplementation(async () => {
+      calls++;
+      throw new Error("proxy 502");
+    });
+    const p = runSweep({} as never, [axis("param:n", 1, 1, 1)], { onRows: () => {} });
+    const assertion = expect(p).rejects.toThrow("proxy 502");
+    await vi.advanceTimersByTimeAsync(700 * 5);
+    await assertion;
+    expect(calls).toBe(5); // exactly 5 consecutive attempts, then it gives up
+  });
+
+  it("submits an explicit combo override verbatim instead of enumerating", async () => {
+    mockJob([[row(7)]]);
+    const submit = vi.spyOn(api, "submitSweepJob");
+    const override = [{ "param:n": 7 }, { "param:n": 9 }];
+    const p = runSweep({} as never, [axis("param:n", 1, 100, 1)], {
+      onRows: () => {}, combosOverride: override,
+    });
+    await vi.advanceTimersByTimeAsync(700);
+    await p;
+    // The override is submitted verbatim, not the 100-value enumerated grid.
+    expect(submit).toHaveBeenCalledWith(expect.anything(), override, undefined, "local");
+  });
+
+  it("appends target=remote query and records the last job", async () => {
+    mockJob([[row(1)]]);
+    const submit = vi.spyOn(api, "submitSweepJob");
+    const p = runSweep({} as never, [axis("param:n", 1, 1, 1)], {
+      onRows: () => {}, windows: [1, 2, 3], target: "remote",
+    });
+    await vi.advanceTimersByTimeAsync(700);
+    await p;
+    expect(submit).toHaveBeenCalledWith(expect.anything(), expect.anything(), [1, 2, 3], "remote");
+    expect(getLastSweepJob()).toEqual({ jobId: "j1", target: "remote" });
+  });
+});
+
+describe("robustWindowBounds", () => {
+  const DAY = 86_400_000;
+
+  it("splits a month into weekly windows", () => {
+    const from = Date.UTC(2026, 2, 1);
+    const to = from + 28 * DAY;
+    const bounds = robustWindowBounds(from, to);
+    expect(bounds).toHaveLength(5); // 4 windows
+    expect(bounds[0]).toBe(Math.round(from / 1000));
+    expect(bounds[4]).toBe(Math.round(to / 1000));
+    for (let i = 1; i < bounds.length; i++) expect(bounds[i]).toBeGreaterThan(bounds[i - 1]);
+  });
+
+  it("splits a year into monthly windows and a week into daily windows", () => {
+    const from = Date.UTC(2026, 0, 1);
+    expect(robustWindowBounds(from, from + 365 * DAY)).toHaveLength(13);
+    expect(robustWindowBounds(from, from + 7 * DAY)).toHaveLength(8);
+  });
+
+  it("clamps auto N to at least 3 and at most 30", () => {
+    const from = Date.UTC(2026, 0, 1);
+    expect(robustWindowBounds(from, from + 1 * DAY)).toHaveLength(4);      // min 3
+    expect(robustWindowBounds(from, from + 3650 * DAY)).toHaveLength(31);  // max 30
+  });
+
+  it("uses the override count when given, clamped to 2..50", () => {
+    const from = Date.UTC(2026, 0, 1);
+    expect(robustWindowBounds(from, from + 28 * DAY, 6)).toHaveLength(7);
+    expect(robustWindowBounds(from, from + 28 * DAY, 1)).toHaveLength(3);
+    expect(robustWindowBounds(from, from + 28 * DAY, 99)).toHaveLength(51);
+  });
+});
+
+describe("sweepCatchState", () => {
+  const prev = { rows: [{ combo: { "param:n": 1 }, metrics: null, error: null, windows: null }], done: 20, total: 45, running: true };
+
+  it("marks a user cancel neutrally, keeping landed rows and no error", () => {
+    const next = sweepCatchState(prev, true, new Error("sweep aborted"));
+    expect(next).toEqual({ rows: prev.rows, done: 20, total: 45, running: false, cancelled: true });
+    expect(next.error).toBeUndefined();
+  });
+
+  it("marks a real failure as an error, not a cancel", () => {
+    const next = sweepCatchState(prev, false, new Error("net down"));
+    expect(next).toEqual({ rows: prev.rows, done: 20, total: 45, running: false, error: "net down" });
+    expect(next.cancelled).toBeUndefined();
+  });
+
+  it("prefers the abort signal over the error when both are present (race)", () => {
+    // A cancel that races a chunk failure: the promise rejects with the chunk's
+    // error, but the signal is already aborted — must still read as a cancel.
+    const next = sweepCatchState(prev, true, new Error("net down"));
+    expect(next.cancelled).toBe(true);
+    expect(next.error).toBeUndefined();
+  });
+
+  it("falls back to a generic message for a non-Error rejection", () => {
+    const next = sweepCatchState(null, false, "oops");
+    expect(next).toEqual({ rows: [], done: 0, total: 0, running: false, error: "sweep failed" });
+  });
+});
+
+describe("list axes", () => {
+  const tw = listAxis("timeWindow", [
+    { label: "morning", patch: { "timeWindow:startMin": 480 } },
+    { label: "afternoon", patch: { "timeWindow:startMin": 720 } },
+  ]);
+
+  it("enumerates each option's patch and counts options", () => {
+    expect(enumerateCombos([tw])).toEqual([
+      { "timeWindow:startMin": 480 }, { "timeWindow:startMin": 720 },
+    ]);
+    expect(comboCount([tw])).toBe(2);
+    expect(comboCount([listAxis("timeWindow", [])])).toBe(Infinity); // empty list blocks Run
+  });
+
+  it("spreads multi-key patches and crosses with a range axis", () => {
+    const win = listAxis("timeWindow", [
+      { label: "morning", patch: { "timeWindow:startMin": 480, "timeWindow:endMin": 720, "timeWindow:tz": "UTC" } },
+    ]);
+    const combos = enumerateCombos([win, axis("param:n", 1, 2, 1)]);
+    expect(combos).toHaveLength(2);
+    expect(combos[0]).toEqual({
+      "timeWindow:startMin": 480, "timeWindow:endMin": 720, "timeWindow:tz": "UTC", "param:n": 1,
+    });
+  });
+
+  it("resolves a row's option by patch-subset match", () => {
+    expect(axisOptionFor(tw, { "timeWindow:startMin": 720, "param:n": 3 })?.label).toBe("afternoon");
+    expect(axisOptionFor(tw, { "timeWindow:startMin": 999 })).toBeNull();
+    expect(comboAxisText(tw, { "timeWindow:startMin": 480 })).toBe("morning");
+    expect(comboAxisText(axis("param:n", 1, 2, 1), { "param:n": 1.5 })).toBe("1.5");
+    // Combos stored by old archives can carry enumeration float noise; the
+    // display text flushes it to a clean 0 (fmtAxisValue).
+    expect(comboAxisText(axis("param:n", -0.15, 0.05, 0.025), { "param:n": 2.7755575615628914e-17 })).toBe("0");
+  });
+
+  it("appends the value after the axis label", () => {
+    expect(comboAxisLabel({ ...axis("param:n", 1, 2, 1), label: "Fast EMA" }, { "param:n": 2 })).toBe("Fast EMA 2");
+    expect(comboAxisLabel({ ...axis("risk:long.stop.value", 0, 1, 1), label: "Long stop %" }, { "risk:long.stop.value": 1 })).toBe("Long stop % 1");
+    expect(comboAxisLabel(tw, { "timeWindow:startMin": 480 })).toBe(`${tw.label} morning`);
+  });
+
+  it("keeps the axis label verbatim for a per-axis column header", () => {
+    expect(axisColumnLabel({ ...axis("param:n", 1, 2, 1), label: "Fast EMA" })).toBe("Fast EMA");
+    expect(axisColumnLabel({ ...axis("risk:long.stop.value", 0, 1, 1), label: "Long stop %" })).toBe("Long stop %");
+    expect(axisColumnLabel(tw)).toBe("timeWindow");
+  });
+});
+
+describe("period axes", () => {
+  const period = { kind: "period" as const, target: "period", label: "Period", n: 2 };
+
+  it("counts n and refuses to enumerate unmaterialized", () => {
+    expect(comboCount([period])).toBe(2);
+    expect(() => enumerateCombos([period])).toThrow(/materialized/);
+  });
+
+  it("materializes into n contiguous equal windows in unix seconds", () => {
+    const fromMs = 1_700_000_000_000;
+    const toMs = fromMs + 2 * 86_400_000;
+    const [m] = materializePeriodAxes([period], fromMs, toMs);
+    if (m.kind !== "list") throw new Error("expected list axis");
+    expect(m.options).toHaveLength(2);
+    expect(m.options[0].patch).toEqual({
+      "period:from": 1_700_000_000, "period:to": 1_700_086_400,
+    });
+    expect(m.options[1].patch).toEqual({
+      "period:from": 1_700_086_400, "period:to": 1_700_172_800,
+    });
+    expect(m.options[0].label).toMatch(/^W1/);
+    // Non-period axes pass through untouched.
+    const passthrough = axis("param:n", 1, 2, 1);
+    expect(materializePeriodAxes([passthrough], fromMs, toMs)).toEqual([passthrough]);
+  });
+});

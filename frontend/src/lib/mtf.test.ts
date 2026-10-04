@@ -1,0 +1,330 @@
+import { describe, expect, it } from "vitest";
+import type { KLineData } from "klinecharts";
+import { maSeries, normalizeMaKind, htfCoverageStartMs, HTF_WARMUP_BARS, alignHtfToChart } from "./mtf";
+
+// Minimal flat bars (open=high=low=close) one step apart.
+function bars(closes: number[]): KLineData[] {
+  return closes.map((c, i) => ({
+    timestamp: i * 60_000,
+    open: c,
+    high: c,
+    low: c,
+    close: c,
+    volume: 0,
+  }));
+}
+
+describe("maSeries smoothing", () => {
+  const closes = Array.from({ length: 30 }, (_, i) => 100 + i);
+
+  it("smooths the defined tail without blanking the line (SMA base + EMA smoothing)", () => {
+    const { smoothing } = maSeries(bars(closes), "sma", 5, {
+      smoothing: { type: "ema", length: 3 },
+    });
+    expect(smoothing).toBeDefined();
+    expect(smoothing!.length).toBe(30);
+    // SMA(5) warms up over the first 4 bars -> undefined; the rest is smoothed.
+    expect(smoothing!.slice(0, 4).every((v) => v === undefined)).toBe(true);
+    const tail = smoothing!.slice(4);
+    expect(tail.length).toBeGreaterThan(0);
+    expect(tail.every((v) => typeof v === "number" && Number.isFinite(v))).toBe(true);
+  });
+
+  it("SMA base + SMA smoothing also stays finite", () => {
+    const { smoothing } = maSeries(bars(closes), "sma", 5, {
+      smoothing: { type: "sma", length: 3 },
+    });
+    // Last value must be a real number, not undefined/NaN.
+    const last = smoothing![smoothing!.length - 1];
+    expect(typeof last).toBe("number");
+    expect(Number.isFinite(last as number)).toBe(true);
+  });
+
+  it("returns the base as a SEPARATE line, never overwritten by smoothing (TV behavior)", () => {
+    const plain = maSeries(bars(closes), "sma", 5);
+    const withSmooth = maSeries(bars(closes), "sma", 5, {
+      smoothing: { type: "ema", length: 3 },
+    });
+    // Base line is identical whether or not smoothing is on.
+    expect(withSmooth.base).toEqual(plain.base);
+    // Smoothing is a distinct line, not equal to the base.
+    expect(withSmooth.smoothing).toBeDefined();
+    expect(withSmooth.smoothing).not.toEqual(withSmooth.base);
+  });
+
+  it("omits the smoothing line when smoothing is off", () => {
+    const off = maSeries(bars(closes), "sma", 5, { smoothing: { type: "none", length: 3 } });
+    expect(off.smoothing).toBeUndefined();
+    expect(off.base).toEqual(maSeries(bars(closes), "sma", 5).base);
+  });
+
+  it("applies offset to the base line only, leaving smoothing unshifted (matches TV)", () => {
+    const noOffset = maSeries(bars(closes), "sma", 5, {
+      smoothing: { type: "ema", length: 3 },
+    });
+    const offset = maSeries(bars(closes), "sma", 5, {
+      offset: 2,
+      smoothing: { type: "ema", length: 3 },
+    });
+    // Base shifted forward by 2 bars: offset.base[i+2] === noOffset.base[i].
+    for (let i = 0; i < closes.length - 2; i++) {
+      expect(offset.base[i + 2]).toBe(noOffset.base[i]);
+    }
+    // Smoothing is computed from the unshifted base, so offset does not move it.
+    expect(offset.smoothing).toEqual(noOffset.smoothing);
+  });
+});
+
+describe("htfCoverageStartMs", () => {
+  const HOUR = 3_600_000;
+  const oldest = 1_000 * HOUR; // arbitrary oldest chart bar
+
+  it("reaches back to before the oldest chart bar by the MA length plus warmup", () => {
+    // The HTF series must start `length` HTF bars before the oldest chart bar so
+    // alignment covers it and the MA is already converged there.
+    expect(htfCoverageStartMs(oldest, HOUR, 9)).toBe(oldest - (9 + HTF_WARMUP_BARS) * HOUR);
+  });
+
+  it("adds the MA length so the oldest visible bars are not blank/unconverged", () => {
+    // Longer MA => reaches strictly further back (more warmup). Load-bearing term.
+    const short = htfCoverageStartMs(oldest, HOUR, 9);
+    const long = htfCoverageStartMs(oldest, HOUR, 200);
+    expect(short - long).toBe((200 - 9) * HOUR);
+  });
+
+  it("returns the oldest bar unchanged when htfMs is not positive", () => {
+    expect(htfCoverageStartMs(oldest, 0, 9)).toBe(oldest);
+  });
+});
+
+// Bars with per-bar volume (the flat-price bars() helper above pins volume to 0,
+// which is exactly the degenerate case for the volume-weighted kinds). Shared
+// with ma.test.ts so the bar shape cannot drift between the two suites.
+import { vbars } from "./testBars";
+
+describe("maSeries vwma", () => {
+  it("is the volume-weighted mean over the window", () => {
+    const { base } = maSeries(vbars([10, 20, 30, 40], [1, 2, 3, 4]), "vwma", 2);
+    expect(base[0]).toBeUndefined(); // warm-up: window not full
+    expect(base[1]).toBeCloseTo(50 / 3, 10); // (10*1 + 20*2) / 3
+    expect(base[2]).toBeCloseTo(26, 10); // (20*2 + 30*3) / 5
+    expect(base[3]).toBeCloseTo(250 / 7, 10); // (30*3 + 40*4) / 7
+  });
+  it("is undefined wherever the window's volume sum is 0", () => {
+    const { base } = maSeries(vbars([10, 20, 30], [1, 0, 0]), "vwma", 2);
+    expect(base[1]).toBeCloseTo(10, 10); // (10*1 + 20*0) / 1
+    expect(base[2]).toBeUndefined(); // window volume 0
+  });
+  it("is all-undefined on a volumeless instrument", () => {
+    const { base } = maSeries(vbars([10, 20, 30], [0, 0, 0]), "vwma", 2);
+    expect(base).toEqual([undefined, undefined, undefined]);
+  });
+});
+
+describe("maSeries vwma float residue", () => {
+  it("gaps on an all-zero window even after fractional volumes slid out", () => {
+    // 0.1 + 0.2 leaves a nonzero float residue when subtracted back out; the
+    // exact-count guard must still treat the [0, 0] window as empty.
+    const { base } = maSeries(vbars([10, 20, 30, 40], [0.1, 0.2, 0, 0]), "vwma", 2);
+    expect(base[1]).toBeDefined();
+    expect(base[2]).toBeDefined(); // window [0.2, 0] still carries volume
+    expect(base[3]).toBeUndefined(); // window [0, 0]: gap, not pv-residue garbage
+  });
+});
+
+describe("maSeries evwma", () => {
+  it("seeds from the source price at the first full window, then recurses", () => {
+    const { base } = maSeries(vbars([10, 20, 30], [1, 2, 3]), "evwma", 2);
+    expect(base[0]).toBeUndefined(); // warm-up
+    expect(base[1]).toBeCloseTo(20, 10); // seed = price at first full window
+    // nbfs = 2+3 = 5: (20*(5-3) + 3*30) / 5
+    expect(base[2]).toBeCloseTo(26, 10);
+  });
+  it("holds the prior value across a zero-volume bar", () => {
+    const { base } = maSeries(vbars([10, 20, 30], [1, 1, 0]), "evwma", 2);
+    expect(base[1]).toBeCloseTo(20, 10);
+    // nbfs = 1+0 = 1, vol = 0: (20*(1-0) + 0) / 1 = 20
+    expect(base[2]).toBeCloseTo(20, 10);
+  });
+  it("goes undefined on a zero-volume window and re-seeds at the next usable bar", () => {
+    const { base } = maSeries(vbars([10, 20, 30, 40, 50], [1, 1, 0, 0, 2]), "evwma", 2);
+    expect(base[1]).toBeCloseTo(20, 10);
+    expect(base[2]).toBeCloseTo(20, 10); // nbfs = 1: holds
+    expect(base[3]).toBeUndefined(); // nbfs = 0
+    expect(base[4]).toBeCloseTo(50, 10); // re-seeded from price
+  });
+  it("respects the source option", () => {
+    // vbars sets high = close + 1, so an evwma over "high" tracks price + 1.
+    const { base } = maSeries(vbars([10, 20, 30], [1, 2, 3]), "evwma", 2, { source: "high" });
+    expect(base[1]).toBeCloseTo(21, 10);
+  });
+});
+
+describe("maSeries evwma float residue", () => {
+  it("does not re-seed off a residue window after fractional volumes slid out", () => {
+    const { base } = maSeries(vbars([10, 20, 30, 40], [0.1, 0.2, 0, 0]), "evwma", 2);
+    expect(base[2]).toBeDefined(); // window [0.2, 0] holds the prior value
+    expect(base[3]).toBeUndefined(); // window [0, 0]: undefined, recursion reset
+  });
+});
+
+describe("normalizeMaKind", () => {
+  it("passes valid kinds through and falls back otherwise", () => {
+    expect(normalizeMaKind("vwma")).toBe("vwma");
+    expect(normalizeMaKind("evwma")).toBe("evwma");
+    expect(normalizeMaKind("sma")).toBe("sma");
+    expect(normalizeMaKind(undefined)).toBe("ema");
+    expect(normalizeMaKind("garbage", "sma")).toBe("sma");
+  });
+});
+
+describe("alignHtfToChart same-timeframe pin", () => {
+  const H = 3_600_000;
+  const htfMs = 4 * H;
+  const vals = [10, 20, 30];
+
+  it("maps bar-for-bar when the chart's own interval equals the HTF width", () => {
+    // A 4H pin on a 4H chart: closed-bar gating would delay every value one
+    // bar for nothing — the value is the bar's own, as chart-TF drawing does.
+    const chartTs = [0, 4, 8].map((h) => h * H);
+    const htfBars = chartTs.map((t) => ({ timestamp: t }) as never);
+    expect(alignHtfToChart(chartTs, htfBars, vals, htfMs, true)).toEqual([10, 20, 30]);
+  });
+
+  it("still detects same-TF across a session/weekend hole in the chart bars", () => {
+    // One oversized gap (12h) must not defeat detection: the smallest positive
+    // gap is the true interval.
+    const chartTs = [0 * H, 4 * H, 16 * H];
+    const htfBars = chartTs.map((t) => ({ timestamp: t }) as never);
+    expect(alignHtfToChart(chartTs, htfBars, vals, htfMs, true)).toEqual([10, 20, 30]);
+  });
+
+  it("a declared chart interval beats gap inference: an anomalous short gap cannot break the pin", () => {
+    // A 4H chart holding one partial bar 1h after its neighbour: the smallest
+    // gap reads 1h, so inference concludes "1h chart" and gates every value a
+    // bar late. The DECLARED interval (what the toolbar says) must win —
+    // mirror of the backend's base_interval_ms fix.
+    const chartTs = [0 * H, 4 * H, 5 * H, 8 * H];
+    const htfBars = [0, 4, 8].map((h) => ({ timestamp: h * H }) as never);
+    expect(alignHtfToChart(chartTs, htfBars, vals, htfMs, true, undefined, htfMs)).toEqual([
+      10, 20, 20, 30,
+    ]);
+  });
+
+  it("a declared interval below the pin keeps closed-bar gating even when the gaps lie high", () => {
+    // Sparse 1h chart whose loaded bars happen to sit 4h apart: inference
+    // would call it a 4H chart and hand every bar its own HTF value —
+    // lookahead. The declared 1h interval keeps the gate.
+    const chartTs = [0, 4, 8].map((h) => h * H);
+    const htfBars = chartTs.map((t) => ({ timestamp: t }) as never);
+    expect(alignHtfToChart(chartTs, htfBars, vals, htfMs, true, undefined, H)).toEqual([
+      undefined, 10, 20,
+    ]);
+  });
+
+  it("keeps closed-bar gating when the pin is genuinely higher", () => {
+    // 1h chart under a 4h pin: unchanged semantics (lag until close).
+    const chartTs = [0, 1, 2, 3, 4, 5].map((h) => h * H);
+    const htfBars = [0, 4].map((h) => ({ timestamp: h * H }) as never);
+    expect(alignHtfToChart(chartTs, htfBars, [10, 20], htfMs, true)).toEqual([
+      undefined, undefined, undefined, undefined, 10, 10,
+    ]);
+  });
+});
+
+describe("alignHtfToChart formingIdx", () => {
+  const H = 3_600_000;
+  const htfMs = 4 * H;
+  const htfBars = [0, 4, 8].map((h) => ({ timestamp: h * H }) as never);
+  const vals = [10, 20, 30];
+  const chartTs = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((h) => h * H);
+
+  it("admits only the forming entry from its open; closed entries keep waitClose", () => {
+    const out = alignHtfToChart(chartTs, htfBars, vals, htfMs, true, 2);
+    // Bars 0-3 sit inside the first HTF bar, which closes at 4h: nothing usable.
+    // Bars 4-7: first bar closed. Bars 8-9: inside the FORMING bar (index 2),
+    // admitted from its open — they read 30, not the closed 20.
+    expect(out).toEqual([
+      undefined, undefined, undefined, undefined,
+      10, 10, 10, 10,
+      30, 30,
+    ]);
+  });
+
+  it("changes nothing when no forming index is flagged", () => {
+    const out = alignHtfToChart(chartTs, htfBars, vals, htfMs, true);
+    expect(out).toEqual([
+      undefined, undefined, undefined, undefined,
+      10, 10, 10, 10,
+      20, 20,
+    ]);
+  });
+});
+
+describe("alignHtfToChart short last intraday bucket", () => {
+  // A 7H pin tiles each UTC day 00/07/14/21, and the 21:00 bucket is short:
+  // it closes at the 00:00 reset, not 04:00. Parity with the backend's
+  // align_htf_to_base (tests/test_mtf_align.py).
+  const H = 3_600_000;
+  const DAY = 24 * H;
+  const htfMs = 7 * H;
+  const htfBars = [0, 7, 14, 21, 24].map((h) => ({ timestamp: h * H }) as never);
+  const vals = [10, 20, 30, 40, 50];
+  const chartTs = [20, 21, 22, 23, 24, 25].map((h) => h * H);
+
+  it("the 00:00 base bar sees the 21:00 bucket when the pin timeframe is given", () => {
+    const out = alignHtfToChart(chartTs, htfBars, vals, htfMs, true, undefined, H, "HOUR_7");
+    expect(out).toEqual([20, 30, 30, 30, 40, 40]);
+    expect(chartTs[4]).toBe(DAY);
+  });
+
+  it("an alias pin reads the same close", () => {
+    const out = alignHtfToChart(chartTs, htfBars, vals, htfMs, true, undefined, H, "7H");
+    expect(out).toEqual([20, 30, 30, 30, 40, 40]);
+  });
+
+  it("without the timeframe it keeps the nominal close (open + htfMs)", () => {
+    const out = alignHtfToChart(chartTs, htfBars, vals, htfMs, true, undefined, H);
+    expect(out).toEqual([20, 30, 30, 30, 30, 30]);
+  });
+
+  it("native pins keep the nominal close", () => {
+    const h4 = [0, 4, 8].map((h) => ({ timestamp: h * H }) as never);
+    const ts = [3, 4, 7, 8].map((h) => h * H);
+    expect(alignHtfToChart(ts, h4, [1, 2, 3], 4 * H, true, undefined, H, "HOUR_4")).toEqual([
+      undefined, 1, 1, 2,
+    ]);
+  });
+});
+
+describe("alignHtfToChart calendar bucket ends", () => {
+  // Month and year pins close at the true calendar end. Parity with the
+  // backend's align_htf_to_base (tests/test_mtf_align.py).
+  const D = 86_400_000;
+  const at = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d);
+  const bars = (ts: number[]) => ts.map((t) => ({ timestamp: t }) as never);
+
+  it("a 1M October bucket closes on Nov 1, not Oct 31", () => {
+    const htf = bars([at(2025, 10, 1), at(2025, 11, 1)]);
+    const ts = [at(2025, 10, 31), at(2025, 11, 1)];
+    expect(alignHtfToChart(ts, htf, [1, 2], 30 * D, true, undefined, D, "MONTH")).toEqual([
+      undefined, 1,
+    ]);
+  });
+
+  it("a 5M short Nov-Dec bucket closes on Jan 1", () => {
+    const htf = bars([at(2025, 6, 1), at(2025, 11, 1), at(2026, 1, 1)]);
+    const ts = [at(2025, 12, 31), at(2026, 1, 1), at(2026, 1, 2)];
+    expect(alignHtfToChart(ts, htf, [1, 2, 3], 150 * D, true, undefined, D, "5M")).toEqual([
+      1, 2, 2,
+    ]);
+  });
+
+  it("a YEAR bucket closes on the next Jan 1", () => {
+    const htf = bars([at(2024, 1, 1), at(2025, 1, 1)]);
+    const ts = [at(2024, 12, 31), at(2025, 1, 1)];
+    expect(alignHtfToChart(ts, htf, [1, 2], 365 * D, true, undefined, D, "YEAR")).toEqual([
+      undefined, 1,
+    ]);
+  });
+});

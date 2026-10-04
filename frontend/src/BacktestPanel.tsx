@@ -1,0 +1,837 @@
+// Backtest results — embedded in the config side panel's "Results" tab
+// (BacktestButton publishes the result onto backtestResultSignal). Shows an
+// empty-state prompt until the first run completes.
+//
+// Overview tab: metricRows() as a wrapped grid of label/value cards (tone
+// coloured pos/neg). Trades tab: a sortable table of every trade
+// (tradeRows()/sortTradeRows()). Each row carries data-trade-index — a hook
+// Phase C uses to highlight the matching chart marker on hover/click.
+
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  backtestResultSignal,
+  highlightTradeSignal,
+  selectedTradeSignal,
+  backtestMessagesSignal,
+  backtestSelectNoticeSignal,
+  backtestPeriodsShownSignal,
+  backtestRegionsShownSignal,
+  backtestMarkersShownSignal,
+  backtestEquityShownSignal,
+  backtestRunningSignal,
+  backtestProgressSignal,
+  requestBacktestClear,
+  tradeReviewSignal,
+} from "./lib/signals";
+import { reviewOrder } from "./lib/tradeReview";
+import { saveBacktestPeriodsShown, saveBacktestRegionsShown, saveBacktestMarkersShown, saveBacktestEquityShown } from "./lib/persist";
+import { metricGroups, METRIC_INFO, legTable, tradeRows, sortTradeRows, rowWindow, type TradeRow, type LegTable } from "./lib/backtestPanelData";
+import { metricTipLines } from "./components/metricScaleTip";
+import InfoTip from "./components/InfoTip";
+import Tooltip from "./components/Tooltip";
+import type { BaselineMetrics } from "./api";
+import { RESOLUTION_SECONDS } from "./lib/feed";
+import { useBarTimeLabel } from "./lib/useMaskedReplay";
+import BacktestAnalysisPanel from "./BacktestAnalysisPanel";
+import { formatDayWindow } from "./lib/backtestSchedule";
+import { formatPeriodDateRange } from "./lib/backtestPeriods";
+import { isDemoMode } from "./lib/demoMode";
+import { getDemoSnapshot } from "./lib/demoSnapshot";
+import DemoCta from "./DemoCta";
+import type { StoredBacktestResult } from "./lib/persist";
+
+// Module-singleton signal — the subscribe fn never changes, so memoize it (matches
+// Toolbar's useSyncExternalStore pattern) instead of resubscribing on every render.
+const subscribeResult = (cb: () => void) => backtestResultSignal.subscribe(cb);
+const subscribeHighlight = (cb: () => void) => highlightTradeSignal.subscribe(cb);
+const subscribeSelected = (cb: () => void) => selectedTradeSignal.subscribe(cb);
+const subscribeMessages = (cb: () => void) => backtestMessagesSignal.subscribe(cb);
+const subscribeSelectNotice = (cb: () => void) => backtestSelectNoticeSignal.subscribe(cb);
+const subscribeRunning = (cb: () => void) => backtestRunningSignal.subscribe(cb);
+
+type Tab = "overview" | "trades" | "analysis";
+const TABS: Tab[] = ["overview", "trades", "analysis"];
+type SortDir = "asc" | "desc";
+
+// Text columns read more naturally A→Z on first click; numeric/time columns
+// most-significant-first (mirrors PositionsPanel's defaultDir).
+const TEXT_KEYS: (keyof TradeRow)[] = ["leg", "reason"];
+const defaultDir = (key: keyof TradeRow): SortDir => (TEXT_KEYS.includes(key) ? "asc" : "desc");
+
+const fmtPrice = (n: number): string => n.toFixed(2);
+const fmtPnl = (n: number): string => `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(2)}`;
+const fmtPct = (n: number): string => `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(2)}%`;
+// Progress ETA — sub-90s reads in seconds (a "~1m left" that sits there for 80s
+// looks stuck), longer spans round to whole minutes.
+const fmtEta = (s: number): string => {
+  const m = Math.round(s / 60);
+  return s < 90 ? `~${Math.max(1, Math.round(s))}s left` : `~${m}m left`;
+};
+const toneOf = (n: number): string => (n > 0 ? "pos" : n < 0 ? "neg" : "");
+
+export default function BacktestPanel({ codedRun }: { codedRun?: boolean }) {
+  const result = useSyncExternalStore(subscribeResult, () => backtestResultSignal.value);
+  const highlighted = useSyncExternalStore(subscribeHighlight, () => highlightTradeSignal.value);
+  const selected = useSyncExternalStore(subscribeSelected, () => selectedTradeSignal.value);
+  const messages = useSyncExternalStore(subscribeMessages, () => backtestMessagesSignal.value);
+  const selectNotice = useSyncExternalStore(subscribeSelectNotice, () => backtestSelectNoticeSignal.value);
+  const running = useSyncExternalStore(subscribeRunning, () => backtestRunningSignal.value);
+  const progress = useSyncExternalStore(
+    (cb) => backtestProgressSignal.subscribe(cb),
+    () => backtestProgressSignal.value,
+  );
+  // The fill's width transition must not run backwards: a stage rollover
+  // (Simulating 100% → Running baselines 0%) would otherwise animate the bar
+  // rewinding for 300ms. Track the last rendered pct and snap on any drop —
+  // paired with the label change, the reset then reads as a NEW bar starting.
+  const lastPctRef = useRef<number | null>(null);
+  const pct = progress?.pct ?? null;
+  const pctRewound = pct != null && lastPctRef.current != null && pct < lastPctRef.current;
+  useEffect(() => {
+    lastPctRef.current = pct;
+  }, [pct]);
+  const periodsShown = useSyncExternalStore(
+    (cb) => backtestPeriodsShownSignal.subscribe(cb),
+    () => backtestPeriodsShownSignal.value,
+  );
+  const toggleBacktestPeriods = () => {
+    const next = !backtestPeriodsShownSignal.value;
+    backtestPeriodsShownSignal.set(next);
+    saveBacktestPeriodsShown(next);
+  };
+  const regionsShown = useSyncExternalStore(
+    (cb) => backtestRegionsShownSignal.subscribe(cb),
+    () => backtestRegionsShownSignal.value,
+  );
+  const toggleBacktestRegions = () => {
+    const next = !backtestRegionsShownSignal.value;
+    backtestRegionsShownSignal.set(next);
+    saveBacktestRegionsShown(next);
+  };
+  const markersShown = useSyncExternalStore(
+    (cb) => backtestMarkersShownSignal.subscribe(cb),
+    () => backtestMarkersShownSignal.value,
+  );
+  const toggleBacktestMarkers = () => {
+    const next = !backtestMarkersShownSignal.value;
+    backtestMarkersShownSignal.set(next);
+    saveBacktestMarkersShown(next);
+  };
+  const equityShown = useSyncExternalStore(
+    (cb) => backtestEquityShownSignal.subscribe(cb),
+    () => backtestEquityShownSignal.value,
+  );
+  const toggleBacktestEquity = () => {
+    const next = !backtestEquityShownSignal.value;
+    backtestEquityShownSignal.set(next);
+    saveBacktestEquityShown(next);
+  };
+  // The three chart-display toggles above live in one compact "Display" dropdown
+  // so the Results row doesn't spend its width on three labeled pills. Own open
+  // state + outside-click/Esc close, following the shared .menu/.dropdown idiom.
+  const [displayOpen, setDisplayOpen] = useState(false);
+  const displayMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!displayOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (displayMenuRef.current && !displayMenuRef.current.contains(t)) setDisplayOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDisplayOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [displayOpen]);
+  const [tab, setTab] = useState<Tab>("overview");
+  const [sort, setSort] = useState<{ key: keyof TradeRow; dir: SortDir }>({ key: "i", dir: "asc" });
+
+  // Demo mode: browse the published canned backtests instead of running a
+  // live one. The picker just pushes the chosen result onto the SAME signal
+  // a live run publishes to (see BacktestButton), so everything below (the
+  // empty state, the summary row, Overview/Trades/Analysis) renders it
+  // through the exact same path unmodified.
+  const demo = isDemoMode();
+  const demoBacktests = useMemo(
+    () => (demo ? getDemoSnapshot()?.backtests ?? [] : []),
+    [demo],
+  );
+  // Selected by INDEX, not name: published backtests can share a name (the
+  // admin-side staging list doesn't enforce global uniqueness against past
+  // versions), and a name-keyed selection would make two same-named entries
+  // indistinguishable and collide as React list keys.
+  const [demoSelectedIndex, setDemoSelectedIndex] = useState<number | null>(null);
+  const selectDemoBacktest = (index: number, cannedResult: unknown) => {
+    setDemoSelectedIndex(index);
+    backtestResultSignal.set(cannedResult as unknown as StoredBacktestResult);
+  };
+  // Land on the first published backtest so a fresh demo visitor sees a real
+  // result immediately rather than an empty "pick one" state.
+  useEffect(() => {
+    if (!demo || demoSelectedIndex != null || demoBacktests.length === 0) return;
+    selectDemoBacktest(0, demoBacktests[0].result);
+  }, [demo, demoBacktests, demoSelectedIndex]);
+  const demoRow = demo ? (
+    <div className="bt-results-messages bt-demo-row">
+      {demoBacktests.length === 0 ? (
+        <span className="bt-notice">No demo backtests published</span>
+      ) : (
+        <div className="seg" role="tablist" aria-label="Demo backtests">
+          {demoBacktests.map((b, i) => (
+            <button
+              key={i}
+              className={demoSelectedIndex === i ? "seg-on" : ""}
+              role="tab"
+              aria-selected={demoSelectedIndex === i}
+              onClick={() => selectDemoBacktest(i, b.result)}
+            >
+              {b.name}
+            </button>
+          ))}
+        </div>
+      )}
+      <DemoCta inline label="Sign up to run your own" />
+    </div>
+  ) : null;
+
+  // Continuous scroll: Overview / Trades / Analysis are stacked sections in one
+  // scroll pane, mirroring the config pane's Period→Costs scroll-tabs. The strip
+  // jumps to a section and highlights whichever is at the top (scrollspy);
+  // suppressSpyUntil silences the spy during the smooth jump so it lands on the
+  // clicked tab, not the ones it scrolls past.
+  const scrollBodyRef = useRef<HTMLDivElement | null>(null);
+  const sectionRefs = useRef<Record<Tab, HTMLElement | null>>({
+    overview: null,
+    trades: null,
+    analysis: null,
+  });
+  const suppressSpyUntil = useRef(0);
+  const setSectionRef = (t: Tab) => (el: HTMLElement | null) => {
+    sectionRefs.current[t] = el;
+  };
+  const jumpToTab = (t: Tab) => {
+    setTab(t);
+    const el = sectionRefs.current[t];
+    const c = scrollBodyRef.current;
+    if (!el || !c) return;
+    suppressSpyUntil.current = Date.now() + 700;
+    const top = el.getBoundingClientRect().top - c.getBoundingClientRect().top + c.scrollTop;
+    c.scrollTo?.({ top, behavior: "smooth" });
+  };
+  const onBodyScroll = () => {
+    if (Date.now() < suppressSpyUntil.current) return;
+    const c = scrollBodyRef.current;
+    if (!c) return;
+    // The active tab is the last section whose top has passed just below the
+    // pane's top edge (a small 24px lead-in feels natural).
+    const ctop = c.getBoundingClientRect().top;
+    let current: Tab = TABS[0];
+    for (const t of TABS) {
+      const el = sectionRefs.current[t];
+      if (el && el.getBoundingClientRect().top - ctop <= 24) current = t;
+    }
+    setTab((prev) => (prev === current ? prev : current));
+  };
+
+  // Row building and sorting are memoized so panel re-renders (row hover sets
+  // highlightTradeSignal on every mouseenter) don't rebuild and re-sort the
+  // whole list — with tens of thousands of trades that made hovering laggy.
+  const resSeconds = result ? RESOLUTION_SECONDS[result.resolution] ?? 60 : 60;
+  const baseRows = useMemo(() => (result ? tradeRows(result, resSeconds) : []), [result, resSeconds]);
+  const rows = useMemo(() => sortTradeRows(baseRows, sort.key, sort.dir), [baseRows, sort.key, sort.dir]);
+
+  // Transient run error — shown whether or not a result exists, since an errored
+  // run leaves no result to render.
+  const msgRow =
+    messages.error || selectNotice ? (
+      <div className="bt-results-messages">
+        {messages.error && <span className="bt-error">{messages.error}</span>}
+        {selectNotice && <span className="bt-notice">{selectNotice}</span>}
+      </div>
+    ) : null;
+
+  if (result == null) {
+    return (
+      <div className="bt-results">
+        {demoRow}
+        {msgRow}
+        <div className="bt-results-empty">
+          {demo ? (
+            demoBacktests.length === 0 ? null : "Pick a demo backtest above to see results."
+          ) : running && progress ? (
+            <span className="bt-progress">
+              <span>
+                {progress.phase === "download"
+                  ? `Downloading ${progress.label} (${progress.pct != null ? `${progress.pct}%` : "…"}${progress.etaS != null ? `, ${fmtEta(progress.etaS)}` : ""})`
+                  : `${progress.label} (${progress.pct ?? 0}%${progress.etaS != null ? `, ${fmtEta(progress.etaS)}` : ""})`}
+              </span>
+              {progress.pct != null && (
+                <span className="bt-progress-track">
+                  <span
+                    className="bt-progress-fill"
+                    style={{ width: `${progress.pct}%`, transition: pctRewound ? "none" : undefined }}
+                  />
+                </span>
+              )}
+            </span>
+          ) : running ? (
+            "Backtest running…"
+          ) : (
+            "Run a backtest to see results here."
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const s = result.summary;
+  const summaryRow = (
+    <div className="bt-results-summary">
+      <span className="bt-summary">
+        <span className={s.net_pnl >= 0 ? "pos" : "neg"}>
+          {s.net_pnl >= 0 ? "+" : ""}
+          {s.net_pnl.toFixed(2)}
+        </span>
+        <Tooltip content="Number of trades">
+          <span className="bt-stat">{s.n_trades}</span>
+        </Tooltip>
+        <Tooltip content="Largest equity drop from a high to a low">
+          <span className="bt-stat">−{s.max_drawdown.toFixed(2)}</span>
+        </Tooltip>
+        <Tooltip content="Win rate: share of trades that closed in profit">
+          <span className="bt-stat">{(s.win_rate * 100).toFixed(0)}%</span>
+        </Tooltip>
+        {(() => {
+          // Effective reward:risk actually realized (avg win ÷ avg loss) — the true
+          // payoff, which can differ sharply from the configured stop/target RR.
+          const rr = result.metrics.avg_win_loss_ratio;
+          const rrTitle =
+            "Effective reward:risk. Average win ÷ average loss, versus your configured stop/target RR.";
+          if (rr != null) return <Tooltip content={rrTitle}><span className="bt-stat">{rr.toFixed(2)}</span></Tooltip>;
+          // null = no losing trades: infinite RR when there were any winners, else nothing to show.
+          return s.win_rate > 0 ? <Tooltip content={rrTitle}><span className="bt-stat">∞</span></Tooltip> : null;
+        })()}
+        {result.fileBracketsOverridden && (
+          <Tooltip content="The strategy file passed sl=/tp= but panel risk is configured, so panel risk was applied.">
+            <span className="bt-chip-muted">file sl/tp overridden</span>
+          </Tooltip>
+        )}
+      </span>
+      {result.period && (
+        <Tooltip content="The date span this backtest traded over">
+          <span className="bt-period-label">
+            <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+              {/* calendar */}
+              <rect x="2" y="3" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+              <line x1="2" y1="6.5" x2="14" y2="6.5" stroke="currentColor" strokeWidth="1.3" />
+              <line x1="5" y1="1.5" x2="5" y2="4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+              <line x1="11" y1="1.5" x2="11" y2="4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            </svg>
+            {formatPeriodDateRange(result.period.fromMs, result.period.toMs)}
+          </span>
+        </Tooltip>
+      )}
+      {result.period?.mask?.timeOfDay && (
+        <Tooltip content={`Daily trading window${result.period.mask.tz ? ` (${result.period.mask.tz})` : ""}`}>
+          <span className="bt-period-label">
+            <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+              {/* clock */}
+              <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+              <path d="M8 4.5 L8 8 L10.5 9.5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            {formatDayWindow(result.period.mask.timeOfDay)}
+          </span>
+        </Tooltip>
+      )}
+      <div className="menu bt-display-menu" ref={displayMenuRef}>
+        <Tooltip content="Choose what the backtest draws on the chart">
+          <button
+            className={`bt-display-btn${displayOpen ? " on" : ""}`}
+            aria-haspopup="menu"
+            aria-expanded={displayOpen}
+            onClick={() => setDisplayOpen((v) => !v)}
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+              {/* stacked layers glyph */}
+              <path d="M8 1.5 L14.5 5 L8 8.5 L1.5 5 Z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+              <path d="M2 8 L8 11 L14 8 M2 11 L8 14 L14 11" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" strokeLinecap="round" />
+            </svg>
+            <span>Display</span>
+            <svg className="tb-caret" width="9" height="9" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M4 6 L8 10 L12 6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        </Tooltip>
+        {displayOpen && (
+          <div className="dropdown bt-display-dropdown" role="menu">
+            <ul>
+              <li
+                className={markersShown ? "on" : ""}
+                role="menuitemcheckbox"
+                aria-checked={markersShown}
+                onClick={toggleBacktestMarkers}
+              >
+                <span className="check">{markersShown ? "✓" : ""}</span>
+                <span>Trade markers</span>
+              </li>
+              <li
+                className={periodsShown ? "on" : ""}
+                role="menuitemcheckbox"
+                aria-checked={periodsShown}
+                onClick={toggleBacktestPeriods}
+              >
+                <span className="check">{periodsShown ? "✓" : ""}</span>
+                <span>Trading periods</span>
+              </li>
+              <li
+                className={regionsShown ? "on" : ""}
+                role="menuitemcheckbox"
+                aria-checked={regionsShown}
+                onClick={toggleBacktestRegions}
+              >
+                <span className="check">{regionsShown ? "✓" : ""}</span>
+                <span>Strategy regions</span>
+              </li>
+              <li
+                className={equityShown ? "on" : ""}
+                role="menuitemcheckbox"
+                aria-checked={equityShown}
+                onClick={toggleBacktestEquity}
+              >
+                <span className="check">{equityShown ? "✓" : ""}</span>
+                <span>Equity curve</span>
+              </li>
+            </ul>
+          </div>
+        )}
+      </div>
+      <Tooltip content="Clear backtest">
+        <button className="bt-clear" onClick={requestBacktestClear}>
+          ✕
+        </button>
+      </Tooltip>
+    </div>
+  );
+
+  const toggleSort = (key: keyof TradeRow) =>
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: defaultDir(key) }));
+
+  const nTrades = result.trades.length;
+
+  return (
+    <div className="bt-results">
+      {demoRow}
+      {summaryRow}
+      {msgRow}
+      <div className="bt-results-head">
+        <div className="seg" role="tablist" aria-label="Backtest results view">
+          <button
+            className={tab === "overview" ? "seg-on" : ""}
+            role="tab"
+            aria-selected={tab === "overview"}
+            onClick={() => jumpToTab("overview")}
+          >
+            Overview
+          </button>
+          <button
+            className={tab === "trades" ? "seg-on" : ""}
+            role="tab"
+            aria-selected={tab === "trades"}
+            onClick={() => jumpToTab("trades")}
+          >
+            Trades
+          </button>
+          <button
+            className={tab === "analysis" ? "seg-on" : ""}
+            role="tab"
+            aria-selected={tab === "analysis"}
+            onClick={() => jumpToTab("analysis")}
+          >
+            Analysis
+          </button>
+        </div>
+        <span className="bt-panel-count">
+          {nTrades} {nTrades === 1 ? "trade" : "trades"}
+        </span>
+        {/* The trade-review tour: step through losses (default) one at a time on
+            the chart with the floating context card. Entered here because the
+            panel is where the result already lives; the card (App level) owns
+            everything after. */}
+        <button
+          className="bt-review-btn"
+          disabled={nTrades === 0}
+          onClick={() => {
+            const res = backtestResultSignal.value;
+            if (!res) return;
+            const order = reviewOrder(res.trades, "losses");
+            tradeReviewSignal.set({ cohort: "losses", order, pos: 0, drill: false });
+            if (order.length > 0) selectedTradeSignal.set(order[0]);
+          }}
+        >
+          Review
+        </button>
+      </div>
+
+      <div className="bt-results-scroll" ref={scrollBodyRef} onScroll={onBodyScroll}>
+        <section className="bt-results-section" ref={setSectionRef("overview")}>
+          <div className="bt-panel-overview">
+            {metricGroups(result).map((g) => (
+              <section className="bt-panel-group" key={g.title}>
+                <h4 className="bt-panel-group-title">{g.title}</h4>
+                {g.title === "Trades" ? (
+                  <LegBreakdownTable table={legTable(result)} />
+                ) : (
+                  <div className="bt-panel-grid">
+                    {g.rows.map((m) => (
+                      <div className="bt-panel-stat" key={m.label}>
+                        <span className="bt-panel-stat-label">
+                          <span className="bt-panel-stat-name">{m.label}</span>
+                          {METRIC_INFO[m.label] && <InfoTip title={m.label} text={metricTipLines(m.label, METRIC_INFO[m.label])} />}
+                        </span>
+                        <span className={`bt-panel-stat-value${m.tone ? ` ${m.tone}` : ""}`}>{m.value}</span>
+                        {m.verdict && <span className={`bt-panel-stat-verdict ${m.verdict.tone}`}>{m.verdict.label}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            ))}
+            {result.baselines && Object.values(result.baselines).some(Boolean) && (
+              <section className="bt-panel-group">
+                <h4 className="bt-panel-group-title">
+                  Baselines
+                  <InfoTip
+                    title="Baselines"
+                    text={[
+                      "Reference runs over the same window, sizing and costs.",
+                      "Each row has its own ⓘ explaining that baseline; Strategy Δ is the real run minus it.",
+                      // Coded runs only: the synthesized null baseline is built from
+                      // the panel's exits/risk, so anything the strategy file does
+                      // internally (its own stops, targets, filters) is not in it.
+                      ...(codedRun
+                        ? ["For Built-in strategies, the null baseline uses the panel's exits and risk; logic inside the strategy file is not mirrored."]
+                        : []),
+                    ]}
+                  />
+                </h4>
+                <div className="bt-leg-wrap">
+                  <table className="bt-baselines">
+                    <thead>
+                      <tr>
+                        <th className="bt-baselines-rowhead" aria-hidden="true" />
+                        <th className="bt-baselines-col">Net P&L</th>
+                        <th className="bt-baselines-col">Return %</th>
+                        <th className="bt-baselines-col">Sharpe</th>
+                        <th className="bt-baselines-col">Max DD</th>
+                        <th className="bt-baselines-col">Strategy Δ net</th>
+                        <th className="bt-baselines-col">Strategy Δ ret</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {([
+                        ["Null signal (long)",
+                          "Long entries replaced by an always-true condition; exits, risk and costs unchanged. Your edge over this row is what the entry signal adds.",
+                          result.baselines.null_long ?? null],
+                        ["Null signal (short)",
+                          "Short entries replaced by an always-true condition; exits, risk and costs unchanged. Your edge over this row is what the entry signal adds.",
+                          result.baselines.null_short ?? null],
+                        ["Enter & hold (long)",
+                          "One long position held for the whole window, no stops or session windows, same costs: the raw market, bought.",
+                          result.baselines.hold_long ?? null],
+                        ["Enter & hold (short)",
+                          "One short position held for the whole window, no stops or session windows, same costs: the raw market, sold.",
+                          result.baselines.hold_short ?? null],
+                        ["Reversed signals",
+                          "Signals executed the opposite way: long instead of short and vice versa.",
+                          result.baselines.reversed ?? null],
+                        ["Losses flipped to wins",
+                          "Same entry times, with direction and exit picked by hindsight.",
+                          result.baselines.oracle_entries ?? null],
+                      ] as [string, string, BaselineMetrics | null][])
+                        .filter((row): row is [string, string, BaselineMetrics] => row[2] != null)
+                        .map(([label, tip, m]) => {
+                          // The main run's net P&L lives on summary, not metrics.
+                          const delta = m.net_pnl == null ? null : s.net_pnl - m.net_pnl;
+                          // Return % is the reverse: it lives on metrics (same source as the
+                          // overview's own Return % stat), not on summary.
+                          const dRet = m.return_pct == null ? null : result.metrics.return_pct - m.return_pct;
+                          return (
+                            <tr key={label}>
+                              <th className="bt-baselines-rowhead" scope="row">
+                                <span className="bt-baselines-rowlabel">
+                                  <span>{label}</span>
+                                  <InfoTip title={label} text={tip} />
+                                </span>
+                              </th>
+                              <td className={`bt-baselines-cell${m.net_pnl == null ? "" : ` ${toneOf(m.net_pnl)}`}`}>
+                                {m.net_pnl == null ? "–" : fmtPnl(m.net_pnl)}
+                              </td>
+                              <td className="bt-baselines-cell">
+                                {m.return_pct == null ? "–" : `${m.return_pct.toFixed(2)}%`}
+                              </td>
+                              <td className="bt-baselines-cell">{m.sharpe == null ? "–" : m.sharpe.toFixed(2)}</td>
+                              <td className="bt-baselines-cell">
+                                {m.max_drawdown_pct == null ? "–" : `${m.max_drawdown_pct.toFixed(2)}%`}
+                              </td>
+                              <td className={`bt-baselines-cell${delta == null ? "" : ` ${toneOf(delta)}`}`}>
+                                {delta == null ? "–" : fmtPnl(delta)}
+                              </td>
+                              <td className={`bt-baselines-cell${dRet == null ? "" : ` ${toneOf(dRet)}`}`}>
+                                {dRet == null ? "–" : `${dRet >= 0 ? "+" : ""}${dRet.toFixed(2)}%`}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+            {result.cost_sensitivity && (
+              <div className="bt-cost-sense">
+                {result.cost_sensitivity.breakeven_multiple === null
+                  ? "Costs: still profitable at 3x assumed costs"
+                  : result.cost_sensitivity.breakeven_multiple === 0
+                    ? "Costs: unprofitable even with zero costs"
+                    : `Costs: breakeven at ${result.cost_sensitivity.breakeven_multiple}x assumed costs`}
+              </div>
+            )}
+          </div>
+        </section>
+        {/* Pinned to the pane height so the windowed table keeps its own scroll
+            viewport (sticky header, spacer rows); reaching its bottom chains
+            the wheel on into Analysis. */}
+        <section className="bt-results-section bt-results-section-fill" ref={setSectionRef("trades")}>
+          <TradesTable rows={rows} sort={sort} onSort={toggleSort} highlighted={highlighted} selected={selected} />
+        </section>
+        {/* min-height 100%: landing on Analysis pins its top at the pane top
+            even when its content is short, so the scrollspy can reach it. */}
+        <section className="bt-results-section bt-results-section-last" ref={setSectionRef("analysis")}>
+          <BacktestAnalysisPanel
+            analysis={result?.analysis}
+            trades={result?.trades}
+            barSeconds={resSeconds}
+          />
+        </section>
+      </div>
+    </div>
+  );
+}
+
+// Sortable trade list with windowed rendering: only the rows near the current
+// scroll position exist in the DOM (spacer rows above/below keep the scrollbar
+// sized for the full list), so a run with tens of thousands of trades opens
+// instantly instead of mounting 10 cells per trade at once.
+const OVERSCAN = 10;
+// Estimate until the first real row is measured; only the first paint uses it.
+const ROW_H_ESTIMATE = 27;
+
+function TradesTable({
+  rows,
+  sort,
+  onSort,
+  highlighted,
+  selected,
+}: {
+  rows: TradeRow[];
+  sort: { key: keyof TradeRow; dir: SortDir };
+  onSort: (key: keyof TradeRow) => void;
+  highlighted: number | null;
+  selected: number | null;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
+  const [rowH, setRowH] = useState(ROW_H_ESTIMATE);
+  // The Entry/Exit columns label the SAME bars the (now masked) cluster popovers
+  // describe, so during a masked replay session they print the exact date it
+  // hides. Task 14 will feed this panel the cursor-filtered result, which makes
+  // it more reachable during a session, not less.
+  const barTime = useBarTimeLabel();
+
+  // Only surface the Financing column when the run actually charged it; a
+  // no-financing run keeps the table visually unchanged. Individual cells stay
+  // blank when a trade held no overnight (financing 0).
+  const showFinancing = rows.some((r) => r.financing !== 0);
+  const colCount = showFinancing ? 11 : 10;
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const measure = () => setViewportH(wrap.clientHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, []);
+
+  // Replace the estimate with the real rendered row height (theme/zoom can
+  // shift it); window maths and spacer heights must use the same value or the
+  // slice drifts away from the scroll position over thousands of rows.
+  useLayoutEffect(() => {
+    const el = wrapRef.current?.querySelector<HTMLTableRowElement>("tr.bt-trade-row");
+    const h = el?.getBoundingClientRect().height ?? 0;
+    if (h > 0 && Math.abs(h - rowH) > 0.5) setRowH(h);
+  }, [rows.length, rowH]);
+
+  const { start, end, padTop, padBottom } = rowWindow(scrollTop, viewportH, rowH, rows.length, OVERSCAN);
+
+  // Keep the SELECTED (clicked) row in view — hover-driven highlight must not
+  // move the list. When the click came from this list's own row it's already
+  // visible, so this is a no-op; when it came from a chart marker the row may
+  // not even be in the DOM — scroll the container to its computed offset and
+  // let the window catch up.
+  const selectedRowRef = useRef<HTMLTableRowElement | null>(null);
+  useEffect(() => {
+    if (selected == null) return;
+    if (selectedRowRef.current) {
+      selectedRowRef.current.scrollIntoView({ block: "nearest" });
+      return;
+    }
+    const wrap = wrapRef.current;
+    const idx = rows.findIndex((r) => r.i === selected);
+    if (!wrap || idx < 0 || rowH <= 0) return;
+    wrap.scrollTop = Math.max(0, idx * rowH - wrap.clientHeight / 2);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
+
+  return (
+    <div
+      className="bt-panel-trades-wrap"
+      ref={wrapRef}
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+    >
+      <table className="bt-panel-table">
+        <thead>
+          <tr>
+            <th><SortHeader label="#" col="i" sort={sort} onSort={onSort} /></th>
+            <th><SortHeader label="Side" col="leg" sort={sort} onSort={onSort} /></th>
+            <th><SortHeader label="Entry time" col="entryTime" sort={sort} onSort={onSort} /></th>
+            <th className="bt-panel-c-num"><SortHeader label="Entry" col="entryPrice" sort={sort} onSort={onSort} /></th>
+            <th><SortHeader label="Exit time" col="exitTime" sort={sort} onSort={onSort} /></th>
+            <th className="bt-panel-c-num"><SortHeader label="Exit" col="exitPrice" sort={sort} onSort={onSort} /></th>
+            <th className="bt-panel-c-num"><SortHeader label="P&L" col="pnl" sort={sort} onSort={onSort} /></th>
+            <th className="bt-panel-c-num"><SortHeader label="P&L %" col="pnlPct" sort={sort} onSort={onSort} /></th>
+            {showFinancing && (
+              <th className="bt-panel-c-num"><SortHeader label="Financing" col="financing" sort={sort} onSort={onSort} /></th>
+            )}
+            <th><SortHeader label="Reason" col="reason" sort={sort} onSort={onSort} /></th>
+            <th className="bt-panel-c-num"><SortHeader label="Duration" col="durationBars" sort={sort} onSort={onSort} /></th>
+          </tr>
+        </thead>
+        <tbody>
+          {padTop > 0 && (
+            <tr aria-hidden="true">
+              <td colSpan={colCount} style={{ height: padTop, padding: 0, border: 0 }} />
+            </tr>
+          )}
+          {rows.slice(start, end).map((row) => (
+            <tr
+              key={row.i}
+              data-trade-index={row.i}
+              ref={row.i === selected ? selectedRowRef : undefined}
+              className={`bt-trade-row${row.i === highlighted ? " highlighted" : ""}${row.i === selected ? " selected" : ""}`}
+              onMouseEnter={() => highlightTradeSignal.set(row.i)}
+              onMouseLeave={() => highlightTradeSignal.set(null)}
+              onClick={() => selectedTradeSignal.set(selected === row.i ? null : row.i)}
+            >
+              <td>{row.i + 1}</td>
+              <td className={row.leg === "long" ? "bt-panel-side-long" : "bt-panel-side-short"}>
+                {row.leg === "long" ? "Long" : "Short"}
+              </td>
+              <td className="bt-panel-c-time">{barTime(row.entryTime * 1000)}</td>
+              <td className="bt-panel-c-num">{fmtPrice(row.entryPrice)}</td>
+              <td className="bt-panel-c-time">{barTime(row.exitTime * 1000)}</td>
+              <td className="bt-panel-c-num">{fmtPrice(row.exitPrice)}</td>
+              <td className={`bt-panel-c-num ${toneOf(row.pnl)}`}>{fmtPnl(row.pnl)}</td>
+              <td className={`bt-panel-c-num ${toneOf(row.pnlPct)}`}>{fmtPct(row.pnlPct)}</td>
+              {showFinancing && (
+                // Engine convention is positive = paid; negate to show the
+                // trade's financing P&L impact (paid = red negative, credit = green).
+                <td className={`bt-panel-c-num ${toneOf(-row.financing)}`}>
+                  {row.financing !== 0 ? fmtPnl(-row.financing) : ""}
+                </td>
+              )}
+              <td>{row.reason}</td>
+              <td className="bt-panel-c-num">{row.durationBars.toFixed(1)} bars</td>
+            </tr>
+          ))}
+          {padBottom > 0 && (
+            <tr aria-hidden="true">
+              <td colSpan={colCount} style={{ height: padBottom, padding: 0, border: 0 }} />
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Clickable column header: click to sort by this column, click again to flip
+// direction (mirrors PositionsPanel's SortHeader).
+// The TRADES section as an ALL / LONG / SHORT table: metric names (with their
+// info tips) run across the header once; each row is one direction so the reader
+// can compare long vs short contribution down a column.
+function LegBreakdownTable({ table }: { table: LegTable }) {
+  return (
+    <div className="bt-leg-wrap">
+      <table className="bt-leg-table">
+        <thead>
+          <tr>
+            <th className="bt-leg-rowhead" aria-hidden="true" />
+            {table.columns.map((c) => (
+              <th key={c.label} className="bt-leg-col">
+                <span className="bt-leg-colhead">
+                  <span className="bt-leg-colname">{c.label}</span>
+                  <InfoTip title={c.label} text={c.info} />
+                </span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows.map((r) => (
+            <tr key={r.leg}>
+              <th className="bt-leg-rowhead" scope="row">{r.leg}</th>
+              {r.cells.map((cell, i) => (
+                <td key={table.columns[i].label} className={`bt-leg-cell${cell.tone ? ` ${cell.tone}` : ""}`}>
+                  {cell.value}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SortHeader({
+  label,
+  col,
+  sort,
+  onSort,
+}: {
+  label: string;
+  col: keyof TradeRow;
+  sort: { key: keyof TradeRow; dir: SortDir };
+  onSort: (key: keyof TradeRow) => void;
+}) {
+  const active = sort.key === col;
+  return (
+    <button
+      className={`bt-panel-sort${active ? " on" : ""}`}
+      onClick={() => onSort(col)}
+      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <span>{label}</span>
+      <span className="bt-panel-sort-caret" aria-hidden="true">
+        {active ? (sort.dir === "asc" ? "▲" : "▼") : ""}
+      </span>
+    </button>
+  );
+}

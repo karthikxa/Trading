@@ -1,0 +1,560 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { installMemStorage } from "./testMemStorage";
+installMemStorage();
+
+import {
+  fetchAllMarkets,
+  fetchFavorites,
+  fetchRecent,
+  fetchRecentWithStatus,
+  fetchRangeWithStatus,
+  fetchRangeStrict,
+  isFeedStale,
+  nominalBarHours,
+  openLive,
+} from "./feed";
+import { registerSynthetic } from "./syntheticRegistry";
+
+// The catalogue/favorites caches are module-level and keyed by broker; each test
+// uses a unique broker id instead of resetting modules, so tests stay independent.
+let n = 0;
+const freshBroker = () => `test-broker-${n++}`;
+
+const MARKETS = [
+  { epic: "US100", name: "US Tech 100", status: "TRADEABLE", type: "INDICES" },
+];
+
+function okResponse() {
+  return { ok: true, json: () => Promise.resolve(MARKETS) };
+}
+
+beforeEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("fetchAllMarkets failure caching", () => {
+  it("does not cache a rejected fetch — the next call retries and succeeds", async () => {
+    const broker = freshBroker();
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("backend down"))
+      .mockResolvedValue(okResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    // First call hits the outage: resolves [] so callers keep working…
+    expect(await fetchAllMarkets(broker)).toEqual([]);
+    // …but the failure must NOT be cached: the next call retries.
+    expect(await fetchAllMarkets(broker)).toEqual(MARKETS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache a non-ok response", async () => {
+    const broker = freshBroker();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({}) })
+      .mockResolvedValue(okResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchAllMarkets(broker)).toEqual([]);
+    expect(await fetchAllMarkets(broker)).toEqual(MARKETS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("still caches a successful catalogue for the session", async () => {
+    const broker = freshBroker();
+    const fetchMock = vi.fn().mockResolvedValue(okResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchAllMarkets(broker)).toEqual(MARKETS);
+    expect(await fetchAllMarkets(broker)).toEqual(MARKETS);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fetchFavorites failure caching", () => {
+  it("does not cache a rejected fetch — the next call retries and succeeds", async () => {
+    const broker = freshBroker();
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("backend down"))
+      .mockResolvedValue(okResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await fetchFavorites(broker)).toEqual([]);
+    expect(await fetchFavorites(broker)).toEqual(MARKETS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("synthetic routing", () => {
+  it("fetchRecent routes a synthetic id to /api/candles/synthetic with expr", async () => {
+    const e = registerSynthetic("A/B", "capital");
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve([]) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchRecent(e.id, "MINUTE", 500, "mid", "capital");
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("/api/candles/synthetic");
+    // canonical of "A/B" is "A / B"; URLSearchParams encodes space as '+' and '/' as '%2F'.
+    expect(url).toContain("expr=A+%2F+B");
+    expect(decodeURIComponent(new URL(url).searchParams.get("expr")!)).toBe("A / B");
+  });
+
+  it("openLive is inert for a synthetic id", () => {
+    const e = registerSynthetic("A/B", "capital");
+    const onCandle = vi.fn();
+    const onStatus = vi.fn();
+    const h = openLive(e.id, "MINUTE", onCandle, onStatus, "mid", "capital");
+    expect(onCandle).not.toHaveBeenCalled();
+    expect(onStatus).toHaveBeenCalledWith("down");
+    expect(() => h.close()).not.toThrow();
+  });
+});
+
+describe("degraded-aware candle fetches", () => {
+  const RAW = [{ time: "2026-07-11T00:00:00Z", open: 1, high: 1, low: 1, close: 1, volume: 0 }];
+
+  it("fetchRangeWithStatus marks a broker-outage status degraded instead of a bare empty page", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+    vi.stubGlobal("fetch", fetchMock);
+    const r = await fetchRangeWithStatus("US100", "MINUTE", 0, 600, "mid", "capital");
+    expect(r.bars).toEqual([]);
+    expect(r.degraded).toContain("503");
+  });
+
+  it("fetchRangeWithStatus carries the backend's error detail in the degraded reason", async () => {
+    // The backend's 503s carry actionable detail (e.g. the WAF "blocked by your
+    // network" message) — the degraded string must surface it, not a bare code.
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      headers: new Headers({ "X-Broker-Blocked": "1" }),
+      json: () => Promise.resolve({ detail: "data fetch: blocked by your network (restricted internet connection)" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const r = await fetchRangeWithStatus("US100", "MINUTE", 0, 600, "mid", "capital");
+    expect(r.bars).toEqual([]);
+    expect(r.degraded).toContain("blocked by your network");
+  });
+
+  it("fetchRangeWithStatus treats a 404/422 as genuine no-data, not degraded", async () => {
+    for (const status of [404, 422]) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status }));
+      const r = await fetchRangeWithStatus("US100", "MINUTE", 0, 600, "mid", "capital");
+      expect(r.bars).toEqual([]);
+      expect(r.degraded).toBeNull();
+    }
+  });
+
+  it("fetchRangeWithStatus surfaces the X-Candles-Degraded header on a 200 (short cached serve)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "X-Candles-Degraded": "broker offline" }),
+      json: () => Promise.resolve(RAW),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const r = await fetchRangeWithStatus("US100", "MINUTE", 0, 600, "mid", "capital");
+    expect(r.bars.length).toBe(1);
+    expect(r.degraded).toBe("broker offline");
+  });
+
+  // The still-filling marker. A separate header from the degraded one because
+  // the two mean different things to a user: unreachable versus unfinished.
+  it("fetchRangeWithStatus reads the fill progress off X-Candles-Partial", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "X-Candles-Partial": "2/96" }),
+      json: () => Promise.resolve(RAW),
+    }));
+    const r = await fetchRangeWithStatus("US100", "MINUTE", 0, 600, "mid", "capital");
+    expect(r.partial).toEqual({ done: 2, total: 96 });
+    // Nothing is unreachable: the download is simply unfinished.
+    expect(r.degraded).toBeNull();
+    expect(r.bars.length).toBe(1);
+  });
+
+  it("fetchRangeWithStatus keeps the FACT of an unfinished fill when the counts are junk", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "X-Candles-Partial": "wat" }),
+      json: () => Promise.resolve(RAW),
+    }));
+    const r = await fetchRangeWithStatus("US100", "MINUTE", 0, 600, "mid", "capital");
+    expect(r.partial).toEqual({ done: 0, total: 0 });
+  });
+
+  it("fetchRangeStrict hands the fill progress to its callback, keeping its bar array", async () => {
+    // The parallel cover marks a hole by a THROW, so this one cannot change its
+    // return shape — the marker has to come out sideways.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "X-Candles-Partial": "5/40" }),
+      json: () => Promise.resolve(RAW),
+    }));
+    const seen: { done: number; total: number }[] = [];
+    const bars = await fetchRangeStrict(
+      "US100", "MINUTE", 0, 600, "mid", "capital", undefined, (p) => seen.push(p),
+    );
+    expect(bars.length).toBe(1);
+    expect(seen).toEqual([{ done: 5, total: 40 }]);
+  });
+
+  it("fetchRangeWithStatus reports a healthy 200 as not degraded", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: () => Promise.resolve(RAW),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const r = await fetchRangeWithStatus("US100", "MINUTE", 0, 600, "mid", "capital");
+    expect(r.bars.length).toBe(1);
+    expect(r.degraded).toBeNull();
+  });
+
+  it("fetchRecentWithStatus surfaces the degraded header; fetchRecent keeps its plain shape", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "X-Candles-Degraded": "breaker open" }),
+      json: () => Promise.resolve(RAW),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const r = await fetchRecentWithStatus("US100", "MINUTE", 500, "mid", "capital");
+    expect(r.bars.length).toBe(1);
+    expect(r.degraded).toBe("breaker open");
+    const plain = await fetchRecent("US100", "MINUTE", 500, "mid", "capital");
+    expect(plain.length).toBe(1);
+  });
+});
+
+describe("isFeedStale", () => {
+  const T = 1_000_000; // arbitrary "now"
+  const base = {
+    status: "live" as const,
+    marketClosed: false,
+    lastCandleAt: T - 200_000, // last tick 200s ago
+    streamLiveAt: T - 300_000, // connected 300s ago
+    now: T,
+    staleMs: 90_000,
+  };
+
+  it("flags a connected, open feed silent past the threshold", () => {
+    expect(isFeedStale(base)).toBe(true);
+  });
+
+  it("is not stale within the threshold", () => {
+    // A tick 30s ago (< 90s) → fresh, even though the connection is older.
+    expect(isFeedStale({ ...base, lastCandleAt: T - 30_000 })).toBe(false);
+  });
+
+  it("measures from the LATER of connect and last candle (never-ticked hang)", () => {
+    // No candle ever (0), connected 300s ago → silence is 300s → stale. A
+    // last-candle-only baseline (0) would wrongly read as "no connection".
+    expect(isFeedStale({ ...base, lastCandleAt: 0 })).toBe(true);
+    // Same connection, but only 30s old → not yet stale.
+    expect(isFeedStale({ ...base, lastCandleAt: 0, streamLiveAt: T - 30_000 })).toBe(false);
+  });
+
+  it("never stale before anything has connected or ticked", () => {
+    expect(isFeedStale({ ...base, lastCandleAt: 0, streamLiveAt: 0 })).toBe(false);
+  });
+
+  it("is suppressed while the cell is detached (no stream to go silent)", () => {
+    // A detached cell's stream is closed on purpose and `status` keeps saying
+    // "live" from before the jump, so the silence would otherwise trip this
+    // ~90s into every detached view and warn about a feed nobody expects ticks
+    // from. Same fixture as the base case, which IS stale.
+    expect(isFeedStale({ ...base, detached: true })).toBe(false);
+    expect(isFeedStale({ ...base, detached: false })).toBe(true);
+  });
+
+  it("is suppressed when the market is closed (no ticks expected)", () => {
+    expect(isFeedStale({ ...base, marketClosed: true })).toBe(false);
+  });
+
+  it("only applies while the socket reports live", () => {
+    expect(isFeedStale({ ...base, status: "down" })).toBe(false);
+    expect(isFeedStale({ ...base, status: "connecting" })).toBe(false);
+  });
+});
+
+describe("openLive reconnect backoff", () => {
+  // Minimal WebSocket stand-in: the test drives onopen/onmessage/onclose by hand.
+  class FakeWS {
+    static instances: FakeWS[] = [];
+    onopen: (() => void) | null = null;
+    onmessage: ((ev: { data: string }) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    url: string;
+    constructor(url: string) {
+      this.url = url;
+      FakeWS.instances.push(this);
+    }
+    close() {
+      this.onclose?.();
+    }
+  }
+
+  beforeEach(() => {
+    FakeWS.instances = [];
+    vi.stubGlobal("WebSocket", FakeWS);
+    vi.useFakeTimers();
+    return () => vi.useRealTimers();
+  });
+
+  // The dial delay before attempt N, driven via fake timers.
+  const dropAndMeasureDelay = (): number => {
+    const before = FakeWS.instances.length;
+    const ws = FakeWS.instances[before - 1];
+    ws.onopen?.();
+    ws.onclose?.(); // server accepted, then dropped the relay immediately
+    let delay = 0;
+    while (FakeWS.instances.length === before && delay < 60000) {
+      vi.advanceTimersByTime(1000);
+      delay += 1000;
+    }
+    return delay;
+  };
+
+  it("keeps backing off when sockets open but die without data (wedged upstream)", () => {
+    const h = openLive("CrudeOIL", "MINUTE", vi.fn(), undefined, "mid", "mt5");
+    expect(FakeWS.instances.length).toBe(1);
+
+    // A successful HANDSHAKE must not reset the backoff — only data may.
+    expect(dropAndMeasureDelay()).toBe(1000);
+    expect(dropAndMeasureDelay()).toBe(2000);
+    expect(dropAndMeasureDelay()).toBe(4000);
+    expect(dropAndMeasureDelay()).toBe(8000);
+    expect(dropAndMeasureDelay()).toBe(15000); // capped
+    expect(dropAndMeasureDelay()).toBe(15000);
+    h.close();
+  });
+
+  it("a real candle frame resets the backoff to the 1s floor", () => {
+    const onCandle = vi.fn();
+    const h = openLive("CrudeOIL", "MINUTE", onCandle, undefined, "mid", "mt5");
+
+    expect(dropAndMeasureDelay()).toBe(1000);
+    expect(dropAndMeasureDelay()).toBe(2000);
+
+    // Healthy stream: data flows, so the next drop starts over at 1s.
+    const ws = FakeWS.instances[FakeWS.instances.length - 1];
+    ws.onopen?.();
+    ws.onmessage?.({
+      data: JSON.stringify({
+        type: "candle",
+        candle: { time: "2026-07-11T00:00:00Z", open: 1, high: 1, low: 1, close: 1, volume: 0 },
+        bid: null,
+        ask: null,
+      }),
+    });
+    expect(onCandle).toHaveBeenCalledTimes(1);
+
+    expect(dropAndMeasureDelay()).toBe(1000);
+    h.close();
+  });
+});
+
+describe("nominalBarHours", () => {
+  // These numbers are the contract with the backend: it computes bar width as
+  // resolution_seconds(res) / 3600 and evaluates every pinned rule operand at
+  // that width, so a disagreement here is a silent pane-vs-rule divergence.
+  // Mirrored by backend/tests/test_slope_pane_rule_equality.py, which asserts
+  // the same pairs against _tf_hours.
+  it("matches the backend's nominal widths", () => {
+    expect(nominalBarHours("MINUTE")).toBeCloseTo(1 / 60, 12);
+    expect(nominalBarHours("MINUTE_5")).toBeCloseTo(5 / 60, 12);
+    expect(nominalBarHours("HOUR")).toBe(1);
+    expect(nominalBarHours("HOUR_4")).toBe(4);
+    expect(nominalBarHours("DAY")).toBe(24);
+    expect(nominalBarHours("WEEK")).toBe(168);
+    expect(nominalBarHours("MONTH")).toBe(720);
+  });
+
+  it("accepts an expression pin alias too, like the backend's tf_resolution", () => {
+    expect(nominalBarHours("4H")).toBe(nominalBarHours("HOUR_4"));
+    expect(nominalBarHours("D")).toBe(nominalBarHours("DAY"));
+    expect(nominalBarHours("W")).toBe(nominalBarHours("WEEK"));
+  });
+
+  it("is null for an unknown name, so callers pick their own fallback", () => {
+    expect(nominalBarHours("NOPE")).toBeNull();
+  });
+
+});
+
+describe("MTF pin helpers", () => {
+  it("pinnableTimeframes includes the chart's own timeframe and everything higher", async () => {
+    const { pinnableTimeframes } = await import("./feed");
+    expect(pinnableTimeframes("HOUR").map((p) => p.resolution)).toEqual([
+      "HOUR",
+      "HOUR_4",
+      "DAY",
+      "WEEK",
+      "WEEK_2",
+      "WEEK_3",
+      "MONTH",
+      "WEEK_6",
+      "MONTH_2",
+      "MONTH_3",
+      "YEAR",
+    ]);
+  });
+
+  it("pinnableTimeframes excludes lower timeframes", async () => {
+    const { pinnableTimeframes } = await import("./feed");
+    expect(pinnableTimeframes("MONTH").map((p) => p.resolution)).toEqual([
+      "MONTH",
+      "WEEK_6",
+      "MONTH_2",
+      "MONTH_3",
+      "YEAR",
+    ]);
+  });
+
+  it("pinBelowChart flags a pin finer than the chart", async () => {
+    const { pinBelowChart } = await import("./feed");
+    expect(pinBelowChart("HOUR", "DAY")).toBe(true);
+  });
+
+  it("pinBelowChart is false for equal, higher, chart-follow, and unknown pins", async () => {
+    const { pinBelowChart } = await import("./feed");
+    expect(pinBelowChart("HOUR", "HOUR")).toBe(false);
+    expect(pinBelowChart("DAY", "HOUR")).toBe(false);
+    expect(pinBelowChart("chart", "DAY")).toBe(false);
+    expect(pinBelowChart(null, "DAY")).toBe(false);
+    expect(pinBelowChart(undefined, "DAY")).toBe(false);
+    expect(pinBelowChart("NOT_A_TF", "DAY")).toBe(false);
+  });
+});
+
+describe("fetchRecentWithStatus in-flight coalescing", () => {
+  const RAW = [{ time: 1752192000, open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 }];
+  const okCandles = () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers(),
+    json: () => Promise.resolve(RAW),
+  });
+
+  it("concurrent identical requests share ONE network call, each getting its own bars", async () => {
+    // StrictMode double-mount (and same-series indicator loads) fire the exact
+    // same recent fetch in the same tick — only one should reach the backend.
+    let release!: (v: unknown) => void;
+    const gate = new Promise((r) => (release = r));
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      await gate;
+      return okCandles();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const a = fetchRecentWithStatus("US100", "MINUTE", 500, "mid", "capital");
+    const b = fetchRecentWithStatus("US100", "MINUTE", 500, "mid", "capital");
+    release(null);
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(ra.bars).toEqual(rb.bars);
+    // Each caller owns its bars: the chart annotates bar objects in place, so a
+    // shared array would leak one cell's mutations into another.
+    ra.bars[0].close = 999;
+    expect(rb.bars[0].close).toBe(1.5);
+  });
+
+  it("does not coalesce requests for different series", async () => {
+    let release!: (v: unknown) => void;
+    const gate = new Promise((r) => (release = r));
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      await gate;
+      return okCandles();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const a = fetchRecentWithStatus("US100", "MINUTE", 500, "mid", "capital");
+    const b = fetchRecentWithStatus("US100", "HOUR", 500, "mid", "capital");
+    release(null);
+    await Promise.all([a, b]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("a settled request is not reused — the next call fetches fresh", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okCandles());
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchRecentWithStatus("US100", "MINUTE", 500, "mid", "capital");
+    await fetchRecentWithStatus("US100", "MINUTE", 500, "mid", "capital");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("a shared failure rejects every waiter and is not cached", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("backend down"))
+      .mockResolvedValue(okCandles());
+    vi.stubGlobal("fetch", fetchMock);
+    const a = fetchRecentWithStatus("US100", "MINUTE", 500, "mid", "capital");
+    const b = fetchRecentWithStatus("US100", "MINUTE", 500, "mid", "capital");
+    await expect(a).rejects.toThrow("backend down");
+    await expect(b).rejects.toThrow("backend down");
+    // The failure must not stick: the next call retries and succeeds.
+    const r = await fetchRecentWithStatus("US100", "MINUTE", 500, "mid", "capital");
+    expect(r.bars.length).toBe(1);
+  });
+});
+
+import {
+  RESOLUTION_SECONDS,
+  periodByResolution,
+  periodGroups,
+  quickBarPeriods,
+  oneTfLower,
+  pinnableTimeframes,
+  isBuiltinResolution,
+} from "./feed";
+
+describe("custom timeframes in feed", () => {
+  it("isBuiltinResolution knows every listed period and nothing else", () => {
+    for (const r of ["MINUTE", "HOUR_4", "WEEK", "MINUTE_3", "MONTH", "YEAR", "SECOND_5"]) {
+      expect(isBuiltinResolution(r)).toBe(true);
+    }
+    for (const r of ["HOUR_6", "MINUTE_90", "DAY_2", "4H", "junk"]) {
+      expect(isBuiltinResolution(r)).toBe(false);
+    }
+  });
+  it("sizes any grammar timeframe", () => {
+    expect(RESOLUTION_SECONDS["HOUR_6"]).toBe(21600);
+    expect(RESOLUTION_SECONDS["MINUTE_120"]).toBe(7200);
+    expect(RESOLUTION_SECONDS["FOO"]).toBeUndefined();
+    expect(Object.keys(RESOLUTION_SECONDS)).toContain("HOUR_4");
+    expect(Object.keys(RESOLUTION_SECONDS)).not.toContain("HOUR_6");
+  });
+  it("synthesizes periods", () => {
+    expect(periodByResolution("HOUR_6")).toEqual({ resolution: "HOUR_6", label: "6H" });
+    expect(periodByResolution("MINUTE_120")).toEqual({ resolution: "HOUR_2", label: "2H" });
+    expect(periodByResolution("HOUR_4")?.label).toBe("4H");
+    expect(periodByResolution("FOO")).toBeUndefined();
+  });
+  it("groups the custom list after the built-ins", () => {
+    const groups = periodGroups(["DAY_2", "MINUTE_120", "HOUR_2", "HOUR_4", "junk"]);
+    const custom = groups[groups.length - 1];
+    expect(custom.label).toBe("Custom");
+    expect(custom.periods.map((p) => p.label)).toEqual(["2H", "2D"]);
+    expect(periodGroups([]).some((g) => g.label === "Custom")).toBe(false);
+  });
+  it("quick bar dedupes non-canonical favorites", () => {
+    const bar = quickBarPeriods(["MINUTE_120", "HOUR_2"]);
+    expect(bar.filter((p) => p.resolution === "HOUR_2")).toHaveLength(1);
+  });
+  it("nominal hours and zoom ladder accept custom", () => {
+    expect(nominalBarHours("6H")).toBe(6);
+    expect(oneTfLower("HOUR_6", [])?.resolution).toBe("HOUR_4");
+  });
+  it("pinnable includes custom favorites at or above the chart", () => {
+    expect(pinnableTimeframes("HOUR", ["HOUR_6", "MINUTE_7"]).map((p) => p.resolution)).toContain("HOUR_6");
+    expect(pinnableTimeframes("HOUR", ["HOUR_6", "MINUTE_7"]).map((p) => p.resolution)).not.toContain("MINUTE_7");
+  });
+});

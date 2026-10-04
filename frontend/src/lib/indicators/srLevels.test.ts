@@ -1,0 +1,454 @@
+// Core S/R clustering math. Rendering is exercised visually; this suite pins the
+// causal algorithm: strict fractal pivots (shared isPivotAt), ATR-scaled merge
+// tolerance, touch-count gating, and the per-bar nearest support/resistance
+// outputs the backtest rules read.
+import { describe, it, expect, vi } from "vitest";
+
+vi.mock("klinecharts", () => ({
+  registerIndicator: () => {},
+  registerOverlay: () => {},
+  registerYAxis: () => {},
+  getSupportedIndicators: () => [],
+}));
+
+import type { KLineData } from "klinecharts";
+import { computeSrLevels } from "./srLevels";
+
+/** Bar with high = close+1, low = close-1 so pivots land on close extremes ±1. */
+function bar(close: number, i: number): KLineData {
+  return {
+    timestamp: 1700000000000 + i * 3600_000,
+    open: close,
+    high: close + 1,
+    low: close - 1,
+    close,
+    volume: 1,
+  };
+}
+
+/** Triangle wave: repeated cycles low(100) → peak → low, 8 bars per cycle.
+ * peaks[k] is cycle k's top close; every trough close is 100. */
+function triangle(peaks: number[]): KLineData[] {
+  const closes: number[] = [];
+  for (const p of peaks) {
+    const up = (p - 100) / 4;
+    closes.push(100, 100 + up, 100 + 2 * up, 100 + 3 * up, p, 100 + 3 * up, 100 + 2 * up, 100 + up);
+  }
+  closes.push(100); // final trough so the last low pivot can confirm
+  return closes.map(bar);
+}
+
+const CFG = { pivotLen: 2, atrMult: 0.5, minTouches: 2, maxLevels: 8, maxBars: 500 };
+
+describe("computeSrLevels", () => {
+  // peaks at bar indices 4,12,20,28 (highs 111 each); troughs at 8,16,24,32 (lows 99).
+  // With pivotLen=2, a pivot at bar i confirms at i+2; ATR(14) is warm from bar 13,
+  // so the first usable touches are the high pivot at 12 (confirms 14) and the low
+  // pivot at 16 (confirms 18).
+  const candles = triangle([110, 110, 110, 110]);
+
+  it("anchors lastIdx to the last touch's extreme bar, not its confirm bar", () => {
+    const { levels } = computeSrLevels(candles, CFG);
+    const res = levels.find((l) => l.price === 111)!;
+    const sup = levels.find((l) => l.price === 99)!;
+    // Highs peak at bars 4/12/20/28 and lows trough at 8/16/24/32; the last
+    // usable touch of each is the pivot itself, not the bar pivotLen later
+    // where it confirmed (30 and 26). The broken test reads the close there,
+    // and only the extreme bar's close says which side the level acted from.
+    // (The trough at 32 is the last bar, so it never gets its right window.)
+    expect(res.lastIdx).toBe(28);
+    expect(sup.lastIdx).toBe(24);
+    expect(candles[res.lastIdx].high).toBe(111);
+    expect(candles[sup.lastIdx].low).toBe(99);
+  });
+
+  it("returns one point per bar", () => {
+    const { points } = computeSrLevels(candles, CFG);
+    expect(points).toHaveLength(candles.length);
+  });
+
+  it("emits no levels before a zone reaches minTouches", () => {
+    const { points } = computeSrLevels(candles, CFG);
+    // First resistance touch confirms at bar 14; a single touch is not major.
+    expect(points[21].resistance).toBeUndefined();
+    expect(points[21].support).toBeUndefined();
+  });
+
+  it("emits nearest resistance above and support below the close once major", () => {
+    const { points } = computeSrLevels(candles, CFG);
+    // Second high touch (pivot at 20) confirms at bar 22 → resistance = 111.
+    expect(points[22].resistance).toBe(111);
+    // Second low touch (pivot at 24) confirms at bar 26 → support = 99.
+    expect(points[26].support).toBe(99);
+    const last = points[points.length - 1];
+    expect(last.resistance).toBe(111);
+    expect(last.support).toBe(99);
+  });
+
+  it("clusters nearby pivots into one averaged level", () => {
+    // Peak highs 111, 111.4, 110.8, 111 — all within 0.5×ATR of each other.
+    const wobbly = triangle([110, 110.4, 109.8, 110]);
+    const { points, levels } = computeSrLevels(wobbly, CFG);
+    const resistances = levels.filter((l) => l.price > 105);
+    expect(resistances).toHaveLength(1);
+    // Only the last three peaks are ATR-warm touches: pivots at 12, 20, 28.
+    const expected = (111.4 + 110.8 + 111) / 3;
+    expect(resistances[0].touches).toBe(3);
+    expect(resistances[0].price).toBeCloseTo(expected, 10);
+    expect(points[points.length - 1].resistance).toBeCloseTo(expected, 10);
+  });
+
+  it("keeps far-apart zones as separate levels and tracks touch counts", () => {
+    const { levels } = computeSrLevels(candles, CFG);
+    expect(levels).toHaveLength(2);
+    const [res, sup] = [...levels].sort((a, b) => b.price - a.price);
+    expect(res.price).toBe(111);
+    expect(res.touches).toBe(3); // pivots at 12, 20, 28
+    expect(sup.price).toBe(99);
+    expect(sup.touches).toBe(2); // pivots at 16 and 24 (the one at 32 never confirms)
+  });
+
+  it("caps the reported levels at maxLevels, keeping the most-touched", () => {
+    const { levels } = computeSrLevels(candles, { ...CFG, maxLevels: 1 });
+    expect(levels).toHaveLength(1);
+    expect(levels[0].price).toBe(111); // 3 touches beats 2
+  });
+});
+
+describe("computeSrLevels MTF branch", () => {
+  const H = 3600_000;
+  const t0 = 1700000000000;
+  // 12 hourly chart bars spanning three 4-hour HTF bars.
+  const chartBars = Array.from({ length: 12 }, (_, i) => bar(100, i));
+  const mtf = {
+    timeframe: "HOUR_4",
+    htfMs: 4 * H,
+    htfStarts: [t0, t0 + 4 * H, t0 + 8 * H],
+    htfSupport: [100, 101, 102] as Array<number | undefined>,
+    htfResistance: [110, undefined, 112] as Array<number | undefined>,
+    htfLevels: [{ price: 100, halfWidth: 5, touches: 2, firstTs: t0, lastTs: t0 + 4 * H }],
+  };
+
+  it("admits a flagged forming entry from its open (waitClose unchecked)", () => {
+    // Entry 2 is the FORMING bucket (opens t0+8h): bars 8..11 read it from its
+    // open instead of nothing (it never closes inside the fixture).
+    const { points } = computeSrLevels(chartBars, CFG, {
+      mtf: { ...mtf, formingIdx: 2 },
+    });
+    expect(points[7].support).toBe(100); // history keeps waitClose
+    expect(points[8].support).toBe(102);
+    expect(points[11].resistance).toBe(112);
+  });
+
+  it("aligns the HTF series onto chart bars using only CLOSED HTF bars", () => {
+    const { points } = computeSrLevels(chartBars, CFG, { mtf });
+    // Bars inside the first (still-open) HTF bar have no closed HTF bar yet.
+    expect(points[0].support).toBeUndefined();
+    expect(points[3].support).toBeUndefined();
+    // Bars in the second HTF bar read the first CLOSED HTF bar's values.
+    expect(points[4].support).toBe(100);
+    expect(points[7].resistance).toBe(110);
+    // Third HTF bar: support steps to 101; resistance was undefined on HTF bar 2.
+    expect(points[8].support).toBe(101);
+    expect(points[8].resistance).toBeUndefined();
+    // The last HTF value (index 2) is never used — its bar never closes on-chart.
+    expect(points[11].support).toBe(101);
+  });
+
+  it("maps stashed HTF level timestamps onto chart bar indices", () => {
+    const { levels } = computeSrLevels(chartBars, CFG, { mtf });
+    expect(levels).toHaveLength(1);
+    expect(levels[0].price).toBe(100);
+    expect(levels[0].touches).toBe(2);
+    expect(levels[0].firstIdx).toBe(0); // firstTs = t0 → chart bar 0
+    // lastTs names the HTF bar starting t0+4h; its last chart bar is index 7.
+    expect(levels[0].lastIdx).toBe(7);
+  });
+
+  it("snaps the zone's left edge to the candle whose extreme is nearest the level", () => {
+    // The level's first pivot lives in the HTF bar spanning chart bars 0..3,
+    // and the price that formed it (high 110) traded at chart bar 2 — the
+    // other bars top out at 101. Starting the band at the HTF bar's OPEN
+    // stretched it up to a whole HTF bar left of the wick that created it.
+    const bars = chartBars.slice();
+    bars[2] = bar(109, 2); // high = 110
+    const { levels } = computeSrLevels(bars, CFG, {
+      mtf: {
+        ...mtf,
+        htfLevels: [{ price: 110, halfWidth: 5, touches: 2, firstTs: t0, lastTs: t0 + 4 * H }],
+      },
+    });
+    expect(levels[0].firstIdx).toBe(2);
+  });
+
+  it("keeps the HTF bar's open edge when its span is not fully loaded", () => {
+    // 11 chart bars: the HTF bar opening t0+8h spans chart bars 8..11 but bar
+    // 11 is unloaded, so the true nearest extreme may be missing — the edge
+    // stays at the span's first loaded bar.
+    const bars = chartBars.slice(0, 11);
+    bars[9] = bar(109, 9); // high = 110, would win a snap
+    const { levels } = computeSrLevels(bars, CFG, {
+      mtf: {
+        ...mtf,
+        htfLevels: [
+          { price: 110, halfWidth: 5, touches: 2, firstTs: t0 + 8 * H, lastTs: t0 + 8 * H },
+        ],
+      },
+    });
+    expect(levels[0].firstIdx).toBe(8);
+  });
+});
+
+// The per-bar selection is cached and only rebuilt when the cluster pool moves
+// or the age window slides past the oldest eligible level. Expiry is the half a
+// cache can silently get wrong: it drops a level with no touch to signal it.
+describe("computeSrLevels level expiry", () => {
+  it("drops a level exactly maxBars after its last touch, with no later touch", () => {
+    // Four peaks put resistance past minTouches (ATR(14) only warms at bar 13,
+    // so the early cycles cannot count), then a long flat tail carrying no
+    // strict pivots at all, so nothing ever re-touches the level.
+    const head = triangle([110, 110, 110, 110]);
+    const flat: KLineData[] = [];
+    for (let i = 0; i < 200; i++) flat.push(bar(100, head.length + i));
+    const candles = [...head, ...flat];
+    const cfg = { ...CFG, maxBars: 40 };
+    const { points } = computeSrLevels(candles, cfg);
+
+    // The last touch can only confirm inside the triangle section, so the flat
+    // tail measures the window from there.
+    expect(points.some((p) => p.resistance !== undefined)).toBe(true);
+    // Held while inside the window...
+    expect(points[head.length + 5].resistance).toBeDefined();
+    // ...and gone once the window has slid past the newest touch entirely.
+    expect(points[head.length + cfg.maxBars + 5].resistance).toBeUndefined();
+  });
+
+  it("expires levels the same way at maxBars=1 (recompute on nearly every bar)", () => {
+    const candles = triangle([110, 110, 110, 110]);
+    const { points } = computeSrLevels(candles, { ...CFG, maxBars: 1 });
+    // A one-bar window can never hold a level beyond the bar after its touch.
+    const live = points.filter((p) => p.support !== undefined || p.resistance !== undefined);
+    expect(live.length).toBeLessThan(points.length / 2);
+  });
+});
+
+describe("srZoneStyleOf", () => {
+  it("returns the defaults for a bare extendData", async () => {
+    const { srZoneStyleOf, SR_ZONE_STYLE_DEFAULTS } = await import("./srLevels");
+    expect(srZoneStyleOf({})).toEqual(SR_ZONE_STYLE_DEFAULTS);
+    expect(srZoneStyleOf(undefined)).toEqual(SR_ZONE_STYLE_DEFAULTS);
+  });
+
+  it("merges a partial zoneStyle over the defaults", async () => {
+    const { srZoneStyleOf, SR_ZONE_STYLE_DEFAULTS } = await import("./srLevels");
+    const st = srZoneStyleOf({ zoneStyle: { supColor: "#123456" } });
+    expect(st.supColor).toBe("#123456");
+    expect(st.resColor).toBe(SR_ZONE_STYLE_DEFAULTS.resColor);
+    expect(st.opacity).toBe(SR_ZONE_STYLE_DEFAULTS.opacity);
+  });
+
+  it("defaults dimBroken to on, and an explicit false survives the merge", async () => {
+    const { srZoneStyleOf } = await import("./srLevels");
+    expect(srZoneStyleOf({}).dimBroken).toBe(true);
+    expect(srZoneStyleOf({ zoneStyle: { dimBroken: false } }).dimBroken).toBe(false);
+  });
+});
+
+describe("isLevelBroken", () => {
+  it("is broken when the last close is on the opposite side of the level from the close at its last touch", async () => {
+    const { isLevelBroken } = await import("./srLevels");
+    // Close was above the level at the last touch (bar 2), now below → broken.
+    expect(isLevelBroken(100, 2, [105, 102, 101, 99])).toBe(true);
+    // Still above → holding.
+    expect(isLevelBroken(100, 2, [105, 102, 101, 103])).toBe(false);
+    // Was below at touch, still below → holding (a resistance keeps resisting).
+    expect(isLevelBroken(110, 1, [105, 104, 106, 108])).toBe(false);
+    // Was below at touch, now above → broken through resistance.
+    expect(isLevelBroken(110, 1, [105, 104, 106, 112])).toBe(true);
+  });
+
+  it("treats a close exactly at the level as the upper side (matching support classification)", async () => {
+    const { isLevelBroken } = await import("./srLevels");
+    expect(isLevelBroken(100, 0, [100, 100])).toBe(false);
+    expect(isLevelBroken(100, 0, [100, 99.9])).toBe(true);
+  });
+});
+
+describe("zoneAlpha", () => {
+  it("ramps with touches above minTouches and caps at 3x the base", async () => {
+    const { zoneAlpha } = await import("./srLevels");
+    expect(zoneAlpha(2, 2, 0.1)).toBeCloseTo(0.1, 10);
+    expect(zoneAlpha(4, 2, 0.1)).toBeCloseTo(0.18, 10);
+    expect(zoneAlpha(20, 2, 0.1)).toBeCloseTo(0.3, 10); // cap
+    expect(zoneAlpha(3, 2, 0.2)).toBeCloseTo(0.24, 10); // base scales the ramp start
+  });
+});
+
+describe("drawSrLevels broken rendering", () => {
+  /** Records every paint call so a test can assert on the ink, not on pixels. */
+  function fakeCtx() {
+    const calls: string[] = [];
+    const ctx: Record<string, unknown> = {
+      fillStyle: "",
+      strokeStyle: "",
+      lineWidth: 0,
+      font: "",
+      textBaseline: "",
+      textAlign: "",
+      save: () => {},
+      restore: () => {},
+      beginPath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      setLineDash: (d: number[]) => calls.push(`dash:${d.join(",")}`),
+      measureText: () => ({ width: 12 }),
+      fillRect: () => calls.push(`fillRect:${ctx.fillStyle}`),
+      fillText: (t: string) => calls.push(`fillText:${t}:${ctx.fillStyle}`),
+      stroke: () => calls.push(`stroke:${ctx.strokeStyle}`),
+    };
+    return { ctx, calls };
+  }
+
+  /** One level at `price` on a chart whose last close is `lastClose`; the
+   * level's last touch closed at `touchClose`, which is what decides broken. */
+  async function paint(price: number, touchClose: number, lastClose: number) {
+    const { SR_LEVELS_TEMPLATE } = await import("./srLevels");
+    const { ctx, calls } = fakeCtx();
+    const dataList = [bar(touchClose, 0), bar(lastClose, 1)];
+    const result = [{}, { levels: [{ price, halfWidth: 5, touches: 3, firstIdx: 0, lastIdx: 0 }] }];
+    (SR_LEVELS_TEMPLATE as { draw: (p: unknown) => boolean }).draw({
+      ctx,
+      chart: { getDataList: () => dataList, getSize: () => ({ width: 40 }) },
+      indicator: { result, calcParams: [15, 0.5, 2, 8, 500], extendData: {}, paneId: "candle_pane" },
+      bounding: { width: 300 },
+      xAxis: { convertToPixel: (i: number) => i * 10 },
+      yAxis: { convertToPixel: (p: number) => 1000 - p },
+    });
+    return calls;
+  }
+
+  it("gives a broken zone a dashed frame and a struck tag, not just a fainter fill", async () => {
+    // Level 100 held with the close above it, and price has since closed below.
+    const calls = await paint(100, 110, 90);
+    expect(calls.filter((c) => c.startsWith("stroke:")).length).toBeGreaterThanOrEqual(2);
+    expect(calls).toContain("dash:3,3");
+  });
+
+  it("leaves a holding zone as a bare fill with no frame or strike", async () => {
+    const calls = await paint(100, 110, 120);
+    expect(calls.filter((c) => c.startsWith("stroke:"))).toEqual([]);
+    expect(calls.some((c) => c.startsWith("fillRect:"))).toBe(true);
+  });
+
+  it("renders every zone at full strength when dimBroken is off", async () => {
+    const { SR_LEVELS_TEMPLATE } = await import("./srLevels");
+    const { ctx, calls } = fakeCtx();
+    (SR_LEVELS_TEMPLATE as { draw: (p: unknown) => boolean }).draw({
+      ctx,
+      chart: { getDataList: () => [bar(110, 0), bar(90, 1)], getSize: () => ({ width: 40 }) },
+      indicator: {
+        result: [{}, { levels: [{ price: 100, halfWidth: 5, touches: 3, firstIdx: 0, lastIdx: 0 }] }],
+        calcParams: [15, 0.5, 2, 8, 500],
+        extendData: { zoneStyle: { dimBroken: false } },
+        paneId: "candle_pane",
+      },
+      bounding: { width: 300 },
+      xAxis: { convertToPixel: (i: number) => i * 10 },
+      yAxis: { convertToPixel: (p: number) => 1000 - p },
+    });
+    expect(calls.filter((c) => c.startsWith("stroke:"))).toEqual([]);
+  });
+});
+
+describe("drawSrLevels off-pane culling", () => {
+  // Under an MTF pin a 1D level can sit far outside a 1m chart's price
+  // window; its y coordinates land way off-pane, and the pane canvas is
+  // shared with the other panes, so unclamped paints bleed into them (the
+  // class of bug trendlines' draw guards document).
+  function fakeCtx() {
+    const calls: string[] = [];
+    const ctx: Record<string, unknown> = {
+      fillStyle: "", strokeStyle: "", lineWidth: 0, font: "",
+      textBaseline: "", textAlign: "",
+      save: () => {}, restore: () => {}, beginPath: () => {},
+      moveTo: () => {}, lineTo: () => {},
+      setLineDash: () => {},
+      measureText: () => ({ width: 12 }),
+      fillRect: (_x: number, y: number) => calls.push(`fillRect:${y}`),
+      fillText: (_t: string, _x: number, y: number) => calls.push(`fillText:${y}`),
+      stroke: () => calls.push("stroke"),
+    };
+    return { ctx, calls };
+  }
+
+  async function paint(price: number, opts: { midline?: boolean } = {}) {
+    const { SR_LEVELS_TEMPLATE } = await import("./srLevels");
+    const { ctx, calls } = fakeCtx();
+    const dataList = [bar(110, 0), bar(120, 1)];
+    const result = [{}, { levels: [{ price, halfWidth: 5, touches: 3, firstIdx: 0, lastIdx: 0 }] }];
+    (SR_LEVELS_TEMPLATE as { draw: (p: unknown) => boolean }).draw({
+      ctx,
+      chart: { getDataList: () => dataList, getSize: () => ({ width: 40 }) },
+      indicator: {
+        result,
+        calcParams: [15, 0.5, 2, 8, 500],
+        extendData: opts.midline ? { showMidline: true } : {},
+        paneId: "candle_pane",
+      },
+      bounding: { width: 300, height: 200 },
+      xAxis: { convertToPixel: (i: number) => i * 10 },
+      yAxis: { convertToPixel: (p: number) => 1000 - p },
+    });
+    return calls;
+  }
+
+  it("paints nothing for a level whose whole band sits off-pane", async () => {
+    // price 5000 -> yMid = -4000, band [-4005, -3995]: entirely above the pane.
+    expect(await paint(5000, { midline: true })).toEqual([]);
+    // price 100 -> y 900, far below a 200px pane.
+    expect(await paint(100)).toEqual([]);
+  });
+
+  it("keeps a visible level's band but withholds an off-pane tag", async () => {
+    // price 902 -> yMid = 98: band on-pane, tag on-pane too.
+    const on = await paint(902);
+    expect(on.some((c) => c.startsWith("fillRect:"))).toBe(true);
+    expect(on.some((c) => c.startsWith("fillText:"))).toBe(true);
+    // price 998 -> yMid = 2: band clips into the pane top, but the tag would
+    // sit at y=-5, outside — it must be withheld, not bled into the pane above.
+    const edge = await paint(998);
+    expect(edge.some((c) => c.startsWith("fillRect:"))).toBe(true);
+    expect(edge.some((c) => c.startsWith("fillText:"))).toBe(false);
+  });
+});
+
+describe("computeSrLevels MTF short last intraday bucket", () => {
+  // 7H pin on a 1h chart: buckets 00/07/14/21 UTC; the 21:00 one closes at
+  // the 00:00 reset, so it reaches the 00:00 bar and a level touched there
+  // ends on the 23:00 bar, not 03:00 the next day.
+  const H = 3600_000;
+  const D0 = Date.UTC(2026, 0, 5);
+  const at = (h: number): KLineData =>
+    ({ timestamp: D0 + h * H, open: 100, high: 101, low: 99, close: 100, volume: 1 }) as KLineData;
+  const chartBars = Array.from({ length: 10 }, (_, k) => at(20 + k)); // 20:00 .. 05:00
+  const mtf = {
+    timeframe: "HOUR_7",
+    htfMs: 7 * H,
+    chartMs: H,
+    htfStarts: [D0 + 14 * H, D0 + 21 * H, D0 + 24 * H],
+    htfSupport: [100, 101, 102] as Array<number | undefined>,
+    htfResistance: [110, 111, 112] as Array<number | undefined>,
+    htfLevels: [{ price: 100, halfWidth: 5, touches: 2, firstTs: D0 + 14 * H, lastTs: D0 + 21 * H }],
+  };
+
+  it("the 00:00 bar reads the short 21:00 bucket", () => {
+    const { points } = computeSrLevels(chartBars, CFG, { mtf });
+    expect(points[3].support).toBe(100); // 23:00
+    expect(points[4].support).toBe(101); // 00:00
+  });
+
+  it("the level ends on the 21:00 bucket's last chart bar", () => {
+    const { levels } = computeSrLevels(chartBars, CFG, { mtf });
+    expect(levels[0].lastIdx).toBe(3); // 23:00
+  });
+});

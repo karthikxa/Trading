@@ -1,0 +1,825 @@
+// The trading dock: the whole open book (positions + resting orders across every
+// symbol) for the selected environment (paper), modelled on TradingView's bottom
+// panel. Driven by the shared trades poll (one poll, fanned out — see trading.ts).
+//
+// Always docked under the chart; collapsible to just its header bar (persisted).
+// A TV-style header strip shows account stats; Positions / Orders tabs split the
+// book; the table carries Side / Qty / Avg fill / TP / SL / P&L with per-row
+// pencil (edit) + ✕ (close/cancel) actions.
+//
+// Editing levels: double-click a row (or its pencil) to open the order ticket in
+// edit mode; or drag a line on the chart (SL/TP any time; an order's price line
+// after pressing Edit). A drag stages a PENDING change here; this panel shows a
+// combined Apply / Discard for all staged changes, so a poll never snaps a
+// half-edited line back. Apply writes them to the broker.
+
+import { useEffect, useRef, useState } from "react";
+import {
+  applyLevels,
+  cancelWorkingOrder,
+  closePosition,
+  refreshTrades,
+  subscribeLivePrices,
+  subscribeTrades,
+  brokerLabel,
+  brokerOf,
+  isDataOnlyBroker,
+  isRealMoneyAccount,
+  isCapital,
+  type TradeView,
+  type TradeAccount,
+  type BrokerAccount,
+  type AccountSummary,
+} from "./lib/trading";
+import { groupPositions, type PositionGroup } from "./lib/positionGroups";
+import {
+  pendingEditsSignal,
+  editTradeSignal,
+  tradeLineUiSignal,
+  toggleTradeHidden,
+  setTradeHovered,
+  toggleTradeSelected,
+  setTradeSelected,
+  draggingLineSignal,
+  mt5DeployStateSignal,
+  type PendingEdit,
+} from "./lib/signals";
+import { accountStats, enrichTrade, type EnrichedTrade } from "./lib/accountStats";
+import type { TradingSettings } from "./theme";
+import Tooltip from "./components/Tooltip";
+import { PositionsHead } from "./PositionsTable";
+import {
+  DEFAULT_SORT,
+  cash,
+  groupCells,
+  nextSort,
+  positionCells,
+  sortCompare,
+  type SortKey,
+  type SortState,
+  type TableTab,
+} from "./lib/positionsTable";
+import Mt5DeployButton from "./Mt5DeployButton";
+
+interface Props {
+  account?: TradeAccount;
+  // All registered accounts (from GET /api/brokers). The dock's account strip shows
+  // a tab per account OF THE ACTIVE BROKER so you can switch env (paper/demo/live)
+  // WITHOUT changing the workspace; switching broker is the tab-bar selector's job.
+  accounts?: BrokerAccount[];
+  onAccountChange?: (account: TradeAccount) => void;
+  // Real per-account balance/currency for a live account (null for paper → the strip
+  // uses the configured paper balance). Lets the dock show the account's TRUE figures.
+  accountSummary?: AccountSummary | null;
+  // The focused chart's symbol — used ONLY to highlight its rows, never to filter:
+  // this panel shows the WHOLE book (every symbol with an open position/order).
+  focusedEpic?: string;
+  // Per-symbol price precision (the book spans symbols); falls back to `precision`.
+  precisionFor?: (epic: string) => number;
+  precision?: number;
+  // Account math for the header stats strip (balance / leverage / currency).
+  trading: TradingSettings;
+  // Editing a row re-scopes the chart to its symbol; selecting then opens the order
+  // ticket in edit mode (setTradeSelected reveals the panel — no separate callback).
+  onJumpToEpic?: (epic: string) => void;
+  // When false, a dragged level applies immediately (no Apply/Discard bar).
+  confirmLineEdits?: boolean;
+  // Dock maximized to fill the chart view (owned by App, which hides the workspace).
+  maximized?: boolean;
+  onToggleMaximize?: () => void;
+}
+
+// A trade row enriched with the derived figures TV shows (last price, P&L %, trade
+// /market value, per-row leverage + margin). All approximate, internally coherent
+// with our paper P&L — see lib/orderInfo. Sortable columns read straight off this.
+type RowExt = EnrichedTrade;
+const COLLAPSE_KEY = "tradeDockCollapsed";
+
+// Env tab label (paper/demo/live → Paper/Demo/Live) and its risk tier, mirroring the
+// broker selector's old tiering so a real-money tab still reads red.
+function envLabel(env: string): string {
+  return env.charAt(0).toUpperCase() + env.slice(1);
+}
+function acctTier(a: BrokerAccount): "paper" | "demo" | "live" {
+  if (a.isRealMoney) return "live";
+  return a.env === "paper" ? "paper" : "demo";
+}
+
+export default function PositionsPanel({
+  account = "capital:paper",
+  accounts = [],
+  onAccountChange,
+  accountSummary,
+  focusedEpic,
+  precisionFor,
+  precision = 2,
+  trading,
+  onJumpToEpic,
+  confirmLineEdits = true,
+  maximized = false,
+  onToggleMaximize,
+}: Props) {
+  const [all, setAll] = useState<TradeView[]>([]);
+  const [pending, setPending] = useState<Record<string, PendingEdit>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  // Symbols whose position group is folded to just its header row.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
+  const [editId, setEditId] = useState<string | null>(editTradeSignal.value);
+  const [hidden, setHidden] = useState<string[]>(tradeLineUiSignal.value.hidden);
+  // Hovered/selected trade ids, mirrored from the chart so a line hover/select
+  // lights up its dock row (and vice-versa — the row writes these too).
+  const [hoveredId, setHoveredId] = useState<string | null>(tradeLineUiSignal.value.hovered);
+  const [selectedId, setSelectedId] = useState<string | null>(tradeLineUiSignal.value.selected);
+  // Paused auto-apply while a chart line is being dragged (no-confirm mode).
+  const [lineDragging, setLineDragging] = useState<boolean>(draggingLineSignal.value);
+  const [tab, setTab] = useState<TableTab>("positions");
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(COLLAPSE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => subscribeTrades(setAll), []);
+  // Re-render on each streamed price so P&L marks to market live — without polling
+  // the server (the dock fetches positions only on actual changes; see trading.ts).
+  const [, setPriceTick] = useState(0);
+  useEffect(() => subscribeLivePrices(() => setPriceTick((n) => n + 1)), []);
+  useEffect(() => draggingLineSignal.subscribe(setLineDragging), []);
+  useEffect(() => pendingEditsSignal.subscribe(setPending), []);
+  useEffect(() => editTradeSignal.subscribe(setEditId), []);
+  useEffect(
+    () =>
+      tradeLineUiSignal.subscribe((ui) => {
+        setHidden(ui.hidden);
+        setHoveredId(ui.hovered);
+        setSelectedId(ui.selected);
+      }),
+    [],
+  );
+
+  // Account tabs for the active broker. Always render at least the active account
+  // (so a single-account broker still shows its tab) even before /api/brokers loads.
+  const activeBroker = brokerOf(account);
+  const dataOnly = isDataOnlyBroker(activeBroker);
+  const brokerAccounts =
+    accounts.filter((a) => a.broker === activeBroker);
+  const acctTabs: BrokerAccount[] =
+    brokerAccounts.length > 0
+      ? brokerAccounts
+      : [{ key: account, broker: activeBroker, env: account.split(":")[1] ?? "paper", isRealMoney: false }];
+
+  // MT5 just came on (Start here, or another tab/backend): jump to the live
+  // account so its balance and positions show without a manual switch. Only on
+  // the off → on transition, never on a boot read that finds it already on, so
+  // a deliberate Paper pick survives a reload.
+  const liveSwitchRef = useRef({ account, acctTabs, onAccountChange });
+  liveSwitchRef.current = { account, acctTabs, onAccountChange };
+  useEffect(() => {
+    let prev = mt5DeployStateSignal.value;
+    return mt5DeployStateSignal.subscribe((next) => {
+      const cameOn = next === "on" && (prev === "off" || prev === "turning-on");
+      prev = next;
+      if (!cameOn) return;
+      const { account: cur, acctTabs: tabs, onAccountChange: change } = liveSwitchRef.current;
+      if (brokerOf(cur) !== "mt5") return;
+      const live = tabs.find((a) => a.broker === "mt5" && a.env === "live");
+      if (live && live.key !== cur) change?.(live.key);
+    });
+  }, []);
+
+  const trades = all; // whole book — every symbol, not just the focused chart
+  const positions = trades.filter((t) => t.kind === "position");
+  const orders = trades.filter((t) => t.kind === "order");
+  const rows = tab === "positions" ? positions : orders;
+
+  const toggleSort = (key: SortKey) => setSort((s) => nextSort(s, key));
+  const precOf = (e: string) => precisionFor?.(e) ?? precision;
+  const fmt = (n: number, p = precision) => n.toFixed(p);
+  // A table level at precision `p`, "—" when absent.
+  const levelFmt = (p: number) => (n: number | null) => (n != null ? fmt(n, p) : "—");
+  // A live account reports its real currency; otherwise the configured paper one.
+  const isLive = isRealMoneyAccount(account);
+  const cur = accountSummary?.currency ?? trading.accountCurrency;
+
+  // Account stats: the shared derivation in lib/accountStats.ts (the mobile
+  // positions tab shows the same strip). Recomputed each render, which the
+  // live-price subscription drives.
+  const stats = accountStats({
+    positions, orders, summary: accountSummary, trading, broker: activeBroker, isLive,
+  });
+  const { pnl, balance, available, accountMargin, ordersMargin, equity, marginBuffer, marginLevel, noBrokerData } = stats;
+  // The broker's margin-call / close-out thresholds on the margin level above (a tooltip
+  // note so a trader knows how far the % can fall). Capital.com publishes these; other
+  // brokers omit the note until their levels are known.
+  // https://capital.com/en-eu/ways-to-trade/margin-calls
+  const marginCallNote =
+    isCapital(activeBroker)
+      ? " Capital.com issues a margin call at 100% (no new trades) and again at 75%; at 50% or below it starts closing positions (margin close-out)."
+      : "";
+  const money = (n: number) => (noBrokerData ? "—" : `${cash(n)} ${cur}`);
+  const pct = (n: number | null) => (noBrokerData || n == null ? "—" : `${n.toFixed(2)}%`);
+
+  // P&L carries a directional caret + sign-driven tone (the one coloured stat).
+  const pnlTone = pnl > 0 ? "pp-pos" : pnl < 0 ? "pp-neg" : "";
+  const caret = pnl > 0 ? "▲" : pnl < 0 ? "▼" : "";
+  const posCount = positions.length;
+
+  const enrich = (t: TradeView): RowExt => enrichTrade(t, stats, isLive);
+
+  // Sorted view of the active tab (nulls sink; see PositionsTable.sortCompare).
+  const compare = sortCompare(sort);
+  const sorted = rows.map(enrich).sort(compare);
+  // Positions of one symbol sit together under a group header carrying their
+  // roll-up (net size, average entry, total P&L, ...). Groups sort by their
+  // aggregate, positions by their own value; a lone position renders as a plain row.
+  const groups: PositionGroup<RowExt>[] | null =
+    tab === "positions" ? groupPositions(sorted).sort(compare) : null;
+  const toggleGroup = (epic: string) =>
+    setCollapsedGroups((s) => {
+      const next = new Set(s);
+      if (next.has(epic)) next.delete(epic);
+      else next.add(epic);
+      return next;
+    });
+
+  // One position / order row. `inGroup` positions sit under their symbol's header row.
+  const renderPosition = (t: RowExt, inGroup: boolean) => {
+    const long = t.side === "buy";
+    const isOrder = t.kind === "order";
+    const linesHidden = hidden.includes(t.id);
+    const prec = precOf(t.epic);
+    const isFocused = focusedEpic != null && t.epic === focusedEpic;
+    return (
+      <Tooltip key={t.id} asChild content={["Click: open chart.", "Double-click: edit."]}>
+        <tr
+          className={`pp-row pp-dir-${long ? "long" : "short"}${inGroup ? " pp-member" : ""}${
+            editId === t.id ? " pp-editing" : ""
+          }${isFocused ? " pp-focused" : ""}${
+            selectedId === t.id ? " pp-selected" : ""
+          }${hoveredId === t.id ? " pp-hovered" : ""}`}
+          // Single click → open/focus the chart for this trade's symbol
+          // AND (de)select the trade, so its chart lines + this row light
+          // up together. Double click → also reveal the ticket in edit mode.
+          onClick={() => {
+            onJumpToEpic?.(t.epic);
+            toggleTradeSelected(t.id);
+          }}
+          onDoubleClick={() => edit(t)}
+          onMouseEnter={() => setTradeHovered(t.id)}
+          onMouseLeave={() => {
+            if (tradeLineUiSignal.value.hovered === t.id) setTradeHovered(null);
+          }}
+        >
+          {positionCells(t, levelFmt(prec))}
+          <td className="pp-c-act">
+            <div className="pp-actions">
+              <Tooltip content={linesHidden ? "Show lines on chart" : "Hide lines on chart"}>
+                <button
+                  className={`pp-iconbtn${linesHidden ? " off" : ""}`}
+                  aria-pressed={linesHidden}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleTradeHidden(t.id);
+                  }}
+                >
+                  <EyeIcon hidden={linesHidden} />
+                </button>
+              </Tooltip>
+              <Tooltip content="Edit levels">
+                <button
+                  className="pp-iconbtn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    edit(t);
+                  }}
+                >
+                  <PencilIcon />
+                </button>
+              </Tooltip>
+              <Tooltip content={isOrder ? "Cancel order" : "Close position"}>
+                <button
+                  className="pp-iconbtn pp-iconbtn-x"
+                  disabled={busy === t.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    act(t);
+                  }}
+                >
+                  <CloseIcon />
+                </button>
+              </Tooltip>
+            </div>
+          </td>
+        </tr>
+      </Tooltip>
+                    );
+  };
+
+  function applyCollapsed(next: boolean) {
+    // Collapsing while maximized makes no sense (the workspace is hidden) — drop
+    // out of maximize first so the chart comes back.
+    if (next && maximized) onToggleMaximize?.();
+    setCollapsed(next);
+    try {
+      localStorage.setItem(COLLAPSE_KEY, next ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }
+  // Maximize fills the chart view with the dock; expand first if collapsed so there
+  // is something to fill.
+  function clickMaximize() {
+    if (collapsed) applyCollapsed(false);
+    onToggleMaximize?.();
+  }
+
+  // Staged changes for the trades this panel shows, paired with their trade. The
+  // trade currently open in the edit ticket is EXCLUDED — its pending edits are
+  // owned by the ticket's Update/Cancel, so the panel must not also stage them
+  // (which would double up the bar and, with auto-apply, fire on every keystroke).
+  const staged = trades
+    .map((t) => ({ trade: t, edit: pending[t.id] }))
+    .filter(
+      (x): x is { trade: TradeView; edit: PendingEdit } =>
+        x.trade.id !== editId &&
+        !!x.edit &&
+        (x.edit.price != null || x.edit.stop != null || x.edit.takeProfit != null),
+    );
+
+  // Open the order ticket in edit mode for `t`: re-scope the chart to its symbol
+  // (so the draggable SL/TP lines are visible), then SELECT it — setTradeSelected is
+  // the single path that loads edit mode + reveals the panel + discards the outgoing
+  // trade's un-applied edits. Triggered by a row click, double-click, or its pencil.
+  function edit(t: TradeView) {
+    onJumpToEpic?.(t.epic);
+    setTradeSelected(t.id);
+  }
+
+  function clearStaged() {
+    // Drop pending for the shown trades (leave other epics' pending intact, and
+    // leave the trade open in the edit ticket alone — its pending is owned by
+    // EditTicket's Update/Cancel, not the panel's Apply/Discard).
+    const next = { ...pendingEditsSignal.value };
+    for (const t of trades) if (t.id !== editId) delete next[t.id];
+    pendingEditsSignal.set(next);
+  }
+
+  // Suppress-confirmation: when the user opted out, apply a staged drag at once
+  // instead of waiting for the Apply button. Keyed on the staged CONTENT (levels,
+  // not just count) so a NEW drag re-applies, but a drag the broker REJECTED isn't
+  // retried in a tight loop — applyAll leaves `staged` intact on failure, and busy
+  // cycling apply→null would otherwise re-fire this effect forever.
+  const stagedKey = staged
+    .map((s) => `${s.trade.id}:${s.edit.price ?? ""}:${s.edit.stop ?? ""}:${s.edit.takeProfit ?? ""}`)
+    .join("|");
+  const autoAppliedKey = useRef<string>("");
+  useEffect(() => {
+    if (
+      !confirmLineEdits &&
+      !lineDragging && // wait for the drag to END (no per-pixel broker writes)
+      staged.length > 0 &&
+      busy == null &&
+      autoAppliedKey.current !== stagedKey
+    ) {
+      autoAppliedKey.current = stagedKey;
+      void applyAll();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmLineEdits, stagedKey, busy, lineDragging]);
+
+  async function applyAll() {
+    setBusy("apply");
+    setError(null);
+    try {
+      for (const { trade, edit } of staged) {
+        await applyLevels(
+          trade,
+          {
+            // Entry repricing only applies to a resting order.
+            limit_level: trade.kind === "order" ? edit.price ?? null : null,
+            stop_level: edit.stop ?? null,
+            take_profit_level: edit.takeProfit ?? null,
+          },
+          account,
+        );
+      }
+      clearStaged();
+      refreshTrades();
+      // Allow a later identical drag to auto-apply again (the guard only exists to
+      // stop retrying a REJECTED set; a success clears it).
+      autoAppliedKey.current = "";
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Apply failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function act(t: TradeView) {
+    setBusy(t.id);
+    try {
+      if (t.kind === "position") await closePosition(t.id, account);
+      else await cancelWorkingOrder(t.id, account);
+      refreshTrades();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Action failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // A data-only source (Dukascopy history) has no account, positions or orders. Show
+  // a plain "history only" note instead of a misleading paper account strip + book.
+  // Deliberately NOT collapsible: the toolbar trade-toggle that would re-open the dock
+  // is hidden for a data-only source, so a Close button here would strand it shut.
+  if (dataOnly) {
+    return (
+      <section className="pp">
+        <nav className="pp-tabs">
+          <span className="pp-dataonly-note">
+            {brokerLabel(activeBroker)}: read-only data source, no trading.
+          </span>
+        </nav>
+      </section>
+    );
+  }
+
+  return (
+    <section className={`pp${collapsed ? " pp-collapsed" : ""}`}>
+      {!collapsed && (
+        <>
+          {/* Positions / Orders tabs with live counts. Window controls (maximize fills
+              the chart view with the dock; close collapses it) ride at the far right. */}
+          <nav className="pp-tabs">
+            <TabButton label="Positions" count={positions.length} on={tab === "positions"} onClick={() => setTab("positions")} />
+            <TabButton label="Orders" count={orders.length} on={tab === "orders"} onClick={() => setTab("orders")} />
+            <div className="pp-winctl">
+              <Tooltip content={maximized ? "Restore dock" : "Maximize dock"}>
+                <button
+                  className="pp-iconbtn"
+                  onClick={clickMaximize}
+                  aria-pressed={maximized}
+                >
+                  {maximized ? <RestoreIcon /> : <MaximizeIcon />}
+                </button>
+              </Tooltip>
+              <Tooltip content="Close book">
+                <button
+                  className="pp-iconbtn"
+                  onClick={() => applyCollapsed(true)}
+                >
+                  <CloseIcon />
+                </button>
+              </Tooltip>
+            </div>
+          </nav>
+
+          {/* The old "Pending changes" Apply/Discard bar lived here. Drag-staged
+              edits now surface on the on-chart pill for the (auto-)selected trade,
+              and confirmLineEdits=false still auto-applies via the effect below. */}
+
+          {error && <div className="pp-error">{error}</div>}
+
+          {rows.length === 0 ? (
+            <div className="pp-empty">
+              {tab === "positions" ? "No open positions." : "No working orders."}
+            </div>
+          ) : (
+            <div className="pp-table-wrap">
+              <table className="pp-table">
+                <thead>
+                  <PositionsHead tab={tab} sort={sort} onSort={toggleSort} trailing={<th className="pp-c-act" />} />
+                </thead>
+                <tbody>
+                  {groups == null ? sorted.map((t) => renderPosition(t, false)) : groups.flatMap((g) => {
+                    // A lone position is a plain row; several under one symbol get a
+                    // header row with the roll-up and (optionally folded) positions beneath.
+                    if (g.positions.length < 2) return g.positions.map((t) => renderPosition(t, false));
+                    const folded = collapsedGroups.has(g.epic);
+                    const isFocused = focusedEpic != null && g.epic === focusedEpic;
+                    const dir = g.side === "buy" ? "long" : g.side === "sell" ? "short" : "mixed";
+                    const prec = precOf(g.epic);
+                    const header = (
+                      <Tooltip key={`group:${g.epic}`} asChild content={folded ? "Click to show positions" : "Click to hide positions"}>
+                        <tr
+                          className={`pp-row pp-group pp-dir-${dir}${isFocused ? " pp-focused" : ""}${folded ? " pp-folded" : ""}`}
+                          onClick={() => toggleGroup(g.epic)}
+                        >
+                          {groupCells(
+                            g,
+                            <td className="pp-c-sym">
+                              <button
+                                className="pp-group-toggle"
+                                aria-expanded={!folded}
+                                aria-label={folded ? "Show positions" : "Hide positions"}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleGroup(g.epic);
+                                }}
+                              >
+                                <span className="pp-group-chevron" aria-hidden="true">›</span>
+                              </button>
+                              {g.epic}
+                              <span className="pp-group-count">{g.positions.length}</span>
+                            </td>,
+                            levelFmt(prec),
+                          )}
+                          <td className="pp-c-act" />
+                        </tr>
+                      </Tooltip>
+                    );
+                    return folded ? [header] : [header, ...g.positions.map((t) => renderPosition(t, true))];
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
+
+      {/* Account strip — sits BELOW the table (per request): collapse toggle + account
+          identity on the left, TV's dense stat row on the right. Collapsed, the dock is
+          just this bar and the stats compress to one live ticker line. */}
+      <div className="pp-bar">
+        {/* Account tabs — switch env (paper/demo/live) WITHIN the active broker
+            without changing the workspace. Always shown, even for a single-account
+            broker, so the active env always reads clearly. Each tab carries its own
+            open/close chevron: the active tab's toggles the dock, an inactive tab's
+            switches to that account and opens its book. */}
+        {/* Broker identity — the env tabs switch WITHIN this broker, so its name
+            reads once, to their left. Backend-reported real name when the broker
+            provides one (MT5 → "Ava Trade Ltd (demo)"), static label otherwise. */}
+        <span className="pp-acct-broker">{brokerLabel(activeBroker)}</span>
+        {activeBroker === "mt5" && <Mt5DeployButton />}
+        <div className="pp-acct-tabs" role="tablist" aria-label="Account">
+          {acctTabs.map((a) => {
+            const isActive = a.key === account;
+            const t = acctTier(a);
+            // The book is on screen only for the active env while expanded; that's
+            // the lone case the chevron points "down" (collapse). Every other tab
+            // shows the "up" (open) affordance.
+            const bookVisible = isActive && !collapsed;
+            return (
+              <Tooltip
+                key={a.key}
+                content={
+                  bookVisible
+                    ? `Collapse ${brokerLabel(a.broker)} · ${envLabel(a.env)} book`
+                    : isActive
+                      ? `Expand ${brokerLabel(a.broker)} · ${envLabel(a.env)} book`
+                      : `Show ${brokerLabel(a.broker)} · ${envLabel(a.env)} book`
+                }
+              >
+                <button
+                  className={`pp-acct-tab ${t}${isActive ? " active" : ""}`}
+                  role="tab"
+                  aria-selected={isActive}
+                  aria-expanded={bookVisible}
+                  // The whole tab toggles its book: the active tab opens/closes the
+                  // dock, an inactive tab switches to that account and opens it.
+                  onClick={() => {
+                    if (!isActive) onAccountChange?.(a.key);
+                    applyCollapsed(isActive ? !collapsed : false);
+                  }}
+                >
+                  <span className={`env-dot ${t}`} aria-hidden="true" />
+                  {envLabel(a.env)}
+                  <span className={`pp-chevron${bookVisible ? "" : " open"}`}>
+                    <ChevronIcon />
+                  </span>
+                </button>
+              </Tooltip>
+            );
+          })}
+        </div>
+
+        {collapsed ? (
+          <div className="pp-ticker">
+            <span className={`pp-ticker-pnl ${pnlTone}`}>
+              {caret && <span className="pp-caret">{caret}</span>}
+              {cash(Math.abs(pnl))} {cur}
+            </span>
+            <span className="pp-ticker-dot" />
+            <span>
+              {posCount} {posCount === 1 ? "position" : "positions"}
+            </span>
+            <span className="pp-ticker-dot" />
+            <span>buffer {pct(marginBuffer)}</span>
+          </div>
+        ) : (
+          <div className="pp-acct">
+            <Tooltip content="Open profit / loss across all positions, marked to live prices (broker-reported for live accounts)">
+              <div className="pp-stat">
+                <span className="pp-stat-label">Unrealized P&amp;L</span>
+                <span className={`pp-stat-val num ${pnlTone}`}>
+                  {pnl >= 0 ? "" : "−"}
+                  {cash(Math.abs(pnl))} {cur}
+                </span>
+              </div>
+            </Tooltip>
+            <Stat
+              label="Balance"
+              value={money(balance)}
+              title={
+                isLive
+                  ? "Account value reported by the broker (cash plus open P&L)"
+                  : "Configured paper-trading cash balance"
+              }
+            />
+            <Stat
+              label="Equity"
+              value={money(equity)}
+              title="Account value = available margin + margin in use (cash plus open P&L). What the account is worth right now."
+            />
+            <Stat
+              label="Account margin"
+              value={money(accountMargin)}
+              title="Total deposit currently tied up by open positions: the sum of each position's MARGIN (broker figures for live accounts)"
+            />
+            <Stat
+              label="Available"
+              value={money(available)}
+              title="Free margin available to open new positions (broker-reported for live accounts)"
+            />
+            <Stat
+              label="Orders margin"
+              value={money(ordersMargin)}
+              title="Margin reserved by resting (not-yet-filled) working orders"
+            />
+            <Stat
+              label="Margin buffer"
+              value={pct(marginBuffer)}
+              title={`Free margin as a share of equity (available ÷ equity). Higher = more headroom before a margin call.${marginCallNote}`}
+            />
+            <Stat
+              label="Margin level"
+              value={pct(marginLevel)}
+              title={`Equity as a share of margin in use (equity ÷ account margin): Capital's 'CFD Margin %'. Falls toward 100% as risk rises.${marginCallNote}`}
+            />
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+export function Stat({
+  label,
+  value,
+  tone,
+  title,
+}: {
+  label: string;
+  value: string;
+  tone?: "pos" | "neg";
+  title?: string;
+}) {
+  return (
+    <Tooltip content={title}>
+      <div className="pp-stat">
+        <span className="pp-stat-label">{label}</span>
+        <span className={`pp-stat-val num${tone ? ` pp-${tone}` : ""}`}>{value}</span>
+      </div>
+    </Tooltip>
+  );
+}
+
+function TabButton({
+  label,
+  count,
+  on,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  on: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button className={`pp-tab${on ? " on" : ""}`} onClick={onClick}>
+      {label}
+      {count > 0 && <span className="pp-count">{count}</span>}
+    </button>
+  );
+}
+
+// Eye (lines shown) / eye-with-slash (lines hidden) — toggles a trade's on-chart
+// lines. Inherits colour from the button via currentColor.
+function EyeIcon({ hidden }: { hidden: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+      <path
+        d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      {hidden && (
+        <line
+          x1="3"
+          y1="21"
+          x2="21"
+          y2="3"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+      )}
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+      <path
+        d="M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// Chevron: a down-pointing V (collapse). Rotated 180° via `.open` to point up
+// (expand) — the dock lives above the strip, so up = reveal, down = tuck away.
+function ChevronIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+      <path
+        d="M6 9l6 6 6-6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+      <path
+        d="M6 6l12 12M18 6L6 18"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+// Maximize: a plain frame (the dock about to fill the view).
+function MaximizeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+      <rect
+        x="4"
+        y="4"
+        width="16"
+        height="16"
+        rx="1.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+// Restore: two offset corners (shrink back from full view).
+function RestoreIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+      <path
+        d="M8 8h8v8H8z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8 6.5h9.5V16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity="0.55"
+      />
+    </svg>
+  );
+}

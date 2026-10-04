@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TradingAI — Kronos &amp; Laya AI Terminal</title>
+  <meta name="description" content="Local AI Trading Terminal powered by Kronos-base 102.3M and Laya 0.4B ModernBERT decision models with TradingView & auto_trader UI">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📈</text></svg>">
+</head>
+<body>
+
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <!-- TOP MULTI-TAB WORKSPACE BAR (matching auto_trader)          -->
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <div class="workspace-tabs-bar" id="workspaceTabsBar">
+    <div class="ws-tab active" data-pair="US100" data-tf="5m">
+      <span class="ws-tab-icon">🇺🇸</span>
+      <span class="ws-tab-title">US100 5m</span>
+      <span class="ws-tab-badge">AI Active</span>
+    </div>
+    <div class="ws-tab" data-pair="EURUSD" data-tf="3m">
+      <span class="ws-tab-icon">🇪🇺</span>
+      <span class="ws-tab-title">EURUSD 3m</span>
+    </div>
+    <div class="ws-tab" data-pair="BTC/USDT" data-tf="15m">
+      <span class="ws-tab-icon">🪙</span>
+      <span class="ws-tab-title">BTC/USDT 15m</span>
+    </div>
+    <div class="ws-tab" data-pair="ETH/USDT" data-tf="1h">
+      <span class="ws-tab-icon">🔷</span>
+      <span class="ws-tab-title">ETH/USDT 1h</span>
+    </div>
+    <button class="ws-add-tab" id="addTabBtn" title="Open new market tab">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <!-- MAIN HEADER TOOLBAR                                         -->
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <header class="tv-header">
+    <!-- Brand / Terminal Logo -->
+    <div class="tv-header__brand">
+      <div class="brand-logo">
+        <svg width="20" height="20" viewBox="0 0 22 22" fill="none">
+          <rect x="2" y="10" width="3" height="10" rx="1" fill="#089981"/>
+          <rect x="7" y="6" width="3" height="14" rx="1" fill="#089981"/>
+          <rect x="12" y="3" width="3" height="17" rx="1" fill="#f23645"/>
+          <rect x="17" y="7" width="3" height="9" rx="1" fill="#089981"/>
+        </svg>
+      </div>
+      <span class="brand-name">TradingAI</span>
+    </div>
+
+    <!-- Ticker & Live Price Display -->
+    <div class="tv-header__symbol-block">
+      <div class="symbol-name" id="headerSymbol">US100</div>
+      <div class="symbol-price-group">
+        <span class="symbol-price" id="headerPrice">29,288.9</span>
+        <span class="symbol-change dn" id="headerChange">-1.7 (-0.01%)</span>
+      </div>
+      <div class="symbol-ohlc">
+        <span>O <span id="hdrOpen">29,290.9</span></span>
+        <span>H <span id="hdrHigh" class="up">29,292.6</span></span>
+        <span>L <span id="hdrLow" class="dn">29,285.9</span></span>
+        <span>C <span id="hdrClose">29,288.9</span></span>
+        <span>V <span id="hdrVol">4.82K</span></span>
+      </div>
+    </div>
+
+    <!-- Timeframe Selector -->
+    <div class="tv-header__timeframes">
+      <button class="tf-btn" data-tf="1m">1m</button>
+      <button class="tf-btn" data-tf="3m">3m</button>
+      <button class="tf-btn active" data-tf="5m">5m</button>
+      <button class="tf-btn" data-tf="15m">15m</button>
+      <button class="tf-btn" data-tf="30m">30m</button>
+      <button class="tf-btn" data-tf="1h">1H</button>
+      <button class="tf-btn" data-tf="4h">4H</button>
+      <button class="tf-btn" data-tf="1d">1D</button>
+      <button class="tf-btn" data-tf="1w">1W</button>
+      <button class="tf-btn" data-tf="1m_m">1M</button>
+      <div class="tf-separator"></div>
+    </div>
+
+    <!-- Technical Indicators Toggles -->
+    <div class="tv-header__indicators">
+      <button class="ind-btn active" id="toggleSMA" title="Toggle SMA 20/50">
+        <span class="ind-dot" style="background:#f59e0b;"></span>SMA
+      </button>
+      <button class="ind-btn active" id="toggleBB" title="Toggle Bollinger Bands">
+        <span class="ind-dot" style="background:#818cf8;"></span>BB
+      </button>
+      <button class="ind-btn active" id="toggleVol" title="Toggle Volume">
+        <span class="ind-dot" style="background:#60a5fa;"></span>Vol
+      </button>
+      <button class="ind-btn active" id="toggleRSI" title="Toggle RSI(14) Sub-Pane">
+        <span class="ind-dot" style="background:#a855f7;"></span>RSI
+      </button>
+      <button class="ind-btn active" id="togglePatterns" title="Toggle Candle Pattern Badges">
+        <span class="ind-dot" style="background:#089981;"></span>Patterns
+      </button>
+    </div>
+
+    <!-- Right Actions -->
+    <div class="tv-header__actions">
+      <!-- Local AI Engine Status -->
+      <div class="status-pill" id="statusPill" title="Kronos-base 102.3M & Laya ModernBERT 0.4B Ready">
+        <div class="status-dot active"></div>
+        <span>Local AI Ready</span>
+      </div>
+
+      <!-- Price Alert Modal Button (auto_trader pattern) -->
+      <button class="hdr-btn outline" id="createAlertBtn" title="Set Price Crossing Alert">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        Alert
+      </button>
+
+      <!-- Theme Switcher (Dark / Light) -->
+      <button class="hdr-btn outline" id="themeToggleBtn" title="Toggle Dark/Light Mode">
+        <span id="themeIcon">🌙</span>
+      </button>
+
+      <!-- CSV Upload Button -->
+      <button class="hdr-btn outline" id="uploadCsvBtn" title="Load custom chart CSV">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        CSV
+      </button>
+
+      <!-- Main Forecast Trigger -->
+      <button class="hdr-btn primary" id="runForecastBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        Run AI Forecast
+      </button>
+    </div>
+  </header>
+
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <!-- MAIN WORKSPACE LAYOUT: Toolbar | Chart Canvas | Sidebar     -->
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <div class="tv-layout">
+
+    <!-- Left Drawing Toolbar -->
+    <aside class="tv-left-toolbar">
+      <button class="tool-btn active" title="Cursor" data-tip="Cursor">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M4 0L4 20L8 16L12 24L14 23L10 15L16 15Z"/></svg>
+      </button>
+      <button class="tool-btn" title="Crosshair" data-tip="Crosshair">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="2" x2="12" y2="7"/><line x1="12" y1="17" x2="12" y2="22"/><line x1="2" y1="12" x2="7" y2="12"/><line x1="17" y1="12" x2="22" y2="12"/></svg>
+      </button>
+      <div class="toolbar-sep"></div>
+      <button class="tool-btn" title="Trend Line" data-tip="Trend Line">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/><circle cx="5" cy="19" r="2" fill="currentColor"/><circle cx="19" cy="5" r="2" fill="currentColor"/></svg>
+      </button>
+      <button class="tool-btn" title="Horizontal Ray" data-tip="Horizontal Ray">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><polyline points="16 8 21 12 16 16"/></svg>
+      </button>
+      <button class="tool-btn" title="Rectangle" data-tip="Rectangle">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/></svg>
+      </button>
+      <div class="toolbar-sep"></div>
+      <button class="tool-btn" title="Fibonacci" data-tip="Fibonacci">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="18" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
+      </button>
+      <button class="tool-btn" title="Price Label" data-tip="Price Label">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+      </button>
+      <div class="toolbar-sep"></div>
+      <button class="tool-btn" title="Measure" data-tip="Measure">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      </button>
+      <button class="tool-btn danger" title="Clear Annotations" id="clearAnnotations" data-tip="Clear">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      </button>
+    </aside>
+
+    <!-- ─── CENTER CHART AREA ───────────────────────────────────── -->
+    <main class="tv-chart-area">
+
+      <!-- Asset / Scenario Selector row -->
+      <div class="chart-topbar">
+        <div class="topbar-left">
+          <select id="pairSelect" class="tv-select">
+            <option value="US100" selected>US100</option>
+            <option value="EURUSD">EURUSD</option>
+            <option value="BTC/USDT">BTC/USDT</option>
+            <option value="ETH/USDT">ETH/USDT</option>
+            <option value="SOL/USDT">SOL/USDT</option>
+            <option value="DOGE/USDT">DOGE/USDT</option>
+            <option value="BNB/USDT">BNB/USDT</option>
+          </select>
+          <select id="scenarioSelect" class="tv-select">
+            <option value="none">Live / Historical Feed</option>
+            <option value="bullish_breakout">▲ Bullish Breakout</option>
+            <option value="bearish_breakdown">▼ Bearish Breakdown</option>
+            <option value="double_bottom">↩ Double Bottom</option>
+            <option value="consolidation">⇔ Range Consolidation</option>
+          </select>
+        </div>
+        <div class="topbar-right">
+          <div class="chart-legend">
+            <div class="legend-item"><span class="l-dot" style="background:#089981"></span>Bull</div>
+            <div class="legend-item"><span class="l-dot" style="background:#f23645"></span>Bear</div>
+            <div class="legend-item"><span class="l-dot" style="background:#00e5ff;"></span>Kronos Forecast</div>
+            <div class="legend-item"><span class="l-dot" style="background:#f59e0b"></span>SMA20</div>
+            <div class="legend-item"><span class="l-dot" style="background:#38bdf8"></span>SMA50</div>
+            <div class="legend-item"><span class="l-dot" style="background:#7e57c2"></span>RSI(14)</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chart Viewport with HTML5 Canvas -->
+      <div class="chart-viewport" id="chartViewport">
+        <!-- Interactive OHLCV HUD -->
+        <div class="chart-hud" id="chartHud">
+          <span>US100 · 5m · Dukascopy (history)</span>
+          <span>O: <b id="hudOpen">29,290.9</b></span>
+          <span>H: <b id="hudHigh" class="up">29,292.6</b></span>
+          <span>L: <b id="hudLow" class="dn">29,285.9</b></span>
+          <span>C: <b id="hudClose">29,288.9</b></span>
+          <span>V: <b id="hudVol">4.82K</b></span>
+          <span>Δ: <b id="hudDelta" class="dn">-0.01%</b></span>
+        </div>
+
+        <!-- Kronos Target Horizon Badge -->
+        <div class="horizon-badge" id="horizonBadge" style="display:none;">
+          ⚡ Kronos Target Active
+        </div>
+
+        <!-- Inference Loading Spinner Overlay -->
+        <div class="chart-loading" id="chartLoading" style="display:none;">
+          <div class="spinner-ring"></div>
+          <div class="loading-text" id="loadingText">Running AI inference…</div>
+        </div>
+
+        <!-- HTML5 Canvas -->
+        <canvas id="tradingChart"></canvas>
+      </div>
+
+      <!-- Bottom Scale Info & Dukascopy note matching screenshot -->
+      <div class="chart-footer-row">
+        <div class="chart-scale-info">
+          <span class="source-tag">Dukascopy (history): read-only data source, no trading.</span>
+        </div>
+        <div class="kronos-target-row" id="kronosTargetRow" style="display:none;">
+          <div class="target-item">Last Close: <span id="targetClose" class="val">--</span></div>
+          <div class="target-item">→ Target: <span id="targetPrice" class="val cyan">--</span></div>
+          <div class="target-item">Return: <span id="targetReturn" class="val">--</span></div>
+        </div>
+      </div>
+
+    </main>
+
+    <!-- ─── RIGHT SIDEBAR PANEL (4 Coss Tabs) ───────────────────── -->
+    <aside class="tv-right-panel">
+
+      <!-- Segmented Tabs Header (coss pattern) -->
+      <div class="panel-tabs">
+        <button class="panel-tab" data-tab="laya">Laya AI</button>
+        <button class="panel-tab active" data-tab="backtest">Backtest</button>
+        <button class="panel-tab" data-tab="plan">Trade Plan</button>
+        <button class="panel-tab" data-tab="kronos">Kronos</button>
+      </div>
+
+      <!-- ── TAB 1: LAYA DECISION & STRATEGY ── -->
+      <div class="panel-body hidden" id="tab-laya">
+        <!-- Decision Banner -->
+        <div class="decision-banner" id="decisionBanner">
+          <div class="decision-main">
+            <div class="action-badge HOLD" id="actionBadge">READY</div>
+            <div class="confidence-group">
+              <div class="confidence-pct" id="confidenceVal">--%</div>
+              <div class="confidence-label">Confidence</div>
+            </div>
+          </div>
+          <div class="decision-model-tag">Laya 0.4B · ModernBERT Head</div>
+        </div>
+
+        <!-- Signal Probabilities -->
+        <div class="prob-section">
+          <div class="section-label">Signal Distribution</div>
+          <div class="prob-row">
+            <span class="prob-name buy">BUY</span>
+            <div class="prob-track"><div class="prob-fill buy" id="probBuyFill" style="width:33%"></div></div>
+            <span class="prob-pct" id="probBuyPct">--%</span>
+          </div>
+          <div class="prob-row">
+            <span class="prob-name sell">SELL</span>
+            <div class="prob-track"><div class="prob-fill sell" id="probSellFill" style="width:33%"></div></div>
+            <span class="prob-pct" id="probSellPct">--%</span>
+          </div>
+          <div class="prob-row">
+            <span class="prob-name hold">HOLD</span>
+            <div class="prob-track"><div class="prob-fill hold" id="probHoldFill" style="width:34%"></div></div>
+            <span class="prob-pct" id="probHoldPct">--%</span>
+          </div>
+        </div>
+
+        <!-- Risk Metrics -->
+        <div class="section-label" style="margin-top:8px;">Risk &amp; Expansion</div>
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <div class="metric-icon">⚠️</div>
+            <div class="metric-content">
+              <div class="metric-label">Execution Risk</div>
+              <div class="metric-value" id="riskVal">--</div>
+              <div class="metric-sub" id="riskSub">Score: -- / 3.0</div>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon">🎯</div>
+            <div class="metric-content">
+              <div class="metric-label">P(Breakout)</div>
+              <div class="metric-value cyan" id="breakoutVal">--%</div>
+              <div class="metric-sub" id="breakoutSub">Boundary expansion</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Inference Latency Telemetry -->
+        <div class="section-label" style="margin-top:8px;">Latency Telemetry</div>
+        <div class="telemetry-row">
+          <div class="telemetry-item">
+            <div class="tel-label">Kronos</div>
+            <div class="tel-value cyan" id="latencyKronos">-- ms</div>
+          </div>
+          <div class="telemetry-item">
+            <div class="tel-label">Laya</div>
+            <div class="tel-value violet" id="latencyLaya">-- ms</div>
+          </div>
+          <div class="telemetry-item">
+            <div class="tel-label">Total</div>
+            <div class="tel-value" id="latencyTotal">-- ms</div>
+          </div>
+        </div>
+      </div><!-- /#tab-laya -->
+
+      <!-- ── TAB 2: BACKTEST & STRATEGY (matching auto_trader Screenshot 2) ── -->
+      <div class="panel-body" id="tab-backtest">
+        <!-- Top Sub-Nav (Backtest, Sweep, Walk-fwd) -->
+        <div class="bt-subnav-bar">
+          <div class="bt-nav-pills">
+            <button class="bt-nav-pill active">Backtest</button>
+            <button class="bt-nav-pill">Sweep</button>
+            <button class="bt-nav-pill">Walk-fwd</button>
+          </div>
+          <span class="bt-symbol-context">— US100 MINUTE_5</span>
+        </div>
+
+        <!-- Sub-filters: Period, Strategy, Costs, Results, Presets -->
+        <div class="bt-filter-strip">
+          <span class="bt-filter-item">Period</span>
+          <span class="bt-filter-item">Strategy</span>
+          <span class="bt-filter-item">Costs</span>
+          <span class="bt-filter-item active">Results <span class="bt-dot"></span></span>
+          <span class="bt-filter-item">Presets</span>
+        </div>
+
+        <!-- High-level Big Numbers Summary Header -->
+        <div class="bt-headline-header">
+          <div class="bt-headline-main">
+            <span class="bt-headline-pnl red" id="btHeadlinePnl">-832.11</span>
+            <span class="bt-headline-sub">8</span>
+            <span class="bt-headline-sub">-924.16</span>
+            <span class="bt-headline-sub">38%</span>
+            <span class="bt-headline-sub">0.12</span>
+          </div>
+          <div class="bt-headline-dates">1 Sept – 13 Sept 2026 | 07:00 – 23:30</div>
+        </div>
+
+        <!-- Segmented Views: Overview, Trades, Analysis -->
+        <div class="bt-segment-row">
+          <div class="bt-segmented-control">
+            <button class="bt-seg-btn active">Overview</button>
+            <button class="bt-seg-btn">Trades</button>
+            <button class="bt-seg-btn">Analysis</button>
+          </div>
+          <div class="bt-trades-count">8 trades <span class="bt-review-link">Review</span></div>
+        </div>
+
+        <!-- PERFORMANCE GRID -->
+        <div class="section-label">PERFORMANCE</div>
+        <div class="bt-performance-grid">
+          <div class="bt-perf-item">
+            <div class="bt-perf-label">NET P&amp;L</div>
+            <div class="bt-perf-val red" id="btNetPnl">-832.11</div>
+          </div>
+          <div class="bt-perf-item">
+            <div class="bt-perf-label">RETURN %</div>
+            <div class="bt-perf-val red" id="btReturnPct">-27.74%</div>
+          </div>
+          <div class="bt-perf-item">
+            <div class="bt-perf-label">CAGR %</div>
+            <div class="bt-perf-val red" id="btCagr">-100.00%</div>
+          </div>
+          <div class="bt-perf-item">
+            <div class="bt-perf-label">PROFIT FACTOR</div>
+            <div class="bt-perf-val red" id="btProfitFactor">0.07 <span class="bt-badge-tiny red">LOSING</span></div>
+          </div>
+          <div class="bt-perf-item">
+            <div class="bt-perf-label">EXPECTANCY</div>
+            <div class="bt-perf-val red" id="btExpectancy">-104.01 <span class="bt-badge-tiny red">NEGATIVE</span></div>
+          </div>
+          <div class="bt-perf-item">
+            <div class="bt-perf-label">P(PROFIT)</div>
+            <div class="bt-perf-val" id="btPProfit">1% <span class="bt-badge-tiny">LOW SAMPLE</span></div>
+          </div>
+          <div class="bt-perf-item">
+            <div class="bt-perf-label">P5 NET P&amp;L</div>
+            <div class="bt-perf-val red" id="btP5Net">-1432.69</div>
+          </div>
+          <div class="bt-perf-item">
+            <div class="bt-perf-label">SHARPE</div>
+            <div class="bt-perf-val red" id="btSharpe">-9.43 <span class="bt-badge-tiny">LOW SAMPLE</span></div>
+          </div>
+          <div class="bt-perf-item">
+            <div class="bt-perf-label">SORTINO</div>
+            <div class="bt-perf-val red" id="btSortino">-8.14 <span class="bt-badge-tiny">LOW SAMPLE</span></div>
+          </div>
+          <div class="bt-perf-item">
+            <div class="bt-perf-label">CALMAR</div>
+            <div class="bt-perf-val red" id="btCalmar">-3.33 <span class="bt-badge-tiny">POOR</span></div>
+          </div>
+        </div>
+
+        <!-- TRADES SUMMARY TABLE -->
+        <div class="section-label" style="margin-top:4px;">TRADES</div>
+        <div class="bt-table-box">
+          <table class="bt-subtable">
+            <thead>
+              <tr>
+                <th>TRADES</th>
+                <th>WIN RATE %</th>
+                <th>NET P&amp;L</th>
+                <th>EXPECTANCY</th>
+                <th>PROFIT FACTOR</th>
+                <th>AVG WIN</th>
+                <th>AVG LOSS</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><b>ALL</b> 8</td>
+                <td id="btWinRate">38%</td>
+                <td class="red">-832.11</td>
+                <td class="red">-104.01</td>
+                <td>0.07</td>
+                <td class="green">21.41</td>
+                <td class="red">-179.26</td>
+              </tr>
+              <tr>
+                <td><b>LONG</b> 8</td>
+                <td>38%</td>
+                <td class="red">-832.11</td>
+                <td class="red">-104.01</td>
+                <td>0.07</td>
+                <td class="green">21.41</td>
+                <td class="red">-179.26</td>
+              </tr>
+              <tr>
+                <td><b>SHORT</b> 0</td>
+                <td>0%</td>
+                <td>+0.00</td>
+                <td>0.00</td>
+                <td>—</td>
+                <td>0.00</td>
+                <td>0.00</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- RISK & EXTREMES -->
+        <div class="section-label" style="margin-top:4px;">RISK &amp; EXTREMES</div>
+        <div class="bt-risk-grid">
+          <div class="bt-risk-item">
+            <span class="bt-risk-label">DRAWDOWN</span>
+            <span class="bt-risk-val" id="btMaxDD">924.16</span>
+          </div>
+          <div class="bt-risk-item">
+            <span class="bt-risk-label">DRAWDOWN %</span>
+            <span class="bt-risk-val red">30.07% <span class="bt-badge-tiny red">SEVERE</span></span>
+          </div>
+          <div class="bt-risk-item">
+            <span class="bt-risk-label">P95 DRAWDOWN</span>
+            <span class="bt-risk-val">1435.34</span>
+          </div>
+          <div class="bt-risk-item">
+            <span class="bt-risk-label">EXPOSURE %</span>
+            <span class="bt-risk-val">36.60%</span>
+          </div>
+          <div class="bt-risk-item">
+            <span class="bt-risk-label">LARGEST WIN</span>
+            <span class="bt-risk-val green">34.59</span>
+          </div>
+          <div class="bt-risk-item">
+            <span class="bt-risk-label">LARGEST LOSS</span>
+            <span class="bt-risk-val red">-298.03</span>
+          </div>
+        </div>
+
+        <!-- Closed Trades Table (matching Screenshot 2) -->
+        <div class="section-label" style="margin-top:6px;">CLOSED TRADES LEDGER</div>
+        <div class="trades-table-container">
+          <table class="trades-table" id="tradesTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>SIDE</th>
+                <th>ENTRY TIME</th>
+                <th>ENTRY</th>
+                <th>EXIT TIME</th>
+                <th>EXIT</th>
+                <th>P&amp;L</th>
+                <th>P&amp;L %</th>
+                <th>REASON</th>
+              </tr>
+            </thead>
+            <tbody id="tradesTableBody">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Sticky Backtest Controls Footer -->
+        <div class="bt-panel-footer">
+          <span class="bt-timing-badge" id="btTiming">Took 6.8s</span>
+          <button class="bt-action-btn ghost" id="clearBtResults">Clear results</button>
+          <button class="bt-action-btn primary" id="runBtBtn">Run backtest</button>
+        </div>
+      </div><!-- /#tab-backtest -->
+
+      <!-- ── TAB 3: TRADE PLAN / ORDER TICKET ── -->
+      <div class="panel-body hidden" id="tab-plan">
+        <div class="plan-action-header">
+          <span class="plan-action-badge HOLD" id="planActionBadge">STANDBY</span>
+          <span class="plan-pair" id="planPairDisplay">US100</span>
+        </div>
+
+        <table class="plan-table">
+          <tbody>
+            <tr><td>Order Action</td><td id="planAction" class="plan-val">STANDBY</td></tr>
+            <tr><td>Entry Price</td><td id="planEntry" class="plan-val">$--</td></tr>
+            <tr class="tr-danger"><td>Stop Loss</td><td id="planSL" class="plan-val red">$--</td></tr>
+            <tr class="tr-success"><td>Take Profit 1</td><td id="planTP1" class="plan-val green">$--</td></tr>
+            <tr class="tr-success"><td>Take Profit 2</td><td id="planTP2" class="plan-val green">$--</td></tr>
+            <tr><td>Risk / Reward</td><td id="planRR" class="plan-val cyan">--</td></tr>
+            <tr><td>Position Sizing</td><td id="planSizing" class="plan-val">--</td></tr>
+          </tbody>
+        </table>
+
+        <div class="plan-run-cta">
+          <button class="cta-btn primary" id="runForecastBtn2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            Generate Trade Plan
+          </button>
+        </div>
+      </div><!-- /#tab-plan -->
+
+      <!-- ── TAB 4: KRONOS MODEL CONTROLS ── -->
+      <div class="panel-body hidden" id="tab-kronos">
+        <div class="section-label">Kronos Hyperparameters</div>
+
+        <div class="control-group">
+          <div class="control-header">
+            <span>Forecast Horizon (Bars)</span>
+            <span class="control-badge" id="predLenVal">20</span>
+          </div>
+          <input type="range" id="predLenSlider" class="tv-slider" min="10" max="60" value="20" step="5">
+          <div class="slider-labels"><span>10</span><span>60 bars</span></div>
+        </div>
+
+        <div class="control-group">
+          <div class="control-header">
+            <span>Sampling Temperature</span>
+            <span class="control-badge" id="tempVal">0.80</span>
+          </div>
+          <input type="range" id="tempSlider" class="tv-slider" min="0.1" max="1.5" value="0.8" step="0.05">
+          <div class="slider-labels"><span>0.1 (Precise)</span><span>1.5 (Dynamic)</span></div>
+        </div>
+
+        <!-- Specifications -->
+        <div class="model-spec-card">
+          <div class="spec-row">
+            <span class="spec-key">Model</span>
+            <span class="spec-val cyan">NeoQuasar/Kronos-base</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-key">Parameters</span>
+            <span class="spec-val">102.3M</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-key">Context Window</span>
+            <span class="spec-val">512 tokens</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-key">Architecture</span>
+            <span class="spec-val">12L / 16H Transformer</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-key">Tokenizer</span>
+            <span class="spec-val">BSQ 10-bit Quantized</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-key">Decision Head</span>
+            <span class="spec-val violet">Laya ModernBERT (0.4B)</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-key">Execution Device</span>
+            <span class="spec-val green" id="deviceBadge">CPU / CUDA</span>
+          </div>
+        </div>
+
+        <button class="cta-btn primary" id="runForecastBtn3" style="margin-top:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          Run Kronos + Laya
+        </button>
+      </div><!-- /#tab-kronos -->
+
+    </aside>
+
+  </div><!-- /.tv-layout -->
+
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <!-- PRICE ALERT MODAL (matching auto_trader Screenshot 3)       -->
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <div class="dialog-backdrop" id="alertDialogBackdrop" style="display:none;" aria-modal="true">
+    <div class="dialog-popup alert-popup" role="dialog" aria-labelledby="alertDialogTitle">
+      <div class="dialog-header">
+        <h2 id="alertDialogTitle" class="dialog-title">Create alert on <span id="alertModalSymbol">US100</span></h2>
+        <button class="dialog-close" id="closeAlertDialog" aria-label="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <div class="dialog-panel">
+        <!-- Condition Row -->
+        <div class="form-row">
+          <label class="form-label">Condition</label>
+          <div class="form-inline-group">
+            <select class="tv-select form-input flex-1" id="alertCondition">
+              <option value="Crossing" selected>Crossing</option>
+              <option value="Crossing Up">Crossing Up</option>
+              <option value="Crossing Down">Crossing Down</option>
+              <option value="Greater Than">Greater Than</option>
+              <option value="Less Than">Less Than</option>
+            </select>
+            <input type="number" step="0.001" class="form-input price-input flex-1" id="alertTriggerPrice" value="29358.831">
+          </div>
+        </div>
+
+        <!-- Trigger & Expiration Row -->
+        <div class="form-inline-grid" style="margin-top:12px;">
+          <div class="form-row">
+            <label class="form-label">Trigger</label>
+            <select class="tv-select form-input" id="alertTriggerMode">
+              <option value="once" selected>Once only</option>
+              <option value="every">Every time</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label class="form-label">Expiration</label>
+            <select class="tv-select form-input" id="alertExpiration">
+              <option value="never" selected>Never</option>
+              <option value="1day">1 Day</option>
+              <option value="1week">1 Week</option>
+              <option value="1month">1 Month</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Message Row -->
+        <div class="form-row" style="margin-top:12px;">
+          <label class="form-label">Message</label>
+          <textarea class="form-input alert-textarea" id="alertMessage" rows="2">US100 Crossing 29358.831</textarea>
+        </div>
+
+        <!-- Notifications Pills -->
+        <div class="form-row" style="margin-top:12px;">
+          <label class="form-label">Notifications</label>
+          <div class="notification-pills">
+            <button class="notif-pill active" type="button">App</button>
+            <button class="notif-pill" type="button">Browser</button>
+            <button class="notif-pill" type="button">Sound</button>
+            <button class="notif-pill" type="button">Push</button>
+            <button class="notif-pill" type="button">Telegram ⚙</button>
+          </div>
+        </div>
+
+        <!-- Start line checkbox -->
+        <div class="form-row" style="margin-top:12px;">
+          <label class="checkbox-item">
+            <input type="checkbox" id="notifyStartLine" checked>
+            <span>Start line at creation time</span>
+            <span class="info-bubble" title="Draws alert line on the chart canvas">ⓘ</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="dialog-footer">
+        <button class="dialog-btn ghost" id="cancelAlertDialog">Cancel</button>
+        <button class="dialog-btn primary" id="confirmAlertDialog">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <!-- CSV UPLOAD DIALOG (Coss Dialog pattern)                     -->
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <div class="dialog-backdrop" id="csvDialogBackdrop" style="display:none;" aria-modal="true">
+    <div class="dialog-popup" role="dialog" aria-labelledby="csvDialogTitle">
+      <div class="dialog-header">
+        <div class="dialog-title-row">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="9" x2="9" y2="21"/></svg>
+          <h2 id="csvDialogTitle" class="dialog-title">Upload Chart Data</h2>
+        </div>
+        <button class="dialog-close" id="closeCsvDialog" aria-label="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <div class="dialog-panel">
+        <p class="dialog-desc">Upload any CSV with OHLCV columns — TradingView, Binance, Yahoo Finance formats all supported.</p>
+        <div class="upload-dropzone" id="csvDropzone" role="button" tabindex="0">
+          <div class="dropzone-icon">📊</div>
+          <div class="dropzone-text">Click or Drag &amp; Drop CSV</div>
+          <div class="dropzone-sub">open, high, low, close, volume, timestamp</div>
+          <input type="file" id="csvFileInput" accept=".csv" style="display:none;">
+        </div>
+      </div>
+
+      <div class="dialog-footer">
+        <button class="dialog-btn ghost" id="cancelCsvDialog">Cancel</button>
+        <button class="dialog-btn primary" id="confirmCsvDialog">Load Data</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <!-- TOAST NOTIFICATION REGION                                   -->
+  <!-- ─────────────────────────────────────────────────────────── -->
+  <div class="toast-region" id="toastRegion" aria-live="polite" aria-relevant="additions"></div>
+
+  <!-- Scripts -->
+  <script src="/static/js/chart.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

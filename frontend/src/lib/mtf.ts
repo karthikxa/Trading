@@ -1,0 +1,415 @@
+// Multi-timeframe (MTF) core: compute an indicator on a higher timeframe (HTF)
+// than the chart and align the result back onto the chart's bars. klinecharts'
+// indicator `calc` is synchronous and only sees the chart's dataList, so the HTF
+// series is fetched + computed outside the chart and injected via the indicator's
+// `extendData` (see customIndicators). This module holds the two pure, testable
+// pieces: the price-source/EMA math and — the correctness crux — the closed-bar
+// alignment that must NOT leak future information onto past bars.
+
+import type { KLineData } from "klinecharts";
+import { minPositiveGap } from "./barInterval";
+import { htfBarEndMs } from "./mtfForming";
+
+export type PriceSource =
+  | "close"
+  | "open"
+  | "high"
+  | "low"
+  | "hl2"
+  | "hlc3"
+  | "ohlc4"
+  | "hlcc4";
+
+// Fields common to every MTF indicator's extendData.mtf, regardless of how many
+// value series it carries. Enough for the scroll-back coverage guard and the
+// refresh dispatcher to read timeframe/reach without knowing the series shape.
+export interface MtfSeriesBase {
+  timeframe: string | null;
+  htfStarts?: number[];
+  htfMs?: number;
+  /** The chart's DECLARED bar interval (ms) at the time the stash was written,
+   * stamped by the coordinator (calc never sees the resolution string).
+   * alignHtfToChart prefers it over gap inference for the same-TF pin test;
+   * absent (pre-field stashes) the inferred interval stands in. Session-only:
+   * a chart-timeframe switch re-applies every pin, which restamps it. */
+  chartMs?: number;
+  /** TV's "Wait for timeframe closes". Absent/true = today's closed-bar-only
+   * behavior. False = the coordinator appends ONE folded still-forming HTF bar
+   * to the computed series and flags it via formingIdx; alignment admits that
+   * entry from its open (see alignHtfToChart). Persisted alongside timeframe —
+   * the only mtf fields persistence keeps. */
+  waitClose?: boolean;
+  /** Index (into htfStarts/the series) of the appended forming bar, when one
+   * exists. Session-only, rewritten by every apply/refresh. */
+  formingIdx?: number;
+  /** The raw CLOSED HTF candles the compute ran on — the full set, not a tail:
+   * a truncated recompute could disagree with the stashed series (e.g. a
+   * trendline seeded from an older pivot). Session-only; lets
+   * refreshFormingBar re-fold + recompute on every chart tick without a
+   * refetch. Stashed only when waitClose is false. */
+  htfClosed?: KLineData[];
+  /** The fetched partial forming bar, kept as the fold seed: its open saw the
+   * bucket's true first trade, and for calendar-bucketed timeframes its
+   * timestamp is the authoritative bucket open. Session-only. */
+  htfSeed?: KLineData;
+  /** How far back the last SUCCESSFUL walk ASKED to reach (its fromMs) —
+   * distinct from how far the fetched bars actually go. A completed walk has
+   * already returned everything the broker can serve for that ask (it pages
+   * until it reaches, exhausts, or hits the page cap), so re-asking the same
+   * reach cannot do better; the refresh pass's coverage guard treats an ask
+   * that reaches the required coverage start as covered even when the BARS
+   * stop short (shallow broker history, pre-listing gaps). Without it, a
+   * config whose warmup demands more history than exists made every refresh
+   * refetch and recompute the identical answer, forever — a saturated main
+   * thread on any chart carrying such a pin. Session-only, like htfClosed:
+   * persistence keeps timeframe/waitClose alone, so a reload re-walks once. */
+  coveredFromMs?: number;
+  /** How far RIGHT the last successful walk asked (its toMs) — the other end
+   * of the covered interval. Under viewport-scoped coverage the stash can be
+   * detached from the live edge (a deep pattern jump covers only the landing
+   * window), and this is what says so: the forming-bar fold and live-tick
+   * refresh are skipped while it sits behind the chart's newest bar. Absent on
+   * pre-field stashes, which were always walked from the live edge, so absence
+   * reads as "reaches the newest fetched bar". Session-only, like
+   * coveredFromMs. */
+  coveredToMs?: number;
+  /** The epic the stashed bars were fetched for, stamped beside chartMs by every
+   * apply. A stash outlives a symbol switch (persistence keeps only the
+   * timeframe, and the switch REFRESHES rather than recreates the indicator), so
+   * this is what says whose bars these are. Session-only. */
+  epic?: string;
+  /** Set when a refresh pass SKIPPED this instance because the indicator was
+   * hidden (see refreshMtfIndicators). While it stands, the coverage guard
+   * accepts the stash only if `epic` and `chartMs` still match the chart -- the
+   * skipped passes are exactly the ones that would have replaced bars belonging
+   * to another symbol or another chart timeframe. A refetch writes a fresh mtf
+   * object, which drops the flag. Session-only. */
+  skippedHidden?: boolean;
+}
+
+export function priceOf(k: KLineData, src: PriceSource): number {
+  switch (src) {
+    case "open": return k.open;
+    case "high": return k.high;
+    case "low": return k.low;
+    case "hl2": return (k.high + k.low) / 2;
+    case "hlc3": return (k.high + k.low + k.close) / 3;
+    case "ohlc4": return (k.open + k.high + k.low + k.close) / 4;
+    case "hlcc4": return (k.high + k.low + k.close + k.close) / 4;
+    case "close":
+    default: return k.close;
+  }
+}
+
+/** Exponential moving average. out[i] is undefined only for an empty input. */
+function ema(values: number[], length: number): Array<number | undefined> {
+  const out: Array<number | undefined> = new Array(values.length).fill(undefined);
+  if (length < 1) return out;
+  const k = 2 / (length + 1);
+  let prev: number | undefined;
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    prev = prev === undefined ? v : v * k + prev * (1 - k);
+    out[i] = prev;
+  }
+  return out;
+}
+
+/** Exponential moving average over a possibly-gappy series: `undefined` inputs
+ * pass through until the first defined value seeds it. Mirrors `sma()`'s
+ * array signature for callers (e.g. slope smoothing) that need EMA over a
+ * series with a leading warm-up gap. */
+export function emaGappy(
+  values: Array<number | undefined>,
+  length: number,
+): Array<number | undefined> {
+  const k = 2 / (length + 1);
+  const out: Array<number | undefined> = [];
+  let prev: number | undefined;
+  for (const v of values) {
+    if (v === undefined) {
+      out.push(undefined);
+      continue;
+    }
+    prev = prev === undefined ? v : v * k + prev * (1 - k);
+    out.push(prev);
+  }
+  return out;
+}
+
+/** Simple moving average over `length` (undefined until enough samples). */
+export function sma(values: number[], length: number): Array<number | undefined> {
+  const out: Array<number | undefined> = new Array(values.length).fill(undefined);
+  if (length < 1) return out;
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= length) sum -= values[i - length];
+    if (i >= length - 1) out[i] = sum / length;
+  }
+  return out;
+}
+
+/** The moving-average kinds every MA consumer shares: classic EMA/SMA plus the
+ * volume-weighted pair. vwma is the rolling volume-weighted mean; evwma is
+ * LazyBear's elastic volume-weighted MA (TradingView "EVWMA_LB"). */
+export type MaKind = "ema" | "sma" | "vwma" | "evwma";
+
+const MA_KINDS = new Set<MaKind>(["ema", "sma", "vwma", "evwma"]);
+
+/** Settings/legend label for each MA kind. Lives here rather than in
+ * indicators/ma.ts so klinecharts-free callers can reuse it: ma.ts imports
+ * klinecharts for real, this module only `import type`s it. */
+export const MA_KIND_LABEL: Record<MaKind, string> = {
+  ema: "EMA",
+  sma: "SMA",
+  vwma: "VWMA",
+  evwma: "EVWMA",
+};
+
+/** Coerce a stored/unknown maType to a valid kind. Centralized so no call site
+ * silently drops the volume-weighted kinds with a binary sma/ema ternary. */
+export function normalizeMaKind(v: unknown, fallback: MaKind = "ema"): MaKind {
+  return MA_KINDS.has(v as MaKind) ? (v as MaKind) : fallback;
+}
+
+/** Rolling volume-weighted mean: sum(price*vol, n) / sum(vol, n). Undefined
+ * during warm-up and wherever the window's volume sum is 0 (volumeless
+ * instruments report 0 on every bar: emit no line rather than garbage). */
+function vwma(
+  bars: KLineData[],
+  prices: number[],
+  length: number,
+): Array<number | undefined> {
+  const out: Array<number | undefined> = new Array(prices.length).fill(undefined);
+  if (length < 1) return out;
+  let pv = 0;
+  let v = 0;
+  // Count of volume-carrying bars in the window. The subtractive rolling sums
+  // accumulate float residue, so after fractional volumes slide out `v` can be
+  // a tiny nonzero number instead of exactly 0 and `pv / v` would plot garbage;
+  // the integer count is exact, so it is the emptiness test, not `v`.
+  let nz = 0;
+  for (let i = 0; i < prices.length; i++) {
+    const vol = bars[i].volume ?? 0;
+    pv += prices[i] * vol;
+    v += vol;
+    if (vol > 0) nz++;
+    if (i >= length) {
+      const oldVol = bars[i - length].volume ?? 0;
+      pv -= prices[i - length] * oldVol;
+      v -= oldVol;
+      if (oldVol > 0) nz--;
+    }
+    if (i >= length - 1 && nz > 0) out[i] = pv / v;
+  }
+  return out;
+}
+
+/** LazyBear's elastic volume-weighted MA. With nbfs = sum(volume, length):
+ *   v[i] = (v[i-1] * (nbfs - vol[i]) + vol[i] * price[i]) / nbfs
+ * Undefined until the volume window is full. The recursion seeds from the
+ * source PRICE at the first usable bar, not Pine's nz -> 0 (which draws a
+ * near-zero ramp at the left edge of history). A zero-volume bar naturally
+ * holds the prior value; a zero-volume WINDOW is undefined and the recursion
+ * re-seeds at the next usable bar. */
+function evwma(
+  bars: KLineData[],
+  prices: number[],
+  length: number,
+): Array<number | undefined> {
+  const out: Array<number | undefined> = new Array(prices.length).fill(undefined);
+  if (length < 1) return out;
+  let nbfs = 0;
+  // Exact emptiness test for the window, same reason as vwma: the subtractive
+  // rolling `nbfs` keeps float residue after fractional volumes slide out, and
+  // a residue "window" must not seed or hold the recursion.
+  let nz = 0;
+  let prev: number | undefined;
+  for (let i = 0; i < prices.length; i++) {
+    const vol = bars[i].volume ?? 0;
+    nbfs += vol;
+    if (vol > 0) nz++;
+    if (i >= length) {
+      const oldVol = bars[i - length].volume ?? 0;
+      nbfs -= oldVol;
+      if (oldVol > 0) nz--;
+    }
+    if (i < length - 1) continue;
+    if (nz <= 0) {
+      prev = undefined;
+      continue;
+    }
+    prev = prev === undefined ? prices[i] : (prev * (nbfs - vol) + vol * prices[i]) / nbfs;
+    out[i] = prev;
+  }
+  return out;
+}
+
+export interface MaOptions {
+  source?: PriceSource;
+  offset?: number;
+  smoothing?: { type: "none" | "sma" | "ema"; length: number };
+}
+
+/** Result of {@link maSeries}: the base MA and (when enabled) a separate
+ * smoothing MA layered on top — matching TradingView, which plots the smoothing
+ * MA as its own line rather than replacing the base. `smoothing` is undefined
+ * when the smoothing type is "none". */
+export interface MaSeries {
+  base: Array<number | undefined>;
+  smoothing?: Array<number | undefined>;
+}
+
+/**
+ * The moving-average lines for a set of bars: source price -> EMA/SMA (base),
+ * plus an optional smoothing MA of that base. Used identically for the chart
+ * timeframe and (on HTF bars) for the multi-timeframe path, so a given config
+ * yields the same math regardless of where it runs.
+ *
+ * Like TradingView, the smoothing MA is a SEPARATE line, not an overwrite of the
+ * base. `offset` shifts the base line only — TV's offset is on plot(out), not on
+ * the smoothing plot — so the smoothing MA is computed from, and stays aligned
+ * with, the UNshifted base.
+ */
+export function maSeries(
+  bars: KLineData[],
+  kind: MaKind,
+  length: number,
+  opt: MaOptions = {},
+): MaSeries {
+  const prices = bars.map((k) => priceOf(k, opt.source ?? "close"));
+  const base =
+    kind === "ema" ? ema(prices, length)
+    : kind === "sma" ? sma(prices, length)
+    : kind === "vwma" ? vwma(bars, prices, length)
+    : evwma(bars, prices, length);
+
+  let smoothing: Array<number | undefined> | undefined;
+  const sm = opt.smoothing;
+  if (sm && sm.type !== "none" && sm.length > 0) {
+    // Smooth only the defined tail. The base MA leads with `undefined` warmup
+    // values; feeding those (as NaN) into ema/sma would poison every later value
+    // and blank the whole line. The defined values are contiguous, so we slice
+    // from the first one, smooth, and keep the warmup gap untouched.
+    const start = base.findIndex((v) => v != null);
+    if (start !== -1) {
+      const defined = base.slice(start) as number[];
+      const smoothed = sm.type === "ema" ? ema(defined, sm.length) : sma(defined, sm.length);
+      const out: Array<number | undefined> = new Array(base.length).fill(undefined);
+      for (let i = 0; i < smoothed.length; i++) out[start + i] = smoothed[i];
+      smoothing = out;
+    }
+  }
+
+  return {
+    base: opt.offset ? applyOffset(base, opt.offset) : base,
+    smoothing,
+  };
+}
+
+/** Shift a series forward (offset > 0 plots it `offset` bars later). */
+function applyOffset(
+  series: Array<number | undefined>,
+  offset: number,
+): Array<number | undefined> {
+  if (!offset) return series;
+  const out: Array<number | undefined> = new Array(series.length).fill(undefined);
+  for (let i = 0; i < series.length; i++) {
+    const j = i + offset;
+    if (j >= 0 && j < series.length) out[j] = series[i];
+  }
+  return out;
+}
+
+// A few extra HTF bars of warmup beyond the exact MA length, so tiny rounding
+// at the span edge never leaves the oldest visible bar in the unconverged zone.
+export const HTF_WARMUP_BARS = 10;
+
+/**
+ * The oldest timestamp an MTF indicator's HTF series must reach so it stays
+ * drawn across the chart's whole *loaded* span — not just the most-recent bars.
+ *
+ * `alignHtfToChart` blanks any chart bar older than the oldest HTF bar it was
+ * given, so the HTF fetch must reach back to the oldest loaded chart bar. It
+ * must also reach `length` HTF bars *before* that, or the MA's warmup zone (SMA
+ * undefined / EMA not yet converged) would land on the oldest visible bars and
+ * show a blank or kinked line there — the load-bearing term of the fix.
+ */
+export function htfCoverageStartMs(
+  oldestChartMs: number,
+  htfMs: number,
+  length: number,
+): number {
+  if (!(htfMs > 0)) return oldestChartMs;
+  return oldestChartMs - (Math.max(1, length) + HTF_WARMUP_BARS) * htfMs;
+}
+
+/**
+ * Map an HTF value series onto chart bars without lookahead.
+ *
+ * Each chart bar at time `t` takes the value of the most recent HTF bar that is
+ * already "usable" at `t`. With waitClose=true (the only v1 mode) an HTF bar is
+ * usable only at/after its CLOSE time (htfBarEndMs: open + htfMs, or the
+ * 00:00 UTC reset for a short last intraday bucket when `timeframe` is given); with
+ * waitClose=false it is usable from its open. Both input arrays must be sorted
+ * ascending by time and `htfValues[i]` corresponds to `htfBars[i]`.
+ *
+ * The closed-bar rule is the whole point: a chart bar must never see an HTF bar
+ * that closes in its future, or any backtest reading the indicator gains
+ * hindsight and silently overstates itself.
+ */
+export function alignHtfToChart(
+  chartTimestamps: number[],
+  htfBars: KLineData[],
+  htfValues: Array<number | undefined>,
+  htfMs: number,
+  waitClose = true,
+  /** Index of the still-FORMING HTF bar, when the caller appended one (the
+   * "Wait for timeframe closes" box unchecked). That one entry is usable from
+   * its OPEN — its value was computed from data up to now, and the chart bars
+   * it spans are the "now" it belongs to. Every closed bar keeps the waitClose
+   * rule, so history never gains lookahead. */
+  formingIdx?: number,
+  /** The chart's DECLARED bar interval in ms (what the toolbar resolution
+   * means, via nominalBarHours) — stashed as mtf.chartMs by the coordinator,
+   * which unlike calc knows the chart it writes to. Preferred over gap
+   * inference, which anomalous data defeats in both directions: one partial
+   * bar shrinks the smallest gap (a real same-TF pin gates a bar late) and a
+   * DAY chart across a DST spring-forward reads 23h against the pin's nominal
+   * 24h (same miss the nominalBarHours doc note warns about). Optional so
+   * stashes written before this field existed keep the inferred behavior. */
+  chartMs?: number,
+  /** The pin's timeframe. A closed bar becomes usable at its true close
+   * (htfBarEndMs, the same rule clampHtfBars uses): a non-native intraday pin
+   * (7H, 90m) ends the day on a short bucket that closes at 00:00 UTC, not a
+   * full span later. Omitted: the nominal open + htfMs. */
+  timeframe?: string | null,
+): Array<number | undefined> {
+  const out: Array<number | undefined> = new Array(chartTimestamps.length).fill(undefined);
+  const tf = timeframe ?? undefined;
+  // Same-timeframe pin: when the chart's own bar interval equals the HTF
+  // width, the closed-bar gate would delay every value one bar for nothing —
+  // the value belongs to the bar that produced it, exactly as the unpinned
+  // (chart-TF) indicator draws it. The declared interval decides when the
+  // caller has it; the SMALLEST positive gap stands in otherwise (true
+  // interval regardless of session/weekend holes — see minPositiveGap). A
+  // genuinely higher pin always has htfMs above the chart interval, so this
+  // can't fire for it.
+  const sameTf = (chartMs ?? minPositiveGap(chartTimestamps)) === htfMs;
+  let j = -1; // index of the last HTF bar usable so far
+  for (let i = 0; i < chartTimestamps.length; i++) {
+    const t = chartTimestamps[i];
+    while (j + 1 < htfBars.length) {
+      const next = htfBars[j + 1];
+      const usableAt =
+        waitClose && !sameTf && j + 1 !== formingIdx
+          ? htfBarEndMs(next.timestamp, htfMs, tf)
+          : next.timestamp;
+      if (usableAt <= t) j++;
+      else break;
+    }
+    if (j >= 0) out[i] = htfValues[j];
+  }
+  return out;
+}

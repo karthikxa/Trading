@@ -1,0 +1,425 @@
+// Bounded walk-back over older candle history. Pages older bars in fixed windows
+// (the backend caps a single fetch, so a calendar window may need several pages),
+// accumulates the fetched pages, and stops when coverage reaches `fromTs`, the
+// broker runs out of history, or the caller signals the request is stale (a newer
+// pick, an epic/broker switch, or a torn-down chart). Pure and dependency-injected
+// so the paging correctness — filter-by-oldest dedup, empty-window exhaustion, and
+// abort-without-applying — is unit-testable without klinecharts or the network.
+//
+// This is the shared primitive the quick-range "cover + fit" uses; the caller
+// owns the mutex (so it can't race the scroll-back loader) and the actual fit.
+
+/** Older bars requested per scroll-back page (ChartCore's page window). */
+export const PAGE_BARS = 500;
+
+/** Said when a jump to a known timestamp covers everything the broker will
+ *  serve and still lands short of it. Since the jump pages in parallel with no
+ *  page budget to spend (see coverHistoryRangeParallel), falling short means
+ *  the history itself ends there, so "scroll back further" would be a lie:
+ *  the way out is a coarser interval, the same answer the backtest trades
+ *  panel gives for a trade older than its timeframe's history. */
+export const DEEP_HISTORY_MESSAGE =
+  "That date is older than the history available at this timeframe. Try a higher timeframe.";
+/** Toast key: coalesces repeat clicks on unreachable matches into one toast. */
+export const DEEP_HISTORY_TOAST_KEY = "go-to-range-short";
+
+/** Said when the jump fell short because a WINDOW FETCH FAILED, not because the
+ *  history ends there. The two are worlds apart to the user: a timeout (a cold
+ *  span the broker takes ~50s to serve against a 10s client deadline) or a 503
+ *  is a "try again", while DEEP_HISTORY_MESSAGE means no amount of retrying
+ *  helps. Telling someone their 2018 data does not exist when it does, and the
+ *  broker was merely slow, is the worse failure of the two. */
+export const FETCH_FAILED_MESSAGE =
+  "Could not load history that far back just now. Try the jump again.";
+/** Toast key: same coalescing as above, distinct so the two never merge. */
+export const FETCH_FAILED_TOAST_KEY = "go-to-range-failed";
+
+/** Said when the jump fell short because the backend is STILL DOWNLOADING the
+ *  history in between. The third of the three dead ends, and the one that was
+ *  previously mistaken for the first: the cache fills contiguously and bounds
+ *  how long any one request may spend at it (X-Candles-Partial), so a deep jump
+ *  legitimately lands short several times before it lands. Telling that user
+ *  their data is older than the available history is exactly the lie
+ *  FETCH_FAILED_MESSAGE exists to avoid, with the added sting that here the
+ *  data is not merely reachable, it is on its way. The counts are the point:
+ *  2 of 96 and 90 of 96 are the same sentence but very different waits. */
+export function stillLoadingMessage(done: number, total: number): string {
+  const progress = total > 0 ? ` (${done} of ${total} batches so far)` : "";
+  return `Still downloading history that far back${progress}. Try the jump again in a moment.`;
+}
+/** Toast key: coalesces repeat clicks while the download runs. Distinct from the
+ *  other two so a run of them never merges with a genuine dead end. */
+export const STILL_LOADING_TOAST_KEY = "go-to-range-loading";
+
+export interface BarLike {
+  timestamp: number; // ms
+}
+
+export type PageResult =
+  | "reached" // coverage reached fromTs (or maxPages spent) — caller should fit
+  | "exhausted" // broker is out of older history — caller should fit what it has
+  | "aborted"; // request went stale mid-walk — caller must NOT fit
+
+export interface PageHistoryBackArgs<T extends BarLike> {
+  fromTs: number; // ms — target left edge (walk back until the oldest bar reaches it)
+  toTs: number; // ms — right edge; the cursor's fallback when no data is loaded yet
+  resSec: number; // seconds per bar (page width = pageBars * resSec)
+  pageBars: number; // bars to request per page
+  maxPages: number; // bound on the walk-back
+  maxEmpty: number; // consecutive empty windows before declaring the broker exhausted
+  // True when this request no longer owns the chart (newer pick, epic/broker change,
+  // chart gone). Checked before each fetch and again after it resolves.
+  isStale: () => boolean;
+  getData: () => T[] | null | undefined; // current loaded bars, ascending
+  fetchOlder: (fromSec: number, toSec: number) => Promise<T[]>; // older page in [from,to]
+  // Called ONCE, when the walk settles (reached / exhausted / transient-fetch
+  // break), with the fetched pages prepended to getData() as re-read at that
+  // moment — never per page, and never on an aborted walk. Chart consumers apply
+  // via a full setBars -> resetData re-init that snaps the view to the live edge
+  // and re-serves the whole array, so per-page applies turned a deep walk
+  // (jump-to-trade on 1m) into seconds of visible thrashing with quadratic cost.
+  // Re-reading getData() at settle time keeps bars the live stream appended
+  // during the walk (the walk only ever adds strictly-older bars, so the two
+  // halves can't overlap).
+  applyData: (merged: T[]) => void;
+  // Both fire at most once, at settle, and only when fresh pages actually landed
+  // — never on an aborted walk, so shared cursor/exhaustion refs stay in
+  // lockstep with the data that was really applied.
+  onCursor?: (sec: number) => void; // oldest applied bar (unix sec)
+  onProgress?: () => void; // fresh history landed (e.g. clear an exhausted flag)
+  onExhausted?: () => void; // the broker bottomed out (set an exhausted flag)
+}
+
+export async function pageHistoryBack<T extends BarLike>(
+  args: PageHistoryBackArgs<T>,
+): Promise<PageResult> {
+  const {
+    fromTs,
+    toTs,
+    resSec,
+    pageBars,
+    maxPages,
+    maxEmpty,
+    isStale,
+    getData,
+    fetchOlder,
+    applyData,
+    onCursor,
+    onProgress,
+    onExhausted,
+  } = args;
+
+  let cursorSec = Math.floor((getData()?.[0]?.timestamp ?? toTs) / 1000);
+  let empties = 0;
+  // Fetched pages, in walk order (each page ascending, each strictly older than
+  // the one before it). Kept as a list — one settle-time concat — instead of a
+  // re-spread accumulator, which copied the whole growing array every page.
+  const pages: T[][] = [];
+  let result: PageResult = "reached";
+
+  for (let page = 0; page < maxPages; page++) {
+    if (isStale()) return "aborted";
+    if (cursorSec * 1000 <= fromTs) break; // history now reaches the period start
+    const toSec = cursorSec - 1;
+    // Never page older than the target left edge. Without this, a high/derived
+    // timeframe (resSec = a year) makes pageBars*resSec span centuries in one
+    // page — the backend would fold that from DAY base bars, looping ~180
+    // sequential broker requests before the loop's fromTs break ever fires.
+    // Clamping bounds each page to the requested [fromTs, toTs] window.
+    const fromSec = Math.max(Math.floor(fromTs / 1000), toSec - pageBars * resSec);
+
+    let older: T[];
+    try {
+      older = await fetchOlder(fromSec, toSec);
+    } catch {
+      break; // transient fetch failure — settle with what we already have
+    }
+    if (isStale()) return "aborted";
+
+    cursorSec = fromSec; // advance back even across gaps
+    const oldestMs = pages.length
+      ? pages[pages.length - 1][0].timestamp
+      : (getData()?.[0]?.timestamp ?? Infinity);
+    const fresh = older.filter((b) => b.timestamp < oldestMs);
+    if (fresh.length) {
+      empties = 0;
+      pages.push(fresh);
+    } else if (++empties >= maxEmpty) {
+      result = "exhausted";
+      break;
+    }
+  }
+  // Settle: one apply for the whole walk. getData() is re-read HERE, not from a
+  // walk-time snapshot, so bars the live stream appended while the pages were
+  // fetching survive the re-init (all pages are strictly older than the
+  // pre-walk oldest bar, so the halves can't overlap). The cursor/progress
+  // callbacks fire with the apply — an aborted walk (returns above) fires
+  // neither, keeping the shared scroll-back cursor in lockstep with what
+  // actually landed.
+  if (pages.length) {
+    const oldestAppliedMs = pages[pages.length - 1][0].timestamp;
+    applyData([...pages.reverse().flat(), ...(getData() ?? [])]);
+    onCursor?.(Math.floor(oldestAppliedMs / 1000));
+    onProgress?.();
+  }
+  if (result === "exhausted") onExhausted?.();
+  return result;
+}
+
+// Parallel variant of pageHistoryBack for a KNOWN target timestamp (jump to a
+// backtest trade). The sequential walk exists because scroll-back probes toward
+// an unknown history edge; here the left edge is a real trade time, so every
+// window between it and the loaded data can be computed up front and fetched
+// concurrently. Measured: a 1-month jump on 5m went from ~20s of one-page-at-a-
+// time round-trips to a handful of parallel batches. Same DI shape as
+// pageHistoryBack; one settle-time apply.
+//
+// Contiguity rule: a window whose fetch THREW breaks the chain — bars older
+// than it must not be applied (the chart's data list is a contiguous array; a
+// hole would silently glue distant bars together). Everything newer than the
+// first failure still applies. Empty windows are fine (market closed) and do
+// not break the chain: the target is a known bar, so any emptiness en route is
+// an interior gap, never the history edge (same reasoning as the trade pager's
+// maxEmpty: Infinity).
+export interface CoverRangeParallelArgs<T extends BarLike> {
+  fromTs: number; // ms — target left edge (the trade's earliest needed bar)
+  toTs: number; // ms — right edge; cursor fallback when no data is loaded yet
+  resSec: number; // seconds per bar (window width = pageBars * resSec)
+  pageBars: number; // bars to request per window (keeps request sizes broker-friendly)
+  maxWindows: number; // safety cap on the number of windows
+  concurrency: number; // parallel fetch lanes
+  isStale: () => boolean; // request no longer owns the chart
+  getData: () => T[] | null | undefined; // current loaded bars, ascending
+  fetchOlder: (fromSec: number, toSec: number) => Promise<T[]>;
+  applyData: (merged: T[]) => void; // called once, at settle, never when aborted
+  onCursor?: (sec: number) => void; // oldest applied bar (unix sec)
+  onProgress?: () => void; // fresh history landed
+  // A window fetch THREW (timeout / 5xx). Fires per failed window, before the
+  // settle. Lets the caller tell "the cover stopped because the request failed"
+  // apart from "the broker has nothing older" — indistinguishable from the
+  // applied bars alone, and the difference is what the user is told.
+  onWindowError?: () => void;
+}
+
+export async function coverHistoryRangeParallel<T extends BarLike>(
+  args: CoverRangeParallelArgs<T>,
+): Promise<PageResult> {
+  const { fromTs, toTs, resSec, pageBars, maxWindows, concurrency, isStale, getData, fetchOlder, applyData, onCursor, onProgress, onWindowError } = args;
+
+  const fromFloorSec = Math.floor(fromTs / 1000);
+  // Same window arithmetic as pageHistoryBack: [max(from, to-width), to] then
+  // step past it, so the two paths stay hole-free against the same backend.
+  const windows: { fromSec: number; toSec: number }[] = [];
+  let toSec = Math.floor((getData()?.[0]?.timestamp ?? toTs) / 1000) - 1;
+  while (toSec * 1000 > fromTs && windows.length < maxWindows) {
+    const fromSec = Math.max(fromFloorSec, toSec - pageBars * resSec);
+    windows.push({ fromSec, toSec });
+    if (fromSec <= fromFloorSec) break;
+    toSec = fromSec - 1;
+  }
+  if (windows.length === 0) return "reached"; // already covered
+
+  // Fixed-lane pool. `null` marks a thrown fetch (≠ a genuine empty window).
+  const results: (T[] | null)[] = new Array(windows.length).fill(null);
+  let next = 0;
+  let stale = false;
+  const lane = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= windows.length || stale) return;
+      if (isStale()) {
+        stale = true;
+        return;
+      }
+      try {
+        results[i] = await fetchOlder(windows[i].fromSec, windows[i].toSec);
+      } catch {
+        results[i] = null; // transient failure — breaks contiguity below
+        onWindowError?.();
+      }
+      if (isStale()) {
+        stale = true;
+        return;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, windows.length) }, lane));
+  if (stale || isStale()) return "aborted";
+
+  // Keep the contiguous prefix (newest → oldest) up to the first failed window.
+  const firstFailed = results.indexOf(null);
+  const usable = firstFailed === -1 ? results : results.slice(0, firstFailed);
+  // Settle exactly like pageHistoryBack: re-read getData() so live-appended bars
+  // survive; only strictly-older bars count as fresh.
+  const current = getData() ?? [];
+  const oldestMs = current[0]?.timestamp ?? Infinity;
+  const fresh = usable
+    .slice()
+    .reverse()
+    .flat()
+    .filter((b): b is T => b != null && b.timestamp < oldestMs);
+  if (fresh.length) {
+    applyData([...fresh, ...current]);
+    onCursor?.(Math.floor(fresh[0].timestamp / 1000));
+    onProgress?.();
+  }
+  return "reached";
+}
+
+// A bare parallel span fetch: both endpoints known, no chart to apply into.
+// coverHistoryRangeParallel's sibling for callers that accumulate the bars
+// themselves (the MTF coordinator's HTF interval store): same window
+// arithmetic, same fixed-lane pool, same contiguous-newest-prefix rule on a
+// thrown window. Empty windows are interior gaps or the history edge and never
+// break the chain; only a THROW does, because with known endpoints emptiness
+// is expected and failure is not.
+export interface FetchSpanParallelArgs<T extends BarLike> {
+  fromMs: number; // span left edge (inclusive ask)
+  toMs: number; // span right edge
+  resSec: number; // seconds per bar (window width = pageBars * resSec)
+  pageBars: number; // bars to request per window
+  maxWindows: number; // safety cap on the number of windows
+  concurrency: number; // parallel fetch lanes
+  fetchWindow: (fromSec: number, toSec: number) => Promise<T[]>;
+}
+
+export async function fetchSpanParallel<T extends BarLike>(
+  args: FetchSpanParallelArgs<T>,
+): Promise<{ bars: T[]; failed: boolean }> {
+  const { fromMs, toMs, resSec, pageBars, maxWindows, concurrency, fetchWindow } =
+    args;
+  const fromFloorSec = Math.floor(fromMs / 1000);
+  const windows: { fromSec: number; toSec: number }[] = [];
+  let toSec = Math.floor(toMs / 1000);
+  while (toSec * 1000 > fromMs && windows.length < maxWindows) {
+    const fromSec = Math.max(fromFloorSec, toSec - pageBars * resSec);
+    windows.push({ fromSec, toSec });
+    if (fromSec <= fromFloorSec) break;
+    toSec = fromSec - 1;
+  }
+  if (windows.length === 0) return { bars: [], failed: false };
+  // windows[0] is the NEWEST. `null` result + errored flag tells a thrown
+  // window apart from a genuinely empty one.
+  const results: (T[] | null)[] = new Array(windows.length).fill(null);
+  const errored: boolean[] = new Array(windows.length).fill(false);
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= windows.length) return;
+      try {
+        results[i] = await fetchWindow(windows[i].fromSec, windows[i].toSec);
+      } catch {
+        errored[i] = true;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, windows.length) }, lane),
+  );
+  // Keep the contiguous prefix nearest toMs, up to the first thrown window:
+  // bars past a failure would leave an interior hole the caller cannot see.
+  const firstErr = errored.indexOf(true);
+  const usable = firstErr === -1 ? results : results.slice(0, firstErr);
+  const seen = new Set<number>();
+  const bars: T[] = [];
+  for (let i = usable.length - 1; i >= 0; i--)
+    for (const b of usable[i] ?? [])
+      if (b != null && !seen.has(b.timestamp)) {
+        seen.add(b.timestamp);
+        bars.push(b);
+      }
+  bars.sort((a, b) => a.timestamp - b.timestamp);
+  return { bars, failed: firstErr !== -1 };
+}
+
+// The interactive scroll-back loader: answers ONE klinecharts forward ('older')
+// load. Distinct from pageHistoryBack in two load-bearing ways, both driven by
+// how klinecharts chains loads: it only re-triggers the next forward load when
+// a NON-empty prepend re-adjusts the visible range, and it re-asks SYNCHRONOUSLY
+// from inside done().
+//
+//  1. Interior gap windows (weekend/holiday closures wider than one page) are
+//     walked across INSIDE this one load. Answering them with an empty done()
+//     would end the chain and stall the fill until the next user gesture (the
+//     "scroll-back walls at a weekend until I zoom" bug).
+//  2. The shared pager mutex is freed BEFORE done() on every exit path. done()
+//     re-enters the loader for the next page while this frame is still on the
+//     stack; freeing it after (e.g. in a .finally) makes that re-entry hit the
+//     mutex-busy bail, killing the chain after one page per gesture, and a
+//     late reset would stomp the mutex the re-entrant page just took. For the
+//     same reason a throw inside done()/onFresh is contained here: letting it
+//     escape would float an unhandled rejection, and any catch-side mutex
+//     reset would stomp the re-entrant page's ownership.
+//
+// Shared refs (cursorSec/emptyStreak/exhausted/loading) are the same loose ones
+// the coverage walks coordinate through; see the DESIGN DEBT note in
+// useRangeNavigation.ensureCoverageAndFit.
+export interface ScrollbackLoadArgs<T extends BarLike> {
+  boundary: number; // ms; oldest loaded bar, only strictly-older bars count as fresh
+  resSec: number; // seconds per bar
+  pageBars: number; // bars to request per page window
+  maxPageSpanSec: number; // cap on a page's span (high/derived timeframes)
+  maxEmpty: number; // consecutive empty windows before latching exhaustion
+  cursorSec: { current: number }; // shared walk-back cursor (unix sec)
+  emptyStreak: { current: number }; // shared consecutive-empty counter
+  exhausted: { current: boolean }; // shared no-older-history latch
+  loading: { current: boolean }; // shared pager mutex
+  isStale: () => boolean; // request no longer owns the chart (identity drift, teardown, range pick)
+  fetchOlder: (fromSec: number, toSec: number) => Promise<T[]>;
+  done: (bars: T[], more: boolean) => void; // klinecharts DataLoader callback
+  onFresh?: (bars: T[]) => void; // after done(); e.g. extend HTF MTF coverage
+}
+
+export async function scrollbackLoadOlder<T extends BarLike>(
+  args: ScrollbackLoadArgs<T>,
+): Promise<void> {
+  const { boundary, resSec, pageBars, maxPageSpanSec, maxEmpty, cursorSec, emptyStreak, exhausted, loading, isStale, fetchOlder, done, onFresh } = args;
+  // Contain callback throws (see contract note): the mutex is already settled
+  // by the time done()/onFresh run, so the only safe handling is to swallow.
+  const answer = (bars: T[], more: boolean, fresh?: T[]) => {
+    try {
+      done(bars, more);
+      if (fresh) onFresh?.(fresh);
+    } catch {
+      /* disposed chart or a listener throw; mutex state is already correct */
+    }
+  };
+  loading.current = true;
+  for (;;) {
+    const toSec = cursorSec.current - 1;
+    const fromSec = toSec - Math.min(pageBars * resSec, maxPageSpanSec);
+    let older: T[];
+    try {
+      older = await fetchOlder(fromSec, toSec);
+    } catch {
+      // Transient failure (broker breaker / slow source / network): retry the
+      // SAME window on the next gesture. Don't advance the cursor or the empty
+      // streak, so a momentary hiccup can't wall scroll-back for the session.
+      loading.current = false;
+      answer([], true);
+      return;
+    }
+    if (isStale()) {
+      loading.current = false;
+      answer([], true);
+      return;
+    }
+    cursorSec.current = fromSec; // advance back even across gaps
+    const fresh = older.filter((b) => b.timestamp < boundary);
+    if (fresh.length > 0) {
+      emptyStreak.current = 0;
+      loading.current = false; // BEFORE done(); see contract note above
+      answer(fresh, true, fresh);
+      return;
+    }
+    emptyStreak.current += 1;
+    if (emptyStreak.current >= maxEmpty) {
+      exhausted.current = true;
+      loading.current = false;
+      answer([], false);
+      return;
+    }
+    // Interior gap window: keep walking back within this one load.
+  }
+}

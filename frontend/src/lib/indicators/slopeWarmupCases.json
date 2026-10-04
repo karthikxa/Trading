@@ -1,0 +1,114 @@
+[
+  {
+    "label": "plain: one line, no smoothing",
+    "calcParams": [
+      9
+    ],
+    "extendData": {
+      "slopePeriod": 3
+    },
+    "warmup": {
+      "9": 12
+    }
+  },
+  {
+    "label": "the review scenario: EMA(50) base, slopePeriod 3, EMA(10) slope smoothing",
+    "calcParams": [
+      50
+    ],
+    "extendData": {
+      "slopePeriod": 3,
+      "smoothing": {
+        "type": "ema",
+        "length": 10
+      }
+    },
+    "warmup": {
+      "50": 62
+    }
+  },
+  {
+    "label": "defaults everywhere (empty calcParams falls back to [9], slopePeriod 3)",
+    "calcParams": [],
+    "extendData": {},
+    "warmup": {
+      "9": 12
+    }
+  },
+  {
+    "label": "smoothing explicitly off costs nothing",
+    "calcParams": [
+      30
+    ],
+    "extendData": {
+      "slopePeriod": 5,
+      "smoothing": {
+        "type": "none",
+        "length": 20
+      }
+    },
+    "warmup": {
+      "30": 35
+    }
+  },
+  {
+    "label": "two lines + accel, both smoothings on",
+    "calcParams": [
+      20,
+      50
+    ],
+    "extendData": {
+      "slopePeriod": 4,
+      "smoothing": {
+        "type": "sma",
+        "length": 5
+      },
+      "showAccel": true,
+      "accelPeriod": 2,
+      "accelSmoothing": {
+        "type": "ema",
+        "length": 7
+      }
+    },
+    "warmup": {
+      "20": 28,
+      "50": 58,
+      "accel20": 36,
+      "accel50": 66
+    }
+  },
+  {
+    "label": "accel on, accel smoothing off",
+    "calcParams": [
+      14
+    ],
+    "extendData": {
+      "slopePeriod": 2,
+      "showAccel": true,
+      "accelPeriod": 6
+    },
+    "warmup": {
+      "14": 16,
+      "accel14": 22
+    }
+  },
+  {
+    "label": "duplicate lengths collapse to one output name, first wins",
+    "calcParams": [
+      9,
+      9,
+      21
+    ],
+    "extendData": {
+      "slopePeriod": 3,
+      "showAccel": true,
+      "accelPeriod": 2
+    },
+    "warmup": {
+      "9": 12,
+      "21": 24,
+      "accel9": 14,
+      "accel21": 26
+    }
+  }
+]

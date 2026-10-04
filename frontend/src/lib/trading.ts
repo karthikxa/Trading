@@ -1,0 +1,858 @@
+// Order-execution API layer (paper now; demo/live in later phases). Mirrors the
+// backend ExecutionBroker seam: place orders (market or limit), list and edit
+// open positions and resting orders.
+//
+// Positions and working orders are normalized into one `TradeView` shape and
+// published on a single `tradesSignal` poll, so the panel and every chart cell
+// render lines/rows for both from one source (one poll, fanned out). Anything
+// keyed on a trade (lines, pending edits) uses the unified `id` (deal_id for a
+// position, order_id for a resting order).
+
+import { BROKERS_CACHE_KEY, defaultAccount } from "./brokerDefaults";
+import { isCapitalBroker, onTradesDirty } from "./persist";
+import { isStrategyDeal } from "./liveTags";
+import { tradesSignal } from "./signals";
+import { API_BASE as BASE, apiFetch, errorDetail, throwIfBrokerBlocked, BrokerBlockedError } from "./http";
+import { reportBrokerBlocked, reportBrokerReachable } from "./brokerBlocked";
+import { expiryToApi } from "./expiry";
+
+// A registry account key "{broker}:{env}", e.g. "capital:paper". Opaque to the
+// frontend — it comes from GET /api/brokers and routes orders/positions.
+export type TradeAccount = string;
+// capital:paper when the backend has it; on a capital-less deployment (demo
+// host) the first registered account from the last-good broker cache instead.
+export const DEFAULT_ACCOUNT: TradeAccount = defaultAccount();
+
+// The broker id half of a "{broker}:{env}" account key. The single place that knows
+// the key shape — callers holding a BrokerAccount object should read its `.broker`
+// field instead; this is for the raw-string account (the active-account string).
+export function brokerOf(account: TradeAccount): string {
+  return account.split(":")[0];
+}
+
+// A real-money (live) account moves real funds. The backend enforces the guards
+// (confirm=true, no strategy orders), but the frontend also needs this to know an
+// account has no server-side push — so its dock must POLL (see the trades feed) —
+// and to fetch the account's real balance/currency (see fetchAccountSummary).
+export function isRealMoneyAccount(account: TradeAccount): boolean {
+  return account.endsWith(":live");
+}
+
+// Last-used account per broker (device-local). The tab-bar broker selector picks the
+// broker; this map lets it land back on the env you last used for that broker (paper
+// / demo / live) instead of always resetting to paper. Keyed by broker id.
+const LAST_ACCOUNT_BY_BROKER_KEY = "lastAccountByBroker";
+export function loadLastAccountByBroker(): Record<string, TradeAccount> {
+  try {
+    const raw = localStorage.getItem(LAST_ACCOUNT_BY_BROKER_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, TradeAccount>) : {};
+  } catch {
+    return {};
+  }
+}
+export function saveLastAccountByBroker(map: Record<string, TradeAccount>): void {
+  try {
+    localStorage.setItem(LAST_ACCOUNT_BY_BROKER_KEY, JSON.stringify(map));
+  } catch {
+    /* storage full / unavailable — best-effort */
+  }
+}
+
+const CAPITAL_LIVE_MIGRATION_KEY = "migratedCapitalLiveKeys";
+
+// One-time rename of the real-money Capital account from "capital:live" to
+// "capital-live:live" when the live host became its own data feed. Idempotent and
+// sentinel-gated. Must run BEFORE App reads activeAccount (else the unknown-account
+// fallback bounces the user to paper and swaps their whole workspace).
+export function migrateCapitalLiveAccountKeys(): void {
+  try {
+    if (localStorage.getItem(CAPITAL_LIVE_MIGRATION_KEY)) return;
+    if (localStorage.getItem("activeAccount") === "capital:live") {
+      localStorage.setItem("activeAccount", "capital-live:live");
+    }
+    const raw = localStorage.getItem(LAST_ACCOUNT_BY_BROKER_KEY);
+    if (raw) {
+      const map = JSON.parse(raw) as Record<string, TradeAccount>;
+      // ONLY migrate the live entry for a user who actually used the real-money
+      // account (their "capital" last-used was "capital:live"). Seeding
+      // "capital-live" unconditionally would make a demo-only user land on the
+      // real-money account the first time they open the live feed — never default
+      // someone into real money they didn't choose.
+      if (map["capital"] === "capital:live") {
+        delete map["capital"];
+        map["capital-live"] = "capital-live:live";
+        localStorage.setItem(LAST_ACCOUNT_BY_BROKER_KEY, JSON.stringify(map));
+      }
+    }
+    localStorage.setItem(CAPITAL_LIVE_MIGRATION_KEY, "1");
+  } catch {
+    /* storage unavailable — best effort, retry next load */
+  }
+}
+
+// Display name for a broker id (the id is a lowercase opaque key; this is UI only).
+// Unknown ids fall back to a capitalized id so a new broker still reads sensibly.
+const BROKER_LABELS: Record<string, string> = {
+  // Two Capital feeds: demo (default data host) and live (live host). Distinct
+  // labels because they're separate data brokers; the env suffix (Paper/Demo/Live)
+  // is a different axis shown on the dock account tabs.
+  capital: "Capital.com (demo)",
+  "capital-live": "Capital.com (live)",
+  "ig-demo": "IG (demo)",
+  "ig-live": "IG (live)",
+  // AvaTrade MT5 through MetaApi's cloud. Same account as mt5-self, so the
+  // backend's live label carries "MetaApi" too.
+  mt5: "AvaTrade MT5 (MetaApi)",
+  // AvaTrade MT5 through the local terminal's built-in MCP server. The backend
+  // sends the real broker name as a label once the terminal answers.
+  "mt5-self": "AvaTrade MT5 (self-hosted)",
+  // Read-only deep-history source (Dukascopy). Charts/backtests only, no dealing.
+  dukascopy: "Dukascopy (history)",
+  // Read-only Yahoo Finance history (stocks/ETFs/FX/crypto/indices). Serves the
+  // public demo; charts/backtests only, no dealing.
+  yfinance: "Yahoo Finance",
+  // Read-only Iranian bazaar rates + gold (oanor.com). Charts/backtests only.
+  oanor: "oanor (IRR bazaar)",
+  // Read-only Nobitex crypto/IRR pairs (USDT/IRR = live rial-dollar proxy).
+  nobitex: "Nobitex (IRR crypto)",
+};
+// Broker-reported display names from /api/brokers (e.g. mt5 → "Ava Trade Ltd
+// (demo)", read from MetaApi account information). They win over the static map
+// because they're the broker's own name for itself. Fed by fetchBrokers /
+// cachedBrokers, so a reload shows the last-known name before the fetch lands.
+let backendLabels: Record<string, string> = {};
+export function noteBrokerLabels(labels: Record<string, string> | undefined): void {
+  if (labels) backendLabels = labels;
+}
+
+// Data-only brokers (read-only history sources like Dukascopy: no trading account,
+// no quote, no positions). The backend flags their synthetic pseudo-account with
+// dataOnly; we remember the broker ids so any component holding only a brokerId can
+// suppress trading UI. Fed by fetchBrokers / cachedBrokers, mirroring backendLabels.
+let dataOnlyBrokers: Set<string> = new Set();
+export function noteDataOnlyBrokers(exec: BrokerAccount[] | undefined): void {
+  if (!exec) return;
+  dataOnlyBrokers = new Set(exec.filter((a) => a.dataOnly).map((a) => a.broker));
+}
+/** True for a read-only history source (no trading). Trading UI must gate on this. */
+export function isDataOnlyBroker(brokerId: string): boolean {
+  return dataOnlyBrokers.has(brokerId);
+}
+// Symbol-search category chips per broker, declared backend-side over each
+// broker's own market-row `type` vocabulary (Capital's "SHARES", Yahoo's
+// "stock"/"etf"). The modal renders exactly these, so the chips can never again
+// filter on a vocabulary the broker doesn't emit. Fed by fetchBrokers /
+// cachedBrokers, mirroring backendLabels; a broker that declares nothing gets no
+// type chips.
+let backendCategories: Record<string, MarketCategory[]> = {};
+export function noteBrokerCategories(
+  categories: Record<string, MarketCategory[]> | undefined,
+): void {
+  if (categories) backendCategories = categories;
+}
+/** The broker's declared symbol-search categories, or [] if it declares none. */
+export function brokerCategories(brokerId: string): MarketCategory[] {
+  return backendCategories[brokerId] ?? [];
+}
+
+// Whether /api/brokers reported this account as admin (hosted: credentialed
+// brokers + dealing unlocked; dev mode: always true). Fed by fetchBrokers /
+// cachedBrokers, mirroring backendLabels — UI cues only, the backend enforces.
+let backendIsAdmin = false;
+export function noteIsAdmin(isAdmin: boolean | undefined): void {
+  backendIsAdmin = Boolean(isAdmin);
+}
+export function isAdminAccount(): boolean {
+  return backendIsAdmin;
+}
+
+export function brokerLabel(brokerId: string): string {
+  return (
+    backendLabels[brokerId] ??
+    BROKER_LABELS[brokerId] ??
+    brokerId.charAt(0).toUpperCase() + brokerId.slice(1)
+  );
+}
+
+// True for any Capital.com feed (demo or live). Capital's reported account balance
+// ALREADY includes unrealized P&L, unlike cash-balance brokers — code that decides
+// whether to add `pnl` must treat both Capital feeds the same (see PositionsPanel).
+export function isCapital(brokerId: string): boolean {
+  return isCapitalBroker(brokerId);
+}
+export type OrderSide = "buy" | "sell";
+type OrderKind = "market" | "limit";
+
+export interface OrderRequest {
+  epic: string;
+  side: OrderSide;
+  quantity: number;
+  account?: TradeAccount;
+  source?: "manual" | "strategy";
+  type?: OrderKind;
+  limit_level?: number | null;
+  stop_level?: number | null;
+  take_profit_level?: number | null;
+  expires_at?: string | null; // UTC ISO good-till-date; null/absent = GTC
+  confirm?: boolean; // required for real-money (live) orders
+  client_order_id?: string; // derived idempotency key (live engine); absent ⇒ minted
+}
+
+// Selector payload from GET /api/brokers: registered data brokers + accounts.
+export interface BrokerAccount {
+  key: TradeAccount; // "capital:paper"
+  broker: string; // "capital"
+  env: string; // "paper" | "demo" | "live" | "data"
+  isRealMoney: boolean;
+  // True for a data-only source's synthetic account (Dukascopy history): selectable
+  // for charts/backtests, but not tradeable. Absent on real trading accounts.
+  dataOnly?: boolean;
+}
+/** One symbol-search chip: which market-row `type` values it covers, plus the
+ * muted phrase shown on a row of that type ("stock cfd", "etf"). */
+export interface MarketCategory {
+  key: string;
+  label: string;
+  types: string[];
+  row?: string;
+}
+export interface BrokerInfo {
+  data: string[];
+  exec: BrokerAccount[];
+  // Sparse broker-reported display names by broker id (see noteBrokerLabels).
+  labels?: Record<string, string>;
+  // Symbol-search chips by broker id (see noteBrokerCategories). Sparse: only
+  // brokers that declare any appear.
+  categories?: Record<string, MarketCategory[]>;
+  // Hosted only: whether this account passes the backend's admin gate.
+  isAdmin?: boolean;
+}
+
+// The account list is purely descriptive (no broker network call), so it should
+// never be the thing that's unavailable. But it shares the browser's per-host
+// connection budget with the chart/poll requests, so when a broker is down those
+// hanging requests can make this one-shot fetch time out. We therefore (a) bound
+// it with an abort timeout and (b) cache the last-good list so a transient failure
+// still renders the selector instead of showing "no accounts".
+const BROKERS_TIMEOUT_MS = 6_000;
+
+/** Last-good broker list from a previous successful fetch, or null. Lets the
+ * selector populate instantly on load and survive a transient backend hiccup. */
+export function cachedBrokers(): BrokerInfo | null {
+  try {
+    const raw = localStorage.getItem(BROKERS_CACHE_KEY);
+    const info = raw ? (JSON.parse(raw) as BrokerInfo) : null;
+    if (info) {
+      noteBrokerLabels(info.labels);
+      noteBrokerCategories(info.categories);
+      noteDataOnlyBrokers(info.exec);
+      noteIsAdmin(info.isAdmin);
+    }
+    return info;
+  } catch {
+    return null;
+  }
+}
+
+// Warm the data-only broker set (and labels) from the cached list at module load,
+// so isDataOnlyBroker is correct on the VERY FIRST render, before fetchBrokers
+// resolves. Without this, reloading with a data-only source (Dukascopy) selected
+// would briefly render trading UI and point the trades feed at its pseudo-account.
+// A first-ever visit (no cache) can only have a real broker active, so nothing to warm.
+cachedBrokers();
+
+/** The selector list: which brokers/accounts the backend has registered. Bounded
+ * by a timeout and cached on success (see cachedBrokers). */
+export async function fetchBrokers(): Promise<BrokerInfo> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), BROKERS_TIMEOUT_MS);
+  try {
+    const res = await apiFetch(`${BASE}/api/brokers`, { signal: ctrl.signal });
+    if (!res.ok) throw new Error(`brokers failed (${res.status})`);
+    const info = (await res.json()) as BrokerInfo;
+    noteBrokerLabels(info.labels);
+    noteBrokerCategories(info.categories);
+    noteDataOnlyBrokers(info.exec);
+    noteIsAdmin(info.isAdmin);
+    try {
+      localStorage.setItem(BROKERS_CACHE_KEY, JSON.stringify(info));
+    } catch {
+      /* storage full / unavailable — caching is best-effort */
+    }
+    return info;
+  } catch (err) {
+    if (ctrl.signal.aborted) throw new Error(`brokers timed out`, { cause: err });
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface OrderResult {
+  client_order_id: string;
+  status: "pending" | "filled" | "partially_filled" | "rejected" | "unknown";
+  deal_reference: string | null;
+  deal_id: string | null;
+  filled_quantity: number;
+  fill_price: number | null;
+  reason: string;
+}
+
+interface Position {
+  epic: string;
+  side: OrderSide;
+  quantity: number;
+  open_level: number;
+  deal_id: string;
+  stop_level: number | null;
+  take_profit_level: number | null;
+  upnl: number | null;
+  created_at: string | null;
+  leverage: number | null; // broker's real per-position leverage (null for paper)
+  margin: number | null; // broker deposit requirement, account currency (null for paper)
+  mark: number | null; // broker's current close-side price (bid for long, offer for short)
+}
+
+interface WorkingOrder {
+  epic: string;
+  side: OrderSide;
+  quantity: number;
+  limit_level: number;
+  order_id: string;
+  stop_level: number | null;
+  take_profit_level: number | null;
+  created_at: string | null;
+  expires_at?: string | null;
+}
+
+// Normalized view of a position OR a resting order — the one shape the panel and
+// chart lines consume.
+export interface TradeView {
+  kind: "position" | "order";
+  id: string; // deal_id (position) | order_id (order)
+  epic: string;
+  side: OrderSide;
+  quantity: number;
+  priceLevel: number; // open_level (position) | limit_level (order)
+  stop: number | null;
+  takeProfit: number | null;
+  upnl: number | null; // positions only
+  openedAt: number | null; // created_at as epoch ms (position open / order placed)
+  expiresAt: number | null; // working orders: good-till-date epoch ms; null = GTC
+  leverage: number | null; // broker per-position leverage (null → fall back to configured)
+  margin: number | null; // broker deposit requirement, account currency (null → estimate)
+  mark?: number | null; // broker's current price from the positions poll (absent → chart stream only)
+  source?: "manual" | "strategy"; // "strategy" = opened by the live engine (dock `strat` tag)
+}
+
+export interface Quote {
+  bid: number | null;
+  ask: number | null;
+  mid: number | null;
+}
+
+// Real per-account figures from the broker (live dealing accounts). null fields when
+// the broker omits them; the whole call returns null for accounts with no real
+// summary (paper sim), so the dock keeps its configured paper balance.
+export interface AccountSummary {
+  balance: number | null;
+  available: number | null;
+  deposit: number | null;
+  profitLoss: number | null;
+  currency: string | null;
+  // Broker-authoritative account value + margin-in-use (MT5). When present the dock
+  // uses them verbatim instead of re-deriving margin/equity; omitted by Capital/IG.
+  equity?: number | null;
+  margin?: number | null;
+}
+
+/** The account's real balance/available/currency (live dealing accounts). Returns
+ *  null for a paper account (no real summary → 404), so the dock falls back to its
+ *  configured paper figures. */
+export async function fetchAccountSummary(
+  account: TradeAccount,
+): Promise<AccountSummary | null> {
+  const res = await apiFetch(`${BASE}/api/account?account=${encodeURIComponent(account)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    await throwIfBrokerBlocked(res);
+    throw new Error(`account summary failed (${res.status})`);
+  }
+  return res.json();
+}
+
+/** The human label for a position or resting order — used identically by the
+ *  chart line, the panel row, and the edit-ticket header (one source so they
+ *  can't drift). NB: a new-order DRAFT uses a different verb ("Buy"/"Sell"). */
+export function tradeLabel(kind: TradeView["kind"], side: OrderSide): string {
+  if (kind === "order") return side === "buy" ? "Limit buy" : "Limit sell";
+  return side === "buy" ? "Long" : "Short";
+}
+
+// A fresh idempotency key per submit so a retried request can't double-fill.
+function newClientOrderId(): string {
+  return crypto.randomUUID();
+}
+
+export async function fetchQuote(
+  epic: string,
+  account: TradeAccount = DEFAULT_ACCOUNT,
+): Promise<Quote> {
+  const url = `${BASE}/api/quote/${encodeURIComponent(epic)}?account=${encodeURIComponent(account)}`;
+  const res = await apiFetch(url);
+  if (!res.ok) throw new Error(`quote failed (${res.status})`);
+  return res.json();
+}
+
+export async function placeOrder(req: OrderRequest): Promise<OrderResult> {
+  const res = await apiFetch(`${BASE}/api/orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      account: DEFAULT_ACCOUNT,
+      source: "manual",
+      type: "market",
+      client_order_id: newClientOrderId(),
+      ...req,
+    }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `order failed (${res.status})`));
+  return res.json();
+}
+
+async function fetchPositions(account: TradeAccount): Promise<Position[]> {
+  const res = await apiFetch(`${BASE}/api/positions?account=${encodeURIComponent(account)}`);
+  if (!res.ok) {
+    await throwIfBrokerBlocked(res);
+    throw new Error(`positions failed (${res.status})`);
+  }
+  return res.json();
+}
+
+/** Open positions for an account (optionally one epic), normalized to TradeView.
+ *  Used by the live engine to reconcile before evaluating — a direct fetch, not
+ *  the shared subscribeTrades feed (which is account-global and event-driven). */
+export async function fetchOpenPositions(
+  account: TradeAccount,
+  epic?: string,
+): Promise<TradeView[]> {
+  const positions = await fetchPositions(account);
+  const filtered = epic ? positions.filter((p) => p.epic === epic) : positions;
+  return toTrades(filtered, []);
+}
+
+async function fetchWorkingOrders(account: TradeAccount): Promise<WorkingOrder[]> {
+  const url = `${BASE}/api/orders/working?account=${encodeURIComponent(account)}`;
+  const res = await apiFetch(url);
+  if (!res.ok) {
+    await throwIfBrokerBlocked(res);
+    throw new Error(`working orders failed (${res.status})`);
+  }
+  return res.json();
+}
+
+function toTrades(positions: Position[], orders: WorkingOrder[]): TradeView[] {
+  return [
+    ...positions.map(
+      (p): TradeView => ({
+        kind: "position",
+        id: p.deal_id,
+        epic: p.epic,
+        side: p.side,
+        quantity: p.quantity,
+        priceLevel: p.open_level,
+        stop: p.stop_level,
+        takeProfit: p.take_profit_level,
+        upnl: p.upnl,
+        openedAt: p.created_at ? Date.parse(p.created_at) : null,
+        expiresAt: null,
+        leverage: p.leverage,
+        margin: p.margin,
+        mark: p.mark ?? null,
+        source: isStrategyDeal(p.deal_id) ? "strategy" : "manual",
+      }),
+    ),
+    ...orders.map(
+      (o): TradeView => ({
+        kind: "order",
+        id: o.order_id,
+        epic: o.epic,
+        side: o.side,
+        quantity: o.quantity,
+        priceLevel: o.limit_level,
+        stop: o.stop_level,
+        takeProfit: o.take_profit_level,
+        upnl: null,
+        openedAt: o.created_at ? Date.parse(o.created_at) : null,
+        expiresAt: o.expires_at != null ? Date.parse(o.expires_at) : null,
+        mark: null,
+        leverage: null,
+        margin: null,
+        source: "manual",
+      }),
+    ),
+  ];
+}
+
+// --- shared trades feed (event-driven, no polling) --------------------------
+//
+// Positions + working orders are fetched ONCE per change, never on a timer:
+//   - on first subscribe and on account switch,
+//   - after a user action (place/close/modify → refreshTrades),
+//   - when the backend pushes a "trades changed" event (a paper trigger filled or
+//     closed) over /ws/state (see onTradesDirty).
+// Live P&L doesn't need a fetch: the dock marks positions to market client-side
+// from `livePrices`, fed by the chart's price stream (setLivePrice). Together this
+// removes the periodic positions/orders poll entirely.
+
+let _refs = 0;
+let _unsubDirty: (() => void) | null = null;
+
+// The account the feed fetches. Set by the App when the active broker/account
+// changes, so positions/orders follow the selection.
+let _account: TradeAccount = DEFAULT_ACCOUNT;
+
+// Real-money accounts get NO server-side push (the onTradesDirty event only fires
+// for paper triggers), so a fill / SL-TP hit / close-on-another-device would leave
+// the dock stale. For those accounts only, fall back to a light poll (paused when
+// the tab is hidden). Paper stays fully event-driven.
+const LIVE_POLL_MS = 6_000;
+let _pollTimer: ReturnType<typeof setInterval> | null = null;
+
+function _stopPoll(): void {
+  if (_pollTimer !== null) {
+    clearInterval(_pollTimer);
+    _pollTimer = null;
+  }
+}
+
+function _syncPoll(): void {
+  _stopPoll();
+  if (_refs <= 0 || !isRealMoneyAccount(_account)) return;
+  _pollTimer = setInterval(() => {
+    if (typeof document !== "undefined" && document.hidden) return; // pause when hidden
+    void _refresh();
+  }, LIVE_POLL_MS);
+}
+
+/** The account the trades feed currently targets. For actions taken from the chart
+ *  (the trade pill's Apply / Close / Cancel) that don't receive `account` as a prop —
+ *  the selected trade was fetched for this account, so it's the one to act against. */
+export function getTradesAccount(): TradeAccount {
+  return _account;
+}
+
+/** Point the trades feed at a different account and refresh immediately. */
+export function setTradesAccount(account: TradeAccount): void {
+  if (account === _account) return;
+  _account = account;
+  // Clear stale trades from the previous account so lines/rows don't linger.
+  tradesSignal.set([]);
+  void _refresh();
+  _syncPoll(); // start/stop the live poll for the new account
+}
+
+async function _refresh(): Promise<void> {
+  const account = _account;
+  // A data-only source (Dukascopy, Yahoo) has no positions or orders; asking
+  // only earns a 422. This is the default account on a host without broker
+  // credentials, e.g. the public demo.
+  if (isDataOnlyBroker(brokerOf(account))) {
+    tradesSignal.set([]);
+    return;
+  }
+  try {
+    const [positions, orders] = await Promise.all([
+      fetchPositions(account),
+      fetchWorkingOrders(account),
+    ]);
+    // A switch mid-flight would publish the wrong account's trades; drop a
+    // response whose account is no longer active.
+    if (account === _account) tradesSignal.set(toTrades(positions, orders));
+    reportBrokerReachable();
+  } catch (e) {
+    // Transient: keep the last known trades rather than clearing the chart —
+    // but a blocked network path (WAF / restricted connection) is surfaced,
+    // since silently painting last-known figures hides a dead broker.
+    if (e instanceof BrokerBlockedError) reportBrokerBlocked(e.message);
+  }
+}
+
+/** Force an immediate refresh (after a fill / close / edit). */
+export function refreshTrades(): void {
+  void _refresh();
+}
+
+/** Subscribe to the shared trades feed. Fetches once on the first subscriber and
+ *  then only on events; the returned unsubscribe detaches the backend push when
+ *  the last consumer leaves. */
+export function subscribeTrades(fn: (t: TradeView[]) => void): () => void {
+  fn(tradesSignal.value); // deliver the current value immediately
+  const unsub = tradesSignal.subscribe(fn);
+  _refs += 1;
+  if (_refs === 1) {
+    void _refresh(); // initial load
+    // Refetch when the backend reports a server-side change (paper trigger fill)
+    // for the active account — event-driven, no polling.
+    _unsubDirty = onTradesDirty((account) => {
+      if (account === _account) void _refresh();
+    });
+    _syncPoll(); // plus a light poll while a real-money account is active
+  }
+  return () => {
+    unsub();
+    _refs -= 1;
+    if (_refs <= 0) {
+      _refs = 0;
+      _unsubDirty?.();
+      _unsubDirty = null;
+      _stopPoll();
+    }
+  };
+}
+
+// --- live prices (client-side mark-to-market) -------------------------------
+//
+// The chart's live feed publishes the latest mid price per epic here; the
+// positions dock reads it to update P&L without re-fetching from the server.
+
+const _livePrices = new Map<string, number>();
+const _priceListeners = new Set<() => void>();
+
+/** Publish the latest streamed price for an epic (called by the chart feed). */
+export function setLivePrice(epic: string, price: number): void {
+  _livePrices.set(epic, price);
+  for (const fn of _priceListeners) fn();
+}
+
+/** Latest streamed price for an epic, or undefined if none is flowing. */
+export function getLivePrice(epic: string): number | undefined {
+  return _livePrices.get(epic);
+}
+
+/** Notify on any live-price change (the dock re-marks P&L). Returns unsubscribe. */
+export function subscribeLivePrices(fn: () => void): () => void {
+  _priceListeners.add(fn);
+  return () => _priceListeners.delete(fn);
+}
+
+export async function closePosition(
+  dealId: string,
+  account: TradeAccount = DEFAULT_ACCOUNT,
+  quantity?: number,
+): Promise<OrderResult> {
+  const qs = new URLSearchParams({ account });
+  if (quantity != null) qs.set("quantity", String(quantity));
+  const res = await apiFetch(
+    `${BASE}/api/positions/${encodeURIComponent(dealId)}?${qs}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) throw new Error(await errorDetail(res, `close failed (${res.status})`));
+  return res.json();
+}
+
+export interface LevelEdit {
+  limit_level?: number | null;
+  stop_level?: number | null;
+  take_profit_level?: number | null;
+  // Explicitly REMOVE a level (None alone means "leave unchanged", so the edit
+  // form's toggle-off sends these to clear an SL/TP).
+  clear_stop?: boolean;
+  clear_take_profit?: boolean;
+  expires_at?: string | null;
+  clear_expiry?: boolean;
+}
+
+/** Apply edited levels to a position (SL/TP) or a resting order (price + SL/TP),
+ *  picked by trade kind. Used by the combined Apply after dragging lines. */
+export async function applyLevels(
+  trade: { kind: "position" | "order"; id: string },
+  edit: LevelEdit,
+  account: TradeAccount = DEFAULT_ACCOUNT,
+): Promise<OrderResult> {
+  const path =
+    trade.kind === "position"
+      ? `/api/positions/${encodeURIComponent(trade.id)}`
+      : `/api/orders/working/${encodeURIComponent(trade.id)}`;
+  const res = await apiFetch(`${BASE}${path}?account=${encodeURIComponent(account)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(edit),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `update failed (${res.status})`));
+  return res.json();
+}
+
+/** Keep an SL/TP on the valid side of a REFERENCE price: a long's stop must sit BELOW
+ *  the reference and its take-profit ABOVE it; a short's are reversed. Clamps `level`
+ *  to one `tick` past the reference so a dragged line can't cross (the broker rejects
+ *  it anyway). Returns `level` unchanged when it's already on the right side.
+ *
+ *  The reference is the current market price for an OPEN POSITION (a TP below the
+ *  market would already be a loss), but the order's own LIMIT price for a WORKING
+ *  ORDER — the order isn't filled yet, so its SL/TP are measured from where it WILL
+ *  fill, not from where the market happens to be now. Callers pass the right one. */
+export function clampLevelToPrice(
+  field: "stop" | "tp",
+  side: OrderSide,
+  reference: number,
+  level: number,
+  tick: number,
+): number {
+  const long = side === "buy";
+  const below = field === "stop" ? long : !long; // must this line stay below the reference?
+  return below ? Math.min(level, reference - tick) : Math.max(level, reference + tick);
+}
+
+/** True when an open position's stop sits PAST its own entry — on the profit side,
+ *  where it is no longer a stop LOSS. A long's stop belongs at or below its fill, a
+ *  short's at or above. The entry is rounded to `precision` first so this agrees with
+ *  what "Set Breakeven" stages (see breakevenEligible, which rounds the same way). */
+export function stopPastEntry(
+  side: OrderSide,
+  entry: number,
+  level: number,
+  precision: number,
+): boolean {
+  const be = Number(entry.toFixed(precision));
+  return side === "buy" ? level > be : level < be;
+}
+
+/** Pull a stop back to the entry when it sits past it (see stopPastEntry). The bound
+ *  is INCLUSIVE — a stop exactly at entry is breakeven and must survive untouched —
+ *  unlike clampLevelToPrice's one-tick-past-the-market bound. Only meaningful for an
+ *  OPEN POSITION: a working order's SL measures from its own unfilled limit. */
+export function clampStopToEntry(
+  side: OrderSide,
+  entry: number,
+  level: number,
+  precision: number,
+): number {
+  return stopPastEntry(side, entry, level, precision) ? Number(entry.toFixed(precision)) : level;
+}
+
+/** True when a level sits at the entry (within one tick) — the shared core of both
+ *  breakeven states (SL-at-entry and TP-at-entry), where that level's line and the
+ *  entry line would render on the same price row and collapse into one. */
+function atEntry(price: number | null, level: number | null, precision: number): boolean {
+  if (price == null || level == null) return false;
+  const tick = 10 ** -precision;
+  const diff = Math.abs(level - price);
+  // Guard against float noise at the exact-one-tick boundary (e.g. 1.23457 -
+  // 1.23456 computes as ~9.999999e-6, a hair under 1e-5) without rounding away
+  // genuinely sub-tick differences.
+  // 1e-6 is a RELATIVE tolerance (fraction of one tick), validated across this
+  // app's 0-5dp instrument precisions: far above float error (~1e-15) so it never
+  // misses real noise, far below any genuine sub-tick gap so it never over-merges.
+  return tick - diff > tick * 1e-6;
+}
+
+/** True when a stop sits at its entry (within one tick) — the "breakeven" state
+ *  where the SL and entry lines would render on the same price row and collapse
+ *  into one. Level-derived; shared by the chart line specs, the DOM pill, and the
+ *  edit form so they never disagree. */
+export function isBreakeven(
+  price: number | null,
+  stop: number | null,
+  precision: number,
+): boolean {
+  return atEntry(price, stop, precision);
+}
+
+/** True when a take-profit sits at its entry (within one tick) — the mirror of
+ *  isBreakeven for a losing position that set its TP to entry to exit flat when
+ *  price recovers. The TP and entry lines collapse into one green '· BE' line. */
+export function isBreakevenTarget(
+  price: number | null,
+  tp: number | null,
+  precision: number,
+): boolean {
+  return atEntry(price, tp, precision);
+}
+
+/** Whether the edit form should offer "Set to breakeven": an OPEN position, in
+ *  profit, whose rounded entry would be a VALID stop (below the latest for a long,
+ *  above for a short), and not already at breakeven. Gating on the ROUNDED entry —
+ *  not raw `latest > entry` — closes the sub-tick sliver where round(entry) lands
+ *  the wrong side of a barely-profitable price and Update would be rejected. */
+export function breakevenEligible(
+  trade: TradeView,
+  latest: number | null,
+  precision: number,
+): boolean {
+  if (trade.kind !== "position" || latest == null) return false;
+  const be = Number(trade.priceLevel.toFixed(precision));
+  const validStop = trade.side === "buy" ? be < latest : be > latest;
+  if (!validStop) return false;
+  return !isBreakeven(trade.priceLevel, trade.stop, precision);
+}
+
+/** Whether the edit form should offer "Set target to breakeven": an OPEN position,
+ *  at a LOSS, whose rounded entry would be a VALID take-profit (above the latest for
+ *  a long, below for a short), and not already at TP-breakeven. The valid-TP gate is
+ *  only satisfied when price is on the losing side of entry, so this naturally
+ *  restricts the button to losing positions — the mirror of breakevenEligible. */
+export function breakevenTargetEligible(
+  trade: TradeView,
+  latest: number | null,
+  precision: number,
+): boolean {
+  if (trade.kind !== "position" || latest == null) return false;
+  const be = Number(trade.priceLevel.toFixed(precision));
+  const validTarget = trade.side === "buy" ? be > latest : be < latest;
+  if (!validTarget) return false;
+  return !isBreakevenTarget(trade.priceLevel, trade.takeProfit, precision);
+}
+
+/** Merge a trade's pending (un-applied) edits over its server levels, BY PRESENCE
+ *  (a field set to `null` means "removed", `undefined` means "unchanged"). Returns
+ *  the resolved entry/stop/tp the user currently sees on the chart lines. Shared by
+ *  the order ticket's edit form and the chart pill so both read one source of truth. */
+export function mergeTradeLevels(
+  trade: { priceLevel: number; stop: number | null; takeProfit: number | null },
+  pending: { price?: number | null; stop?: number | null; takeProfit?: number | null },
+): { price: number | null; stop: number | null; takeProfit: number | null } {
+  const has = (k: "price" | "stop" | "takeProfit") => pending[k] !== undefined;
+  return {
+    price: (has("price") ? pending.price : trade.priceLevel) ?? null,
+    stop: (has("stop") ? pending.stop : trade.stop) ?? null,
+    takeProfit: (has("takeProfit") ? pending.takeProfit : trade.takeProfit) ?? null,
+  };
+}
+
+/** Commit the MERGED levels as the trade's authoritative final state: a null SL/TP
+ *  here means "remove it" (clear_*), unlike the drag path where null means "leave
+ *  unchanged". Used by BOTH the edit ticket's Update and the chart pill's Apply, so
+ *  the two can't diverge (e.g. ticket toggles SL off → Apply must actually clear it). */
+export async function applyEditedLevels(
+  trade: { kind: "position" | "order"; id: string },
+  merged: { price: number | null; stop: number | null; takeProfit: number | null; expiresAt?: number | null },
+  account: TradeAccount = DEFAULT_ACCOUNT,
+): Promise<OrderResult> {
+  const exp = merged.expiresAt ?? null;
+  return applyLevels(
+    trade,
+    {
+      limit_level: trade.kind === "order" ? merged.price : null,
+      stop_level: merged.stop,
+      take_profit_level: merged.takeProfit,
+      clear_stop: merged.stop == null,
+      clear_take_profit: merged.takeProfit == null,
+      // Expiry only applies to a resting order; a position ignores it.
+      ...(trade.kind === "order"
+        ? { expires_at: expiryToApi(exp), clear_expiry: exp == null }
+        : {}),
+    },
+    account,
+  );
+}
+
+export async function cancelWorkingOrder(
+  orderId: string,
+  account: TradeAccount = DEFAULT_ACCOUNT,
+): Promise<OrderResult> {
+  const url = `${BASE}/api/orders/working/${encodeURIComponent(orderId)}?account=${encodeURIComponent(account)}`;
+  const res = await apiFetch(url, { method: "DELETE" });
+  if (!res.ok) throw new Error(await errorDetail(res, `cancel failed (${res.status})`));
+  return res.json();
+}

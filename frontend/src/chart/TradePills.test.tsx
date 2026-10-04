@@ -1,0 +1,761 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render } from "@testing-library/react";
+import TradePills, { type TradePillItem } from "./TradePills";
+import type { TradeView } from "../lib/trading";
+import { setTradeSelected, tradePanelOpen, type PendingEdit } from "../lib/signals";
+import { armMaskedReplay, disarmMaskedReplay, maskedReplaySignal } from "../lib/maskedReplay";
+import { setCellReplaying } from "../lib/chartSync";
+
+// The dealing calls are the thing the replay tests must prove are NOT reached:
+// a replay session trades a local ledger, so a single HTTP dealing call would be
+// an order placed on the user's real account. Spread the real module — the pills
+// need tradeLabel / mergeTradeLevels to render and to stage an edit at all.
+const dealing = vi.hoisted(() => ({
+  applyEditedLevels: vi.fn(async () => {}),
+  closePosition: vi.fn(async () => {}),
+  cancelWorkingOrder: vi.fn(async () => {}),
+  refreshTrades: vi.fn(),
+}));
+vi.mock("../lib/trading", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/trading")>()),
+  ...dealing,
+}));
+
+// The entry pill's ✕ does not deal directly: it raises a confirm and hands the
+// action over as `onConfirm`. No modal is mounted in this suite, so capture the
+// request and run its callback the way the modal would.
+const confirms = vi.hoisted(() => ({
+  requestConfirm: vi.fn<(req: { onConfirm: () => Promise<void> | void }) => void>(),
+}));
+vi.mock("../lib/signals", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/signals")>()),
+  ...confirms,
+}));
+
+// The fail-closed path tells the user why nothing happened rather than silently
+// dropping the click, so the toast is part of what these tests assert.
+const toasts = vi.hoisted(() => ({ toast: vi.fn() }));
+vi.mock("../lib/notify", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/notify")>()),
+  ...toasts,
+}));
+
+// Two trades, each with an entry + TP pill, so overlap z-order (the "raised"
+// trade-group class) can be asserted per pill.
+const pill = (tradeId: string, field: TradePillItem["field"]): TradePillItem => ({
+  tradeId,
+  field,
+  y: 100,
+  kind: "position",
+  side: "buy",
+  qty: 1,
+  level: 1.2345,
+  expiresAt: null,
+  pl: null,
+  pct: null,
+  changed: false,
+});
+
+// Non-colliding levels: these fixtures assert per-pill classes, so nothing may
+// merge into an aggregate (overlap behaviour has its own suites below).
+const PILLS: TradePillItem[] = [
+  { ...pill("A", "price"), y: 40 },
+  { ...pill("A", "tp"), y: 80 },
+  { ...pill("B", "price"), y: 120 },
+  { ...pill("B", "tp"), y: 160 },
+];
+
+function renderPills(over: Partial<Parameters<typeof TradePills>[0]> = {}) {
+  const { container } = render(
+    <TradePills
+      cellId="cell-1"
+      pills={PILLS}
+      precisionRef={{ current: 4 }}
+      tradesRef={{ current: [] as TradeView[] }}
+      pendingRef={{ current: {} as Record<string, PendingEdit> }}
+      tradePillNodesRef={{ current: new Map() }}
+      hoveredPillKey={null}
+      focusedPillKey={null}
+      selectedTradeId={null}
+      axisWidth={60}
+      {...over}
+    />,
+  );
+  return { container };
+}
+
+const classesOf = (container: HTMLElement) =>
+  Array.from(container.querySelectorAll<HTMLElement>(".trade-pill")).map((n) => n.className);
+
+describe("TradePills trade-group raising", () => {
+  it("raises every pill of the focused (selected) trade, not just the focused field", () => {
+    const { container } = renderPills({ focusedPillKey: "A:price" });
+    const [aEntry, aTp, bEntry, bTp] = classesOf(container);
+    expect(aEntry).toContain("raised");
+    expect(aEntry).toContain("focused");
+    expect(aTp).toContain("raised"); // sibling pill of the selected trade rises too
+    expect(aTp).not.toContain("focused");
+    expect(bEntry).not.toContain("raised");
+    expect(bTp).not.toContain("raised");
+  });
+
+  it("marks every pill of the click-selected trade with the selected class; hover alone doesn't", () => {
+    const { container } = renderPills({ selectedTradeId: "A", focusedPillKey: "A:price", hoveredPillKey: "B:tp" });
+    const [aEntry, aTp, bEntry, bTp] = classesOf(container);
+    expect(aEntry).toContain("selected");
+    expect(aTp).toContain("selected"); // whole trade group reads as selected
+    expect(bEntry).not.toContain("selected");
+    expect(bTp).not.toContain("selected"); // hovered ≠ selected
+  });
+
+  it("dims every other trade's pills while a trade is selected; none dimmed without a selection", () => {
+    const { container } = renderPills({ selectedTradeId: "A", focusedPillKey: "A:price" });
+    const [aEntry, aTp, bEntry, bTp] = classesOf(container);
+    expect(aEntry).not.toContain("dimmed");
+    expect(aTp).not.toContain("dimmed"); // the selected group stays at full strength
+    expect(bEntry).toContain("dimmed");
+    expect(bTp).toContain("dimmed");
+    const none = renderPills({});
+    expect(classesOf(none.container).some((c) => c.includes("dimmed"))).toBe(false);
+  });
+
+  it("raises the whole trade when one of its pills (e.g. TP) is hovered", () => {
+    const { container } = renderPills({ hoveredPillKey: "B:tp" });
+    const [aEntry, aTp, bEntry, bTp] = classesOf(container);
+    expect(bTp).toContain("raised");
+    expect(bTp).toContain("hovering");
+    expect(bEntry).toContain("raised"); // associated entry pill rises with the hovered TP
+    expect(aEntry).not.toContain("raised");
+    expect(aTp).not.toContain("raised");
+  });
+
+  it("handles trade ids containing colons (splits on the LAST colon)", () => {
+    const pills = [pill("deal:1", "price"), pill("deal:1", "tp")];
+    const { container } = render(
+      <TradePills
+        cellId="cell-1"
+        pills={pills}
+        precisionRef={{ current: 4 }}
+        tradesRef={{ current: [] as TradeView[] }}
+        pendingRef={{ current: {} as Record<string, PendingEdit> }}
+        tradePillNodesRef={{ current: new Map() }}
+        hoveredPillKey={"deal:1:tp"}
+        selectedTradeId={null}
+        focusedPillKey={null}
+        axisWidth={60}
+      />,
+    );
+    const [entry, tp] = classesOf(container);
+    expect(entry).toContain("raised");
+    expect(tp).toContain("raised");
+  });
+});
+
+const cascadeRender = (pills: TradePillItem[], over: Partial<Parameters<typeof TradePills>[0]> = {}) =>
+    render(
+    <TradePills
+      cellId="cell-1"
+      pills={pills}
+      precisionRef={{ current: 4 }}
+      tradesRef={{ current: [] as TradeView[] }}
+      pendingRef={{ current: {} as Record<string, PendingEdit> }}
+      tradePillNodesRef={{ current: new Map() }}
+      hoveredPillKey={null}
+      selectedTradeId={null}
+      focusedPillKey={null}
+      axisWidth={60}
+      {...over}
+    />,
+    ).container;
+
+describe("TradePills overlap vertical spread", () => {
+  it("spreads an ENGAGED cluster vertically around its centre; separated pills keep their own y", () => {
+    const container = cascadeRender([
+      { ...pill("A", "price"), y: 100 },
+      { ...pill("B", "price"), y: 110 }, // within 22px of A's entry → collides
+      { ...pill("B", "tp"), y: 300 }, // far away → stays put
+    ], { hoveredPillKey: "A:price" });
+    const tops = Array.from(container.querySelectorAll<HTMLElement>(".trade-pill")).map((n) => n.style.top);
+    // cluster mean y = 105, 24px rows → column starts at 105 - 12 = 93
+    expect(tops[0]).toBe("93px");
+    expect(tops[1]).toBe("117px");
+    expect(tops[2]).toBe("300px"); // non-colliding pill untouched
+  });
+
+  it("chains transitively: three stacked pills form one centred column", () => {
+    const container = cascadeRender([
+      { ...pill("A", "price"), y: 100 },
+      { ...pill("B", "price"), y: 115 },
+      { ...pill("C", "price"), y: 130 }, // clears A but collides with B → same cluster
+    ], { hoveredPillKey: "A:price" });
+    const tops = Array.from(container.querySelectorAll<HTMLElement>(".trade-pill")).map((n) => n.style.top);
+    // mean y = 115 → rows at 91 / 115 / 139
+    expect(tops).toEqual(["91px", "115px", "139px"]);
+  });
+
+  it("shows a leader tick from the pill's edge to its line, only when the line clears the pill body", () => {
+    // jsdom has no layout, so the faces report width 0 and the tick would fail closed
+    // (see the placement test below) — give them a width so the display logic runs.
+    const spy = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(90);
+    try {
+    // Four pills on one line → rows 64/88/112/136 around mean 100. The outer rows'
+    // lines fall outside their 22px bodies (tick shown, edge→line); the inner rows
+    // still cover the line (no tick). A far pill is undisplaced (no tick).
+    const container = cascadeRender([
+      { ...pill("A", "price"), y: 100 },
+      { ...pill("B", "price"), y: 100 },
+      { ...pill("C", "price"), y: 100 },
+      { ...pill("D", "price"), y: 100 },
+      { ...pill("D", "tp"), y: 300 },
+    ], { hoveredPillKey: "A:price" });
+    const leaders = Array.from(container.querySelectorAll<HTMLElement>(".tp-leader"));
+    expect(leaders).toHaveLength(5);
+    expect(leaders[0].style.display).not.toBe("none"); // row 64: bottom edge 75 → line 100
+    expect(leaders[0].style.top).toBe("75px");
+    expect(leaders[0].style.height).toBe("25px");
+    expect(leaders[1].style.display).toBe("none"); // row 88 still covers the line
+    expect(leaders[2].style.display).toBe("none"); // row 112 still covers the line
+    expect(leaders[3].style.display).not.toBe("none"); // row 136: line 100 → top edge 125
+    expect(leaders[3].style.top).toBe("100px");
+    expect(leaders[3].style.height).toBe("25px");
+    expect(leaders[4].style.display).toBe("none"); // undisplaced pill
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("stands the leader tick clear of the pill it belongs to, not under it", () => {
+    // The pills dock right-edge flush against the axis and are opaque, so a tick
+    // parked AT the axis is hidden behind its own pill and ties nothing to
+    // anything. It belongs just outside the pill's left edge — which means
+    // measuring the face, since a compact and an expanded face differ in width.
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "offsetWidth", "get")
+      .mockReturnValue(90);
+    try {
+      const container = cascadeRender([
+        { ...pill("A", "price"), y: 100 },
+        { ...pill("B", "price"), y: 100 },
+        { ...pill("C", "price"), y: 100 },
+        { ...pill("D", "price"), y: 100 },
+      ], { hoveredPillKey: "A:price", axisWidth: 60 });
+      const leaders = Array.from(container.querySelectorAll<HTMLElement>(".tp-leader"));
+      const shown = leaders.filter((l) => l.style.display !== "none");
+      expect(shown.length).toBeGreaterThan(0);
+      for (const l of shown) expect(l.style.right).toBe("152px"); // 60 axis + 90 face + 2
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("merges a neighbour that a spread column would collide with", () => {
+    // A/B cluster alone would spread to 93/117; C at 135 is ≥22 from B's line but only
+    // 18px from the 117 row — the second pass merges all three into one column
+    // (mean 115 → rows 91/115/139).
+    const container = cascadeRender([
+      { ...pill("A", "price"), y: 100 },
+      { ...pill("B", "price"), y: 110 },
+      { ...pill("C", "price"), y: 135 },
+    ], { hoveredPillKey: "A:price" });
+    const tops = Array.from(container.querySelectorAll<HTMLElement>(".trade-pill")).map((n) => n.style.top);
+    expect(tops).toEqual(["91px", "115px", "139px"]);
+  });
+
+  it("clamps a spread column at the top of the pane", () => {
+    // Mean 7.5 would start the column at -4.5; the clamp holds the first row at 11
+    // (half a pill) so nothing renders above the pane edge.
+    const container = cascadeRender([
+      { ...pill("A", "price"), y: 5 },
+      { ...pill("B", "price"), y: 10 },
+    ], { hoveredPillKey: "A:price" });
+    const tops = Array.from(container.querySelectorAll<HTMLElement>(".trade-pill")).map((n) => n.style.top);
+    expect(tops).toEqual(["11px", "35px"]);
+  });
+});
+
+
+describe("TradePills compact axis-docked face", () => {
+  it("docks the pill against the price axis (right-anchored, no left)", () => {
+    const { container } = renderPills({ pills: [pill("A", "price")] });
+    const node = container.querySelector<HTMLElement>(".trade-pill")!;
+    expect(node.style.right).toBe("60px");
+    expect(node.style.left).toBe("");
+  });
+
+  it("renders a resting entry pill compact: side letter + qty + P/L, no price, no buttons", () => {
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "price"), qty: 5, pl: 39.3 }],
+    });
+    const node = container.querySelector<HTMLElement>(".trade-pill")!;
+    expect(node.className).toContain("compact");
+    expect(node.textContent).toContain("L5");
+    expect(node.textContent).toContain("+39.30");
+    expect(node.querySelector(".tp-price")).toBeNull();
+    expect(node.querySelector(".tp-close")).toBeNull();
+    expect(node.querySelector(".tp-info")).toBeNull();
+  });
+
+  it("uses S for a sell side", () => {
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "price"), side: "sell" as const, qty: 2 }],
+    });
+    expect(container.querySelector<HTMLElement>(".trade-pill")!.textContent).toContain("S2");
+  });
+
+  it("renders a resting SL pill compact: tag + percent move from entry, no remove button", () => {
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "stop"), pl: -12.4, pct: -1.234 }],
+    });
+    const node = container.querySelector<HTMLElement>(".trade-pill")!;
+    expect(node.textContent).toContain("SL");
+    expect(node.textContent).toContain("\u22121.23%"); // percent, not money
+    expect(node.textContent).not.toContain("12.40");
+    expect(node.querySelector(".tp-remove")).toBeNull();
+    expect(node.querySelector(".tp-price")).toBeNull();
+  });
+
+  it("falls back to the money figure on a compact SL/TP when no percent is computable", () => {
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "tp"), pl: 24.6, pct: null }],
+    });
+    expect(container.querySelector<HTMLElement>(".trade-pill")!.textContent).toContain("+24.60");
+  });
+
+  it("keeps the absolute P/L-if-hit on the EXPANDED SL/TP face", () => {
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "stop"), pl: -12.4, pct: -1.234 }],
+      tradesRef: { current: [tradeView()] },
+      hoveredPillKey: "A:stop",
+    });
+    const node = container.querySelector<HTMLElement>(".trade-pill")!;
+    expect(node.className).not.toContain("compact");
+    expect(node.textContent).toContain("\u221212.40");
+  });
+
+  it("renders a resting order entry compact with its GTC status", () => {
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "price"), kind: "order" as const }],
+    });
+    const node = container.querySelector<HTMLElement>(".trade-pill")!;
+    expect(node.textContent).toContain("GTC");
+    expect(node.querySelector(".tp-close")).toBeNull();
+  });
+
+  it("expands the selected trade's pills: full face with price, BE chip, details and close", () => {
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "price"), pl: 39.3, breakevenField: "stop" as const }],
+      tradesRef: { current: [tradeView()] },
+      selectedTradeId: "A",
+    });
+    const node = container.querySelector<HTMLElement>(".trade-pill")!;
+    expect(node.className).not.toContain("compact");
+    expect(node.querySelector(".tp-price")!.textContent).toContain("1.2345");
+    expect(node.querySelector(".tp-be")).not.toBeNull();
+    expect(node.querySelector(".tp-close")).not.toBeNull();
+    expect(node.querySelector(".tp-info")).toBeNull(); // details card removed
+  });
+
+  it("expands the hovered pill only", () => {
+    const { container } = renderPills({
+      pills: [pill("A", "price"), pill("A", "tp")],
+      tradesRef: { current: [tradeView()] },
+      hoveredPillKey: "A:price",
+    });
+    const [entry, tp] = Array.from(container.querySelectorAll<HTMLElement>(".trade-pill"));
+    expect(entry.className).not.toContain("compact");
+    expect(tp.className).toContain("compact");
+  });
+
+  it("always expands a pill with a staged drag so Apply/Discard stay reachable", () => {
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "price"), changed: true }],
+      tradesRef: { current: [tradeView()] },
+    });
+    const node = container.querySelector<HTMLElement>(".trade-pill")!;
+    expect(node.className).not.toContain("compact");
+    expect(node.querySelector(".tp-apply")).not.toBeNull();
+    expect(node.querySelector(".tp-discard")).not.toBeNull();
+  });
+});
+
+
+describe("TradePills cluster collapse", () => {
+  it("collapses colliding resting pills into one summary pill: count, net P/L, mean y", () => {
+    const container = cascadeRender([
+      { ...pill("A", "price"), y: 100, pl: 100.25 },
+      { ...pill("B", "price"), y: 110, pl: 46.45 },
+      { ...pill("B", "tp"), y: 300 },
+    ]);
+    const nodes = Array.from(container.querySelectorAll<HTMLElement>(".trade-pill"));
+    expect(nodes).toHaveLength(2); // one summary + the far singleton
+    const summary = nodes[0];
+    expect(summary.className).toContain("tp-cluster");
+    expect(summary.textContent).toContain("2×");
+    expect(summary.textContent).toContain("+146.70");
+    expect(summary.style.top).toBe("105px"); // cluster mean y
+    expect(summary.style.right).toBe("60px");
+  });
+
+  it("omits the net P/L when no member carries one", () => {
+    const container = cascadeRender([
+      { ...pill("A", "price"), y: 100 },
+      { ...pill("B", "price"), y: 110 },
+    ]);
+    const summary = container.querySelector<HTMLElement>(".tp-cluster")!;
+    expect(summary.textContent).toBe("2×");
+  });
+
+  it("stays collapsed while the cluster holds the selected trade, carrying the selected style", () => {
+    // Selection no longer forces a spread: pills hold their exact levels at rest,
+    // and the aggregate wears the selected border so the bracket spine still reads
+    // as tied to something.
+    const container = cascadeRender(
+      [
+        { ...pill("A", "price"), y: 100 },
+        { ...pill("B", "price"), y: 110 },
+      ],
+      { selectedTradeId: "A", focusedPillKey: "A:price" },
+    );
+    const summary = container.querySelector<HTMLElement>(".tp-cluster")!;
+    expect(summary).not.toBeNull();
+    expect(summary.className).toContain("selected");
+    expect(summary.className).not.toContain("dimmed");
+    expect(summary.style.top).toBe("105px"); // still at the cluster mean y
+  });
+
+  it("expands into individual pills only while a member is hovered", () => {
+    const container = cascadeRender(
+      [
+        { ...pill("A", "price"), y: 100 },
+        { ...pill("B", "price"), y: 110 },
+      ],
+      { selectedTradeId: "A", hoveredPillKey: "A:price" },
+    );
+    expect(container.querySelector(".tp-cluster")).toBeNull();
+    const tops = Array.from(container.querySelectorAll<HTMLElement>(".trade-pill")).map((n) => n.style.top);
+    expect(tops).toEqual(["93px", "117px"]);
+  });
+
+  it("keeps a cluster expanded while a member has a staged drag (Apply must stay reachable)", () => {
+    const container = cascadeRender([
+      { ...pill("A", "price"), y: 100, changed: true },
+      { ...pill("B", "price"), y: 110 },
+    ]);
+    expect(container.querySelector(".tp-cluster")).toBeNull();
+    expect(container.querySelectorAll(".trade-pill")).toHaveLength(2);
+  });
+
+  it("registers the summary under its first member's key so hover/click hit-tests reach it", () => {
+    const nodes = { current: new Map<string, HTMLDivElement>() };
+    cascadeRender(
+      [
+        { ...pill("A", "price"), y: 100 },
+        { ...pill("B", "price"), y: 110 },
+      ],
+      { tradePillNodesRef: nodes },
+    );
+    expect(Array.from(nodes.current.keys())).toEqual(["A:price"]);
+  });
+
+  it("clamps a collapsed summary at the top of the pane", () => {
+    const container = cascadeRender([
+      { ...pill("A", "price"), y: 5 },
+      { ...pill("B", "price"), y: 10 },
+    ]);
+    expect(container.querySelector<HTMLElement>(".tp-cluster")!.style.top).toBe("11px");
+  });
+
+  it("dims the summary while some other trade is selected", () => {
+    const container = cascadeRender(
+      [
+        { ...pill("A", "price"), y: 100 },
+        { ...pill("B", "price"), y: 110 },
+        { ...pill("C", "price"), y: 300 },
+      ],
+      { selectedTradeId: "C" },
+    );
+    expect(container.querySelector<HTMLElement>(".tp-cluster")!.className).toContain("dimmed");
+  });
+});
+
+
+// The bracket spine is placed by MEASURING these pills (chartGeometry tradeSpineX).
+// Selection repaints the bracket synchronously from a signal subscriber — before
+// React has committed the expanded face — so the pills themselves must ask for a
+// repaint once their faces are laid out, or the spine keeps the compact width and
+// the expanded pill covers it and its %/R:R badges.
+describe("TradePills bracket repaint after layout", () => {
+  it("asks for a repaint once its faces are laid out", () => {
+    const onFacesLaidOut = vi.fn();
+    renderPills({ pills: [pill("A", "price")], onFacesLaidOut });
+    expect(onFacesLaidOut).toHaveBeenCalled();
+  });
+
+  it("asks again when a face changes width (compact → expanded)", () => {
+    const onFacesLaidOut = vi.fn();
+    const { rerender } = render(
+      <TradePills
+        cellId="cell-1"
+        pills={[pill("A", "price")]}
+        precisionRef={{ current: 4 }}
+        tradesRef={{ current: [tradeView()] }}
+        pendingRef={{ current: {} as Record<string, PendingEdit> }}
+        tradePillNodesRef={{ current: new Map() }}
+        hoveredPillKey={null}
+        focusedPillKey={null}
+        selectedTradeId={null}
+        axisWidth={60}
+        onFacesLaidOut={onFacesLaidOut}
+      />,
+    );
+    onFacesLaidOut.mockClear();
+    rerender(
+      <TradePills
+        cellId="cell-1"
+        pills={[pill("A", "price")]}
+        precisionRef={{ current: 4 }}
+        tradesRef={{ current: [tradeView()] }}
+        pendingRef={{ current: {} as Record<string, PendingEdit> }}
+        tradePillNodesRef={{ current: new Map() }}
+        hoveredPillKey={null}
+        focusedPillKey={null}
+        selectedTradeId="A"
+        axisWidth={60}
+        onFacesLaidOut={onFacesLaidOut}
+      />,
+    );
+    expect(onFacesLaidOut).toHaveBeenCalled();
+  });
+});
+
+// --- replay wiring -----------------------------------------------------------
+
+const OPENED_MS = Date.UTC(2021, 4, 17, 9, 30); // real date: 17 May 2021, 09:30 UTC
+
+const tradeView = (over: Partial<TradeView> = {}): TradeView => ({
+  kind: "position",
+  id: "A",
+  epic: "US100",
+  side: "buy",
+  quantity: 1,
+  priceLevel: 1.2,
+  stop: 1.1,
+  takeProfit: 1.3,
+  upnl: 0,
+  openedAt: OPENED_MS,
+  expiresAt: null,
+  leverage: null,
+  margin: null,
+  source: "manual",
+  ...over,
+});
+
+type MergedLevels = { price: number | null; stop: number | null; takeProfit: number | null };
+
+// Typed signatures rather than bare vi.fn(): the assertions index into
+// mock.calls, which is a never-tuple without them.
+const replayActions = () => ({
+  apply: vi.fn<(t: TradeView, merged: MergedLevels) => Promise<void>>(async () => {}),
+  close: vi.fn<(t: TradeView) => Promise<void>>(async () => {}),
+  cancel: vi.fn<(t: TradeView) => Promise<void>>(async () => {}),
+});
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+  // maskedReplaySignal is module-global: an armed entry left behind would mask
+  // every later test in this file.
+  maskedReplaySignal.set(disarmMaskedReplay(maskedReplaySignal.value, "cell-1"));
+  // Same for the replaying-cells registry and the app-wide trade selection.
+  setCellReplaying("cell-1", false);
+  setTradeSelected(null);
+});
+
+describe("TradePills actions override (replay)", () => {
+  it("routes Apply through the injected action and makes NO dealing call", async () => {
+    const actions = replayActions();
+    const trade = tradeView();
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "price"), changed: true }],
+      tradesRef: { current: [trade] },
+      actions,
+    });
+    fireEvent.click(container.querySelector<HTMLElement>(".tp-apply")!);
+    await vi.waitFor(() => expect(actions.apply).toHaveBeenCalledTimes(1));
+    expect(actions.apply.mock.calls[0][0]).toBe(trade);
+    // The whole point: a replay edit never reaches the account.
+    expect(dealing.applyEditedLevels).not.toHaveBeenCalled();
+    expect(dealing.refreshTrades).not.toHaveBeenCalled();
+  });
+
+  it("routes an SL/TP remove through the injected action and makes NO dealing call", async () => {
+    const actions = replayActions();
+    const { container } = renderPills({
+      pills: [pill("A", "stop")],
+      tradesRef: { current: [tradeView()] },
+      selectedTradeId: "A",
+      actions,
+    });
+    fireEvent.click(container.querySelector<HTMLElement>(".tp-remove")!);
+    await vi.waitFor(() => expect(actions.apply).toHaveBeenCalledTimes(1));
+    expect(actions.apply.mock.calls[0][1].stop).toBeNull(); // the cleared level
+    expect(dealing.applyEditedLevels).not.toHaveBeenCalled();
+    expect(dealing.refreshTrades).not.toHaveBeenCalled();
+  });
+
+  it("routes a position Close through the injected action and makes NO dealing call", async () => {
+    const actions = replayActions();
+    const trade = tradeView();
+    const { container } = renderPills({
+      pills: [pill("A", "price")],
+      tradesRef: { current: [trade] },
+      selectedTradeId: "A",
+      actions,
+    });
+    fireEvent.click(container.querySelector<HTMLElement>(".tp-close")!);
+    // The ✕ raises a confirm; run its callback the way the modal would.
+    await confirms.requestConfirm.mock.calls[0][0].onConfirm();
+    expect(actions.close).toHaveBeenCalledWith(trade);
+    expect(actions.cancel).not.toHaveBeenCalled();
+    expect(dealing.closePosition).not.toHaveBeenCalled();
+    expect(dealing.refreshTrades).not.toHaveBeenCalled();
+  });
+
+  it("routes an order Cancel through the injected action and makes NO dealing call", async () => {
+    const actions = replayActions();
+    const trade = tradeView({ kind: "order" });
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "price"), kind: "order" }],
+      tradesRef: { current: [trade] },
+      selectedTradeId: "A",
+      actions,
+    });
+    fireEvent.click(container.querySelector<HTMLElement>(".tp-close")!);
+    await confirms.requestConfirm.mock.calls[0][0].onConfirm();
+    expect(actions.cancel).toHaveBeenCalledWith(trade);
+    expect(actions.close).not.toHaveBeenCalled();
+    expect(dealing.cancelWorkingOrder).not.toHaveBeenCalled();
+    expect(dealing.refreshTrades).not.toHaveBeenCalled();
+  });
+
+  it("still deals against the account when no actions are supplied", async () => {
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "price"), changed: true }],
+      tradesRef: { current: [tradeView()] },
+    });
+    fireEvent.click(container.querySelector<HTMLElement>(".tp-apply")!);
+    await vi.waitFor(() => expect(dealing.applyEditedLevels).toHaveBeenCalledTimes(1));
+    expect(dealing.refreshTrades).toHaveBeenCalled();
+  });
+});
+
+// What pins the `actions` override at ChartCore's call site. Deleting that
+// ternary leaves the suite above green — every replay pill would then Apply /
+// Close / Cancel straight to the broker — so the component itself refuses the
+// account when its cell is replaying, and these tests are what would fail.
+describe("TradePills fails CLOSED when a replaying cell supplies no actions", () => {
+  it("makes no dealing call on Apply, and says why", async () => {
+    setCellReplaying("cell-1", true);
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "price"), changed: true }],
+      tradesRef: { current: [tradeView()] },
+    });
+    fireEvent.click(container.querySelector<HTMLElement>(".tp-apply")!);
+    await vi.waitFor(() => expect(toasts.toast).toHaveBeenCalled());
+    expect(dealing.applyEditedLevels).not.toHaveBeenCalled();
+    expect(dealing.refreshTrades).not.toHaveBeenCalled();
+  });
+
+  it("makes no dealing call on Close", async () => {
+    setCellReplaying("cell-1", true);
+    const { container } = renderPills({
+      pills: [pill("A", "price")],
+      tradesRef: { current: [tradeView()] },
+      selectedTradeId: "A",
+    });
+    fireEvent.click(container.querySelector<HTMLElement>(".tp-close")!);
+    await confirms.requestConfirm.mock.calls[0][0].onConfirm();
+    expect(dealing.closePosition).not.toHaveBeenCalled();
+    expect(dealing.refreshTrades).not.toHaveBeenCalled();
+  });
+
+  it("makes no dealing call on an order Cancel", async () => {
+    setCellReplaying("cell-1", true);
+    const { container } = renderPills({
+      pills: [{ ...pill("A", "price"), kind: "order" }],
+      tradesRef: { current: [tradeView({ kind: "order" })] },
+      selectedTradeId: "A",
+    });
+    fireEvent.click(container.querySelector<HTMLElement>(".tp-close")!);
+    await confirms.requestConfirm.mock.calls[0][0].onConfirm();
+    expect(dealing.cancelWorkingOrder).not.toHaveBeenCalled();
+    expect(dealing.refreshTrades).not.toHaveBeenCalled();
+  });
+});
+
+// The real order ticket is a REAL-MONEY form on a live quote. A pill belonging to
+// a replay ledger must never be the thing that opens it (see lib/signals
+// setTradeSelected -> tradePanelOpen, and App's trade sidebar).
+describe("TradePills never opens the real order ticket for a replaying cell", () => {
+  it("does not open the ticket when removing a replay SL", async () => {
+    setCellReplaying("cell-1", true);
+    const actions = replayActions();
+    const { container } = renderPills({
+      pills: [pill("rp1", "stop")],
+      tradesRef: { current: [tradeView({ id: "rp1" })] },
+      selectedTradeId: "rp1",
+      actions,
+    });
+    fireEvent.click(container.querySelector<HTMLElement>(".tp-remove")!);
+    await vi.waitFor(() => expect(actions.apply).toHaveBeenCalledTimes(1));
+    expect(tradePanelOpen.value).toBe(false);
+  });
+});
+
+// A resting order's expiry is the one CALENDAR DATE the pills still render, and it
+// rides both faces (compact and expanded). Under a masked replay session it must
+// come through the cell's own clock as a day number: over-masking costs a label,
+// under-masking costs the session.
+describe("TradePills date masking", () => {
+  const DAY_MS = 86_400_000;
+  const arm = (cellId: string) =>
+    maskedReplaySignal.set(
+      armMaskedReplay(maskedReplaySignal.value, {
+        cellId,
+        startMs: OPENED_MS - 2 * DAY_MS, // the order is placed on Day 3
+        clock: "24h",
+        timezone: "UTC",
+      }),
+    );
+  const orderPills = (over: Partial<Parameters<typeof TradePills>[0]> = {}) =>
+    renderPills({
+      pills: [{ ...pill("A", "price"), kind: "order" as const, expiresAt: OPENED_MS + DAY_MS }],
+      tradesRef: { current: [tradeView({ kind: "order", expiresAt: OPENED_MS + DAY_MS })] },
+      ...over,
+    });
+
+  it("masks the expiry on a compact order pill", () => {
+    arm("cell-1");
+    const { container } = orderPills();
+    const text = container.querySelector<HTMLElement>(".trade-pill")!.textContent ?? "";
+    expect(text).toContain("Day 4");
+    expect(text).not.toMatch(/2021|May/);
+  });
+
+  it("masks the expiry on the expanded face too", () => {
+    arm("cell-1");
+    const { container } = orderPills({ selectedTradeId: "A" });
+    const text = container.querySelector<HTMLElement>(".trade-pill")!.textContent ?? "";
+    expect(text).toContain("Day 4");
+    expect(text).not.toMatch(/2021|May/);
+  });
+
+  it("keeps a LIVE sibling cell's real expiry when another cell is masked", () => {
+    arm("other-cell");
+    const { container } = orderPills();
+    const text = container.querySelector<HTMLElement>(".trade-pill")!.textContent ?? "";
+    expect(text).not.toContain("Day 4");
+    maskedReplaySignal.set(disarmMaskedReplay(maskedReplaySignal.value, "other-cell"));
+  });
+});

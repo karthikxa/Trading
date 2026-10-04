@@ -1,0 +1,847 @@
+// TradingView-style drawing settings modal, opened from a drawing's right-click
+// "Settings…" item or a double-click on the drawing (drawingSettingsRequest ->
+// App mounts this). Reads the live overlay via the focused cell's OverlayManager
+// and writes changes back through it (which persists). Tabs mirror TV:
+//   Style       — line color / width / style; Extend (trend lines only)
+//   Coordinates — each anchor point's price (+ timestamp, read-only date label)
+//   Visibility  — whether the drawing is drawn
+// The pattern overlay is the exception: its geometry comes from the copied
+// candles, so it gets its own Style tab (shape / colour / opacity / score) and
+// neither a Text nor a Coordinates tab — its anchor price is not something the
+// drawing reads back (it is fitted to the candles under it, or to the placement
+// a drag froze), so a price field there would be a control that does nothing.
+//
+// Edits preview live on the chart; Cancel/Escape restores the opening snapshot.
+// The Text tab + middle-point / price-labels are a planned second pass (the
+// built-in overlays have fixed figure rendering); the tab shell is present so the
+// layout matches TV, with those fields noted as coming soon.
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import FloatingModal from "./components/FloatingModal";
+import type { LineType } from "klinecharts";
+import type { DeepPartial, OverlayStyle } from "klinecharts";
+import { type OverlayManager, asDrawingExtra } from "./lib/overlays";
+import ColorLineStylePicker, { type LineStyleOpt } from "./ColorLineStylePicker";
+import { hexToRgba, rgbaToHexAlpha } from "./lib/lineStyle";
+import VisibilityTab from "./VisibilityTab";
+import { type VisibilityModel, defaultVisibility } from "./lib/visibility";
+import FibLevelsEditor from "./components/FibLevelsEditor";
+import { toast } from "./lib/notify";
+import InfoTip from "./components/InfoTip";
+import Tooltip from "./components/Tooltip";
+import { useMaskedReplay } from "./lib/useMaskedReplay";
+import { maskedTimeLabel } from "./lib/timeFormat";
+import { type FibConfig, asFibConfig } from "./lib/fibConfig";
+import { isFibOverlay } from "./lib/drawTools";
+import { asGhostStyle, type GhostStyle } from "./lib/patternGhost";
+import { asTradeConfig, TRADE_DEFAULTS, type TradeConfig } from "./lib/tradePlan";
+import {
+  loadDrawingDefault,
+  saveDrawingDefault,
+  clearDrawingDefault,
+  loadDrawingPresets,
+  saveDrawingPreset,
+  deleteDrawingPreset,
+  type SavedDrawingConfig,
+} from "./lib/persist";
+
+interface Props {
+  overlays: OverlayManager;
+  id: string;
+  // The modal may RE-CREATE the overlay (Extend changes its klinecharts name →
+  // new id). It calls this so the opener (the drawingSettingsRequest signal) keeps
+  // pointing at the live overlay.
+  onIdChange: (id: string) => void;
+  onClose: () => void;
+}
+
+type Tab = "style" | "text" | "coordinates" | "visibility";
+
+// Trend-line family whose endpoints define a line we can "extend" by swapping the
+// built-in (segment = no extend, rayLine = one side, straightLine = both).
+const TREND = new Set(["segment", "rayLine", "straightLine"]);
+const EXTEND_OF: Record<string, "none" | "ray" | "both"> = {
+  segment: "none",
+  rayLine: "ray",
+  straightLine: "both",
+};
+
+// Friendly modal title per overlay name (falls back to the raw name).
+const TITLES: Record<string, string> = {
+  segment: "Trend line",
+  rayLine: "Ray",
+  straightLine: "Trend line",
+  horizontalStraightLine: "Horizontal line",
+  verticalStraightLine: "Vertical line",
+  rect: "Rectangle",
+  priceLine: "Price line",
+  priceChannelLine: "Parallel channel",
+  fibonacciLine: "Fib retracement",
+  fibChannel: "Fib channel",
+  patternGhost: "Pattern overlay",
+  tradeBox: "Trade box",
+};
+
+// The trade-planning drawing, which paints its own labels off a TradeConfig.
+const TRADE_NAME = "tradeBox";
+
+// The colour a ghost falls back to when the user switches it off the chart's
+// up/down colours: neutral, so one flat ghost reads apart from real candles.
+const GHOST_FLAT_COLOR = "#9598a1";
+
+export default function DrawingSettings({ overlays, id, onIdChange, onClose }: Props) {
+  // Live id (changes if Extend recreates the overlay). All reads/writes use this;
+  // every handler below is recreated each render, so it closes over the current id.
+  const [curId, setCurId] = useState(id);
+
+  // A rehydrate while this modal is open (live-feed reload, cross-tab layout
+  // sync) re-mints every overlay id; without following the remap, every control
+  // here keeps writing to a dead id and silently stops applying. onIdChange
+  // keeps the opener's signal pointing at the live overlay too, exactly as the
+  // Extend recreate path does.
+  useEffect(() => {
+    return overlays.onIdRemap((map) => {
+      const next = map.get(curId);
+      if (next) {
+        setCurId(next);
+        onIdChange(next);
+      }
+    });
+  }, [overlays, curId, onIdChange]);
+
+  // Opening snapshot for Cancel — captured ONCE via the lazy state initializer (by
+  // value), so it survives an Extend recreate (which cancel re-applies by recreating
+  // if the name changed).
+  const [original] = useState(() => overlays.getDrawing(id));
+
+  const live = overlays.getDrawing(curId);
+  const name = live?.name ?? original?.name ?? "";
+  const title = TITLES[name] ?? "Drawing";
+  const isTrend = TREND.has(name);
+  const isRect = name === "rect";
+  const isFib = isFibOverlay(name);
+  // The pattern overlay derives its whole geometry from the copied candles, so
+  // none of the generic line/text controls apply to it: it gets its own Style
+  // tab (shape, colour, opacity, score) and no Text tab at all.
+  const isGhost = name === "patternGhost";
+  // Long/Short Position. Its look is fixed (green reward, red risk, one entry
+  // line), so the Style tab carries the trade's OWN settings instead: which
+  // labels it paints, and the account the money figures are sized against.
+  const isTrade = name === TRADE_NAME;
+
+  const line = (live?.styles?.line ?? {}) as Partial<{ color: string; size: number; style: LineType }>;
+  const poly = (live?.styles?.polygon ?? {}) as Partial<{ color: string; borderColor: string; borderSize: number }>;
+  const fill0 = rgbaToHexAlpha(poly.color ?? "rgba(41, 98, 255, 0.12)");
+  const [tab, setTab] = useState<Tab>("style");
+  const [color, setColor] = useState(line.color ?? "#2962ff");
+  const [size, setSize] = useState<number>(line.size ?? 1);
+  const [style, setStyle] = useState<LineType>(line.style ?? 'solid');
+  // Rectangle fill (hex + opacity) and border (hex + width) — separate from `line`.
+  const [fillHex, setFillHex] = useState(fill0.hex);
+  const [fillAlpha, setFillAlpha] = useState(fill0.alpha);
+  const [borderHex, setBorderHex] = useState(poly.borderColor ?? "#2962ff");
+  const [borderSize, setBorderSize] = useState<number>(poly.borderSize ?? 1);
+  const [extend, setExtend] = useState<"none" | "ray" | "both">(EXTEND_OF[name] ?? "none");
+  const [visible, setVisible] = useState<boolean>(live?.visible ?? true);
+
+  // Visibility tab extras (from extendData): price-axis tag toggle, and the set of
+  // intervals the drawing shows on (null = every interval).
+  const extra0 = asDrawingExtra(live?.extendData);
+  const [priceLabels, setPriceLabels] = useState<boolean>(extra0.priceLabels ?? true);
+  // Text tab (trend lines only — the overridden custom overlays render these).
+  const [text, setText] = useState<string>(extra0.text ?? "");
+  const [showMiddle, setShowMiddle] = useState<boolean>(extra0.showMiddle ?? false);
+  const [vis, setVis] = useState<VisibilityModel>(extra0.visibility ?? defaultVisibility());
+  // Fib config (fibonacciLine + fibChannel) — levels/extend/reverse/trend/labels.
+  const [fib, setFib] = useState<FibConfig>(() => asFibConfig(extra0.fib));
+  // Pattern overlay look (patternGhost only).
+  const [ghostStyle, setGhostStyleState] = useState<GhostStyle>(() => asGhostStyle(extra0.ghostStyle));
+  // Trade box labels + account overrides (the tradeBox drawing only).
+  const [trade, setTradeState] = useState<TradeConfig>(() => asTradeConfig(extra0.trade));
+
+  // "Defaults ▾" footer menu: this drawing type's default + named templates (global,
+  // keyed by overlay name). Mirrors the indicator settings Defaults menu.
+  const [defOpen, setDefOpen] = useState(false);
+  const [naming, setNaming] = useState(false); // inline "Save as template…" field
+  const [presetName, setPresetName] = useState("");
+  const defMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!defOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (defMenuRef.current && !defMenuRef.current.contains(e.target as Node)) {
+        setDefOpen(false);
+        setNaming(false);
+      }
+    };
+    // Capture phase: the modal body stops mousedown propagation, so a document
+    // listener must capture to see clicks inside the modal.
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [defOpen]);
+
+  // Coordinates: editable price per point, with the timestamp shown as a date.
+  const [points, setPoints] = useState(() =>
+    (live?.points ?? []).map((p) => ({ timestamp: p.timestamp, value: p.value })),
+  );
+  const dateFmt = useMemo(
+    () =>
+      new Intl.DateTimeFormat(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    [],
+  );
+  // A drawing placed during a masked replay session is anchored to REPLAYED bars,
+  // so its coordinates ARE the hidden period's dates. Relabel them the way that
+  // cell's own axis does ("Day 3 09:30"); drawing stays fully usable, only the
+  // read-only date label changes.
+  const maskedReplay = useMaskedReplay();
+  const coordTime = (ts: number) =>
+    maskedReplay
+      ? maskedTimeLabel(maskedReplay.startMs, ts, maskedReplay.clock, maskedReplay.timezone)
+      : dateFmt.format(ts);
+
+  function applyStyle(next: Partial<{ color: string; size: number; style: LineType }>) {
+    const merged = { color, size, style, ...next };
+    setColor(merged.color);
+    setSize(merged.size);
+    setStyle(merged.style);
+    overlays.setStyle(curId, {
+      line: { color: merged.color, size: merged.size, style: merged.style },
+    } as DeepPartial<OverlayStyle>);
+  }
+
+  function applyRectFill(next: Partial<{ hex: string; alpha: number }>) {
+    const hex = next.hex ?? fillHex;
+    const alpha = next.alpha ?? fillAlpha;
+    setFillHex(hex);
+    setFillAlpha(alpha);
+    overlays.setStyle(curId, { polygon: { color: hexToRgba(hex, alpha) } } as DeepPartial<OverlayStyle>);
+  }
+  function applyRectBorder(next: Partial<{ color: string; size: number }>) {
+    const c = next.color ?? borderHex;
+    const s = next.size ?? borderSize;
+    setBorderHex(c);
+    setBorderSize(s);
+    overlays.setStyle(curId, { polygon: { borderColor: c, borderSize: s } } as DeepPartial<OverlayStyle>);
+  }
+
+  function applyFib(next: FibConfig) {
+    setFib(next);
+    overlays.setFibConfig(curId, next);
+  }
+
+  function applyGhostStyle(next: Partial<GhostStyle>) {
+    const merged = { ...ghostStyle, ...next };
+    setGhostStyleState(merged);
+    overlays.setGhostStyle(curId, merged);
+  }
+
+  function applyTrade(next: Partial<TradeConfig>) {
+    const merged = { ...trade, ...next };
+    setTradeState(merged);
+    overlays.setTradeConfig(curId, merged);
+  }
+
+  function applyExtend(mode: "none" | "ray" | "both") {
+    setExtend(mode);
+    const newId = overlays.setExtend(curId, mode);
+    if (newId && newId !== curId) {
+      setCurId(newId);
+      onIdChange(newId);
+    }
+  }
+
+  function applyVisible(v: boolean) {
+    setVisible(v);
+    overlays.setVisible(curId, v);
+  }
+
+  function applyPriceLabels(v: boolean) {
+    setPriceLabels(v);
+    overlays.setPriceLabels(curId, v);
+  }
+
+  function applyText(v: string) {
+    setText(v);
+    overlays.setText(curId, v);
+  }
+
+  function applyShowMiddle(v: boolean) {
+    setShowMiddle(v);
+    overlays.setShowMiddle(curId, v);
+  }
+
+  function applyVis(next: VisibilityModel) {
+    setVis(next);
+    overlays.setVisibilityModel(curId, next);
+  }
+
+  function applyPointValue(i: number, value: number) {
+    const next = points.map((p, j) => (j === i ? { ...p, value } : p));
+    setPoints(next);
+    overlays.updatePoints(curId, next);
+  }
+
+  // Apply a config to the open drawing AND refresh local state so the controls
+  // reflect it. `null` = this name's default (or no-op if none saved). Note the
+  // setters: `setStyle` is the local line-style state, `setVis` the visibility state.
+  function applyConfigHere(cfg: SavedDrawingConfig | null) {
+    if (!cfg) return;
+    overlays.applyDrawingConfig(curId, cfg);
+    if (cfg.line?.color !== undefined) setColor(cfg.line.color);
+    if (cfg.line?.size !== undefined) setSize(cfg.line.size);
+    if (cfg.line?.style !== undefined) setStyle(cfg.line.style);
+    if (cfg.polygon?.color !== undefined) {
+      const { hex, alpha } = rgbaToHexAlpha(cfg.polygon.color);
+      setFillHex(hex);
+      setFillAlpha(alpha);
+    }
+    if (cfg.polygon?.borderColor !== undefined) setBorderHex(cfg.polygon.borderColor);
+    if (cfg.polygon?.borderSize !== undefined) setBorderSize(cfg.polygon.borderSize);
+    if (cfg.fib !== undefined) setFib(cfg.fib);
+    if (cfg.ghostStyle !== undefined) setGhostStyleState(asGhostStyle(cfg.ghostStyle));
+    if (cfg.showMiddle !== undefined) setShowMiddle(cfg.showMiddle);
+    if (cfg.priceLabels !== undefined) setPriceLabels(cfg.priceLabels);
+    if (cfg.visibility !== undefined) setVis(cfg.visibility);
+  }
+
+  function resetToDefault() {
+    applyConfigHere(loadDrawingDefault(name));
+    setDefOpen(false);
+  }
+  function saveAsDefault() {
+    const cfg = overlays.getDrawingConfig(curId); // LIVE overlay → correct name key
+    if (cfg) saveDrawingDefault(name, cfg);
+    setDefOpen(false);
+    toast(`Saved ${title} default`);
+  }
+  function commitPreset() {
+    const nm = presetName.trim();
+    if (!nm) return;
+    const cfg = overlays.getDrawingConfig(curId);
+    if (cfg) saveDrawingPreset(name, nm, cfg);
+    setNaming(false);
+    setPresetName("");
+    setDefOpen(false);
+    toast(`Saved template "${nm}"`);
+  }
+  function applyPreset(nm: string) {
+    const cfg = loadDrawingPresets(name)[nm];
+    if (cfg) applyConfigHere(cfg);
+    setDefOpen(false);
+  }
+  function removePreset(nm: string) {
+    deleteDrawingPreset(name, nm);
+    // Re-read by toggling the menu (same idiom as the indicator menu).
+    setDefOpen(false);
+    setTimeout(() => setDefOpen(true), 0);
+  }
+
+  function cancel() {
+    // Restore the opening snapshot. If Extend changed the overlay's name, the
+    // current overlay is a different one (different id) — remove it and recreate
+    // the original; otherwise just push the original style/points/visible back.
+    const o = original;
+    if (o) {
+      if (o.name !== overlays.getDrawing(curId)?.name) {
+        overlays.remove(curId);
+        overlays.placeDrawing({
+          name: o.name,
+          points: o.points,
+          styles: o.styles,
+          lock: o.lock,
+          visible: o.visible,
+          zLevel: o.zLevel,
+          extendData: o.extendData,
+        });
+      } else {
+        const oExtra = asDrawingExtra(o.extendData);
+        overlays.setStyle(curId, o.styles ?? {});
+        overlays.updatePoints(curId, o.points);
+        overlays.setVisibilityModel(curId, oExtra.visibility ?? defaultVisibility());
+        overlays.setPriceLabels(curId, oExtra.priceLabels ?? true);
+        overlays.setText(curId, oExtra.text ?? "");
+        overlays.setShowMiddle(curId, oExtra.showMiddle ?? false);
+        if (isFibOverlay(o.name)) overlays.setFibConfig(curId, asFibConfig(oExtra.fib));
+        if (o.name === "patternGhost") overlays.setGhostStyle(curId, asGhostStyle(oExtra.ghostStyle));
+        if (o.name === TRADE_NAME) overlays.setTradeConfig(curId, asTradeConfig(oExtra.trade));
+        overlays.setVisible(curId, o.visible);
+      }
+    }
+    onClose();
+  }
+
+  if (!live && !original) return null;
+
+  const foot = (
+    <>
+      {/* TV-style "Defaults" menu: this drawing type's default + named templates,
+          all global. Pinned left opposite Cancel/Ok. */}
+      <div className="menu ind-def-menu" ref={defMenuRef}>
+        <span className="ind-row-head">
+          <button className={`ghost ${defOpen ? "on" : ""}`} onClick={() => setDefOpen((v) => !v)}>
+            Defaults ▾
+          </button>
+          <InfoTip
+            title="Defaults"
+            text="Save these settings as the default for this drawing type, or store named templates."
+          />
+        </span>
+        {defOpen && (
+          <div className="dropdown ind-def-dropdown">
+            <ul>
+              <li onClick={resetToDefault}>Reset settings</li>
+              <li onClick={saveAsDefault}>Save as default</li>
+              {loadDrawingDefault(name) && (
+                <li
+                  onClick={() => {
+                    clearDrawingDefault(name);
+                    setDefOpen(false);
+                    toast(`Cleared ${title} default`);
+                  }}
+                >
+                  Clear default
+                </li>
+              )}
+              <li className="sep" />
+              {Object.keys(loadDrawingPresets(name)).map((nm) => (
+                <li key={nm} className="ind-def-preset">
+                  <Tooltip content={`Apply "${nm}"`}>
+                    <span onClick={() => applyPreset(nm)}>{nm}</span>
+                  </Tooltip>
+                  <Tooltip content={`Delete "${nm}"`}>
+                    <button
+                      className="ind-def-del"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removePreset(nm);
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </Tooltip>
+                </li>
+              ))}
+              {naming ? (
+                <li className="ind-def-name">
+                  <input
+                    autoFocus
+                    placeholder="Template name…"
+                    value={presetName}
+                    onChange={(e) => setPresetName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitPreset();
+                      if (e.key === "Escape") {
+                        setNaming(false);
+                        setPresetName("");
+                      }
+                    }}
+                  />
+                  <button onClick={commitPreset}>Save</button>
+                </li>
+              ) : (
+                <li onClick={() => setNaming(true)}>Save as template…</li>
+              )}
+            </ul>
+          </div>
+        )}
+      </div>
+      <button className="ghost" onClick={cancel}>
+        Cancel
+      </button>
+      <button onClick={onClose}>Ok</button>
+    </>
+  );
+
+  return (
+    <FloatingModal
+      className={`ind-settings${isFib ? " ind-settings-fib" : ""}`}
+      title={<strong>{title}</strong>}
+      onClose={cancel}
+      closeLabel="Cancel"
+      footer={foot}
+    >
+        <div className="ind-tabs">
+          {((isGhost
+            ? ["style", "visibility"]
+            : ["style", "text", "coordinates", "visibility"]) as Tab[]).map((t) => (
+            <button key={t} className={`ind-tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>
+              {t === "style"
+                ? "Style"
+                : t === "text"
+                  ? "Text"
+                  : t === "coordinates"
+                    ? "Coordinates"
+                    : "Visibility"}
+            </button>
+          ))}
+        </div>
+
+        <div className="ind-body">
+          {tab === "style" && (
+            <>
+              {isTrade ? (
+                <>
+                  {/* Which labels the drawing paints. R:R and the two
+                      percentages are always on; these are the extras, off by
+                      default because all of them at once buries the chart. */}
+                  <label className="ind-check" htmlFor="trade-price">
+                    <input
+                      id="trade-price"
+                      type="checkbox"
+                      checked={trade.showPrice}
+                      onChange={(e) => applyTrade({ showPrice: e.target.checked })}
+                    />
+                    <span>Show level prices</span>
+                  </label>
+                  <label className="ind-check" htmlFor="trade-points">
+                    <input
+                      id="trade-points"
+                      type="checkbox"
+                      checked={trade.showPoints}
+                      onChange={(e) => applyTrade({ showPoints: e.target.checked })}
+                    />
+                    <span>Show point distance</span>
+                  </label>
+                  <label className="ind-check" htmlFor="trade-money">
+                    <input
+                      id="trade-money"
+                      type="checkbox"
+                      checked={trade.showMoney}
+                      onChange={(e) => applyTrade({ showMoney: e.target.checked })}
+                    />
+                    <span>Show risk in account currency</span>
+                  </label>
+                  <label className="ind-check" htmlFor="trade-duration">
+                    <input
+                      id="trade-duration"
+                      type="checkbox"
+                      checked={trade.showDuration}
+                      onChange={(e) => applyTrade({ showDuration: e.target.checked })}
+                    />
+                    <span>Show span in bars</span>
+                  </label>
+                  <div className="ind-row">
+                    <label htmlFor="trade-account">Account size</label>
+                    <input
+                      id="trade-account"
+                      type="number"
+                      placeholder="Live account"
+                      value={trade.accountSize ?? ""}
+                      onChange={(e) =>
+                        applyTrade({
+                          // Empty ⇒ back to the connected dealing account.
+                          accountSize: e.target.value === "" ? null : Number(e.target.value),
+                        })
+                      }
+                    />
+                    <InfoTip
+                      title="Account size"
+                      text="Leave empty to use the connected dealing account's balance."
+                    />
+                  </div>
+                  <div className="ind-row">
+                    <label htmlFor="trade-risk">Risk per trade %</label>
+                    <input
+                      id="trade-risk"
+                      type="number"
+                      step={0.1}
+                      value={trade.riskPct}
+                      onChange={(e) =>
+                        applyTrade({
+                          // Empty ⇒ the default, like Account size: Number("")
+                          // is 0, which asTradeConfig's ?? would keep forever.
+                          riskPct: e.target.value === "" ? TRADE_DEFAULTS.riskPct : Number(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="ind-row">
+                    <label htmlFor="trade-vpp">Value per point</label>
+                    <input
+                      id="trade-vpp"
+                      type="number"
+                      step={0.01}
+                      value={trade.valuePerPoint}
+                      onChange={(e) =>
+                        applyTrade({
+                          valuePerPoint:
+                            e.target.value === "" ? TRADE_DEFAULTS.valuePerPoint : Number(e.target.value),
+                        })
+                      }
+                    />
+                    <InfoTip
+                      title="Value per point"
+                      text={[
+                        "Account currency won or lost per one point of price movement, per unit of position.",
+                        "1 is right for a CFD quoted in your account currency; the position size is only as correct as this number.",
+                      ]}
+                    />
+                  </div>
+                  <div className="ind-row">
+                    <label htmlFor="trade-currency">Currency</label>
+                    <input
+                      id="trade-currency"
+                      type="text"
+                      placeholder="Live account"
+                      value={trade.currency ?? ""}
+                      onChange={(e) =>
+                        applyTrade({ currency: e.target.value.trim() === "" ? null : e.target.value })
+                      }
+                    />
+                  </div>
+                </>
+              ) : isGhost ? (
+                <>
+                  <div className="ind-row">
+                    <label>Shape</label>
+                    <select
+                      value={ghostStyle.shape}
+                      onChange={(e) =>
+                        applyGhostStyle({ shape: e.target.value as GhostStyle["shape"] })
+                      }
+                    >
+                      <option value="candles">Candles</option>
+                      <option value="line">Close line</option>
+                    </select>
+                  </div>
+                  <div className="ind-row ind-style-row">
+                    <label>Color</label>
+                    <div className="ind-line-controls">
+                      <select
+                        className="ghost-color-mode"
+                        value={ghostStyle.color === "direction" ? "direction" : "flat"}
+                        onChange={(e) =>
+                          applyGhostStyle({
+                            color: e.target.value === "direction" ? "direction" : GHOST_FLAT_COLOR,
+                          })
+                        }
+                      >
+                        <option value="direction">Up / down</option>
+                        <option value="flat">One color</option>
+                      </select>
+                      {ghostStyle.color !== "direction" && (
+                        <ColorLineStylePicker
+                          color={ghostStyle.color}
+                          onColor={(hex) => applyGhostStyle({ color: hex })}
+                        />
+                      )}
+                    </div>
+                  </div>
+                  <div className="ind-row ind-style-row">
+                    <label>Opacity</label>
+                    {/* Same slider the color popover uses elsewhere, lifted into
+                        the row: opacity is the control that matters most here, so
+                        it should not be a click deep. */}
+                    <div className="ind-line-controls clsp-opacity-row">
+                      <input
+                        className="clsp-opacity"
+                        type="range"
+                        min={15}
+                        max={100}
+                        step={5}
+                        value={Math.round(ghostStyle.opacity * 100)}
+                        onChange={(e) => applyGhostStyle({ opacity: Number(e.target.value) / 100 })}
+                      />
+                      <span className="clsp-opacity-val">
+                        {Math.round(ghostStyle.opacity * 100)}%
+                      </span>
+                    </div>
+                  </div>
+                  <label className="ind-check">
+                    <input
+                      type="checkbox"
+                      checked={ghostStyle.score}
+                      onChange={(e) => applyGhostStyle({ score: e.target.checked })}
+                    />
+                    <span>Show match score</span>
+                  </label>
+                </>
+              ) : isRect ? (
+                <>
+                  <div className="ind-row ind-style-row">
+                    <label>Fill</label>
+                    <div className="ind-line-controls">
+                      <ColorLineStylePicker
+                        color={fillHex}
+                        onColor={(hex) => applyRectFill({ hex })}
+                        opacity={fillAlpha}
+                        onOpacity={(a) => applyRectFill({ alpha: a })}
+                      />
+                    </div>
+                  </div>
+                  <div className="ind-row ind-style-row">
+                    <label>Border</label>
+                    <div className="ind-line-controls">
+                      <ColorLineStylePicker
+                        color={borderHex}
+                        onColor={(c) => applyRectBorder({ color: c })}
+                        size={borderSize}
+                        onSize={(s) => applyRectBorder({ size: s })}
+                      />
+                    </div>
+                  </div>
+                </>
+              ) : isFib ? (
+                <>
+                  {/* Shared width + dash for every level line. The chip is TV's
+                      "use one color": picking one recolors EVERY level at once;
+                      the per-level swatches below still override individually. */}
+                  <div className="ind-row ind-style-row">
+                    <label>Lines</label>
+                    <div className="ind-line-controls">
+                      <ColorLineStylePicker
+                        color={color}
+                        onColor={(hex) => {
+                          applyStyle({ color: hex });
+                          applyFib({ ...fib, levels: fib.levels.map((l) => ({ ...l, color: hex })) });
+                        }}
+                        size={size}
+                        onSize={(s) => applyStyle({ size: s })}
+                        lineStyle={style === 'dashed' ? "dashed" : "solid"}
+                        onLineStyle={(s) =>
+                          applyStyle({ style: s === "dashed" ? 'dashed' : 'solid' })
+                        }
+                        lineStyleOptions={["solid", "dashed"] as LineStyleOpt[]}
+                      />
+                    </div>
+                  </div>
+                  <FibLevelsEditor
+                    fib={fib}
+                    onChange={applyFib}
+                    sharedSize={size}
+                    sharedStyle={style === "dashed" ? "dashed" : "solid"}
+                    trendLabel={name === "fibChannel" ? "Width line" : "Trend line"}
+                  />
+                </>
+              ) : (
+                <div className="ind-row ind-style-row">
+                  <label>Line</label>
+                  <div className="ind-line-controls">
+                    {/* klinecharts overlays support Solid / Dashed only (no dotted),
+                        so the picker offers just those two line styles. */}
+                    <ColorLineStylePicker
+                      color={color}
+                      onColor={(hex) => applyStyle({ color: hex })}
+                      size={size}
+                      onSize={(s) => applyStyle({ size: s })}
+                      lineStyle={style === 'dashed' ? "dashed" : "solid"}
+                      onLineStyle={(s) =>
+                        applyStyle({ style: s === "dashed" ? 'dashed' : 'solid' })
+                      }
+                      lineStyleOptions={["solid", "dashed"] as LineStyleOpt[]}
+                    />
+                  </div>
+                </div>
+              )}
+              {isTrend && (
+                <div className="ind-row">
+                  <label>Extend</label>
+                  <select
+                    value={extend}
+                    onChange={(e) => applyExtend(e.target.value as "none" | "ray" | "both")}
+                  >
+                    <option value="none">Don't extend</option>
+                    <option value="ray">Extend right</option>
+                    <option value="both">Extend both</option>
+                  </select>
+                </div>
+              )}
+            </>
+          )}
+
+          {tab === "text" &&
+            (isTrend || isRect || isTrade ? (
+              <>
+                <div className="ind-row ind-style-row">
+                  <label>Label</label>
+                  <input
+                    type="text"
+                    placeholder="Add text…"
+                    value={text}
+                    onChange={(e) => applyText(e.target.value)}
+                    style={{ flex: 1 }}
+                  />
+                </div>
+                {/* Midpoint marker is a line-only affordance; the rectangle centers
+                    its label instead, so no marker toggle there. */}
+                {isTrend && (
+                  <label className="ind-check">
+                    <input
+                      type="checkbox"
+                      checked={showMiddle}
+                      onChange={(e) => applyShowMiddle(e.target.checked)}
+                    />
+                    <span>Show midpoint marker</span>
+                  </label>
+                )}
+              </>
+            ) : (
+              <p className="ind-note">
+                Text labels are available on trend lines, rectangles and trade boxes.
+              </p>
+            ))}
+
+          {tab === "coordinates" && (
+            <>
+              {points.length === 0 && (
+                <p className="ind-note">This drawing has no editable coordinates.</p>
+              )}
+              {points.map((p, i) => (
+                <div className="ind-row" key={i}>
+                  <label>{points.length > 1 ? `Point ${i + 1}` : "Price"}</label>
+                  <div className="ind-line-controls">
+                    <input
+                      type="number"
+                      step="any"
+                      value={p.value ?? ""}
+                      onChange={(e) => applyPointValue(i, Number(e.target.value))}
+                    />
+                    {p.timestamp != null && (
+                      <span className="ind-coord-date">{coordTime(p.timestamp)}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {tab === "visibility" && (
+            <>
+              <label className="ind-check">
+                <input
+                  type="checkbox"
+                  checked={visible}
+                  onChange={(e) => applyVisible(e.target.checked)}
+                />
+                <span>Show on chart</span>
+              </label>
+              {/* A ghost is fitted to the candles under it, so its anchor price
+                  is not a level worth tagging on the axis. */}
+              {!isGhost && (
+                <label className="ind-check">
+                  <input
+                    type="checkbox"
+                    checked={priceLabels}
+                    onChange={(e) => applyPriceLabels(e.target.checked)}
+                  />
+                  <span>Show price label on axis</span>
+                </label>
+              )}
+
+              <VisibilityTab
+                model={vis}
+                onChange={applyVis}
+                showAutoHide
+                currentResolution={overlays.getResolution()}
+              />
+            </>
+          )}
+        </div>
+    </FloatingModal>
+  );
+}

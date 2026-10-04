@@ -1,0 +1,385 @@
+// Inline SVG icons for context-menu items. Inline (not the Material Symbols
+// woff2, which is subset to only 4 glyphs) so any action can have a crisp icon
+// without re-subsetting the font — same approach as the legend's ⋯ button.
+// 16px, 1.5px stroke, currentColor so they inherit the item's hover color.
+
+import type { ReactNode } from "react";
+
+function svg(children: ReactNode): ReactNode {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+      strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {children}
+    </svg>
+  );
+}
+
+// Bell glyph shared by the toolbar's alerts-panel toggle and the on-chart alert
+// tags. Sized per caller (toolbar 16, chart tag 11); currentColor so each inherits
+// its context's color. Standalone (not in MenuIcons) because those are fixed-size.
+export function BellIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M18 8A6 6 0 1 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+    </svg>
+  );
+}
+
+// The four study-mode glyphs, shared by the toolbar's inline buttons and the
+// tight-bar "Study" menu (and its trigger face), so the same mode reads the
+// same everywhere. 2px stroke like the toolbar's other 15px glyphs.
+function study(children: ReactNode, size: number, className?: string) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" width={size} height={size} fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true">
+      {children}
+    </svg>
+  );
+}
+// Rewind: two left-pointing triangles, playing the chart from a point in the
+// PAST, not plain playback.
+export function ReplayIcon({ size = 15, className }: { size?: number; className?: string }) {
+  return study(<><path d="M12 5v14L3 12z" /><path d="M22 5v14L13 12z" /></>, size, className);
+}
+// Rewind clock: run a strategy over past bars.
+export function BacktestIcon({ size = 15, className }: { size?: number; className?: string }) {
+  return study(
+    <><path d="M3 12a9 9 0 1 0 2.6-6.3" /><path d="M3 4v4h4" /><path d="M12 7.5v5l3.5 2" /></>,
+    size, className,
+  );
+}
+// Cell grid: the rule-proximity heatmap's tiles.
+export function HeatmapIcon({ size = 15, className }: { size?: number; className?: string }) {
+  return study(
+    <>
+      <rect x="3.5" y="3.5" width="7" height="7" rx="1.2" />
+      <rect x="13.5" y="3.5" width="7" height="7" rx="1.2" />
+      <rect x="3.5" y="13.5" width="7" height="7" rx="1.2" />
+      <rect x="13.5" y="13.5" width="7" height="7" rx="1.2" />
+    </>,
+    size, className,
+  );
+}
+// Generic "study" face for the collapsed menu when no mode is on: a flask.
+export function StudyIcon({ size = 15, className }: { size?: number; className?: string }) {
+  return study(
+    <><path d="M9 3h6" /><path d="M10 3v6.5L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9.5V3" /><path d="M7.5 15h9" /></>,
+    size, className,
+  );
+}
+
+// Warning triangle shared by the legend's amber ⚠ badge and Tooltip's caveat
+// note. Sized per caller; currentColor so each context sets the amber (or not).
+// The dot is filled rather than stroked so it stays a dot at 11-13px.
+export function WarnTriangleIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3.2 22 20.5H2L12 3.2z" />
+      <line x1="12" y1="10" x2="12" y2="15" />
+      <circle cx="12" cy="17.5" r="0.7" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+// Ruler glyph for the toolbar's Measure toggle. A tilted ruler with tick marks,
+// echoing TradingView's measure tool icon. currentColor so it inherits the button
+// state (accent when armed).
+export function RulerIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="1.8" y="7.8" width="20.4" height="8.4" rx="1.5" transform="rotate(-45 12 12)" />
+      <path d="M8.5 8.5l1.6 1.6M11 6l2.4 2.4M13.5 3.5l1.6 1.6" />
+    </svg>
+  );
+}
+
+// Slope glyph for the angle-ruler toggle: a rising line between two endpoint handles
+// with a little angle arc at the base — reads as "measure the slope / angle". Same
+// currentColor idiom as RulerIcon so it lights up when armed.
+export function SlopeIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 20h16" opacity="0.5" />
+      <path d="M5 19L19 7" />
+      <path d="M5 19a9 9 0 0 0 3.4-4.2" opacity="0.7" />
+      <circle cx="5" cy="19" r="1.9" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="7" r="1.9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+// Zoom-to-range glyph: a magnifier with a small range bracket inside the lens —
+// reads as "zoom into this time span". Same 24x24 / currentColor conventions as
+// RulerIcon/SlopeIcon so it lights up when armed.
+export function ZoomRangeIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="10" cy="10" r="6.5" />
+      <path d="M14.8 14.8L21 21" />
+      <path d="M6.8 10h6.4" opacity="0.85" />
+      <path d="M6.8 8v4M13.2 8v4" opacity="0.85" />
+    </svg>
+  );
+}
+
+// "Find similar": three candles over a repeating wave (the shape recurring).
+export function SimilarSequenceIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 2.5v13M11 3.5v11M17 2.5v13" />
+      <rect x="3.4" y="5" width="3.2" height="6.5" rx="0.6" />
+      <rect x="9.4" y="6.5" width="3.2" height="4.5" rx="0.6" />
+      <rect x="15.4" y="4.5" width="3.2" height="7" rx="0.6" />
+      <path d="M3 20c1.5-1.8 3-1.8 4.5 0s3 1.8 4.5 0 3-1.8 4.5 0 2.2.9 3.5.4" opacity="0.8" />
+    </svg>
+  );
+}
+
+// Select range: candles inside a dashed marquee, nothing more — the pattern
+// panel's arm-the-drag control. CopyPatternIcon adds the paste corner (same
+// gesture, different destination), so this stays the plain selection.
+export function SelectRangeIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4.5" width="18" height="15" rx="1.4" strokeDasharray="2.6 2" />
+      <path d="M8 7.5v9M13 8.5v8M18 7v9.5" />
+      <rect x="6.6" y="9.5" width="2.8" height="4.5" rx="0.5" />
+      <rect x="11.6" y="10.5" width="2.8" height="4" rx="0.5" />
+      <rect x="16.6" y="9" width="2.8" height="5.5" rx="0.5" />
+    </svg>
+  );
+}
+
+// Save as preset: a bookmark ribbon holding a swing path — a selected shape
+// filed into the pattern library.
+export function SavePresetIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4.5L5 21V4a1 1 0 0 1 1-1Z" />
+      <path d="M8 12l2.5-3.5 2.5 2.5 3-4" opacity="0.85" />
+    </svg>
+  );
+}
+
+// Copy pattern: candles inside a dashed marquee — the drag that lifts a shape
+// off the chart. Sibling to SimilarSequenceIcon, which starts from the same
+// gesture but goes looking for matches instead.
+export function CopyPatternIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2.5" y="3" width="14" height="14" rx="1.4" strokeDasharray="2.6 2" />
+      <path d="M6.5 5.5v9M11 5.5v9" />
+      <rect x="5.1" y="7.5" width="2.8" height="4.5" rx="0.5" />
+      <rect x="9.6" y="6.5" width="2.8" height="6" rx="0.5" />
+      <path d="M19 9v10.5H9" strokeDasharray="2.6 2" />
+    </svg>
+  );
+}
+
+// Paste pattern: the copied candles as a ghost (dashed) dropped onto the chart.
+export function PastePatternIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+      strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.5 19h19" opacity="0.55" />
+      <g strokeDasharray="2.4 1.8">
+        <path d="M6.5 3.5v11M11.5 5v10M16.5 3v11" />
+        <rect x="5.1" y="6" width="2.8" height="5.5" rx="0.5" />
+        <rect x="10.1" y="7.5" width="2.8" height="5" rx="0.5" />
+        <rect x="15.1" y="5.5" width="2.8" height="6.5" rx="0.5" />
+      </g>
+    </svg>
+  );
+}
+
+// Horseshoe magnet, angled −45° with detached pole caps (matches the user's
+// reference art). "Filled" look built from thick butt-capped strokes so it
+// still inherits currentColor like every other icon here.
+export function MagnetIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none"
+      stroke="currentColor" strokeWidth="3.8" strokeLinecap="butt"
+      aria-hidden="true">
+      {/* Mirrored horizontally (user preference) — poles point up-right. */}
+      <g transform="translate(24 0) scale(-1 1) rotate(-45 12 12)">
+        <path d="M8.2 9.4v2.8a3.8 3.8 0 0 0 7.6 0V9.4" />
+        <path d="M8.2 4.4v2.6" />
+        <path d="M15.8 4.4v2.6" />
+      </g>
+    </svg>
+  );
+}
+
+// "Strong Magnet": the same angled horseshoe with a lightning bolt striking
+// from the top-right (the magnet-flyout rows pair Weak=plain / Strong=bolt,
+// per the user's reference art).
+export function StrongMagnetIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none"
+      stroke="currentColor" strokeWidth="3.6" strokeLinecap="butt"
+      aria-hidden="true">
+      {/* Mirrored horizontally (user preference) — bolt strikes from top-left. */}
+      <g transform="translate(24 0) scale(-1 1)">
+        <g transform="rotate(-45 13 14) translate(1.6 3.2)">
+          <path d="M8.4 9.4v2.5a3.6 3.6 0 0 0 7.2 0V9.4" />
+          <path d="M8.4 4.8v2.4" />
+          <path d="M15.6 4.8v2.4" />
+        </g>
+        <path fill="currentColor" stroke="none"
+          d="M23 0.6l-7.6 3.6 2.5 1.4-5 4.6 7.9-3.5-2.5-1.4z" />
+      </g>
+    </svg>
+  );
+}
+
+export const MenuIcons = {
+  settings: svg(
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </>,
+  ),
+  // Re-align a pinned pattern ghost: snap-to-the-line.
+  realign: svg(
+    <>
+      <path d="M4 12h16" strokeDasharray="3 2" />
+      <path d="M12 4v4M12 16v4" />
+      <rect x="8.5" y="9" width="7" height="6" rx="1" />
+    </>,
+  ),
+  clone: svg(
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+    </>,
+  ),
+  copy: svg(
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </>,
+  ),
+  bringFront: svg(
+    <>
+      <rect x="4" y="4" width="12" height="12" rx="1.5" />
+      <path d="M16 8h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-2" />
+    </>,
+  ),
+  sendBack: svg(
+    <>
+      <rect x="8" y="8" width="12" height="12" rx="1.5" />
+      <path d="M8 16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2" />
+    </>,
+  ),
+  moveUp: svg(
+    <>
+      <path d="M12 19V5" />
+      <path d="M5 12l7-7 7 7" />
+    </>,
+  ),
+  moveDown: svg(
+    <>
+      <path d="M12 5v14" />
+      <path d="M5 12l7 7 7-7" />
+    </>,
+  ),
+  // Inset: a small framed band inside a larger frame — the mode it names.
+  inset: svg(
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <rect x="6" y="14" width="12" height="3" rx="1" />
+    </>,
+  ),
+  lock: svg(
+    <>
+      <rect x="5" y="11" width="14" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </>,
+  ),
+  unlock: svg(
+    <>
+      <rect x="5" y="11" width="14" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 7.4-2" />
+    </>,
+  ),
+  hide: svg(
+    <>
+      <path d="M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 10 8 10 8a18 18 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+      <path d="M6.6 6.6A18 18 0 0 0 2 12s3 8 10 8a9 9 0 0 0 5.4-1.6" />
+      <path d="M2 2l20 20" />
+    </>,
+  ),
+  show: svg(
+    <>
+      <path d="M2 12s3-8 10-8 10 8 10 8-3 8-10 8-10-8-10-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </>,
+  ),
+  remove: svg(
+    <>
+      <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+    </>,
+  ),
+  paste: svg(
+    <>
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+      <rect x="8" y="2" width="8" height="4" rx="1" />
+    </>,
+  ),
+  // Floppy disk — "save / overwrite this template".
+  save: svg(
+    <>
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+      <path d="M17 21v-8H7v8M7 3v5h8" />
+    </>,
+  ),
+  // Checkmark — "apply this template to the current chart".
+  apply: svg(<path d="M20 6L9 17l-5-5" />),
+  // Star — marks the global, symbol-agnostic default template.
+  star: svg(
+    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14l-5-4.87 6.91-1.01L12 2z" />,
+  ),
+  // Bell — "add alert here" (menu-weight twin of the standalone BellIcon).
+  bell: svg(
+    <>
+      <path d="M18 8A6 6 0 1 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+    </>,
+  ),
+  // Horizontal line with endpoint handles — "draw a horizontal line here".
+  horizontalLine: svg(
+    <>
+      <circle cx="4.5" cy="12" r="1.7" />
+      <circle cx="19.5" cy="12" r="1.7" />
+      <path d="M6.4 12h11.2" />
+    </>,
+  ),
+  // Thick diagonal line — "highlight this trendline".
+  highlight: svg(<path d="M4 19L20 5" strokeWidth="4" />),
+  // Pencil — "drawings" (the eye menu's Hide drawings row).
+  pencil: svg(<path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />),
+  // Pulse line — "indicators" (the eye menu's Hide indicators row).
+  indicator: svg(<path d="M22 12h-4l-3 9L9 3l-3 9H2" />),
+  // Briefcase — "positions" (the eye menu's Hide positions row).
+  positions: svg(
+    <>
+      <rect x="2" y="7" width="20" height="13" rx="2" />
+      <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />
+    </>,
+  ),
+  // Up chevron — "buy limit" (long).
+  chevronUp: svg(<path d="M6 15l6-6 6 6" />),
+  // Down chevron — "sell limit" (short).
+  chevronDown: svg(<path d="M6 9l6 6 6-6" />),
+};

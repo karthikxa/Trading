@@ -1,0 +1,461 @@
+/* ==========================================================================
+   TradingView-Grade Monochrome Theme & AI Model Prediction (Kronos + Laya)
+   ========================================================================== */
+
+/* 1. Global Color Override: Pure Black & White (No Electric Blue) */
+:root {
+  --accent: #f0f3fa !important;
+  --accent-text: #131722 !important;
+  --accent-soft: rgba(255, 255, 255, 0.08) !important;
+}
+
+:root[data-theme="light"],
+[data-theme="light"] {
+  --accent: #131722 !important;
+  --accent-text: #ffffff !important;
+  --accent-soft: rgba(19, 23, 34, 0.08) !important;
+}
+
+/* 2. Fix InfoTip (i) across entire app so it never renders as a filled blue/black box */
+.ind-info,
+.toolbar button.ind-info,
+.toolbar .ind-info,
+.heatmap-panel .ind-info,
+.wfo-label .ind-info,
+.dropdown .ind-info,
+.setting-row .ind-info,
+button.ind-info {
+  background: transparent !important;
+  color: var(--text-dim) !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  margin: 0 0 0 4px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  cursor: help !important;
+  box-shadow: none !important;
+  line-height: 1 !important;
+  vertical-align: middle !important;
+}
+
+.ind-info svg,
+.toolbar button.ind-info svg,
+.toolbar .ind-info svg,
+.heatmap-panel .ind-info svg,
+.wfo-label .ind-info svg,
+.dropdown .ind-info svg {
+  fill: none !important;
+  stroke: currentColor !important;
+  stroke-width: 1.6 !important;
+  width: 13px !important;
+  height: 13px !important;
+}
+
+.ind-info:hover,
+.toolbar button.ind-info:hover,
+.toolbar .ind-info:hover,
+.heatmap-panel .ind-info:hover,
+.wfo-label .ind-info:hover {
+  background: transparent !important;
+  color: var(--text) !important;
+}
+
+/* 3. Segmented Controls & Buttons - High-Contrast Black & White */
+.seg button.seg-on,
+.heatmap-seg button.seg-on,
+.wfo-seg button.seg-on {
+  font-weight: 600 !important;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+:root[data-theme="light"] .seg button.seg-on,
+:root[data-theme="light"] .heatmap-seg button.seg-on,
+:root[data-theme="light"] .wfo-seg button.seg-on,
+[data-theme="light"] .seg button.seg-on,
+[data-theme="light"] .heatmap-seg button.seg-on {
+  background: #131722 !important;
+  color: #ffffff !important;
+}
+
+:root:not([data-theme="light"]) .seg button.seg-on,
+:root:not([data-theme="light"]) .heatmap-seg button.seg-on,
+:root:not([data-theme="light"]) .wfo-seg button.seg-on,
+[data-theme="dark"] .seg button.seg-on,
+[data-theme="dark"] .heatmap-seg button.seg-on {
+  background: #f0f3fa !important;
+  color: #131722 !important;
+}
+
+/* Heatmap dropdown panel polishing */
+.heatmap-panel {
+  min-width: 250px;
+}
+.heatmap-seg button {
+  border-radius: 4px;
+}
+.heatmap-width:focus {
+  outline: none;
+  border-color: var(--text) !important;
+}
+
+/* Active tabs & range indicators in Black / White */
+.bt-htabs button.on,
+.pp-tab.on,
+.subtabs button.on,
+.periods button.on {
+  color: var(--text) !important;
+  border-bottom-color: var(--text) !important;
+}
+.crb-btn.active {
+  color: var(--text) !important;
+  background: var(--hover-strong) !important;
+  font-weight: 600 !important;
+}
+
+/* 4. Left Toolbar AI Family & Trigger Button */
+.draw-sidebar .ds-family.ai-prediction-family {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: 30px;
+}
+
+.draw-sidebar .ds-family .ai-prediction-btn {
+  position: relative;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+
+.draw-sidebar .ds-family .ai-prediction-btn:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.draw-sidebar .ds-family .ai-prediction-btn.on {
+  background: var(--hover-strong) !important;
+  color: var(--text) !important;
+}
+
+/* 5. Left-Side Corner AI Prediction Flyout (TradingView .ds-flyout Style) */
+.draw-sidebar .ds-flyout.ai-flyout {
+  position: fixed;
+  z-index: 1000;
+  width: 310px;
+  max-width: 88vw;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  animation: aiFlyoutSlide 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  font-family: var(--font-common, 'Inter', sans-serif);
+  box-sizing: border-box;
+}
+
+@keyframes aiFlyoutSlide {
+  from {
+    opacity: 0;
+    transform: translateX(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+/* Flyout Section Headers */
+.ai-fly-section {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ai-badge-live {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(38, 166, 154, 0.16);
+  color: #26a69a;
+  border: 1px solid rgba(38, 166, 154, 0.3);
+}
+
+/* Current Graph Info Card */
+.ai-graph-info-card {
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ai-graph-symbol-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ai-graph-symbol {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.3px;
+}
+
+.ai-graph-tf {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--input-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.ai-graph-subtext {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/* Prediction Horizon / Candles Selector */
+.ai-handles-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ai-handles-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  display: flex;
+  justify-content: space-between;
+}
+
+.ai-handles-hint {
+  font-size: 10px;
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+/* Stepper Input Row */
+.ai-input-stepper-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-candle-number-input {
+  flex: 1;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 5px 8px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+
+.ai-candle-number-input:focus {
+  border-color: var(--text-dim);
+}
+
+.ai-step-btn {
+  width: 32px;
+  height: 30px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s ease;
+}
+
+.ai-step-btn:hover {
+  background: var(--hover);
+  border-color: var(--text-dim);
+}
+
+.ai-handles-row {
+  display: flex;
+  gap: 4px;
+}
+
+.ai-handle-btn {
+  flex: 1;
+  padding: 4px 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  border-radius: 4px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.12s ease;
+  text-align: center;
+}
+
+.ai-handle-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+:root[data-theme="light"] .ai-handle-btn.active,
+[data-theme="light"] .ai-handle-btn.active {
+  background: #131722 !important;
+  color: #ffffff !important;
+  border-color: #131722 !important;
+}
+
+:root:not([data-theme="light"]) .ai-handle-btn.active,
+[data-theme="dark"] .ai-handle-btn.active {
+  background: #f0f3fa !important;
+  color: #131722 !important;
+  border-color: #f0f3fa !important;
+}
+
+/* Model Decision & Target Card */
+.ai-fly-card {
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ai-fly-decision-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ai-fly-badge {
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  padding: 3px 9px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  color: #ffffff;
+}
+
+.ai-fly-badge.buy { background: #26a69a; }
+.ai-fly-badge.sell { background: #ef5350; }
+.ai-fly-badge.hold { background: #787b86; }
+
+.ai-fly-conf {
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.ai-fly-target-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+
+.ai-fly-target {
+  font-size: 17px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.ai-fly-ret {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ai-fly-ret.pos { color: #26a69a; }
+.ai-fly-ret.neg { color: #ef5350; }
+
+/* Levels Row (Entry, SL, TP) */
+.ai-fly-levels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+}
+
+.ai-fly-level-item span {
+  color: var(--text-dim);
+  margin-right: 4px;
+}
+
+.ai-fly-level-item strong.sl { color: #ef5350; }
+.ai-fly-level-item strong.tp { color: #26a69a; }
+
+/* Analyze Button */
+.ai-fly-btn-predict {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 8px 14px;
+  border-radius: 5px;
+  cursor: pointer;
+  border: none;
+  transition: all 0.12s ease;
+  letter-spacing: 0.3px;
+}
+
+:root[data-theme="light"] .ai-fly-btn-predict,
+[data-theme="light"] .ai-fly-btn-predict {
+  background: #131722;
+  color: #ffffff;
+}
+
+:root:not([data-theme="light"]) .ai-fly-btn-predict,
+[data-theme="dark"] .ai-fly-btn-predict {
+  background: #f0f3fa;
+  color: #131722;
+}
+
+.ai-fly-btn-predict:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.ai-fly-btn-predict:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}

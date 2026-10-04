@@ -1,0 +1,388 @@
+// Global defaults / presets / templates: per-type indicator defaults & presets,
+// per-name drawing defaults & presets, backtest configs, and symbol / default
+// chart templates.
+
+import { normalizeBacktestConfig, type BacktestConfig } from "../backtestConfig";
+import { PREFIX, root, load, save, saveLocal, mirrorDelete } from "./core";
+import { backtestStrategySetupChanged } from "../signals";
+import type {
+  IndicatorInstance,
+  SavedOverlay,
+  SavedIndicatorConfig,
+  SavedDrawingConfig,
+} from "./artifacts";
+
+// --- per-indicator presets (global, keyed by indicator TYPE) -----------------
+//
+// TradingView's indicator settings "Defaults" menu. GLOBAL (not per-cell, not
+// per-symbol) — a personal preference like the favourites list above — so a tuned
+// EMA setup is available on every chart. Two layers, both keyed by indicator TYPE
+// (EMA/MA/RSI/…), both holding the SAME SavedIndicatorConfig snapshot the settings
+// modal already produces (currentConfig) — no new serialization:
+//  - default : ONE config per type. Freshly-ADDED instances of that type seed from
+//              it (see applyIndicator). Never touches existing/rehydrated instances.
+//  - presets : named configs per type ("Fast EMA", …), applied on demand.
+// The AVWAP anchor is intentionally absent from SavedIndicatorConfig, so a preset is
+// anchorless — correct, since a fresh AVWAP is unplaced regardless.
+const indicatorDefaultKey = (type: string) => `${PREFIX}.indicatorDefault.${type}`;
+const indicatorPresetsKey = (type: string) => `${PREFIX}.indicatorPresets.${type}`;
+
+export function loadIndicatorDefault(type: string): SavedIndicatorConfig | null {
+  return load<SavedIndicatorConfig | null>(indicatorDefaultKey(type), null);
+}
+export function saveIndicatorDefault(type: string, cfg: SavedIndicatorConfig): void {
+  save(indicatorDefaultKey(type), cfg);
+}
+export function clearIndicatorDefault(type: string): void {
+  const key = indicatorDefaultKey(type);
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* non-fatal */
+  }
+  mirrorDelete(key);
+}
+
+export function loadIndicatorPresets(type: string): Record<string, SavedIndicatorConfig> {
+  return load<Record<string, SavedIndicatorConfig>>(indicatorPresetsKey(type), {});
+}
+export function saveIndicatorPreset(
+  type: string,
+  name: string,
+  cfg: SavedIndicatorConfig,
+): void {
+  const all = loadIndicatorPresets(type);
+  all[name] = cfg;
+  save(indicatorPresetsKey(type), all);
+}
+export function deleteIndicatorPreset(type: string, name: string): void {
+  const all = loadIndicatorPresets(type);
+  if (name in all) {
+    delete all[name];
+    save(indicatorPresetsKey(type), all);
+  }
+}
+
+// --- per-drawing defaults + templates (global, keyed by overlay NAME) --------
+//
+// The drawing analogue of the indicator "Defaults" menu above. GLOBAL (not
+// per-cell, not per-symbol) — a personal style preference — keyed by the
+// klinecharts overlay NAME (segment/rayLine/straightLine/…). Two layers holding
+// the SAME SavedDrawingConfig the drawing settings modal produces:
+//  - default : ONE config per name. Freshly-DRAWN overlays of that name seed from
+//              it (see OverlayManager.addDrawing). Never touches rehydrated draws.
+//  - presets : named configs per name ("Red", …), applied on demand.
+// Extend is NOT a stored field: the trend family (segment/rayLine/straightLine)
+// is three separate names, so extend is captured by which name you save under.
+const drawingDefaultKey = (name: string) => `${PREFIX}.drawingDefault.${name}`;
+const drawingPresetsKey = (name: string) => `${PREFIX}.drawingPresets.${name}`;
+
+export function loadDrawingDefault(name: string): SavedDrawingConfig | null {
+  return load<SavedDrawingConfig | null>(drawingDefaultKey(name), null);
+}
+export function saveDrawingDefault(name: string, cfg: SavedDrawingConfig): void {
+  save(drawingDefaultKey(name), cfg);
+}
+export function clearDrawingDefault(name: string): void {
+  const key = drawingDefaultKey(name);
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* non-fatal */
+  }
+  mirrorDelete(key);
+}
+
+export function loadDrawingPresets(name: string): Record<string, SavedDrawingConfig> {
+  return load<Record<string, SavedDrawingConfig>>(drawingPresetsKey(name), {});
+}
+export function saveDrawingPreset(name: string, presetName: string, cfg: SavedDrawingConfig): void {
+  const all = loadDrawingPresets(name);
+  all[presetName] = cfg;
+  save(drawingPresetsKey(name), all);
+}
+export function deleteDrawingPreset(name: string, presetName: string): void {
+  const all = loadDrawingPresets(name);
+  if (presetName in all) {
+    delete all[presetName];
+    save(drawingPresetsKey(name), all);
+  }
+}
+
+// --- backtest configs (global) ------------------------------------------------
+//
+// Only the last-used snapshot lives here now: it auto-restores the panel next
+// time the modal opens. GLOBAL (not per-symbol/per-cell) — a strategy you built
+// is useful on any chart.
+//
+// Named presets moved to `lib/backtestPresets.ts` (v3), which wraps each config
+// in an envelope (origin symbol/timeframe, timestamps, last-run summary) the bare
+// v2 map could not carry. The v2 key `${PREFIX}.backtestPresets.v2` is ABANDONED,
+// not migrated — v2 entries have none of that metadata.
+export type SavedBacktestConfig = BacktestConfig;
+
+// `.v2` in the key marks the config-shape change from entry/exit to four groups
+// (hedging). Only that shape is read; anything else falls back to
+// defaultBacktestConfig().
+const BACKTEST_LAST_USED_KEY = `${PREFIX}.backtestLastUsed.v2`;
+
+export function loadBacktestLastUsed(): SavedBacktestConfig | null {
+  const cfg = load<SavedBacktestConfig | null>(BACKTEST_LAST_USED_KEY, null);
+  // Fold the stored snapshot forward: a legacy numeric slippage becomes the fixed
+  // model and any new cost fields fill from defaults, so an older last-used config
+  // loads into the panel (and the run payload) with a valid `costs` shape.
+  return cfg ? normalizeBacktestConfig(cfg) : null;
+}
+export function saveBacktestLastUsed(cfg: SavedBacktestConfig): void {
+  save(BACKTEST_LAST_USED_KEY, cfg);
+  // Notify the chart's strategy-overlay sync: this is how mode/strategy writes
+  // from outside the panel (agent bridge backtest.config.set) reach the band.
+  backtestStrategySetupChanged.set(backtestStrategySetupChanged.value + 1);
+}
+
+// The Long/Short tab the backtest modal last showed. Device-local (a per-browser
+// view preference, not synced) so re-opening the modal returns to the same side.
+const BACKTEST_SIDE_KEY = `${PREFIX}.backtestSide`;
+export function loadBacktestSide(): "long" | "short" {
+  return load<"long" | "short">(BACKTEST_SIDE_KEY, "long");
+}
+export function saveBacktestSide(side: "long" | "short"): void {
+  saveLocal(BACKTEST_SIDE_KEY, side);
+}
+
+// Whether the backtest panel runs a single backtest, a parameter sweep, or a
+// walk-forward optimization. The mode gates what Run does and which results
+// the region shows. Device-local view preference like the side above.
+const BACKTEST_MODE_KEY = `${PREFIX}.backtestMode`;
+export type BacktestRunMode = "backtest" | "sweep" | "walkforward";
+export function loadBacktestMode(): BacktestRunMode {
+  const m = load<BacktestRunMode>(BACKTEST_MODE_KEY, "backtest");
+  return m === "sweep" || m === "walkforward" ? m : "backtest";
+}
+export function saveBacktestMode(mode: BacktestRunMode): void {
+  saveLocal(BACKTEST_MODE_KEY, mode);
+}
+
+// Walk-forward optimization schedule configuration (device-local). Persists
+// the user's selected training/test spans and other schedule settings across
+// reloads, so the WFO panel reopens with the same config.
+const WFO_SCHEDULE_KEY = `${PREFIX}.wfoSchedule`;
+export function loadWfoSchedule<T>(fallback: T): T {
+  return load<T>(WFO_SCHEDULE_KEY, fallback);
+}
+export function saveWfoSchedule<T>(cfg: T): void {
+  saveLocal(WFO_SCHEDULE_KEY, cfg);
+}
+
+// Backtest panel width (px), dragged via its left-edge handle. Device-local
+// view preference.
+const BACKTEST_PANEL_WIDTH_KEY = `${PREFIX}.backtestPanelWidth`;
+export const BACKTEST_PANEL_DEFAULT_WIDTH = 720;
+export function loadBacktestPanelWidth(): number {
+  const w = load<number>(BACKTEST_PANEL_WIDTH_KEY, BACKTEST_PANEL_DEFAULT_WIDTH);
+  return Number.isFinite(w) && w >= 560 ? w : BACKTEST_PANEL_DEFAULT_WIDTH;
+}
+export function saveBacktestPanelWidth(w: number): void {
+  saveLocal(BACKTEST_PANEL_WIDTH_KEY, w);
+}
+
+// Backtest results layout: when on, results move out of the stacked config
+// panel into their own docked column beside it. Device-local view preference
+// like the panel width above.
+const BACKTEST_RESULTS_SIDE_BY_SIDE_KEY = `${PREFIX}.backtestResultsSideBySide`;
+export function loadBacktestResultsSideBySide(): boolean {
+  return load<boolean>(BACKTEST_RESULTS_SIDE_BY_SIDE_KEY, false);
+}
+export function saveBacktestResultsSideBySide(on: boolean): void {
+  saveLocal(BACKTEST_RESULTS_SIDE_BY_SIDE_KEY, on);
+}
+
+// Width (px) of that results column, dragged via its left-edge handle.
+const BACKTEST_RESULTS_COL_WIDTH_KEY = `${PREFIX}.backtestResultsColWidth`;
+export const BACKTEST_RESULTS_COL_DEFAULT_WIDTH = 560;
+export function loadBacktestResultsColWidth(): number {
+  const w = load<number>(BACKTEST_RESULTS_COL_WIDTH_KEY, BACKTEST_RESULTS_COL_DEFAULT_WIDTH);
+  return Number.isFinite(w) && w >= 360 ? w : BACKTEST_RESULTS_COL_DEFAULT_WIDTH;
+}
+export function saveBacktestResultsColWidth(w: number): void {
+  saveLocal(BACKTEST_RESULTS_COL_WIDTH_KEY, w);
+}
+
+// Backtest panel layout mode: pinned docks the panel beside the chart (the
+// chart shrinks, pre-overlay behaviour); unpinned overlays the chart and
+// auto-hides on chart click. Device-local view preference like the width above.
+const BACKTEST_PANEL_PINNED_KEY = `${PREFIX}.backtestPanelPinned`;
+export function loadBacktestPanelPinned(): boolean {
+  return load<boolean>(BACKTEST_PANEL_PINNED_KEY, false);
+}
+export function saveBacktestPanelPinned(on: boolean): void {
+  saveLocal(BACKTEST_PANEL_PINNED_KEY, on);
+}
+
+// Whether the docked backtest config panel was open. Device-local view
+// preference (like side & split) so the panel reopens after a reload if it was
+// open — showing the already-persisted config/results, without re-running.
+const BACKTEST_OPEN_KEY = `${PREFIX}.backtestOpen`;
+export function loadBacktestOpen(): boolean {
+  return load<boolean>(BACKTEST_OPEN_KEY, false);
+}
+export function saveBacktestOpen(open: boolean): void {
+  saveLocal(BACKTEST_OPEN_KEY, open);
+}
+
+// Whether the Live trading panel is open — device-local view preference (mirrors
+// backtestOpen) so the panel reopens after a reload if it was open.
+const LIVE_OPEN_KEY = `${PREFIX}.liveOpen`;
+export function loadLiveOpen(): boolean {
+  return load<boolean>(LIVE_OPEN_KEY, false);
+}
+export function saveLiveOpen(open: boolean): void {
+  saveLocal(LIVE_OPEN_KEY, open);
+}
+
+// Whether the on-chart backtest trading-period shading is shown. Device-local
+// view preference (like the panel open/side/split flags above), default on.
+const BACKTEST_PERIODS_SHOWN_KEY = `${PREFIX}.backtestPeriodsShown`;
+export function loadBacktestPeriodsShown(): boolean {
+  return load<boolean>(BACKTEST_PERIODS_SHOWN_KEY, true);
+}
+export function saveBacktestPeriodsShown(shown: boolean): void {
+  saveLocal(BACKTEST_PERIODS_SHOWN_KEY, shown);
+}
+
+// Whether strategy-declared viz regions (chart_regions hook — e.g. squeeze
+// windows) are shaded on the chart. Device-local view preference, default on.
+const BACKTEST_REGIONS_SHOWN_KEY = `${PREFIX}.backtestRegionsShown`;
+export function loadBacktestRegionsShown(): boolean {
+  return load<boolean>(BACKTEST_REGIONS_SHOWN_KEY, true);
+}
+export function saveBacktestRegionsShown(shown: boolean): void {
+  saveLocal(BACKTEST_REGIONS_SHOWN_KEY, shown);
+}
+
+// Whether the trade markers (per-fill arrows + signal carets + aggregate pills)
+// are drawn on the chart. Device-local view preference, default on. Off skips the
+// bulk of on-chart render cost for rapid backtesting; the equity curve, period
+// shading, and trade-selection overlays are unaffected.
+const BACKTEST_MARKERS_SHOWN_KEY = `${PREFIX}.backtestMarkersShown`;
+export function loadBacktestMarkersShown(): boolean {
+  return load<boolean>(BACKTEST_MARKERS_SHOWN_KEY, true);
+}
+export function saveBacktestMarkersShown(shown: boolean): void {
+  saveLocal(BACKTEST_MARKERS_SHOWN_KEY, shown);
+}
+
+// Whether the equity curve is drawn in its own sub-pane. Device-local view
+// preference (like periods above), default off. A live toggle in the Results
+// row — flipping it adds/removes the pane; it's no longer a per-run config value.
+const BACKTEST_EQUITY_SHOWN_KEY = `${PREFIX}.backtestEquityShown`;
+export function loadBacktestEquityShown(): boolean {
+  return load<boolean>(BACKTEST_EQUITY_SHOWN_KEY, false);
+}
+export function saveBacktestEquityShown(shown: boolean): void {
+  saveLocal(BACKTEST_EQUITY_SHOWN_KEY, shown);
+}
+
+// Which Analysis sub-tab is active, and which analysis sections are collapsed.
+// Device-local view preferences (like the panel flags above): one preference for
+// the whole app, not per cell. Both flat keys are registered in
+// DEVICE_LOCAL_FLAT_KEYS in core.ts; without that, hydrateFromBackend prunes
+// them a beat after each load, so the SECOND reload would lose them.
+const BACKTEST_ANALYSIS_TAB_KEY = `${PREFIX}.backtestAnalysisTab`;
+export type BacktestAnalysisTab = "placement" | "bardyn" | "whatif" | "context";
+export function loadBacktestAnalysisTab(): BacktestAnalysisTab {
+  return load<BacktestAnalysisTab>(BACKTEST_ANALYSIS_TAB_KEY, "placement");
+}
+export function saveBacktestAnalysisTab(tab: BacktestAnalysisTab): void {
+  saveLocal(BACKTEST_ANALYSIS_TAB_KEY, tab);
+}
+
+// Collapsed analysis sections, stored as an array of stable section slugs
+// (e.g. "exit-reasons"), not display labels. Unknown slugs are ignored on read;
+// sections not listed are expanded.
+const BACKTEST_ANALYSIS_COLLAPSED_KEY = `${PREFIX}.backtestAnalysisCollapsed`;
+export function loadBacktestAnalysisCollapsed(): string[] {
+  return load<string[]>(BACKTEST_ANALYSIS_COLLAPSED_KEY, []);
+}
+export function saveBacktestAnalysisCollapsed(slugs: string[]): void {
+  saveLocal(BACKTEST_ANALYSIS_COLLAPSED_KEY, slugs);
+}
+
+// --- per-symbol chart templates (global, keyed by epic) ----------------------
+//
+// A saved layout (indicators + drawings) tied to a SYMBOL, not a cell — so a
+// NAS100 setup can follow NAS100 onto any chart. TradingView's "chart layout
+// template" / "apply default to symbol". v1 = ONE default template per epic
+// (saving overwrites it; that single template auto-applies to fresh charts of the
+// symbol and can be applied on demand to any chart).
+//
+// The payload reuses the existing saved shapes VERBATIM (IndicatorInstance[],
+// per-id SavedIndicatorConfig, SavedOverlay[]) so capture/apply just shuttle the
+// same blobs the per-cell stores already hold — no new serialization. AVWAP anchors
+// (deliberately NOT inside SavedIndicatorConfig — they live under avwap.<epic>.<id>)
+// are captured separately so a templated AVWAP keeps its anchor. Stored under a
+// PER-BROKER key (root()) so it's shared across cells/tabs of one broker and
+// mirrored to the backend; epics are broker-specific, so templates don't cross
+// brokers.
+export interface SymbolTemplate {
+  epic: string;
+  indicators: IndicatorInstance[];
+  indicatorConfigs: Record<string, SavedIndicatorConfig>;
+  drawings: SavedOverlay[];
+  avwapAnchors: Record<string, number>; // instance id -> anchor ms
+  savedAt: number;
+}
+
+const templateKey = (epic: string) => root(`template.${epic}`);
+
+export function loadSymbolTemplate(epic: string): SymbolTemplate | null {
+  return load<SymbolTemplate | null>(templateKey(epic), null);
+}
+export function saveSymbolTemplate(t: SymbolTemplate): void {
+  save(templateKey(t.epic), t);
+}
+export function deleteSymbolTemplate(epic: string): void {
+  const key = templateKey(epic);
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* non-fatal */
+  }
+  mirrorDelete(key); // keep the backend / other tabs in step
+}
+
+// --- global default chart template (symbol-agnostic) -------------------------
+//
+// A single, NOT-per-epic default layout that auto-applies to EVERY fresh chart
+// regardless of symbol — for indicators useful on almost any chart (Volume, a
+// session VWAP, etc.) so they don't have to be re-added by hand each time.
+// TradingView's "apply as default to all symbols".
+//
+// Unlike SymbolTemplate this carries ONLY indicators + their per-id configs:
+// drawings and AVWAP anchors are price/time/epic-specific (drawings live under
+// the epic; anchors under avwap.<epic>.<id>), so they're meaningless-to-wrong on
+// an arbitrary symbol and are deliberately excluded at capture. Stored under one
+// global key, mirrored to the backend like everything else.
+export interface DefaultTemplate {
+  indicators: IndicatorInstance[];
+  indicatorConfigs: Record<string, SavedIndicatorConfig>;
+  savedAt: number;
+}
+
+const defaultTemplateKey = () => `${PREFIX}.defaultTemplate`;
+
+export function loadDefaultTemplate(): DefaultTemplate | null {
+  return load<DefaultTemplate | null>(defaultTemplateKey(), null);
+}
+export function saveDefaultTemplate(t: DefaultTemplate): void {
+  save(defaultTemplateKey(), t);
+}
+export function deleteDefaultTemplate(): void {
+  const key = defaultTemplateKey();
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* non-fatal */
+  }
+  mirrorDelete(key); // keep the backend / other tabs in step
+}

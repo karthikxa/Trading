@@ -1,0 +1,575 @@
+.m-app {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.m-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* When the tab bar is unmounted (chrome hidden), it stops contributing its
+   bottom safe-area padding. .m-body takes it over so the chart's time axis
+   and the drawing FAB don't land under a home indicator / gesture band. */
+.m-body--no-tabbar {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.m-tabbar {
+  display: flex;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.m-tabbar button {
+  flex: 1;
+  padding: 10px 0 8px;
+  background: none;
+  border: none;
+  color: var(--text-dim, var(--text));
+  font-size: 12px;
+}
+
+.m-tabbar button.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Task 14: settings ⚙ button — sits apart from the four flex:1 tab buttons
+   (fixed width, not flex:1) so it doesn't steal space from them. */
+.m-tabbar-settings {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: var(--text);
+}
+
+.m-sheet-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 200; display: flex; align-items: flex-end; }
+.m-sheet { width: 100%; max-height: 85vh; background: var(--bg); border-top: 1px solid var(--border); border-radius: 12px 12px 0 0; display: flex; flex-direction: column; padding-bottom: env(safe-area-inset-bottom); }
+.m-sheet-title { padding: 12px 16px; font-weight: 600; border-bottom: 1px solid var(--border); }
+.m-sheet-body { overflow-y: auto; padding: 8px 0; }
+.m-sheet-row { display: block; width: 100%; text-align: left; padding: 12px 16px; background: none; border: none; color: var(--text); font-size: 15px; }
+.m-sheet-row:active { background: var(--bg-hover, rgba(128,128,128,.15)); }
+
+.m-ind-list { padding: 4px 0; }
+.m-ind-row { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.m-ind-row-title { flex: 1; color: var(--text); font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-ind-row-btn { padding: 6px 10px; background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; }
+.m-ind-row-btn:active { background: var(--bg-hover, rgba(128,128,128,.15)); }
+.m-ind-empty { padding: 16px; color: var(--text-secondary, #888); font-size: 14px; text-align: center; }
+.m-ind-add-toggle { font-weight: 600; border-top: 1px solid var(--border); }
+.m-ind-add { border-top: 1px solid var(--border); padding-top: 4px; }
+.m-ind-filter { display: block; width: calc(100% - 32px); box-sizing: border-box; margin: 4px 16px 8px; padding: 8px 10px; background: var(--bg-hover, rgba(128,128,128,.1)); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 14px; }
+
+.m-chart-view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.m-chart-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.m-chart-topbar button {
+  background: var(--panel-bg, rgba(128,128,128,.12));
+  border: none;
+  border-radius: 8px;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.m-chart-topbar button:disabled {
+  color: var(--text-dim, var(--text));
+  opacity: .5;
+}
+
+/* Rotate and maximize share one box with the restore chip (.m-chart-restore),
+   so maximize and restore swap in place at the same size. */
+.m-chart-topbar .m-chart-viewmode {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 28px;
+  padding: 0;
+  font-size: 16px;
+}
+
+.m-chart-symbol {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-chart-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* Maximize / restore: one control in two states, parked at the top of the
+   price axis column (51px wide) in both, where no candle, legend or drawing
+   lives. Same chip styling as the topbar buttons. */
+.m-chart-restore {
+  position: absolute;
+  top: calc(4px + env(safe-area-inset-top));
+  right: calc(5px + env(safe-area-inset-right));
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Task 8: touch drawing tool strip. FAB floats bottom-right inside the chart
+   body (already above the tab bar, which is a sibling outside .m-chart-view);
+   the strip is a full-width horizontal scroller anchored just above the FAB. */
+.m-drawbar-fab {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 50;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.m-drawbar-strip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+.m-drawbar-strip::-webkit-scrollbar { display: none; }
+/* The strip docks to the chart-body floor; while it is open the FAB rides
+   above it instead of sitting in a gap of exposed time axis below it. */
+.m-chart-body:has(> .m-drawbar-strip) .m-drawbar-fab { bottom: 76px; }
+
+/* The selected drawing's and the touch crosshair's menu handles
+   (MobileDrawingHandle, MobileCrosshairHandle); each sets transform. */
+.m-drawing-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 40;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* display:flex above would otherwise beat the hidden attribute both handles
+   toggle (the crosshair one hides on every clear). */
+.m-drawing-handle[hidden] {
+  display: none;
+}
+
+.m-drawbar-tool {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  color: var(--text-dim, var(--text));
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Muted-gray active state for persistent toggles (magnet stays on for long
+   stretches) — not the solid accent-blue fill used for transient actions. */
+.m-drawbar-magnet.on {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  color: var(--text);
+  font-weight: 600;
+  border-radius: 6px;
+}
+
+.m-drawbar-delete {
+  color: var(--danger);
+}
+
+/* Desktop modals re-hosted on mobile (Task 7). Two families:
+   - ConfirmDialog / SymbolSearchModal render inline (no portal), so each
+     one's ".modal-backdrop" lands as a direct child of this host.
+   - AlertModal / IndicatorSettings / DrawingSettings render via the shared
+     FloatingModal, which portals to document.body (a *direct child of
+     <body>*, NOT of .m-app or .m-modal-host) and self-positions with an
+     inline style (fixed, centered, draggable). ".m-app" is a child of
+     "#root", not a sibling of the portal, so no descendant/sibling selector
+     rooted at ".m-app" can ever reach it (verified against
+     FloatingModal.tsx's createPortal(..., document.body) call — a prior
+     draft of this rule used ".m-app ~ .floating-modal", which never matches
+     in any browser and is invisible to jsdom-based tests, since jsdom does
+     not evaluate CSS selector matching at all).
+     MobileApp instead stamps a marker class straight onto <body> itself
+     (added/removed in a mount effect — see MobileApp.tsx), which every
+     body-level portal — including this one — sits under by definition. Scope
+     off that: "body.m-mobile .floating-modal". Since main.tsx always bundles
+     both App and MobileApp, and only the mobile boot path ever adds
+     "m-mobile" to <body>, this cannot leak onto desktop.
+     !important beats FloatingModal's inline style, which is the point
+     (bottom sheet instead of centered draggable panel). */
+.m-modal-host > .modal-backdrop {
+  align-items: flex-end;
+}
+.m-modal-host > .modal-backdrop > * {
+  width: 100%;
+  max-width: 100vw !important;
+  border-radius: 12px 12px 0 0;
+  max-height: 85vh;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Task 10: Alerts tab (Active/History segmented switch + row list). */
+.m-alerts-view { position: absolute; inset: 0; display: flex; flex-direction: column; }
+.m-alerts-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.m-seg { flex: 1; display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.m-seg button { flex: 1; padding: 6px 0; background: none; border: none; color: var(--text-dim, var(--text)); font-size: 13px; font-weight: 600; }
+.m-seg button.on { background: var(--panel-bg, rgba(128,128,128,.12)); color: var(--text); }
+.m-alerts-add { width: 32px; height: 32px; border-radius: 8px; border: none; background: var(--panel-bg, rgba(128,128,128,.12)); color: var(--text); font-size: 18px; line-height: 1; }
+.m-alerts-list { flex: 1; min-height: 0; overflow-y: auto; }
+.m-alerts-row { padding: 10px 14px; border-bottom: 1px solid var(--border); position: relative; }
+.m-alerts-row-main { display: flex; align-items: baseline; gap: 8px; }
+.m-alerts-epic { font-weight: 600; color: var(--text); font-size: 14px; }
+.m-alerts-cond { color: var(--text-dim, var(--text)); font-size: 13px; }
+.m-alerts-time { margin-left: auto; color: var(--text-secondary, #888); font-size: 12px; }
+.m-alerts-msg { color: var(--text-secondary, #888); font-size: 12px; margin-top: 2px; padding-right: 60px; }
+.m-alerts-at { color: var(--text-secondary, #888); }
+.m-alerts-delete { position: absolute; right: 10px; top: 8px; padding: 4px 10px; background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--danger); font-size: 12px; }
+.m-alerts-empty { padding: 24px 16px; color: var(--text-secondary, #888); font-size: 14px; text-align: center; }
+
+/* Task 11: Positions tab (account summary strip + trade rows + detail sheet). */
+.m-pos-view { position: absolute; inset: 0; display: flex; flex-direction: column; }
+/* The positions tab is the desktop dock (pp-* classes, App.css) on a phone:
+   the table has no width floor and scrolls sideways, the table fills the
+   column instead of capping at a dock height, and the stat strip is one
+   horizontally scrollable row under it. */
+.m-pos-view .pp-tabs { flex: 0 0 auto; }
+.m-pos-view .pp-table-wrap { flex: 1; max-height: none; -webkit-overflow-scrolling: touch; }
+.m-pos-view .pp-table { min-width: 0; width: max-content; }
+.m-pos-view .pp-empty { flex: 1; padding: 24px 16px; font-size: 14px; }
+.m-pos-view .pp-bar {
+  flex: 0 0 auto; flex-wrap: wrap; gap: 8px 14px; padding: 6px 12px;
+  border-top: 1px solid var(--border);
+}
+.m-pos-view .pp-acct {
+  flex-basis: 100%; margin-left: 0; flex-wrap: nowrap; justify-content: flex-start;
+  overflow-x: auto; padding-bottom: 2px; -webkit-overflow-scrolling: touch;
+}
+.m-pos-view .pp-stat { align-items: flex-start; flex: 0 0 auto; }
+.m-pos-detail { padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
+.m-pos-detail-row { display: flex; justify-content: space-between; font-size: 14px; color: var(--text); }
+.m-pos-chart-btn { margin-top: 8px; padding: 12px; border-radius: 8px; border: 1px solid var(--border); background: none; color: var(--text); font-size: 15px; font-weight: 600; }
+.m-pos-act-btn { padding: 12px; border-radius: 8px; border: none; background: var(--danger); color: #fff; font-size: 15px; font-weight: 600; }
+
+body.m-mobile .floating-modal {
+  left: 0 !important;
+  right: 0 !important;
+  top: auto !important;
+  bottom: 0 !important;
+  transform: none !important;
+  width: 100% !important;
+  max-width: 100vw !important;
+  border-radius: 12px 12px 0 0;
+  max-height: 85vh;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Task 12: Trade tab (order ticket, full-width). */
+.m-trade-view { position: absolute; inset: 0; overflow-y: auto; }
+.m-app .m-trade-view .ot { width: 100%; padding: 16px; box-sizing: border-box; }
+.m-trade-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px 16px; color: var(--text-secondary, #888); font-size: 14px; text-align: center; }
+
+/* Task 13: PWA offline banner — muted, unobtrusive, sits above the tab content. */
+.m-offline {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  padding-top: calc(6px + env(safe-area-inset-top));
+  background: var(--surface, var(--bg));
+  color: var(--text-secondary, #888);
+  font-size: 12px;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Task 14: Settings sheet (push notifications, theme, switch to desktop). */
+.m-set-label { padding: 12px 16px 4px; color: var(--text-dim, var(--text)); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; }
+.m-set-hint { padding: 4px 16px 12px; color: var(--text-secondary, #888); font-size: 13px; }
+.m-set-toggle {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 0 16px 8px;
+  padding: 10px 14px;
+  text-align: left;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 15px;
+}
+/* Muted-gray "on" state for this persistent toggle, not the solid accent-blue
+   fill (see .m-drawbar-magnet.on / muted-toggle-states convention). */
+.m-set-toggle.on {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  font-weight: 600;
+}
+.m-set-theme { margin: 0 16px 12px; width: calc(100% - 32px); }
+.m-set-desktop { border-top: 1px solid var(--border); margin-top: 8px; }
+
+
+/* Desktop-layout mirror strip (Chart tab, under the top bar). */
+.m-chart-strip { display: flex; align-items: center; gap: 6px; overflow-x: auto; padding: 4px 8px; scrollbar-width: none; }
+/* The button keeps a full-width, touch-friendly height; only the pill inside
+   it (.m-chart-strip-pull-i) is visually compact. Any downward swipe in the
+   chart body already opens the overview too (see useAnywherePull), so this
+   only needs to be a visual hint, not the main grab target. */
+.m-chart-strip-pull { display: flex; align-items: center; justify-content: center; width: 100%; height: 16px; padding: 0; border: 0; background: none; touch-action: none; }
+.m-chart-strip-pull-i { display: flex; align-items: center; justify-content: center; width: 44px; height: 15px; border: 1px solid var(--border); border-top: none; border-radius: 0 0 10px 10px; background: var(--surface); color: var(--text-dim); box-shadow: 0 3px 7px rgba(0,0,0,.3); }
+.m-chart-strip-group { display: flex; align-items: center; gap: 6px; }
+.m-chart-strip-divider { width: 1px; align-self: stretch; background: var(--border); margin: 2px 2px; }
+.m-chart-strip-chip { flex: 0 0 auto; border: 1px solid var(--border); background: none; color: var(--text-dim); border-radius: 12px; padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+.m-chart-strip-chip.active { color: var(--text); background: color-mix(in srgb, var(--text) 10%, transparent); }
+/* Find-open-chart search: magnifier pinned at the strip's left edge so it
+   stays reachable while the chips scroll under it. */
+.m-chart-strip-icon { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text-dim); }
+.m-chart-strip-search { position: sticky; left: 0; z-index: 1; flex: 0 0 auto; display: flex; align-items: center; gap: 4px; background: var(--bg); }
+.m-chart-strip > .m-chart-strip-icon { position: sticky; left: 0; z-index: 1; }
+.m-chart-strip-input { width: 110px; font: inherit; font-size: 14px; color: var(--text); background: none; border: 1px solid var(--border); border-radius: 12px; padding: 3px 10px; outline: none; }
+/* The strip has its own close button; drop the native clear x beside it. */
+.m-chart-strip-input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+.m-chart-strip-empty { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+
+/* Tab overview: pulled down from under the chart strip. Sized to its
+   content (capped by max-height) rather than the full chart body, so a
+   handful of tabs don't leave a wall of empty space under them. */
+.m-tab-ov-host { position: absolute; inset: 0; z-index: 70; pointer-events: none; overflow: hidden; }
+.m-tab-ov-host > .m-tab-ov { pointer-events: auto; }
+/* While open, the host itself catches taps in the area below the panel
+   (chart is otherwise inert underneath) so a tap outside the drawer closes
+   it instead of falling through to the chart. */
+.m-tab-ov-host:has(> .m-tab-ov.open) { pointer-events: auto; }
+.m-tab-ov-host.pulling > .m-tab-ov { transition: none; transform: translateY(min(0px, calc(-100% + max(0px, var(--pull))))); }
+.m-tab-ov-host.pulling > .m-tab-ov.open { transform: translateY(min(0px, var(--pull))); }
+.m-tab-ov { position: absolute; top: 0; left: 0; right: 0; max-height: min(60vh, 100%); display: flex; flex-direction: column; overflow: hidden; background: var(--bg); border-bottom: 1px solid var(--border); box-shadow: 0 12px 24px -8px color-mix(in srgb, #000 45%, transparent); transform: translateY(-100%); transition: transform .24s cubic-bezier(.2,.8,.2,1); }
+.m-tab-ov.open { transform: translateY(0); }
+@media (prefers-reduced-motion: reduce) { .m-tab-ov { transition: none; } }
+.m-tab-ov-head { display: flex; align-items: center; gap: 6px; padding: 8px; }
+.m-tab-ov-head select, .m-tab-ov-head input { min-width: 0; font: inherit; font-size: 14px; color: var(--text); background: none; border: 1px solid var(--border); border-radius: 12px; padding: 4px 10px; }
+.m-tab-ov-head select { flex: 0 1 auto; max-width: 110px; }
+.m-tab-ov-head input { flex: 1; }
+.m-tab-ov-add, .m-tab-ov-refresh { flex: 0 0 auto; width: 30px; height: 28px; border: 1px solid var(--border); border-radius: 12px; background: none; color: var(--text); }
+.m-tab-ov-add { font-size: 18px; line-height: 1; }
+.m-tab-ov-refresh { display: inline-flex; align-items: center; justify-content: center; color: var(--text-dim); }
+.m-tab-ov-count { padding: 0 10px 6px; font-size: 11px; color: var(--text-faint); letter-spacing: .04em; text-transform: uppercase; }
+.m-tab-ov-body { position: relative; flex: 0 1 auto; min-height: 0; overflow-y: auto; padding: 2px 8px 12px; touch-action: pan-y; }
+.m-tab-ov-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.m-tab-ov-chip { border: 1px solid var(--border); background: none; color: var(--text-dim); border-radius: 12px; padding: 6px 12px; font-size: 13px; white-space: nowrap; touch-action: pan-y; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.m-tab-ov-chip.active { color: var(--text); background: color-mix(in srgb, var(--text) 10%, transparent); }
+.m-tab-ov-chip.lifted { transform: scale(1.05); transition: transform .12s; }
+.m-tab-ov-chip.dragging { opacity: .6; }
+.m-tab-ov-more { color: var(--text-faint); font-size: 11px; }
+.m-tab-ov-empty { padding: 16px 4px; font-size: 13px; color: var(--text-faint); }
+/* The button keeps a full-width, touch-friendly height; only the pill inside
+   it (.m-tab-ov-grip-i) is visually compact, matching the strip's handle. */
+.m-tab-ov-grip { flex: 0 0 26px; display: flex; align-items: center; justify-content: center; border: 0; border-top: 1px solid var(--border); background: none; touch-action: none; }
+.m-tab-ov-grip-i { display: flex; align-items: center; justify-content: center; width: 44px; height: 15px; margin-top: -1px; border: 1px solid var(--border); border-bottom: none; border-radius: 10px 10px 0 0; background: var(--surface); color: var(--text-dim); box-shadow: 0 -3px 7px rgba(0,0,0,.3); }
+.m-tab-ov-scrim { position: absolute; inset: 0; display: flex; align-items: flex-end; background: color-mix(in srgb, #000 35%, transparent); }
+.m-tab-ov-menu { width: 100%; display: grid; gap: 6px; padding: 12px; background: var(--bg); border-top: 1px solid var(--border); border-radius: 14px 14px 0 0; }
+.m-tab-ov-menu button { text-align: left; padding: 10px 12px; font: inherit; color: var(--text); background: none; border: 1px solid var(--border); border-radius: 10px; }
+.m-tab-ov-menu button.danger { color: var(--down, #ef5350); }
+.m-tab-ov-menu button:disabled { opacity: .4; }
+
+/* Broker chip in the chart top bar (broker switching). Fixed-shrink so a long
+   broker label can't squeeze the symbol name out entirely. */
+.m-chart-broker {
+  flex: 0 1 auto;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Selected row in a sheet list (current broker account): muted, not accent. */
+.m-sheet-row-on {
+  background: var(--bg-hover, rgba(128, 128, 128, 0.15));
+  font-weight: 600;
+}
+
+.m-broker-empty {
+  padding: 12px 16px;
+  color: var(--text-dim, var(--text));
+  font-size: 14px;
+}
+
+/* Compact chart legend on a phone: the desktop 12px/22px rows eat too much of
+   a small chart, so tighten font, row height and inter-segment gaps. */
+body.m-mobile .chart-legend {
+  font-size: 10.5px;
+  top: 4px;
+  left: 4px;
+}
+body.m-mobile .cl-row {
+  height: 18px;
+  padding: 0 4px;
+}
+body.m-mobile .cl-row > * + * { margin-left: 4px; }
+body.m-mobile .cl-row > .cl-ohlc-item + .cl-ohlc-item,
+body.m-mobile .cl-row > .cl-fig + .cl-fig { margin-left: 5px; }
+
+/* The draw FAB (44px, right/bottom 12) owns the axis corner on mobile, so the
+   axis-parked go-live pill can't live there without sliding underneath it.
+   Move it to the top edge instead, clear of BOTH the FAB and (unlike the
+   `topRight` placement MobileChartView avoids) the full-width OHLC legend
+   line, and under the maximize/restore chip (4px top + 28px tall) plus a
+   6px gap. `!important` is required to win over the inline bottom/right the
+   component sets from goLivePillStyle's axis branch. */
+body.m-mobile .chart-golive[data-pos="axis"] {
+  top: 38px !important;
+  bottom: auto !important;
+}
+
+/* OHLC legend line: at 411px the symbol + interval + O/H/L/C + change run to
+   ~410px against a legend capped at 70% of the pane, so the tail rode over
+   the price axis. Cap the legend short of the axis and let the line wrap. */
+body.m-mobile .chart-legend { max-width: calc(100% - 64px); }
+body.m-mobile .cl-row.cl-ohlc {
+  flex-wrap: wrap; height: auto; min-height: 18px; row-gap: 2px;
+}
+
+/* Symbol search rows: the desktop min-widths (epic 128 + type 92 + broker 96)
+   plus icon, gaps and padding add up past the sheet, so the list scrolled
+   sideways. Drop the fixed columns and the broker tag (the sheet title
+   already names the broker). */
+body.m-mobile .symsearch-results li { gap: 10px; padding: 10px 12px; }
+body.m-mobile .ss-epic { min-width: 0; }
+body.m-mobile .ss-type { min-width: 0; }
+body.m-mobile .ss-exch { display: none; }
+
+/* Indicator row: the legend's param/timeframe tail in a dimmer, smaller run. */
+.m-ind-row-params { color: var(--text-dim); font-size: 12px; margin-left: 6px; }
+
+/* Public demo (DemoApp with the mobile boot): the sign-up nudge stands in for
+   the account tabs, and the admin's preview bar rides inside the fixed shell. */
+.m-tabbar .demo-cta {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dim, var(--text));
+  text-decoration: none;
+}
+.m-app .demo-preview-bar {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding-top: calc(6px + env(safe-area-inset-top));
+}
+.m-set-hint a { color: var(--text); }
+.m-chart-source {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text-dim, var(--text));
+}
+/* Chart-only mode in the demo: the tab bar's nudge, shrunk to a pill on the
+   legend's top row, just left of the price axis (the restore button covers
+   the axis: 40px wide at 5px from the edge). The legend gives up the width
+   so its OHLC row wraps under the pill instead of running into it. */
+.m-chart-cta {
+  position: absolute;
+  top: calc(4px + env(safe-area-inset-top));
+  right: calc(53px + env(safe-area-inset-right));
+  z-index: 60;
+}
+.m-chart-body:has(> .m-chart-cta) .chart-legend {
+  max-width: calc(100% - 190px);
+}
+.m-chart-cta .demo-cta {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+/* Timeframe sheet (MobilePeriodSheet): each group is a grid of tap-sized
+   chips instead of one long list, so the whole picker fits a phone screen.
+   The current timeframe is muted, not accent, like every other sheet. */
+.m-tf-sheet { padding: 4px 16px 12px; }
+.m-tf-group + .m-tf-group { margin-top: 12px; }
+.m-tf-group-label { margin: 0 0 6px; font-size: 13px; font-weight: 500; color: var(--text-faint); }
+.m-tf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; }
+.m-tf-chip {
+  height: 40px; border: 1px solid var(--border); border-radius: 8px;
+  background: none; color: var(--text); font-size: 15px; font-variant-numeric: tabular-nums;
+}
+.m-tf-chip:active { background: var(--hover); }
+.m-tf-chip[aria-pressed="true"] { background: var(--hover-strong); border-color: var(--text-faint); font-weight: 600; }
+/* The shared add form (components/CustomTimeframeForm) at touch size: the
+   desktop dropdown sizes it for a 150px menu. */
+.m-tf-group .custom-tf-form { padding: 8px 0 0; gap: 8px; }
+.m-tf-group .custom-tf-form .custom-tf-field { height: 44px; border-radius: 8px; }
+.m-tf-group .custom-tf-form .custom-tf-field input { font-size: 16px; padding: 0 10px; }
+.m-tf-group .custom-tf-form .custom-tf-units button { width: 40px; font-size: 15px; }
+.m-tf-group .custom-tf-form .custom-tf-add { height: 40px; border-radius: 8px; font-size: 15px; }
+.m-tf-group .custom-tf-form .custom-tf-error { min-height: 40px; font-size: 13px; }

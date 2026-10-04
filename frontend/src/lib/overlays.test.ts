@@ -1,0 +1,2689 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { defaultVisibility, isVisibleOnResolution, barsSpanned, applyPreset } from "./visibility";
+
+// Test helper: a model visible ONLY on `res` (mirrors the "Only this timeframe"
+// preset) — the shorthand these tests use in place of hand-building a full model.
+function onlyVisibleOn(res: string) {
+  return applyPreset(defaultVisibility(), res, "only");
+}
+
+// klinecharts' runtime enums (LineType) aren't resolvable under the node test env,
+// and overlays.ts reads LineType.Dashed at module load. We only need the enum value
+// to exist — stub the package's runtime surface (types are erased at compile time).
+vi.mock("klinecharts", () => ({
+  registerIndicator: () => {},
+  registerOverlay: () => {},
+  registerYAxis: () => {},
+  getSupportedIndicators: () => [],
+}));
+
+// node env: provide in-memory localStorage before importing the modules (same idiom
+// as persist.test.ts — OverlayManager.persist() writes through persist.ts).
+class MemStorage {
+  private m = new Map<string, string>();
+  get length() { return this.m.size; }
+  key(i: number) { return [...this.m.keys()][i] ?? null; }
+  getItem(k: string) { return this.m.has(k) ? this.m.get(k)! : null; }
+  setItem(k: string, v: string) { this.m.set(k, v); }
+  removeItem(k: string) { this.m.delete(k); }
+  clear() { this.m.clear(); }
+}
+(globalThis as unknown as { localStorage: MemStorage }).localStorage = new MemStorage();
+
+// Alerts are BACKEND state now (lib/alertsApi): the reads below are served from an
+// in-memory cache and every mutation fires an optimistic apiFetch. Stub fetch so
+// those calls resolve OK — a rejection would make addStoredAlert roll the
+// optimistic row back out of the cache, which is exactly what these tests read.
+const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+(globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
+// Every request this file's alert writes make (POST/PATCH/DELETE /api/alerts...).
+const alertRequests = () =>
+  fetchMock.mock.calls.filter(([u]: unknown[]) => String(u).includes("/api/alerts"));
+
+const { OverlayManager, asDrawingExtra } = await import("./overlays");
+const { fitToWindow, windowMoments } = await import("./patternGhost");
+// Type-only alias: the runtime binding above is a value (dynamic import defers the
+// klinecharts-enum mock), so it can't be used in type position. This import is
+// erased at build time and does not eager-load the module.
+type OverlayManagerT = import("./overlays").OverlayManager;
+const P = await import("./persist");
+const { alertsChanged } = await import("./signals");
+const { asTradeConfig } = await import("./tradePlan");
+const { setMagnet, DEFAULT_MAGNET } = await import("./magnet");
+
+// Minimal faithful stand-in for a klinecharts Chart: the only 4 methods
+// OverlayManager calls (createOverlay/getOverlays/overrideOverlay/removeOverlay),
+// backed by an in-memory overlay map that mirrors klinecharts' merge-on-override.
+// v10 replaced getOverlayById(id)/removeOverlay(id) with the filter-based
+// getOverlays({ id }) / removeOverlay({ id }); this double models those shapes, and
+// `ovById` below is a test-only reader (not a klinecharts method) for the assertions.
+// NOTE: verified against klinecharts' own source (OverlayImp) that a never-customized
+// overlay's real `.styles` is actually `{}` — concrete colors are resolved only at
+// PAINT time from getDefaultOverlayStyle(), not stored on the instance. So a raw
+// `{ ...spec }` (styles possibly undefined/empty) would be the MORE faithful mock.
+// We seed a populated default here anyway purely so the ghost-stub fade/restore
+// tests below can assert an exact solid-color round-trip by value; the production
+// fade()/unfade() logic (overlays.ts) does NOT rely on this — it always writes back
+// an explicit, concretely-resolved `line.color` itself (see DEFAULT_LINE_COLOR),
+// so restoring works correctly even when `.styles` starts genuinely empty (this was
+// deliberately verified with this seeding removed before landing the fix).
+const DEFAULT_OVERLAY_STYLES = { line: { color: "#1677FF", size: 1, style: "solid" } };
+
+// Local deep clone for seeding each overlay's own default styles object below (mirrors
+// overlays.ts's private cloneStyles — not exported, so re-declared here for the mock).
+function cloneStyles<T>(styles: T): T {
+  return styles == null ? styles : (JSON.parse(JSON.stringify(styles)) as T);
+}
+
+class FakeChart {
+  overlays = new Map<string, Record<string, unknown>>();
+  private seq = 0;
+  createOverlay(spec: Record<string, unknown>) {
+    // Real klinecharts honours a caller-supplied id (`create.id ?? createId(...)`)
+    // and returns the EXISTING overlay's id without creating when it is taken.
+    const given = typeof spec.id === "string" ? spec.id : undefined;
+    if (given && this.overlays.has(given)) return given;
+    const id = given ?? `ov_${++this.seq}`;
+    // Clone the default styles per-overlay: DEFAULT_OVERLAY_STYLES is a single shared
+    // const, and overrideOverlay below now mutates `styles` objects in place (to match
+    // real klinecharts). Without cloning, every overlay that never got an explicit
+    // style would share ONE styles object, so fading overlay A would corrupt the
+    // "default" styles read by every other never-styled overlay B too.
+    // `id` AFTER the spread: spec carries an own `id` key (undefined when the
+    // caller let the library mint) which would otherwise clobber the real one.
+    this.overlays.set(id, { ...spec, id, styles: spec.styles ?? cloneStyles(DEFAULT_OVERLAY_STYLES) });
+    return id;
+  }
+  // v10 filter-based lookup. OverlayManager only ever filters by { id }, so that's all
+  // this models; a filter with no id returns everything (matching getOverlays()).
+  getOverlays(filter?: { id?: string }) {
+    if (filter?.id != null) {
+      const ov = this.overlays.get(filter.id);
+      return ov ? [ov] : [];
+    }
+    return [...this.overlays.values()];
+  }
+  // Loaded candles. Timestamps are all most of OverlayManager reads; the pattern
+  // ghost also reads OHLC (it fits a copied shape to the bars under it), so the
+  // rows are loosely typed and those tests seed prices too.
+  data: Array<{ timestamp: number; open?: number; high?: number; low?: number; close?: number }> = [];
+  getDataList() { return this.data; }
+  // Straight-line price → pixel, enough for the ghost's "was this drag vertical?"
+  // test (it only compares two ys).
+  convertToPixel(points: Array<{ value?: number }>) {
+    return points.map((p) => ({ x: 0, y: 1000 - (p.value ?? 0) }));
+  }
+  // Mirrors real klinecharts applyNewData: replaces the data list, then — like its
+  // INIT-type OverlayStore.updatePointPosition (verified against klinecharts 9.8) —
+  // BACK-FILLS point.timestamp for any dataIndex-only overlay point whose index now
+  // lands on a real bar, WITHOUT the Forward-type index shift. This is the trap
+  // OverlayManager.applyOlderBars exists to defuse by shifting first.
+  applyNewData(data: Array<{ timestamp: number }>) {
+    this.data = data;
+    for (const ov of this.overlays.values()) {
+      const pts = ov.points as Array<{ timestamp?: number; dataIndex?: number }> | undefined;
+      for (const p of pts ?? []) {
+        if (p.timestamp == null && p.dataIndex != null) p.timestamp = data[p.dataIndex]?.timestamp;
+      }
+    }
+  }
+  overrideOverlay(o: { id: string } & Record<string, unknown>) {
+    const cur = this.overlays.get(o.id);
+    if (!cur) return;
+    const { styles, ...rest } = o;
+    const merged: Record<string, unknown> = { ...cur, ...rest };
+    if (styles && typeof styles === "object") {
+      // Real klinecharts mutates the overlay's existing `styles` object IN PLACE
+      // (Object.assign-style, one level deep — matching the `{line: {...}}`-shaped
+      // patches mergeStyles/fade/unfade build) rather than replacing the reference.
+      // A shallow `{...cur, ...o}` (the old mock behavior) silently swapped in a
+      // brand-new styles object instead, which could never reproduce the real
+      // reference-aliasing bug where a stashed "canonical" styles object gets
+      // corrupted by a later fade() because it points at the SAME object klinecharts
+      // then mutates.
+      const curStyles = (cur.styles as Record<string, unknown>) ?? {};
+      Object.assign(curStyles, styles as Record<string, unknown>);
+      merged.styles = curStyles;
+    }
+    this.overlays.set(o.id, merged);
+  }
+  // v10 filter-based removal. OverlayManager always passes { id }.
+  removeOverlay(filter: { id?: string }) {
+    const id = filter.id;
+    if (id == null) return;
+    const cur = this.overlays.get(id);
+    this.overlays.delete(id); // delete first so the onRemoved → persist doesn't see it
+    const cb = cur?.onRemoved;
+    if (typeof cb === "function") (cb as (e: { overlay: unknown }) => void)({ overlay: cur });
+  }
+  // hoverAlert reconciles the crosshair's horizontal guide over alert lines. The
+  // contract (see overlays.ts applyCrosshairForAlert): the master `horizontal.show`
+  // stays TRUE — klinecharts gates both the line AND the y-axis label on it — and
+  // the child flags `line.show` / `text.show` do the actual hiding. In v10 this goes
+  // through plain chart.setStyles (v10's setStyles no longer re-fits the price scale,
+  // so the old private _chartStore escape is gone); captureCrosshair records what was
+  // pushed and setStylesCalls counts the calls so the mechanism stays asserted.
+  crosshairHorizontal:
+    | { show?: boolean; line?: { show?: boolean }; text?: { show?: boolean } }
+    | undefined;
+  setStylesCalls = 0;
+  private captureCrosshair(s?: {
+    crosshair?: { horizontal?: { show?: boolean; line?: { show?: boolean }; text?: { show?: boolean } } };
+  }) {
+    const horizontal = s?.crosshair?.horizontal;
+    if (horizontal) this.crosshairHorizontal = horizontal;
+  }
+  styles: Record<string, unknown> = {};
+  setStyles(s: Parameters<FakeChart["captureCrosshair"]>[0] & Record<string, unknown>) {
+    this.setStylesCalls += 1;
+    this.captureCrosshair(s);
+    this.styles = { ...this.styles, ...s };
+  }
+  // klinecharts' internal click-selection state — the source of truth for the
+  // visible anchor handles. syncDrawingSelectionFromClick reads it through
+  // getChartStore() (a real ChartImp method, absent from the public typings).
+  clickInfo: { overlay: { id: string } | null } = { overlay: null };
+  getChartStore() {
+    return { getClickOverlayInfo: () => this.clickInfo };
+  }
+}
+
+// Test-only reader: fetch one overlay by id via the v10 filter API. Not a klinecharts
+// method; it just keeps the assertions below readable (they used the old getOverlayById).
+function ovById(chart: FakeChart, id: string) {
+  return chart.getOverlays({ id })[0] ?? null;
+}
+
+// Minimal v10 data-pipeline facade for tests: setBars lands merged bars into the
+// FakeChart via its applyNewData, which models klinecharts' INIT-type back-fill
+// (the trap OverlayManager.applyOlderBars defuses). The rest are inert stubs.
+function fakeFacade(chart: FakeChart) {
+  return {
+    attach() {},
+    setSymbol() {},
+    setPeriod() {},
+    setBars: (b: Array<{ timestamp: number }>) => chart.applyNewData(b),
+    pushBar() {},
+    onLoadRequest: () => {},
+    onForwardPrepend: null,
+    getBars: () => chart.getDataList(),
+  } as any;
+}
+
+function setup() {
+  const chart = new FakeChart();
+  const m = new OverlayManager();
+  m.attach(chart as any, fakeFacade(chart));
+  m.setScope("tab.A");
+  m.setEpic("US100");
+  m.rehydrate(); // real cells always rehydrate on mount; arms persist()'s epic guard
+  return { chart, m };
+}
+
+// The alerts cache is module state that outlives a test, so drain it (localStorage
+// .clear() no longer touches alerts). Deleting by id is the only public write.
+function clearStoredAlerts() {
+  for (const { epic, alerts } of P.loadAllAlerts())
+    for (const a of alerts) P.deleteStoredAlert(epic, a.id);
+}
+
+beforeEach(() => {
+  localStorage.clear();
+  clearStoredAlerts();
+  fetchMock.mockClear();
+});
+
+describe("OverlayManager interactive-draw preview visibility (v10 regression)", () => {
+  // v10's OverlayView.drawImp gates the IN-PROGRESS (progress) overlay's paint on a
+  // truthy `visible`. klinecharts' OverlayImp defaults `visible` to true, but its config
+  // `merge` writes any own key over that default, so an interactive addDrawing (which
+  // sends no `visible`) created the overlay with `visible: undefined`, and the rubber-band
+  // preview stayed invisible until onDrawEnd ran applyDisplay to flip it true. create()
+  // now coalesces to true, so the preview draws while the second point is being placed.
+  it("an interactive draw (no points yet) is born visible", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment")!; // interactive: klinecharts collects the clicks
+    expect(id).toBeTruthy();
+    expect(ovById(chart, id)!.visible).toBe(true);
+  });
+});
+
+describe("OverlayManager right-click claim (chart menu yields to the overlay menu)", () => {
+  // klinecharts delivers an overlay's onRightClick on the right-MOUSEDOWN, which
+  // always precedes the DOM contextmenu event of the same gesture. ChartCore's
+  // contextmenu handler must yield (not open the "Paste indicator" chart menu) when
+  // the overlay menu already opened. Gating that on hoveredDrawingId was flaky:
+  // onMouseEnter doesn't always fire before the press (and never sets it for alert
+  // lines), so BOTH menus opened stacked. The claim below is set by the same
+  // callback that opens the overlay menu, so the two can't disagree.
+  it("an overlay right-click claims the gesture; the claim consumes once", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    expect(m.consumeOverlayRightClick()).toBe(false); // nothing claimed yet
+    const ov = ovById(chart, id)!;
+    const cb = ov.onRightClick as (e: { overlay: unknown; preventDefault: () => void }) => boolean;
+    // v10 deletes the overlay unless the handler calls e.preventDefault() (the return
+    // value lost that meaning) — right-clicking a drawing must NOT delete it.
+    const prevent = vi.fn();
+    cb({ overlay: ov, preventDefault: prevent });
+    expect(prevent).toHaveBeenCalled();
+    // ChartCore's contextmenu handler (same gesture, fires right after mousedown)
+    // sees the claim and yields...
+    expect(m.consumeOverlayRightClick()).toBe(true);
+    // ...and consuming clears it: the NEXT empty-space right-click isn't swallowed.
+    expect(m.consumeOverlayRightClick()).toBe(false);
+  });
+
+  it("alert-line right-clicks claim too (hover never set hoveredDrawingId for them)", () => {
+    const { chart, m } = setup();
+    const id = m.addAlert(50, { condition: "crossing", trigger: "once", message: "" })!;
+    const ov = ovById(chart, id)!;
+    (ov.onRightClick as (e: { overlay: unknown }) => boolean)({ overlay: ov });
+    expect(m.consumeOverlayRightClick()).toBe(true);
+  });
+
+  it("a stale claim (contextmenu never followed the mousedown) expires", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const ov = ovById(chart, id)!;
+    const now = Date.now();
+    const spy = vi.spyOn(Date, "now").mockReturnValue(now);
+    (ov.onRightClick as (e: { overlay: unknown }) => boolean)({ overlay: ov });
+    spy.mockReturnValue(now + 1000); // a later, unrelated right-click gesture
+    expect(m.consumeOverlayRightClick()).toBe(false);
+    spy.mockRestore();
+  });
+});
+
+describe("OverlayManager per-interval visibility (data-corruption guards)", () => {
+  it("visible intent survives an interval where the drawing is filtered out (rendered as a ghost, not hidden)", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+
+    // User pins the drawing to 1H only, and wants it visible.
+    m.setVisibilityModel(id, onlyVisibleOn("HOUR"));
+    m.setVisible(id, true);
+    expect(ovById(chart, id)!.visible).toBe(true); // effective: on, 1H matches
+    const solidColor = (ovById(chart, id)!.styles as { line?: { color?: string } } | undefined)
+      ?.line?.color;
+
+    // Switch to a 5m chart → interval filter excludes it, but the user still wants it
+    // on: it stays visible (a ghost) so it's still clickable, just faded...
+    m.setResolution("MINUTE_5");
+    const ghosted = ovById(chart, id)!;
+    expect(ghosted.visible).toBe(true);
+    expect((ghosted.styles as { line?: { color?: string } } | undefined)?.line?.color).toMatch(
+      /^rgba\(/,
+    );
+
+    // ...and ANY edit fires persist() here. If persist sampled the ghosted style, it
+    // would save the faded color and corrupt the user's drawing. Trigger one:
+    m.setText(id, "noted");
+
+    // Switch back to 1H → the drawing must return to its SOLID canonical style.
+    m.setResolution("HOUR");
+    const restored = ovById(chart, id)!;
+    expect(restored.visible).toBe(true);
+    expect((restored.styles as { line?: { color?: string } } | undefined)?.line?.color).toBe(
+      solidColor,
+    );
+
+    // And the persisted record carries INTENT (true) and the CANONICAL (unfaded) style,
+    // not the filtered visible flag or the ghost color.
+    const saved = P.loadDrawings("tab.A", "US100").find((d) => d.extendData);
+    expect(asDrawingExtra(saved!.extendData).userVisible).toBe(true);
+    expect((saved!.styles as { line?: { color?: string } } | undefined)?.line?.color).not.toMatch(
+      /^rgba\(/,
+    );
+  });
+
+  it("getDrawing().visible returns intent, not the interval-filtered flag", () => {
+    const { m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setVisible(id, true);
+    m.setVisibilityModel(id, onlyVisibleOn("MINUTE_5")); // not the current interval → effective off
+    expect(m.getDrawing(id)!.visible).toBe(true); // checkbox/clone must see intent
+  });
+});
+
+describe("OverlayManager alert hover/select line-weight sync (sidebar ↔ chart)", () => {
+  const lineSize = (chart: FakeChart, id: string) =>
+    (ovById(chart, id)!.styles as { line?: { size?: number } } | undefined)?.line?.size;
+
+  it("hoverAlert emphasizes the line and surfaces `hovered`; clearing restores it", () => {
+    const { chart, m } = setup();
+    const id = m.addAlert(50, { condition: "crossing", trigger: "once", message: "" })!;
+    expect(lineSize(chart, id)).toBe(1); // resting weight
+    expect(m.getAlerts().find((a) => a.id === id)!.hovered).toBe(false);
+
+    m.hoverAlert(id);
+    expect(lineSize(chart, id)).toBe(2); // emphasized on hover
+    expect(m.getAlerts().find((a) => a.id === id)!.hovered).toBe(true);
+    // Over the line: the guide's LINE and y-axis LABEL hide, but the master `show`
+    // must stay true — flipping it would take the label down with it permanently.
+    expect(chart.crosshairHorizontal).toEqual({ show: true, line: { show: false }, text: { show: false } });
+
+    m.hoverAlert(null);
+    expect(lineSize(chart, id)).toBe(1); // back to resting
+    expect(m.getAlerts().find((a) => a.id === id)!.hovered).toBe(false);
+    // Guide (line + label) restored on un-hover.
+    expect(chart.crosshairHorizontal).toEqual({ show: true, line: { show: true }, text: { show: true } });
+
+    // v10: the crosshair toggle is delivered via chart.setStyles (v10's setStyles no
+    // longer re-fits the price scale, so the v9 hover-jolt escape is gone). The child
+    // flags asserted above are what carry the behaviour; this just confirms the
+    // reconcile actually pushed a style patch on the hover transitions.
+    expect(chart.setStylesCalls).toBeGreaterThan(0);
+  });
+
+  it("un-hovering a SELECTED line keeps it emphasized (states don't fight)", () => {
+    const { chart, m } = setup();
+    const id = m.addAlert(50, { condition: "crossing", trigger: "once", message: "" })!;
+    m.selectAlert(id);
+    expect(lineSize(chart, id)).toBe(2); // selected → thick
+
+    m.hoverAlert(id); // both selected and hovered
+    expect(lineSize(chart, id)).toBe(2);
+    m.hoverAlert(null); // still selected → must stay thick
+    expect(lineSize(chart, id)).toBe(2);
+
+    m.selectAlert(null); // now neither → thin
+    expect(lineSize(chart, id)).toBe(1);
+  });
+
+  it("keeps a dragged alert's pill `active` even when native hover drops mid-drag", () => {
+    const { m } = setup();
+    const id = m.addAlert(50, { condition: "crossing", trigger: "once", message: "" })!;
+    // Grab and drag it — the common flow grabs on the FIRST press, so the line is
+    // neither selected nor (reliably) hovered while dragging.
+    m.beginAlertDrag(id);
+    m.dragAlertTo(id, 55);
+    // klinecharts' native onMouseLeave can fire as the line moves under the cursor,
+    // dropping the hover. Without the drag-glue this flips `active` off and the on-line
+    // pill mounts/unmounts → flicker.
+    m.hoverAlert(null);
+    const mid = m.getAlerts().find((a) => a.id === id)!;
+    expect(mid.active).toBe(true); // glued for the whole drag — pill stays put
+    expect(mid.level).toBe(55); // live level still tracks the drag
+    // Releasing the drag lifts the glue (back to hover/selection rules).
+    m.endAlertDrag(id);
+    expect(m.getAlerts().find((a) => a.id === id)!.active).toBe(false);
+  });
+});
+
+describe("OverlayManager alert-level rounding (no raw cursor-pixel floats)", () => {
+  const RAW = 70.64347166211272;
+
+  it("addAlert quantizes the level to the instrument precision on write", () => {
+    const { chart, m } = setup();
+    m.setPricePrecision(2);
+    const id = m.addAlert(RAW, { condition: "crossing", trigger: "every", message: "" })!;
+    expect((ovById(chart, id)!.points as Array<Record<string, unknown>>)[0]).toMatchObject({ value: 70.64 });
+    expect(m.getAlert(id)!.level).toBe(70.64);
+  });
+
+  it("updateAlert quantizes too (edit-modal save path)", () => {
+    const { m } = setup();
+    m.setPricePrecision(2);
+    const id = m.addAlert(10, { condition: "crossing", trigger: "every", message: "" })!;
+    m.updateAlert(id, RAW, { condition: "crossing", trigger: "every", message: "" });
+    expect(m.getAlert(id)!.level).toBe(70.64);
+  });
+
+  it("getAlert rounds on READ so legacy raw-stored alerts show clean in the modal", () => {
+    const { chart, m } = setup();
+    // Simulate an alert stored before rounding-on-write existed: write raw directly.
+    const id = m.addAlert(RAW, { condition: "crossing", trigger: "every", message: "" })!;
+    // raw on disk (precision unset)
+    expect((ovById(chart, id)!.points as Array<Record<string, unknown>>)[0]).toMatchObject({ value: RAW });
+    m.setPricePrecision(2);
+    expect(m.getAlert(id)!.level).toBe(70.64); // but the modal sees it clean
+  });
+
+  it("leaves the level raw when precision is unknown (no wrong-default mangling)", () => {
+    const { m } = setup();
+    const id = m.addAlert(RAW, { condition: "crossing", trigger: "every", message: "" })!;
+    expect(m.getAlert(id)!.level).toBe(RAW);
+  });
+});
+
+// The stable id is the join key the engine relies on to tell "same alert moved"
+// from "different alert". This guards the overlay HALF of that contract: a drag /
+// edit must persist the SAME id, not mint a new one (the seam where the
+// drag-deletes-the-alert bug lived). See alert-identity-redesign.md.
+describe("OverlayManager alert identity (stable id survives drag/edit)", () => {
+  const cfg = { condition: "crossing" as const, trigger: "every" as const, message: "" };
+
+  it("addAlert persists a stable id and updateAlert keeps it across a move", () => {
+    const { m } = setup();
+    const ovId = m.addAlert(100, cfg)!;
+    const id1 = P.loadAlerts("US100")[0].id;
+    expect(id1).toBeTruthy();
+
+    m.updateAlert(ovId, 104, { ...cfg, trigger: "once" }); // move + reconfigure
+    const saved = P.loadAlerts("US100");
+    expect(saved).toHaveLength(1);
+    expect(saved[0].id).toBe(id1); // identity survives the edit
+    expect(saved[0].level).toBe(104);
+  });
+
+  it("reconcileAlerts drops a line by id when the engine removed it from storage", () => {
+    const { chart, m } = setup();
+    const ovId = m.addAlert(100, cfg)!;
+    expect(ovById(chart, ovId)).not.toBeNull();
+
+    // Engine fired a "once" and wrote survivors=[] (the id is gone from storage).
+    clearStoredAlerts();
+    m.reconcileAlerts();
+    expect(ovById(chart, ovId)).toBeNull(); // line removed off the id mismatch
+  });
+});
+
+// The alerts sidebar's "go to chart" navigation selects a line on a (possibly
+// just-opened) chart. Two guards: the saved-id ↔ overlay-id lookups the sidebar/App
+// use to find the line, and selection SURVIVING a same-epic rehydrate — without
+// that, a dev double-mount (or a live data refresh) re-mints overlay ids and
+// silently drops the just-applied selection (the bug this navigation feature hit).
+describe("OverlayManager alert lookup + selection survives rehydrate (sidebar nav)", () => {
+  const cfg = { condition: "crossing" as const, trigger: "every" as const, message: "" };
+
+  it("findAlertOverlayId maps a stored saved-id to the live overlay id", () => {
+    const { m } = setup();
+    const ovId = m.addAlert(100, cfg)!;
+    const savedId = P.loadAlerts("US100")[0].id;
+    expect(m.findAlertOverlayId(savedId)).toBe(ovId);
+    expect(m.findAlertOverlayId("no-such-id")).toBeNull();
+  });
+
+  it("findAlertOverlayIdByMatch resolves a history row by condition + level", () => {
+    const { m } = setup();
+    m.setPricePrecision(2);
+    const ovId = m.addAlert(70.64, cfg)!;
+    expect(m.findAlertOverlayIdByMatch("crossing", 70.64, 2)).toBe(ovId);
+    expect(m.findAlertOverlayIdByMatch("less", 70.64, 2)).toBeNull(); // condition differs
+    expect(m.findAlertOverlayIdByMatch("crossing", 71, 2)).toBeNull(); // level differs
+  });
+
+  it("a selected alert stays selected (by saved id) across a same-epic rehydrate", () => {
+    const { chart, m } = setup();
+    const ovId = m.addAlert(100, cfg)!;
+    m.selectAlert(ovId);
+    expect(m.getSelectedAlertId()).toBe(ovId);
+
+    // A second rehydrate (dev double-mount / live data refresh) re-mints overlay ids.
+    m.rehydrate();
+    const newOvId = m.findAlertOverlayId(P.loadAlerts("US100")[0].id)!;
+    expect(newOvId).not.toBe(ovId); // id was genuinely re-minted
+    expect(m.getSelectedAlertId()).toBe(newOvId); // selection followed the alert
+    const size = (ovById(chart, newOvId)!.styles as { line?: { size?: number } }).line?.size;
+    expect(size).toBe(2); // and the line is drawn emphasized
+  });
+
+  it("selection drops cleanly if the selected alert is gone after rehydrate", () => {
+    const { m } = setup();
+    const ovId = m.addAlert(100, cfg)!;
+    m.selectAlert(ovId);
+    clearStoredAlerts(); // alert removed (e.g. a fired "once")
+    m.rehydrate();
+    expect(m.getSelectedAlertId()).toBeNull();
+  });
+});
+
+// Alerts are GLOBAL per epic: two cells of one tab showing the SAME epic (a split
+// layout, both mounted at once) share one stored list. reconcileAlerts must keep
+// each cell's lines in sync with that list — add a peer's new alert, follow a moved
+// level — AND a cell's persist() must write the COMPLETE list so it never drops a
+// peer's alert. This is the regression the per-epic redesign introduced and this
+// reconcile-as-full-resync fixes.
+describe("OverlayManager global alerts shared across same-epic cells", () => {
+  const cfg = { condition: "crossing" as const, trigger: "every" as const, message: "" };
+  const priceLines = (c: FakeChart) => [...c.overlays.values()].filter((o: any) => o.name === "alertPriceLine");
+
+  function twoCells() {
+    const ca = new FakeChart();
+    const a = new OverlayManager();
+    a.attach(ca as unknown as Parameters<OverlayManagerT["attach"]>[0]);
+    a.setScope("tab.T"); // primary cell
+    a.setEpic("US100");
+    a.rehydrate();
+    const cb = new FakeChart();
+    const b = new OverlayManager();
+    b.attach(cb as unknown as Parameters<OverlayManagerT["attach"]>[0]);
+    b.setScope("tab.T.cell.c1"); // second cell, SAME epic, different scope
+    b.setEpic("US100");
+    b.rehydrate();
+    return { a, ca, b, cb };
+  }
+
+  it("an alert added in one cell materialises in the other on reconcile", () => {
+    const { a, b, cb } = twoCells();
+    a.addAlert(100, cfg);
+    expect(priceLines(cb)).toHaveLength(0); // B hasn't reconciled yet
+    b.reconcileAlerts(); // the alerts signal would call this
+    const lines = priceLines(cb);
+    expect(lines).toHaveLength(1);
+    expect((lines[0] as any).points[0].value).toBe(100);
+  });
+
+  it("a second cell's persist() does NOT drop the first cell's alert", () => {
+    const { a, b } = twoCells();
+    a.addAlert(100, cfg); // storage: [100]
+    b.reconcileAlerts(); // B now mirrors [100]
+    b.addAlert(200, cfg); // B persists its full set — must still include 100
+    expect(P.loadAlerts("US100").map((x) => x.level).sort((p, q) => p - q)).toEqual([100, 200]);
+  });
+
+  it("a level moved in one cell re-levels the line in the other", () => {
+    const { a, b, cb } = twoCells();
+    const ovId = a.addAlert(100, cfg)!;
+    b.reconcileAlerts();
+    a.updateAlert(ovId, 105, cfg); // drag/edit in A → storage 105
+    b.reconcileAlerts();
+    expect((priceLines(cb)[0] as any).points[0].value).toBe(105);
+  });
+
+  it("an alert deleted in one cell disappears from the other", () => {
+    const { a, b, cb } = twoCells();
+    const ovId = a.addAlert(100, cfg)!;
+    b.reconcileAlerts();
+    expect(priceLines(cb)).toHaveLength(1);
+    a.remove(ovId); // delete in A
+    b.reconcileAlerts();
+    expect(priceLines(cb)).toHaveLength(0);
+  });
+
+  it("a notify-only edit in one cell is synced to the other (not reverted on its next persist)", () => {
+    const { a, b } = twoCells();
+    const ovId = a.addAlert(100, cfg)!; // notify defaults: all on
+    b.reconcileAlerts(); // B mirrors [100] with notify all-on
+    // A mutes ONLY the sound channel (level/condition/trigger/message unchanged).
+    a.updateAlert(ovId, 100, {
+      ...cfg,
+      notify: { toast: true, browser: true, sound: false, push: true, telegram: true },
+    });
+    b.reconcileAlerts(); // B must pull the notify change in...
+    // ...so when B persists (adds another alert), it writes the muted notify, not stale all-on.
+    b.addAlert(200, cfg);
+    const at100 = P.loadAlerts("US100").find((x) => x.level === 100)!;
+    expect(at100.notify!.sound).toBe(false);
+  });
+
+  it("a BACKEND-channel-only edit (push/telegram) syncs too — sameAlertCfg covers all 5", () => {
+    const { a, b } = twoCells();
+    const ovId = a.addAlert(100, cfg)!; // notify defaults: all on
+    b.reconcileAlerts();
+    // Mute ONLY push + telegram: the three in-tab channels are untouched, so a
+    // sameAlertCfg that compares toast/browser/sound alone reads this as "no
+    // change" and leaves B's cached cfg (and its edit modal) showing stale state.
+    a.updateAlert(ovId, 100, {
+      ...cfg,
+      notify: { toast: true, browser: true, sound: true, push: false, telegram: false },
+    });
+    b.reconcileAlerts();
+    const bOvId = b.findAlertOverlayId(P.loadAlerts("US100")[0].id)!;
+    expect(b.getAlert(bOvId)!.cfg.notify).toEqual({
+      toast: true, browser: true, sound: true, push: false, telegram: false,
+    });
+  });
+});
+
+// The symbol-change window: setEpic advances this.epic, but the old epic's overlays
+// linger in `entries` until the async data load + rehydrate(). A stray persist() in
+// that window must NOT write the old overlays under the NEW epic's (global, shared)
+// alert key. persist() bails while hydratedEpic !== epic.
+describe("OverlayManager symbol-change persist guard", () => {
+  const cfg = { condition: "crossing" as const, trigger: "every" as const, message: "" };
+
+  it("a persist during the setEpic→rehydrate window does not corrupt the new epic's alerts", () => {
+    const { m } = setup(); // US100, rehydrated
+    m.addAlert(100, cfg); // US100 storage = [100]
+    expect(P.loadAlerts("US100").map((x) => x.level)).toEqual([100]);
+
+    // Symbol changes: epic advances, but rehydrate() hasn't run for BTCUSD yet.
+    m.setEpic("BTCUSD");
+    m.addAlert(200, cfg); // triggers persist() while hydratedEpic=US100 != BTCUSD
+
+    // BTCUSD's shared list must be untouched (not clobbered with US100's overlays).
+    expect(P.loadAlerts("BTCUSD")).toEqual([]);
+    // US100's list is likewise not rewritten in the window.
+    expect(P.loadAlerts("US100").map((x) => x.level)).toEqual([100]);
+
+    // After BTCUSD rehydrates, persistence resumes normally.
+    m.rehydrate();
+    m.addAlert(300, cfg);
+    expect(P.loadAlerts("BTCUSD").map((x) => x.level)).toEqual([300]);
+  });
+});
+
+// reconcileAlerts removes overlays whose onRemoved synchronously re-fires the alerts
+// signal this cell subscribes to (ChartCore wires `alertsChanged -> reconcileAlerts`).
+// The re-entrancy guard must keep that from recursing into itself / leaking the
+// hydrating guard and writing a half-removed list back to the shared key.
+describe("OverlayManager reconcile re-entrancy (self-triggered alerts signal)", () => {
+  const cfg = { condition: "crossing" as const, trigger: "every" as const, message: "" };
+  const priceLines = (c: FakeChart) => [...c.overlays.values()].filter((o: any) => o.name === "alertPriceLine");
+
+  it("removing multiple alerts via a wired signal terminates and doesn't resurrect storage", () => {
+    const { chart, m } = setup();
+    m.addAlert(100, cfg);
+    m.addAlert(200, cfg); // US100 storage = [100, 200], two lines drawn
+    // Wire the cell's reconcile to the GLOBAL signal exactly as ChartCore does.
+    const unsub = alertsChanged.subscribe(() => m.reconcileAlerts());
+    // Engine clears the stored list, then signals a reconcile.
+    clearStoredAlerts();
+    expect(() => m.reconcileAlerts()).not.toThrow(); // no infinite recursion
+    unsub();
+    expect(priceLines(chart)).toHaveLength(0); // both lines removed
+    expect(P.loadAlerts("US100")).toEqual([]); // not rewritten by a mid-removal persist
+  });
+});
+
+// The alert-write decoupling: persist() is drawings-only. Alert mutations go through
+// by-id storage intents (add/update/delete), never a whole-list snapshot of the
+// chart's view — so a redraw/rehydrate/drawing action writes the alerts key ZERO
+// times, and only a genuine user intent touches it. See docs
+// 2026-07-08-alert-write-decoupling-design.md.
+describe("OverlayManager alert-write decoupling (persist is drawings-only)", () => {
+  const cfg = { condition: "crossing" as const, trigger: "every" as const, message: "" };
+  it("a drawing action does not write alerts", () => {
+    const { m } = setup();
+    m.addAlert(100, cfg); // one legitimate alert intent
+    fetchMock.mockClear();
+    m.addDrawing("segment", [{ value: 1 }, { value: 2 }]);
+    expect(alertRequests()).toHaveLength(0); // drawing persist must not touch alerts
+  });
+
+  it("a full rehydrate of a cell holding alerts + drawings writes alerts zero times", () => {
+    const { m } = setup();
+    m.addAlert(100, cfg);
+    m.addAlert(200, cfg);
+    m.addDrawing("segment", [{ value: 1 }, { value: 2 }]);
+    // Wire the cell's reconcile to the GLOBAL alerts signal exactly as ChartCore does,
+    // so a teardown removal that rings the signal re-enters reconcileAlerts live.
+    const unsub = alertsChanged.subscribe(() => m.reconcileAlerts());
+    fetchMock.mockClear();
+    m.rehydrate(); // teardown + rebuild — a pure view op
+    expect(alertRequests()).toHaveLength(0); // the class is dead: no view op writes alerts
+    unsub();
+    expect(P.loadAlerts("US100").map((x) => x.level)).toEqual([100, 200]); // survived
+  });
+
+  it("addAlert draws exactly one line with the reconcile signal wired (ChartCore's real wiring)", () => {
+    const { chart, m } = setup();
+    // ChartCore subscribes the cell's reconcile to the global signal for the whole
+    // mount, so addStoredAlert's own bump re-enters reconcileAlerts BEFORE addAlert
+    // has materialised its line. The line must not be drawn twice.
+    const unsub = alertsChanged.subscribe(() => m.reconcileAlerts());
+    const ovId = m.addAlert(100, cfg)!;
+    const lines = [...chart.overlays.values()].filter((o: any) => o.name === "alertPriceLine");
+    unsub();
+    expect(lines).toHaveLength(1);
+    expect(ovById(chart, ovId)).not.toBeNull();
+  });
+
+  it("addAlert routes through the storage intent (line drawn + selectable + persisted)", () => {
+    const { chart, m } = setup();
+    const ovId = m.addAlert(100, cfg)!;
+    expect(ovId).toBeTruthy(); // synchronous overlay id contract preserved
+    expect(ovById(chart, ovId)).not.toBeNull(); // line drawn
+    const saved = P.loadAlerts("US100");
+    expect(saved).toHaveLength(1);
+    expect(saved[0].level).toBe(100);
+  });
+
+  it("endAlertDrag persists the dropped level by id (ChartCore-driven drag commit)", () => {
+    const { m } = setup();
+    const ovId = m.addAlert(100, cfg)!;
+    const savedId = P.loadAlerts("US100")[0].id;
+    // The ChartCore manual-drag gesture: begin → move → end. The drop must persist
+    // the new level (via the by-id update intent), keeping the same stable id — not
+    // rely on persist(), which is now drawings-only and would leave storage at 100.
+    m.beginAlertDrag(ovId);
+    m.dragAlertTo(ovId, 105);
+    m.endAlertDrag(ovId);
+    const saved = P.loadAlerts("US100");
+    expect(saved).toHaveLength(1);
+    expect(saved[0].id).toBe(savedId); // identity survives the drag
+    expect(saved[0].level).toBe(105); // dropped level stuck
+  });
+});
+
+// Two browser tabs open the SAME workspace → both mount the SAME cell (same scope +
+// epic) and write the SAME shared alert/drawing keys. Cross-tab, another tab's edit
+// reaches this tab's localStorage via /ws/state WITHOUT firing this tab's in-memory
+// alerts signal, so a mounted cell can hold a STALE overlay set. Its next persist()
+// then blows away what the other tab stored — the reported "alerts/drawings vanish
+// when the app is open in two tabs" data loss. The fix (App.onBackendPush) reconciles
+// a cell to storage on every relevant remote push BEFORE it can persist a stale set.
+describe("OverlayManager cross-tab shared-storage stomp (two same-epic/scope cells)", () => {
+  const cfg = { condition: "crossing" as const, trigger: "every" as const, message: "" };
+  function cell() {
+    const chart = new FakeChart();
+    const m = new OverlayManager();
+    m.attach(chart as any);
+    m.setScope("tab.A");
+    m.setEpic("US100");
+    m.rehydrate(); // real cells rehydrate on mount; arms persist()'s epic guard
+    return { chart, m };
+  }
+
+  it("a cell that reconciles before persisting keeps alerts another tab stored (the fix)", () => {
+    const A = cell();
+    const B = cell(); // second tab, same scope + epic → shared storage keys
+    // Tab A adds two alerts (shared storage now [100, 200]). Tab B, mounted earlier,
+    // has NOT materialised them — a real cross-tab push updates localStorage but does
+    // not fire THIS tab's alerts signal.
+    A.m.addAlert(100, cfg);
+    A.m.addAlert(200, cfg);
+    expect(P.loadAlerts("US100").map((x) => x.level)).toEqual([100, 200]);
+    // The fix: on a remote alerts push, App bumps the alerts signal, so every mounted
+    // same-epic cell reconciles to storage BEFORE it can persist a stale set.
+    B.m.reconcileAlerts();
+    // Tab B now draws a line — persist() writes B's whole set. Because B reconciled,
+    // its set includes A's alerts, so the shared list survives.
+    B.m.addDrawing("segment", [{ value: 1 }, { value: 2 }]);
+    expect(P.loadAlerts("US100").map((x) => x.level)).toEqual([100, 200]);
+  });
+
+  it("a STALE cell's drawing persist can no longer wipe alerts it never reconciled", () => {
+    // This inverts the old "documents the bug" case. Before the write decoupling,
+    // persist() wrote BOTH keys from the chart's in-memory snapshot, so a stale B
+    // drawing a line stomped A's alerts to []. Now persist() is drawings-only —
+    // alert writes are by-id intents — so B's drawing can't touch the alerts key at
+    // all, and A's alerts survive even without B reconciling first.
+    const A = cell();
+    const B = cell();
+    A.m.addAlert(100, cfg);
+    A.m.addAlert(200, cfg);
+    B.m.addDrawing("segment", [{ value: 1 }, { value: 2 }]);
+    expect(P.loadAlerts("US100").map((x) => x.level)).toEqual([100, 200]);
+  });
+});
+
+describe("OverlayManager setExtend preserves extendData (text + intervals survive name-swap)", () => {
+  it("text and pinned intervals ride through segment -> ray -> straight", () => {
+    const { m } = setup();
+    m.setResolution("HOUR");
+    let id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setText(id, "LABEL");
+    m.setShowMiddle(id, true);
+    m.setVisibilityModel(id, onlyVisibleOn("HOUR"));
+
+    // Extend right (segment -> rayLine): new id, but extendData must survive.
+    id = m.setExtend(id, "ray")!;
+    let ex = asDrawingExtra(m.getDrawing(id)!.extendData);
+    expect(ex.text).toBe("LABEL");
+    expect(ex.showMiddle).toBe(true);
+    expect(ex.visibility).toEqual(onlyVisibleOn("HOUR"));
+
+    // Extend both (rayLine -> straightLine): still survives.
+    id = m.setExtend(id, "both")!;
+    ex = asDrawingExtra(m.getDrawing(id)!.extendData);
+    expect(ex.text).toBe("LABEL");
+    expect(ex.visibility).toEqual(onlyVisibleOn("HOUR"));
+  });
+});
+
+describe("OverlayManager future-whitespace anchors (dataIndex-only points)", () => {
+  // A point placed/dragged past the last candle has NO timestamp in klinecharts
+  // (dataIndexToTimestamp returns null beyond the data) — it exists only as a
+  // dataIndex. klinecharts renders x from timestamp if present, else dataIndex,
+  // else x=0 (the left edge). So any copy path that drops dataIndex teleports a
+  // future-anchored endpoint to the left edge → the "extend changes the slope" bug.
+  const FUTURE = [
+    { timestamp: 1_000, value: 1 },
+    { dataIndex: 250, value: 2 }, // beyond the last bar: dataIndex-only
+  ];
+
+  it("setExtend keeps a dataIndex-only anchor (recreate must not drop it)", () => {
+    const { chart, m } = setup();
+    let id = m.addDrawing("segment", FUTURE)!;
+    id = m.setExtend(id, "ray")!;
+    const pts = ovById(chart, id)!.points as Array<Record<string, unknown>>;
+    expect(pts[1].dataIndex).toBe(250);
+    expect(pts[1].value).toBe(2);
+    expect(pts[0].timestamp).toBe(1_000);
+  });
+
+  it("getDrawing keeps a dataIndex-only anchor (clipboard/clone/Cancel snapshot source)", () => {
+    const { m } = setup();
+    const id = m.addDrawing("segment", FUTURE)!;
+    const pts = m.getDrawing(id)!.points;
+    expect(pts[1].dataIndex).toBe(250);
+  });
+});
+
+describe("drawing effective visibility", () => {
+  // effectiveVisible mirrors: userVisible AND interval AND NOT(autoHide && bars<min).
+  function effective(
+    userVisible: boolean,
+    model: ReturnType<typeof defaultVisibility>,
+    res: string,
+    span?: { t1: number; t2: number },
+  ): boolean {
+    if (!(userVisible && isVisibleOnResolution(model, res))) return false;
+    if (model.autoHide.on && span) {
+      if (barsSpanned(span.t1, span.t2, res) < model.autoHide.minBars) return false;
+    }
+    return true;
+  }
+
+  it("auto-hides a short-span drawing on a coarse timeframe but not a fine one", () => {
+    const m = defaultVisibility();
+    m.autoHide = { on: true, minBars: 3 };
+    const span = { t1: 0, t2: 3_600_000 }; // 1 hour
+    expect(effective(true, m, "MINUTE", span)).toBe(true); // 60 bars
+    expect(effective(true, m, "HOUR", span)).toBe(false); // 1 bar < 3
+  });
+});
+
+// There is no object-list panel: a drawing that becomes invisible (visible:false) can
+// never be clicked again to reopen its settings. So a drawing hidden ONLY by the
+// interval/auto-hide filter (userVisible still true) must render as a faint, still-
+// hittable "ghost" instead of being fully removed from the paint list — while a drawing
+// the user explicitly turned off (userVisible:false) hides completely, same as before.
+describe("ghost stub", () => {
+  it("ghosts an interval-hidden but user-visible drawing (decision-table pin)", () => {
+    const m = defaultVisibility();
+    m.units.minutes.on = false; // hidden on minute timeframes
+    // decision table the manager implements:
+    const userVisible = true;
+    const intervalOk = false; // minutes off, on a minute resolution
+    const ghost = userVisible && !intervalOk;
+    expect(ghost).toBe(true);
+  });
+});
+
+describe("OverlayManager ghost-stub for interval/auto-hidden drawings", () => {
+  it("renders an interval-filtered but user-visible drawing faded (not hidden) and clickable", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setVisibilityModel(id, onlyVisibleOn("HOUR"));
+    m.setVisible(id, true);
+    expect(ovById(chart, id)!.visible).toBe(true);
+
+    m.setResolution("MINUTE_5"); // filtered out, but the user still wants it on
+    const ov = ovById(chart, id)!;
+    expect(ov.visible).toBe(true); // ghosted, not hidden — stays clickable
+    const lineColor = (ov.styles as { line?: { color?: string } } | undefined)?.line?.color;
+    expect(lineColor).toMatch(/^rgba\(/); // faded
+
+    m.setResolution("HOUR"); // back to a matching interval → solid again
+    const restored = ovById(chart, id)!;
+    expect(restored.visible).toBe(true);
+    expect((restored.styles as { line?: { color?: string } } | undefined)?.line?.color).not.toMatch(
+      /^rgba\(/,
+    );
+  });
+
+  it("a user-hidden drawing (Show on chart off) is fully hidden, never ghosted", () => {
+    const { chart, m } = setup();
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setVisible(id, false);
+    expect(ovById(chart, id)!.visible).toBe(false);
+  });
+
+  it("ghosting survives rehydrate (loads on a filtered interval → renders as a ghost, not invisible)", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setVisibilityModel(id, onlyVisibleOn("HOUR"));
+    m.setVisible(id, true);
+
+    m.setResolution("MINUTE_5"); // filtered on this interval
+    m.rehydrate(); // reload while on a filtered interval (e.g. app restart)
+    const newId = [...chart.overlays.keys()].find((k) => chart.overlays.get(k)?.name === "segment")!;
+    const ov = ovById(chart, newId)!;
+    expect(ov.visible).toBe(true); // ghosted on load, not hidden
+    expect((ov.styles as { line?: { color?: string } } | undefined)?.line?.color).toMatch(/^rgba\(/);
+  });
+
+  // getDrawing() feeds copy/clone (placeDrawing) and the settings modal's color
+  // picker — if it read the LIVE (faded) styles off a ghosted drawing, cloning it
+  // would bake the ghost rgba in as the clone's own "canonical" style, and every
+  // future ghost/restore cycle on the clone would re-fade an already-faded color:
+  // a drawing that can never become solid again.
+  it("getDrawing() returns the canonical (unfaded) style even while a drawing is ghosted", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setVisibilityModel(id, onlyVisibleOn("HOUR"));
+    const solidColor = (m.getDrawing(id)!.styles as { line?: { color?: string } } | null)?.line?.color;
+
+    m.setResolution("MINUTE_5"); // now ghosted
+    expect((ovById(chart, id)!.styles as { line?: { color?: string } })?.line?.color).toMatch(
+      /^rgba\(/,
+    );
+    const snapshot = m.getDrawing(id)!;
+    expect((snapshot.styles as { line?: { color?: string } } | null)?.line?.color).toBe(solidColor);
+    expect((snapshot.styles as { line?: { color?: string } } | null)?.line?.color).not.toMatch(
+      /^rgba\(/,
+    );
+
+    // A clone (placeDrawing) built from that snapshot must persist the real color.
+    const cloneId = m.placeDrawing({
+      name: snapshot.name,
+      points: [{ value: 3 }, { value: 4 }],
+      styles: snapshot.styles,
+      extendData: snapshot.extendData,
+    })!;
+    const saved = P.loadDrawings("tab.A", "US100").find((d) => d.points?.[0]?.value === 3);
+    expect((saved!.styles as { line?: { color?: string } } | undefined)?.line?.color).not.toMatch(
+      /^rgba\(/,
+    );
+    expect(cloneId).toBeTruthy();
+  });
+
+  // setExtend (segment -> rayLine -> straightLine) removes and recreates the overlay
+  // under a new id. If it copied the LIVE styles off a ghosted drawing, the extended
+  // line would persist with the faded color baked in as canonical.
+  it("setExtend on a ghosted drawing carries the canonical style, not the faded one, and stays ghosted", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    let id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setVisibilityModel(id, onlyVisibleOn("HOUR"));
+
+    m.setResolution("MINUTE_5"); // ghosted
+    id = m.setExtend(id, "ray")!;
+    const ov = ovById(chart, id)!;
+    expect(ov.visible).toBe(true); // still rendered (ghost), not hidden
+    expect((ov.styles as { line?: { color?: string } } | undefined)?.line?.color).toMatch(/^rgba\(/); // still visibly faded
+
+    const saved = P.loadDrawings("tab.A", "US100").find((d) => d.extendData);
+    expect((saved!.styles as { line?: { color?: string } } | undefined)?.line?.color).not.toMatch(
+      /^rgba\(/,
+    ); // but the persisted style is the real color
+  });
+
+  // setStyle() is the Style-tab handler in DrawingSettings.tsx — the exact modal a
+  // user reaches by clicking a ghost to reopen its settings and change its color. If
+  // it writes the new color straight onto the live (faded) overlay, canonicalStyles()
+  // still sees a stashed pre-edit fadedStyles entry and persist() (which setStyle
+  // itself triggers) saves that STALE color instead of the user's edit — discarding it
+  // on the spot, and re-applying it live the moment the drawing naturally un-ghosts.
+  it("setStyle on a ghosted drawing persists the NEW color, not the stale pre-ghost one, and un-ghosts to the NEW color", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setVisibilityModel(id, onlyVisibleOn("HOUR"));
+
+    m.setResolution("MINUTE_5"); // filtered out -> ghosted (fadedStyles stashes the OLD color)
+    const ghosted = ovById(chart, id)!;
+    expect(ghosted.visible).toBe(true);
+    expect((ghosted.styles as { line?: { color?: string } })?.line?.color).toMatch(/^rgba\(/);
+
+    // Edit the color while ghosted (exactly what DrawingSettings' Style tab does).
+    m.setStyle(id, { line: { color: "#ff0000", size: 2, style: "solid" } });
+
+    // Still rendered as a ghost (faded), but with the NEW hue baked into the fade —
+    // not the pre-edit default blue.
+    const stillGhosted = ovById(chart, id)!;
+    expect(stillGhosted.visible).toBe(true);
+    const fadedColor = (stillGhosted.styles as { line?: { color?: string } })?.line?.color;
+    expect(fadedColor).toMatch(/^rgba\(/);
+    expect(fadedColor?.toLowerCase()).toContain("255, 0, 0"); // red, faded — not the stale blue
+
+    // persist() (triggered by setStyle itself) must save the NEW canonical color, not
+    // the stashed pre-edit one.
+    const saved = P.loadDrawings("tab.A", "US100").find((d) => d.name === "segment");
+    expect((saved!.styles as { line?: { color?: string } } | undefined)?.line?.color).toBe("#ff0000");
+
+    // Un-ghost (back to an allowed interval) — must render with the NEW color, not a
+    // stale stash.
+    m.setResolution("HOUR");
+    const restored = ovById(chart, id)!;
+    expect(restored.visible).toBe(true);
+    expect((restored.styles as { line?: { color?: string } } | undefined)?.line?.color).toBe("#ff0000");
+  });
+
+  // Regression test for the reference-aliasing bug: applyDisplay's fade branch used
+  // to stash `ov.styles` by REFERENCE (`this.fadedStyles.set(id, ov.styles)`) as the
+  // "canonical" unfaded backup. Real klinecharts mutates an overlay's `.styles` object
+  // IN PLACE on overrideOverlay, so the very next fade() call (which patches
+  // `line.color` to the ghost rgba) corrupted the stashed canonical too, since it was
+  // the SAME object. Every later un-fade then restored the GHOST color, not the true
+  // original — a drawing that, once ghosted even once, stayed faded forever. Fixed by
+  // deep-cloning the styles at stash time (cloneStyles). This must exercise a drawing
+  // that was NEVER explicitly styled (default color), because that's exactly the
+  // real-world repro: draw a line, never touch its color, switch timeframes.
+  it("a never-explicitly-styled drawing restores its TRUE original color after a ghost/un-ghost cycle, not the ghost rgba (reference-aliasing regression)", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setVisibilityModel(id, onlyVisibleOn("HOUR"));
+
+    const originalColor = (ovById(chart, id)!.styles as { line?: { color?: string } })?.line
+      ?.color;
+    expect(originalColor).toBeTruthy();
+    expect(originalColor).not.toMatch(/^rgba\(/); // sanity: starts solid/concrete
+
+    m.setResolution("MINUTE_5"); // filtered out -> ghosted (first-ever fade for this id)
+    const ghosted = ovById(chart, id)!;
+    expect((ghosted.styles as { line?: { color?: string } })?.line?.color).toMatch(/^rgba\(/);
+
+    m.setResolution("HOUR"); // back to a matching interval -> should un-ghost to solid
+    const restored = ovById(chart, id)!;
+    const restoredColor = (restored.styles as { line?: { color?: string } })?.line?.color;
+    expect(restoredColor).not.toMatch(/^rgba\(/); // must not still be the ghost color
+    expect(restoredColor).toBe(originalColor); // must be the EXACT true original, not a mutated copy
+
+    // The bug wasn't limited to a single cycle — the corrupted canonical stayed
+    // corrupted, so repeat the round trip once more for good measure.
+    m.setResolution("MINUTE_5");
+    m.setResolution("HOUR");
+    const restoredAgain = ovById(chart, id)!;
+    expect(
+      (restoredAgain.styles as { line?: { color?: string } })?.line?.color,
+    ).toBe(originalColor);
+  });
+
+  // Same reference-aliasing bug, but in the ORDINARY (never-ghosted) path this time.
+  // getDrawing() is DrawingSettings.tsx's Cancel-button snapshot source
+  // (`useState(() => overlays.getDrawing(id))`). If it returns `ov.styles` by
+  // reference (canonicalStyles' non-ghosted branch used to), a later setStyle() edit
+  // mutates that SAME object in place (klinecharts' overrideOverlay merges into
+  // `ov.styles`), silently corrupting the earlier snapshot too — so Cancel, which
+  // re-applies the stashed snapshot's styles, just re-applies the post-edit value and
+  // never actually reverts anything.
+  it("getDrawing() snapshot is unaffected by a LATER setStyle edit (Cancel-button aliasing regression)", () => {
+    const { m } = setup();
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+
+    const snapshot = m.getDrawing(id)!;
+    const originalColor = (snapshot.styles as { line?: { color?: string } } | null)?.line?.color;
+    expect(originalColor).toBeTruthy();
+
+    m.setStyle(id, { line: { color: "#00ff00", size: 3, style: "solid" } });
+
+    // The EARLIER snapshot must still read the pre-edit color, not the new one.
+    expect((snapshot.styles as { line?: { color?: string } } | null)?.line?.color).toBe(
+      originalColor,
+    );
+  });
+});
+
+describe("magnet mode (TV-style OHLC snap)", () => {
+  beforeEach(() => setMagnet(DEFAULT_MAGNET)); // reset the global setting per test
+
+  const modeOf = (chart: FakeChart, id: string) =>
+    ovById(chart, id)!.mode as string | undefined;
+
+  it("new drawings get the current magnet mode; alerts never snap", () => {
+    const { chart, m } = setup();
+    setMagnet({ on: true, strength: "weak" });
+
+    const draw = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const alert = m.addAlert(50, { condition: "crossing", trigger: "once", message: "" })!;
+
+    expect(modeOf(chart, draw)).toBe("weak_magnet");
+    expect(ovById(chart, draw)!.modeSensitivity).toBeGreaterThan(0);
+    // Alert lines must not snap to OHLC regardless of the magnet setting. 'normal'
+    // must be EXPLICIT: v10 snaps whenever mode !== 'normal', and createOverlay's
+    // config merge clobbers the OverlayImp default even with undefined (see create()).
+    expect(modeOf(chart, alert)).toBe("normal");
+  });
+
+  it("a drawing added while magnet is off has no snap mode", () => {
+    const { chart, m } = setup();
+    const draw = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    expect(modeOf(chart, draw)).toBe("normal");
+  });
+
+  it("toggling magnet syncs the mode of existing drawings but not alerts", () => {
+    const { chart, m } = setup();
+    const draw = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const alert = m.addAlert(50, { condition: "crossing", trigger: "once", message: "" })!;
+
+    setMagnet({ on: true, strength: "strong" });
+    expect(modeOf(chart, draw)).toBe("strong_magnet");
+    expect(modeOf(chart, alert)).toBe("normal"); // alert untouched (explicit non-snap)
+
+    setMagnet(DEFAULT_MAGNET); // back off
+    expect(modeOf(chart, draw)).toBe("normal");
+  });
+
+  it("stops syncing after detach (subscription cleaned up)", () => {
+    const { chart, m } = setup();
+    const draw = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.detach();
+    // With the chart detached the manager must not touch a stale overlay map.
+    setMagnet({ on: true, strength: "strong" });
+    expect(modeOf(chart, draw)).toBe("normal"); // unchanged since detach
+  });
+});
+
+describe("OverlayManager hide-all drawings (sidebar eye)", () => {
+  it("hides every drawing without touching per-drawing intent, and restores on unhide", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const a = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const b = m.addDrawing("priceLine", [{ value: 3 }])!;
+
+    expect(m.getDrawingsHidden()).toBe(false);
+    m.setDrawingsHidden(true);
+    expect(m.getDrawingsHidden()).toBe(true);
+    expect(ovById(chart, a)!.visible).toBe(false);
+    expect(ovById(chart, b)!.visible).toBe(false);
+    // Intent untouched: getDrawing still reports the user's choice, and persist
+    // (which reads intent) is not corrupted by the session-only hide.
+    expect(m.getDrawing(a)!.visible).toBe(true);
+    const saved = P.loadDrawings("tab.A", "US100");
+    expect(saved.every((d) => (asDrawingExtra(d.extendData).userVisible ?? true) === true)).toBe(true);
+
+    m.setDrawingsHidden(false);
+    expect(ovById(chart, a)!.visible).toBe(true);
+    expect(ovById(chart, b)!.visible).toBe(true);
+  });
+
+  it("a ghosted (interval-filtered) drawing comes back as a ghost, not solid", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setVisibilityModel(id, onlyVisibleOn("HOUR"));
+    m.setResolution("MINUTE_5"); // → ghost (faded, still visible)
+    const ghostColor = (ovById(chart, id)!.styles as { line?: { color?: string } }).line?.color;
+    expect(ghostColor).toMatch(/^rgba\(/);
+
+    m.setDrawingsHidden(true);
+    expect(ovById(chart, id)!.visible).toBe(false);
+    m.setDrawingsHidden(false);
+    const back = ovById(chart, id)!;
+    expect(back.visible).toBe(true);
+    expect((back.styles as { line?: { color?: string } }).line?.color).toMatch(/^rgba\(/);
+  });
+});
+
+describe("OverlayManager hide-all alert lines (sidebar eye)", () => {
+  const cfg = { condition: "crossing" as const, trigger: "every" as const, message: "" };
+
+  it("hides alert lines only (drawings untouched), keeps storage, restores on unhide", () => {
+    const { chart, m } = setup();
+    const d = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const a = m.addAlert(100, cfg)!;
+
+    expect(m.getAlertsHidden()).toBe(false);
+    m.setAlertsHidden(true);
+    expect(m.getAlertsHidden()).toBe(true);
+    expect(ovById(chart, a)!.visible).toBe(false);
+    expect(ovById(chart, d)!.visible).not.toBe(false); // drawings unaffected
+    // Session-only: the stored alert row survives (the engine still fires it).
+    expect(P.loadAlerts("US100").map((x) => x.level)).toEqual([100]);
+
+    m.setAlertsHidden(false);
+    expect(ovById(chart, a)!.visible).toBe(true);
+  });
+
+  it("an alert materialised while hidden comes in hidden, and unhide reveals it", () => {
+    const { chart, m } = setup();
+    m.setAlertsHidden(true);
+    const a = m.addAlert(200, cfg)!;
+    expect(ovById(chart, a)!.visible).toBe(false);
+    m.setAlertsHidden(false);
+    expect(ovById(chart, a)!.visible).toBe(true);
+  });
+
+  it("hiding clears alert hover and selection (no stuck emphasis on invisible lines)", () => {
+    const { m } = setup();
+    const a = m.addAlert(300, cfg)!;
+    m.hoverAlert(a);
+    m.selectAlert(a);
+    expect(m.getAlerts()[0].selected).toBe(true);
+    m.setAlertsHidden(true);
+    expect(m.getAlerts()[0].selected).toBe(false);
+    expect(m.getAlerts()[0].hovered).toBe(false);
+  });
+});
+
+describe("OverlayManager lock-all drawings (sidebar padlock)", () => {
+  it("lockAllDrawings locks only drawings; anyDrawingsLocked reflects it", () => {
+    const { chart, m } = setup();
+    const d = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const alert = m.addAlert(5, { condition: "crossing", trigger: "once", message: "" })!;
+
+    expect(m.anyDrawingsLocked()).toBe(false);
+    m.lockAllDrawings();
+    expect(m.anyDrawingsLocked()).toBe(true);
+    expect(ovById(chart, d)!.lock).toBe(true);
+    expect(ovById(chart, alert)!.lock).not.toBe(true); // alerts untouched
+    // Lock persists (SavedOverlay.lock existed already).
+    expect(P.loadDrawings("tab.A", "US100")[0].lock).toBe(true);
+
+    m.unlockAll();
+    expect(m.anyDrawingsLocked()).toBe(false);
+  });
+
+  it("anyDrawingsLocked is true in a MIXED state (one locked, one not) so the padlock unlocks instead of locking everything", () => {
+    const { chart, m } = setup();
+    const a = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.addDrawing("segment", [{ value: 3 }, { value: 4 }])!;
+    chart.overrideOverlay({ id: a, lock: true }); // one drawing locked via right-click
+    expect(m.anyDrawingsLocked()).toBe(true);
+  });
+
+  it("anyDrawingsLocked is false with zero drawings", () => {
+    const { m } = setup();
+    expect(m.anyDrawingsLocked()).toBe(false);
+  });
+});
+
+describe("OverlayManager match bands (where a jumped-to pattern match starts and ends)", () => {
+  // Every band the manager owns lands as a chart overlay named "matchBand".
+  const bands = (chart: FakeChart) =>
+    chart.getOverlays().filter((o) => (o as { name?: string }).name === "matchBand");
+  const points = (ov: unknown) =>
+    ((ov as { points: Array<{ timestamp: number }> }).points).map((p) => p.timestamp);
+  const fill = (ov: unknown) =>
+    ((ov as { styles: { polygon: { color: string } } }).styles.polygon.color);
+
+  // A 3-bar match at 10_000..12_000 with a 3-bar aftermath on the next bar.
+  // These are RAW bar timestamps: the half-bar that makes each band enclose its
+  // candles is taken in pixel space by the matchBand template, not here (see
+  // the "matchBand geometry" suite in customOverlays.test.ts).
+  const FWD = { fromTs: 13_000, toTs: 15_000 };
+
+  it("paints the match and the aftermath as two adjacent bands, the aftermath dimmer", () => {
+    const { chart, m } = setup();
+    m.showMatchBands(10_000, 12_000, FWD);
+    const [matched, fwd] = bands(chart);
+    expect(bands(chart)).toHaveLength(2);
+    expect(fill(fwd)).not.toBe(fill(matched));
+    // Non-interactive, like the range band it is modelled on.
+    expect((matched as { lock: boolean }).lock).toBe(true);
+    expect((fwd as { lock: boolean }).lock).toBe(true);
+  });
+
+  it("anchors each band on the raw first and last bar of its own window", () => {
+    // The aftermath starts on the FIRST measured forward bar (the one after the
+    // match), never back on the match's own last bar — that would re-cover a
+    // matched candle instead of butting up against it.
+    const { chart, m } = setup();
+    m.showMatchBands(10_000, 12_000, FWD);
+    expect(points(bands(chart)[0])).toEqual([10_000, 12_000]);
+    expect(points(bands(chart)[1])).toEqual([13_000, 15_000]);
+  });
+
+  it("paints one band when the match has no forward window", () => {
+    const { chart, m } = setup();
+    m.showMatchBands(10_000, 12_000, null);
+    expect(bands(chart)).toHaveLength(1);
+    expect(points(bands(chart)[0])).toEqual([10_000, 12_000]);
+  });
+
+  it("paints one band when the forward window is inverted", () => {
+    const { chart, m } = setup();
+    m.showMatchBands(10_000, 12_000, { fromTs: 15_000, toTs: 13_000 });
+    expect(bands(chart)).toHaveLength(1);
+  });
+
+  it("paints a one-bar aftermath band when only one forward bar was measured", () => {
+    const { chart, m } = setup();
+    m.showMatchBands(10_000, 12_000, { fromTs: 13_000, toTs: 13_000 });
+    expect(bands(chart)).toHaveLength(2);
+    expect(points(bands(chart)[1])).toEqual([13_000, 13_000]);
+  });
+
+  it("replaces rather than accumulates when a second match is picked", () => {
+    const { chart, m } = setup();
+    m.showMatchBands(10_000, 12_000, FWD);
+    m.showMatchBands(50_000, 60_000, { fromTs: 61_000, toTs: 70_000 });
+    expect(bands(chart)).toHaveLength(2);
+    expect(points(bands(chart)[0])).toEqual([50_000, 60_000]);
+  });
+
+  it("clears both bands", () => {
+    const { chart, m } = setup();
+    m.showMatchBands(10_000, 12_000, FWD);
+    m.clearMatchBands();
+    expect(bands(chart)).toHaveLength(0);
+    // And clearing twice is inert (dismiss can follow an identity reset).
+    m.clearMatchBands();
+    expect(bands(chart)).toHaveLength(0);
+  });
+
+  it("survives an external removal without leaving a stale id behind", () => {
+    const { chart, m } = setup();
+    m.showMatchBands(10_000, 12_000, FWD);
+    for (const ov of bands(chart)) chart.removeOverlay({ id: (ov as { id: string }).id });
+    m.showMatchBands(50_000, 60_000, FWD); // would throw/miss if ids were stale
+    expect(bands(chart)).toHaveLength(2);
+  });
+});
+
+describe("OverlayManager cancelDrawing (Esc cancels an in-progress drawing)", () => {
+  it("returns false when nothing is in progress", () => {
+    const { m } = setup();
+    expect(m.cancelDrawing()).toBe(false);
+  });
+
+  it("cancels a drawing armed via addDrawing(name) with no points: removes the overlay, clears isDrawing()", () => {
+    const { chart, m } = setup();
+    const id = m.addDrawing("segment")!; // interactive draw, no points yet
+    expect(id).toBeTruthy();
+    expect(m.isDrawing()).toBe(true);
+    expect(ovById(chart, id)).toBeTruthy();
+
+    expect(m.cancelDrawing()).toBe(true);
+
+    expect(ovById(chart, id)).toBeNull();
+    expect(m.isDrawing()).toBe(false);
+    // A second Escape (cancelDrawing) is a no-op — nothing left to cancel.
+    expect(m.cancelDrawing()).toBe(false);
+  });
+
+  it("cancelling an in-progress drawing never persists it", () => {
+    const { m } = setup();
+    m.addDrawing("segment");
+    m.cancelDrawing();
+    expect(P.loadDrawings("tab.A", "US100")).toEqual([]);
+  });
+
+  it("does not disturb an unrelated already-placed drawing", () => {
+    const { chart, m } = setup();
+    const placed = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.addDrawing("segment"); // arm a second, interactive one
+    expect(m.cancelDrawing()).toBe(true);
+    expect(ovById(chart, placed)).toBeTruthy();
+    expect(P.loadDrawings("tab.A", "US100")).toHaveLength(1);
+  });
+
+  it("re-arming a different tool cancels the first in-progress overlay (no ghost entry)", () => {
+    const { chart, m } = setup();
+    // klinecharts keeps ONE progress slot and overwrites it without firing
+    // onRemoved — arming tool B while tool A is unplaced would strand A's id in
+    // `entries` forever. addDrawing must cancel A properly first.
+    const first = m.addDrawing("segment")!;
+    const second = m.addDrawing("horizontalStraightLine")!;
+    expect(ovById(chart, first)).toBeNull(); // A removed, not orphaned
+    expect(ovById(chart, second)).toBeTruthy();
+    expect(m.isDrawing()).toBe(true); // B is still armed
+    // The stale id must not poison bulk lock state (a ghost read as "unlocked"
+    // would pin the sidebar padlock to its lock branch for the whole session).
+    expect(m.anyDrawingsLocked()).toBe(false);
+  });
+});
+
+// A new tab or split on an already-loaded series pre-paints cached bars before
+// its own fetch lands and rehydrate() runs. persist() refuses to write until then
+// and rehydrate() rebuilds from storage, so a line placed in that window showed,
+// was never saved, and vanished. Placement now waits for the rehydrate.
+describe("OverlayManager placement before the first rehydrate", () => {
+  function unhydrated() {
+    const chart = new FakeChart();
+    const m = new OverlayManager();
+    m.attach(chart as any, fakeFacade(chart));
+    m.setScope("tab.A");
+    m.setEpic("US100");
+    return { chart, m };
+  }
+
+  it("defers an interactive tool until rehydrate, then arms it", () => {
+    const { chart, m } = unhydrated();
+    expect(m.addDrawing("segment")).toBeNull();
+    expect(m.isDrawing()).toBe(false);
+    expect(chart.getOverlays({})).toHaveLength(0);
+
+    m.rehydrate();
+    expect(m.isDrawing()).toBe(true);
+    expect(chart.getOverlays({}).map((o) => o.name)).toEqual(["segment"]);
+  });
+
+  it("the latest tool picked while loading is the one armed", () => {
+    const { chart, m } = unhydrated();
+    m.addDrawing("segment");
+    m.addDrawing("horizontalStraightLine");
+    m.rehydrate();
+    expect(chart.getOverlays({}).map((o) => o.name)).toEqual(["horizontalStraightLine"]);
+  });
+
+  it("Esc drops a deferred tool, so rehydrate arms nothing", () => {
+    const { chart, m } = unhydrated();
+    m.addDrawing("segment");
+    expect(m.cancelDrawing()).toBe(true);
+    expect(m.cancelDrawing()).toBe(false);
+    m.rehydrate();
+    expect(m.isDrawing()).toBe(false);
+    expect(chart.getOverlays({})).toHaveLength(0);
+  });
+
+  it("refuses in-place draws until rehydrate, then places and saves them", () => {
+    const { m } = unhydrated();
+    expect(m.addDrawing("horizontalStraightLine", [{ value: 5 }])).toBeNull();
+    expect(m.placeDrawing({ name: "segment", points: [{ value: 1 }, { value: 2 }] })).toBeNull();
+    expect(m.startTimeRange(1_000)).toBeNull();
+    m.rehydrate();
+    expect(m.addDrawing("horizontalStraightLine", [{ value: 5 }])).toBeTruthy();
+    expect(P.loadDrawings("tab.A", "US100")).toHaveLength(1);
+  });
+
+  it("a symbol switch defers a tool until the new epic rehydrates", () => {
+    const { chart, m } = setup(); // US100, rehydrated
+    m.setEpic("BTCUSD");
+    expect(m.addDrawing("segment")).toBeNull();
+    m.rehydrate();
+    expect(m.isDrawing()).toBe(true);
+    expect(chart.getOverlays({}).map((o) => o.name)).toEqual(["segment"]);
+  });
+
+  it("a read-only snapshot rehydrate drops the deferred tool", () => {
+    const { m } = unhydrated();
+    m.addDrawing("segment");
+    m.setReadOnly(true);
+    m.rehydrate();
+    expect(m.isDrawing()).toBe(false);
+  });
+});
+
+// A trendline whose second anchor sits to the RIGHT of the last candle (projected
+// into the future) gets NO timestamp from klinecharts — only a dataIndex. Persisting
+// must encode that anchor as an extrapolated timestamp (last bar + n × bar width),
+// and rehydrating must decode it back to a beyond-data dataIndex: klinecharts'
+// timestampToDataIndex CLAMPS to the nearest existing bar, and a point with neither
+// timestamp nor dataIndex renders at x=0 — the "trendline teleports to the left
+// edge after a timeframe change" bug.
+describe("future-anchored drawing points survive persist/rehydrate", () => {
+  const HOUR = 3_600_000;
+  const T0 = 1_750_000_000_000;
+  const bars = (n: number) => Array.from({ length: n }, (_, i) => ({ timestamp: T0 + i * HOUR }));
+
+  it("persists an extrapolated timestamp for a point beyond the last candle", () => {
+    const { chart, m } = setup();
+    chart.data = bars(10); // last bar index 9
+    m.setResolution("HOUR");
+    m.addDrawing("segment", [
+      { timestamp: chart.data[5].timestamp, value: 1 },
+      { dataIndex: 13, value: 2 }, // 4 bars past the last — no timestamp, like klinecharts
+    ]);
+    const saved = P.loadDrawings("tab.A", "US100")[0];
+    expect(saved.points[1].timestamp).toBe(chart.data[9].timestamp + 4 * HOUR);
+    expect(saved.points[1].value).toBe(2);
+  });
+
+  it("rehydrates a future timestamp as a beyond-data dataIndex (not clamped / left-edge)", () => {
+    const { chart, m } = setup();
+    chart.data = bars(10);
+    m.setResolution("HOUR");
+    P.saveDrawings("tab.A", "US100", [
+      {
+        name: "segment",
+        points: [
+          { timestamp: chart.data[5].timestamp, value: 1 },
+          { timestamp: chart.data[9].timestamp + 4 * HOUR, value: 2 },
+        ],
+      },
+    ]);
+    m.rehydrate();
+    const ov = [...chart.overlays.values()].find((o) => o.name === "segment")!;
+    const p = (ov.points as Array<{ timestamp?: number; dataIndex?: number; value?: number }>)[1];
+    expect(p.dataIndex).toBe(13);
+    expect(p.timestamp).toBeUndefined(); // klinecharts prefers timestamp — it must be gone
+  });
+
+  it("the future offset re-derives per resolution: same saved anchor lands on the right bar at 5m", () => {
+    const { chart, m } = setup();
+    const M5 = 300_000;
+    chart.data = Array.from({ length: 10 }, (_, i) => ({ timestamp: T0 + i * M5 }));
+    m.setResolution("MINUTE_5");
+    P.saveDrawings("tab.A", "US100", [
+      { name: "segment", points: [{ timestamp: T0, value: 1 }, { timestamp: chart.data[9].timestamp + 2 * HOUR, value: 2 }] },
+    ]);
+    m.rehydrate();
+    const ov = [...chart.overlays.values()].find((o) => o.name === "segment")!;
+    const p = (ov.points as Array<{ dataIndex?: number }>)[1];
+    expect(p.dataIndex).toBe(9 + 24); // 2h beyond the last 5m bar = 24 bars
+  });
+
+  // The timeframe-switch bug: ChartCore rebuilds overlays right after the NEW
+  // resolution's bars land, but the manager's `resolution` field still holds the
+  // PREVIOUS timeframe at that moment — so the future offset was extrapolated with
+  // the OLD bar width (a 14h-ahead anchor became 28 one-hour bars after a 30m→1H
+  // switch: line flattens, and the next persist() bakes the drift into storage).
+  // rehydrate(resolution) must adopt the new resolution BEFORE materializing.
+  it("rehydrate(resolution) materializes the future offset with the NEW timeframe's bar width, not the stale one", () => {
+    const { chart, m } = setup();
+    m.setResolution("MINUTE_5"); // the timeframe the cell was on before the switch
+    chart.data = bars(10); // the 1H bars that just landed
+    P.saveDrawings("tab.A", "US100", [
+      {
+        name: "segment",
+        points: [
+          { timestamp: chart.data[5].timestamp, value: 1 },
+          { timestamp: chart.data[9].timestamp + 4 * HOUR, value: 2 },
+        ],
+      },
+    ]);
+    m.rehydrate("HOUR");
+    const ov = [...chart.overlays.values()].find((o) => o.name === "segment")!;
+    const p = (ov.points as Array<{ dataIndex?: number }>)[1];
+    expect(p.dataIndex).toBe(13); // 4h beyond the last 1H bar = 4 bars (not 48 five-minute bars)
+    expect(m.getResolution()).toBe("HOUR"); // adopted — the later setResolution call is subsumed
+  });
+
+  it("rehydrate() without an argument keeps the current resolution (template re-apply path)", () => {
+    const { chart, m } = setup();
+    chart.data = bars(10);
+    m.setResolution("HOUR");
+    P.saveDrawings("tab.A", "US100", [
+      {
+        name: "segment",
+        points: [
+          { timestamp: chart.data[5].timestamp, value: 1 },
+          { timestamp: chart.data[9].timestamp + 4 * HOUR, value: 2 },
+        ],
+      },
+    ]);
+    m.rehydrate();
+    const ov = [...chart.overlays.values()].find((o) => o.name === "segment")!;
+    expect((ov.points as Array<{ dataIndex?: number }>)[1].dataIndex).toBe(13);
+    expect(m.getResolution()).toBe("HOUR");
+  });
+
+  // Prepending older bars (scroll-back page, anchor-coverage walk) renumbers every
+  // bar's dataIndex — a timestamped point re-resolves per paint, but a beyond-data
+  // point is dataIndex-ONLY (timestamp stripped at materialize), so klinecharts
+  // leaves it at the old index and the future anchor slides back into history.
+  // Callers report each prepend so these points shift along.
+  it("shiftIndexAnchoredPoints moves dataIndex-only points by the prepend size and leaves timestamped points alone", () => {
+    const { chart, m } = setup();
+    chart.data = bars(10);
+    m.setResolution("HOUR");
+    P.saveDrawings("tab.A", "US100", [
+      {
+        name: "segment",
+        points: [
+          { timestamp: chart.data[5].timestamp, value: 1 },
+          { timestamp: chart.data[9].timestamp + 4 * HOUR, value: 2 },
+        ],
+      },
+    ]);
+    m.rehydrate();
+    // A 3-bar page of older history lands.
+    chart.data = [
+      ...Array.from({ length: 3 }, (_, i) => ({ timestamp: T0 - (3 - i) * HOUR })),
+      ...chart.data,
+    ];
+    m.shiftIndexAnchoredPoints(3);
+    const ov = [...chart.overlays.values()].find((o) => o.name === "segment")!;
+    const pts = ov.points as Array<{ timestamp?: number; dataIndex?: number }>;
+    expect(pts[1].dataIndex).toBe(16); // still 4 bars past the (shifted) last bar
+    expect(pts[1].timestamp).toBeUndefined();
+    expect(pts[0].timestamp).toBe(T0 + 5 * HOUR); // in-range anchor untouched
+  });
+
+  // The ordering invariant applyOlderBars encodes: klinecharts' INIT-type
+  // updatePointPosition back-fills point.timestamp from whatever bar sits at a
+  // dataIndex-only point's index the moment new data lands. Shift AFTER the data
+  // and the stale index is in-range — the future anchor gets pinned onto a
+  // historical bar permanently. FakeChart.applyNewData models that back-fill, so
+  // this test fails if anyone reorders the shift behind the applyNewData call.
+  it("applyOlderBars shifts beyond-data anchors BEFORE the data lands (Init back-fill can't pin them)", () => {
+    const { chart, m } = setup();
+    chart.data = bars(10);
+    m.setResolution("HOUR");
+    P.saveDrawings("tab.A", "US100", [
+      {
+        name: "segment",
+        points: [
+          { timestamp: chart.data[5].timestamp, value: 1 },
+          { timestamp: chart.data[9].timestamp + 4 * HOUR, value: 2 },
+        ],
+      },
+    ]);
+    m.rehydrate(); // future anchor → dataIndex 13, no timestamp
+    // A coverage-walk page of 20 older bars lands via the canonical prepend.
+    const older = Array.from({ length: 20 }, (_, i) => ({ timestamp: T0 - (20 - i) * HOUR }));
+    m.applyOlderBars([...older, ...chart.data] as never);
+    const p = ([...chart.overlays.values()].find((o) => o.name === "segment")!
+      .points as Array<{ timestamp?: number; dataIndex?: number }>)[1];
+    expect(p.dataIndex).toBe(33); // 13 + 20 — still 4 bars past the (shifted) last bar
+    expect(p.timestamp).toBeUndefined(); // index 33 is beyond the 30 bars → no back-fill
+  });
+
+  // A prepend re-serves the dataset as an INIT, which overwrites klinecharts'
+  // load-more flags, so it must pass canLoadOlder=true or native scroll-back
+  // paging dies the moment any coverage walk runs (the "hard wall at the walk
+  // budget" bug: zero /api/candles requests while panning).
+  it("applyOlderBars keeps older-history loads armed (canLoadOlder=true)", () => {
+    const chart = new FakeChart();
+    const m = new OverlayManager();
+    const facade = fakeFacade(chart);
+    const setBars = vi.spyOn(facade, "setBars");
+    m.attach(chart as any, facade);
+    m.setScope("tab.A");
+    m.setEpic("US100");
+    m.rehydrate();
+    chart.data = bars(10);
+    const older = Array.from({ length: 20 }, (_, i) => ({ timestamp: T0 - (20 - i) * HOUR }));
+    m.applyOlderBars([...older, ...chart.data] as never);
+    expect(setBars).toHaveBeenCalledWith(expect.anything(), true);
+  });
+
+  // klinecharts v10.0.0's native Forward merge (_addData 'forward') just concats
+  // the prepend — v9's updatePointPosition, which shifted dataIndex-only points by
+  // the prepend size, no longer exists. So attach() installs a shift on the
+  // facade's onForwardPrepend hook, which the facade fires BEFORE forward-loaded
+  // bars are handed over (the prepend + repaint happen synchronously inside the
+  // DataLoader callback — ordering is covered by chartDataFacade.test.ts).
+  // Without this, reload → zoom out slides a future-anchored trendline endpoint a
+  // whole page into history.
+  it("attach installs a facade onForwardPrepend hook that shifts beyond-data anchors by the page size", () => {
+    const chart = new FakeChart();
+    const facade = fakeFacade(chart);
+    const m = new OverlayManager();
+    m.attach(chart as any, facade);
+    m.setScope("tab.A");
+    m.setEpic("US100");
+    chart.data = bars(10);
+    m.setResolution("HOUR");
+    P.saveDrawings("tab.A", "US100", [
+      {
+        name: "segment",
+        points: [
+          { timestamp: chart.data[5].timestamp, value: 1 },
+          { timestamp: chart.data[9].timestamp + 4 * HOUR, value: 2 },
+        ],
+      },
+    ]);
+    m.rehydrate(); // future anchor → dataIndex 13, no timestamp
+    expect(facade.onForwardPrepend).toBeInstanceOf(Function);
+    facade.onForwardPrepend!(3); // a 3-bar scroll-back page is about to land
+    const pts = [...chart.overlays.values()].find((o) => o.name === "segment")!
+      .points as Array<{ timestamp?: number; dataIndex?: number }>;
+    expect(pts[1].dataIndex).toBe(16); // 13 + 3
+    expect(pts[1].timestamp).toBeUndefined();
+    // The timestamped anchor is untouched — it re-resolves at paint time.
+    expect(pts[0].timestamp).toBe(chart.data[5].timestamp);
+    m.detach();
+    expect(facade.onForwardPrepend).toBeNull(); // no stale shift into a dead manager
+  });
+
+  // The transient measure ruler can also have a beyond-data endpoint — it must
+  // shift with the drawings or a prepend pins its box into history.
+  it("shiftIndexAnchoredPoints moves a measure's beyond-data endpoint too", () => {
+    const { chart, m } = setup();
+    chart.data = bars(10);
+    m.setResolution("HOUR");
+    const id = m.startMeasureDraw()!;
+    // As if klinecharts collected the two clicks, the second past the last candle.
+    chart.overrideOverlay({
+      id,
+      points: [{ timestamp: chart.data[5].timestamp, value: 1 }, { dataIndex: 12, value: 2 }],
+    });
+    m.shiftIndexAnchoredPoints(3);
+    const pts = ovById(chart, id)!.points as Array<{ dataIndex?: number }>;
+    expect(pts[1].dataIndex).toBe(15);
+  });
+});
+
+// The remaining stablePoints branches: an anchor dragged LEFT of the loaded window
+// (negative dataIndex) extrapolates backwards from the first bar, and an in-range
+// point that klinecharts left timestamp-less resolves to its bar's timestamp.
+describe("stablePoints edge branches", () => {
+  const HOUR = 3_600_000;
+  const T0 = 1_750_000_000_000;
+  const bars = (n: number) => Array.from({ length: n }, (_, i) => ({ timestamp: T0 + i * HOUR }));
+
+  it("encodes a before-data anchor (negative dataIndex) as first bar minus n bars", () => {
+    const { chart, m } = setup();
+    chart.data = bars(10);
+    m.setResolution("HOUR");
+    m.addDrawing("segment", [
+      { dataIndex: -3, value: 1 },
+      { timestamp: chart.data[5].timestamp, value: 2 },
+    ]);
+    const saved = P.loadDrawings("tab.A", "US100")[0];
+    expect(saved.points[0].timestamp).toBe(T0 - 3 * HOUR);
+  });
+
+  it("resolves an in-range point with dataIndex but no timestamp to that bar's timestamp", () => {
+    const { chart, m } = setup();
+    chart.data = bars(10);
+    m.setResolution("HOUR");
+    m.addDrawing("segment", [
+      { dataIndex: 4, value: 1 },
+      { timestamp: chart.data[9].timestamp, value: 2 },
+    ]);
+    const saved = P.loadDrawings("tab.A", "US100")[0];
+    expect(saved.points[0].timestamp).toBe(chart.data[4].timestamp);
+  });
+});
+
+describe("drawing defaults seeding + config round-trip", () => {
+  it("seeds a freshly-drawn overlay from the saved default (styles + extendData)", () => {
+    const { chart, m } = setup();
+    // A visibility model that hides on all intervals, to prove it's stored on the
+    // seeded overlay. (Enforcement runs in create()'s onDrawEnd, which FakeChart does
+    // not fire for an interactive draw — so we assert STORAGE here; the apply path is
+    // exercised by the round-trip test below.)
+    const hidden = defaultVisibility();
+    for (const u of Object.values(hidden.units)) u.on = false;
+    P.saveDrawingDefault("segment", {
+      line: { color: "#ff0000", size: 3 },
+      showMiddle: true,
+      priceLabels: false,
+      visibility: hidden,
+    });
+    const id = m.addDrawing("segment"); // interactive: no points
+    expect(id).not.toBeNull();
+    const ov = ovById(chart, id!)!;
+    expect((ov.styles as { line?: { color?: string } }).line?.color).toBe("#ff0000");
+    expect(asDrawingExtra(ov.extendData).showMiddle).toBe(true);
+    expect(asDrawingExtra(ov.extendData).priceLabels).toBe(false);
+    expect(ov.needDefaultYAxisFigure).toBe(false); // priceLabels:false ⇒ no y-axis tag
+    expect(asDrawingExtra(ov.extendData).visibility).toEqual(hidden); // stored
+  });
+
+  it("placeFreshDrawing styles a placed drawing from the saved default, and persists it", () => {
+    const { chart, m } = setup();
+    P.saveDrawingDefault("rayLine", { line: { color: "#00ff00", size: 2 } });
+    const id = m.placeFreshDrawing("rayLine", [{ value: 5 }, { value: 6 }])!;
+    expect((ovById(chart, id)!.styles as { line?: { color?: string } }).line?.color).toBe("#00ff00");
+    const saved = P.loadDrawings("tab.A", "US100").find((d) => d.points?.[0]?.value === 5);
+    expect((saved!.styles as { line?: { color?: string } } | undefined)?.line?.color).toBe("#00ff00");
+    // No default: the built-in drawing look, not the other tool's default.
+    const plain = m.placeFreshDrawing("segment", [{ value: 7 }, { value: 8 }])!;
+    expect((ovById(chart, plain)!.styles as { line?: { color?: string } } | undefined)?.line?.color).not.toBe("#00ff00");
+  });
+
+  it("enforces a seeded hidden-visibility default when an interactive draw completes (Step 3b)", () => {
+    // The interactive (no-points) path enforces visibility in create()'s onDrawEnd,
+    // which klinecharts fires on completion. FakeChart never fires it, so simulate
+    // completion by invoking the stored callback — the ONLY thing that exercises the
+    // onDrawEnd applyDisplay branch. (A with-points draw is enforced earlier, in
+    // addDrawing itself — covered by the in-place test above; using no-points here
+    // isolates the onDrawEnd branch.) Hidden-but-user-visible ⇒ GHOST (faded rgba).
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const hidden = defaultVisibility();
+    for (const u of Object.values(hidden.units)) u.on = false; // hidden on every interval
+    P.saveDrawingDefault("segment", { visibility: hidden });
+    const id = m.addDrawing("segment")!; // interactive: no points
+    const ov = ovById(chart, id)! as unknown as { onDrawEnd?: () => void };
+    const before = (ovById(chart, id)!.styles as { line?: { color?: string } }).line?.color;
+    expect(before).not.toMatch(/^rgba\(/); // not yet faded (onDrawEnd hasn't fired)
+    ov.onDrawEnd?.(); // fire Step 3b
+    const after = (ovById(chart, id)!.styles as { line?: { color?: string } }).line?.color;
+    expect(after).toMatch(/^rgba\(/); // seeded hide enforced → ghosted
+  });
+
+  it("enforces a seeded hidden-visibility default on an in-place (with-points) draw", () => {
+    // The chart "+" menu draws with points → completes synchronously → NO onDrawEnd.
+    // Seeded visibility must still be enforced immediately (not only after a reload).
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const hidden = defaultVisibility();
+    for (const u of Object.values(hidden.units)) u.on = false;
+    P.saveDrawingDefault("horizontalStraightLine", { visibility: hidden });
+    const id = m.addDrawing("horizontalStraightLine", [{ value: 100 }])!;
+    const color = (ovById(chart, id)!.styles as { line?: { color?: string } }).line?.color;
+    expect(color).toMatch(/^rgba\(/); // ghosted right away
+  });
+
+  it("captures CONCRETE line fields so a size-1 default fully resets a widened line", () => {
+    const { m } = setup();
+    // A default from a plain (unstyled) drawing must carry concrete size/style/color…
+    const src = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const def = m.getDrawingConfig(src)!;
+    expect(def.line?.size).toBe(1);
+    expect(def.line?.color).toBeTruthy();
+    expect(def.line?.style).toBeDefined();
+    // …so applying it over a customized (width-5) line resets the width back to 1.
+    const other = m.addDrawing("segment", [{ value: 3 }, { value: 4 }])!;
+    m.setStyle(other, { line: { size: 5 } } as Parameters<typeof m.setStyle>[1]);
+    expect(m.getDrawingConfig(other)!.line?.size).toBe(5);
+    m.applyDrawingConfig(other, def);
+    expect(m.getDrawingConfig(other)!.line?.size).toBe(1);
+  });
+
+  it("draws with no seeded style/extras when there is no default", () => {
+    const { chart, m } = setup();
+    const id = m.addDrawing("rayLine");
+    const ov = ovById(chart, id!)!;
+    // No default ⇒ create() passes styles:undefined; FakeChart substitutes the
+    // klinecharts default (#1677FF), and no appearance flags are seeded.
+    expect((ov.styles as { line?: { color?: string } }).line?.color).toBe("#1677FF");
+    expect(asDrawingExtra(ov.extendData)).toEqual({});
+  });
+
+  it("getDrawingConfig reads the live overlay; applyDrawingConfig writes it back (incl. visibility)", () => {
+    const { m } = setup();
+    const id = m.addDrawing("segment", [{ value: 10 }, { value: 20 }])!;
+    const hidden = defaultVisibility();
+    hidden.units.days.on = false;
+    m.applyDrawingConfig(id, {
+      line: { color: "#00ff00" },
+      priceLabels: false,
+      visibility: hidden,
+    });
+    const cfg = m.getDrawingConfig(id)!;
+    expect(cfg.line?.color).toBe("#00ff00");
+    expect(cfg.priceLabels).toBe(false);
+    // applyDrawingConfig routes visibility through setVisibilityModel (applyDisplay +
+    // store); getDrawingConfig reads it straight back.
+    expect(cfg.visibility?.units.days.on).toBe(false);
+  });
+});
+
+describe("OverlayManager picker-hover emphasis (thicken on chart, never persist the bump)", () => {
+  const liveLine = (chart: FakeChart, id: string) =>
+    (ovById(chart, id)!.styles as { line?: { size?: number; color?: string } }).line ?? {};
+
+  it("hoverDrawing thickens the live line but getDrawing/persist report the BASE size (shield)", () => {
+    const { chart, m } = setup();
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    expect(liveLine(chart, id).size).toBe(1); // seeded default
+
+    m.hoverDrawing(id);
+    // Live overlay is emphasized (thicker), color preserved (full line reconstructed).
+    expect(liveLine(chart, id).size).toBe(3); // 1 + EMPHASIS_EXTRA_SIZE
+    expect(liveLine(chart, id).color).toBe("#1677FF");
+    // The SHIELD: a snapshot (clipboard/clone/persist path) must NOT see the bump.
+    const styled = m.getDrawing(id)!.styles as { line?: { size?: number } } | null;
+    expect(styled?.line?.size ?? 1).toBe(1);
+
+    // Un-hover restores the exact base weight on the live overlay.
+    m.hoverDrawing(null);
+    expect(liveLine(chart, id).size).toBe(1);
+    expect(liveLine(chart, id).color).toBe("#1677FF");
+  });
+
+  it("moving hover from one drawing to another restores the first and emphasizes the second", () => {
+    const { chart, m } = setup();
+    const a = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const b = m.addDrawing("segment", [{ value: 3 }, { value: 4 }])!;
+    m.hoverDrawing(a);
+    m.hoverDrawing(b);
+    expect(liveLine(chart, a).size).toBe(1); // restored
+    expect(liveLine(chart, b).size).toBe(3); // now emphasized
+  });
+
+  it("a drawing that FADES while picker-emphasized never stashes the +2px as canonical (shield covers fade-stash)", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setVisibilityModel(id, onlyVisibleOn("HOUR"));
+    m.setVisible(id, true); // solid on HOUR
+    m.hoverDrawing(id);
+    expect(liveLine(chart, id).size).toBe(3); // emphasized
+
+    m.setResolution("MINUTE_5"); // fades WHILE emphasized → fade-stash must capture BASE
+    // Canonical/persisted width stays the base 1, not the transient 3.
+    const styled = m.getDrawing(id)!.styles as { line?: { size?: number } } | null;
+    expect(styled?.line?.size ?? 1).toBe(1);
+
+    m.hoverDrawing(null);
+    m.setResolution("HOUR"); // back to solid
+    expect(liveLine(chart, id).size).toBe(1); // never re-baked thicker
+  });
+
+  it("emphasizing a ghosted (faded) drawing returns it to faded on un-hover", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    m.setVisibilityModel(id, onlyVisibleOn("HOUR"));
+    m.setVisible(id, true);
+    m.setResolution("MINUTE_5"); // now a ghost (faded rgba color)
+    expect(liveLine(chart, id).color).toMatch(/^rgba\(/);
+
+    m.hoverDrawing(id);
+    expect(liveLine(chart, id).size).toBe(3); // popped to full color + thick
+    expect(liveLine(chart, id).color).not.toMatch(/^rgba\(/);
+
+    m.hoverDrawing(null);
+    expect(liveLine(chart, id).color).toMatch(/^rgba\(/); // re-faded
+  });
+});
+
+describe("OverlayManager rehydrate teardown vs re-entrant reconcile (TF-switch data loss)", () => {
+  // THE 2026-07-08 vanish bug. A same-epic rehydrate (timeframe switch) tears down
+  // every overlay; removing an ALERT fires onRemoved → notifyAlerts → alertsChanged,
+  // and the cell's live subscription (ChartCore) synchronously runs reconcileAlerts,
+  // whose guarded() finally CLEARED the shared boolean `hydrating` flag while the
+  // teardown loop was still mid-flight. Every remaining removal then persisted a
+  // partial, shrinking list — alerts AND drawings spiralled to [] in storage, and
+  // the rebuild phase re-read the freshly-stomped keys and recreated nothing.
+  it("a same-epic rehydrate with the live alertsChanged→reconcileAlerts wiring keeps storage intact", () => {
+    const { m } = setup();
+    // Real cell wiring (ChartCore.tsx): every alertsChanged bump reconciles this cell.
+    const unsub = alertsChanged.subscribe(() => m.reconcileAlerts());
+    try {
+      m.addDrawing("segment", [{ value: 1 }, { value: 2 }]);
+      for (const lvl of [10, 20, 30, 40]) {
+        m.addAlert(lvl, { condition: "crossing", trigger: "every", message: "" });
+      }
+      expect(P.loadAlerts("US100")).toHaveLength(4);
+      expect(P.loadDrawings("tab.A", "US100")).toHaveLength(1);
+
+      m.rehydrate("MINUTE_5"); // the timeframe switch
+
+      expect(P.loadAlerts("US100").map((a) => a.level)).toEqual([10, 20, 30, 40]);
+      expect(P.loadDrawings("tab.A", "US100")).toHaveLength(1);
+    } finally {
+      unsub();
+    }
+  });
+});
+
+// Delete-key "sometimes does nothing": the drawing-selection mirror used to be
+// cleared by ChartCore's DOM click handler whenever the HOVER mirror hadn't seen
+// the drawing (hover is mousemove-driven — a click after the chart panned/zoomed
+// under a resting cursor, or a trackpad tap, never hovers). klinecharts still
+// held the click-selection and kept drawing the anchor handles, so the drawing
+// LOOKED selected while getSelectedDrawingId() was null and Delete no-oped.
+// syncDrawingSelectionFromClick mirrors klinecharts' own click state instead.
+describe("OverlayManager syncDrawingSelectionFromClick (Delete-key desync)", () => {
+  const alertCfg = { condition: "crossing" as const, trigger: "every" as const, message: "" };
+
+  it("mirrors a click-selected drawing even when the hover mirror never saw it", () => {
+    const { chart, m } = setup();
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    chart.clickInfo = { overlay: { id } };
+    m.syncDrawingSelectionFromClick();
+    expect(m.getSelectedDrawingId()).toBe(id);
+  });
+
+  it("clears the mirror when klinecharts holds no click-selected overlay", () => {
+    const { chart, m } = setup();
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    chart.clickInfo = { overlay: { id } };
+    m.syncDrawingSelectionFromClick();
+    chart.clickInfo = { overlay: null }; // empty-space click
+    m.syncDrawingSelectionFromClick();
+    expect(m.getSelectedDrawingId()).toBeNull();
+  });
+
+  it("a click-selected ALERT is not mistaken for the selected drawing", () => {
+    const { chart, m } = setup();
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    chart.clickInfo = { overlay: { id } };
+    m.syncDrawingSelectionFromClick();
+    const alertId = m.addAlert(100, alertCfg)!;
+    chart.clickInfo = { overlay: { id: alertId } };
+    m.syncDrawingSelectionFromClick();
+    expect(m.getSelectedDrawingId()).toBeNull();
+  });
+
+  it("leaves the event-driven mirror alone when the store API is unavailable", () => {
+    const { chart, m } = setup();
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    // Select via klinecharts' onSelected event (the normal hover-then-click path).
+    (ovById(chart, id) as { onSelected?: (e: { overlay: { id: string } }) => void }).onSelected?.({
+      overlay: { id },
+    });
+    (chart as unknown as { getChartStore?: unknown }).getChartStore = undefined;
+    m.syncDrawingSelectionFromClick();
+    expect(m.getSelectedDrawingId()).toBe(id); // no false clear on a fallback path
+  });
+});
+
+// A drawing whose anchors collapse onto one x (fib drawn on a single bar) or whose
+// second anchor lost its x (a straight line saved with a value-only point) renders as
+// a zero-width, unclickable strip the user can neither select nor delete. The guard
+// refuses to recreate/persist these and scrubs them from storage on load.
+describe("degenerate-drawing guard (unclickable half-drawn tool)", () => {
+  const T = 1_750_000_000_000;
+
+  it("rehydrate drops a collapsed fib (both anchors share one timestamp) and scrubs storage", () => {
+    const { chart, m } = setup();
+    P.saveDrawings("tab.A", "US100", [
+      { name: "fibonacciLine", points: [{ timestamp: T, value: 71.7 }, { timestamp: T, value: 75.2 }] },
+    ]);
+    m.rehydrate();
+    expect([...chart.overlays.values()].some((o) => o.name === "fibonacciLine")).toBe(false);
+    expect(P.loadDrawings("tab.A", "US100")).toEqual([]);
+  });
+
+  it("rehydrate drops a line whose second anchor lost its x (timestamp on one point only)", () => {
+    const { chart, m } = setup();
+    P.saveDrawings("tab.A", "US100", [
+      { name: "straightLine", points: [{ timestamp: T, value: 80.4 }, { value: 76.2 }] },
+    ]);
+    m.rehydrate();
+    expect([...chart.overlays.values()].some((o) => o.name === "straightLine")).toBe(false);
+    expect(P.loadDrawings("tab.A", "US100")).toEqual([]);
+  });
+
+  it("keeps a valid drawing and only scrubs the degenerate one", () => {
+    const { chart, m } = setup();
+    P.saveDrawings("tab.A", "US100", [
+      { name: "fibonacciLine", points: [{ timestamp: T, value: 71.7 }, { timestamp: T, value: 75.2 }] },
+      { name: "segment", points: [{ timestamp: T, value: 1 }, { timestamp: T + 3_600_000, value: 2 }] },
+    ]);
+    m.rehydrate();
+    const names = [...chart.overlays.values()].map((o) => o.name);
+    expect(names).toContain("segment");
+    expect(names).not.toContain("fibonacciLine");
+    const saved = P.loadDrawings("tab.A", "US100");
+    expect(saved.map((d) => d.name)).toEqual(["segment"]);
+  });
+
+  it("onDrawEnd removes a drawing that finished with collapsed anchors instead of persisting", () => {
+    const { chart, m } = setup();
+    const id = m.addDrawing("fibonacciLine", [{ timestamp: T, value: 71.7 }, { timestamp: T, value: 75.2 }])!;
+    // Simulate klinecharts firing onDrawEnd once the (degenerate) second click lands.
+    (ovById(chart, id) as { onDrawEnd?: (e: { overlay: { id: string } }) => void }).onDrawEnd?.({
+      overlay: { id },
+    });
+    expect(ovById(chart, id)).toBeNull(); // removed, not left stuck
+    expect(P.loadDrawings("tab.A", "US100")).toEqual([]); // never persisted
+  });
+
+  it("does not flag the symmetric x-less fixture shorthand", () => {
+    const { m } = setup();
+    m.addDrawing("segment", [{ value: 1 }, { value: 2 }]);
+    expect(P.loadDrawings("tab.A", "US100")).toHaveLength(1);
+  });
+});
+
+describe("OverlayManager id remap on rehydrate", () => {
+  it("keeps every drawing's id across a rebuild, so held ids never go stale", () => {
+    const { m } = setup();
+    const a = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const b = m.addDrawing("horizontalStraightLine", [{ value: 5 }])!;
+    let calls = 0;
+    const unsub = m.onIdRemap(() => {
+      calls++;
+    });
+    m.rehydrate(); // a same-epic rebuild, e.g. a live data refresh
+    unsub();
+    // The persisted id came back verbatim: no remap to announce, and a write
+    // through the ORIGINAL id still lands (the settings-modal case).
+    expect(calls).toBe(0);
+    expect(m.getDrawing(a)?.name).toBe("segment");
+    expect(m.getDrawing(b)?.name).toBe("horizontalStraightLine");
+    m.setStyle(a, { line: { color: "#123456" } } as Parameters<typeof m.setStyle>[1]);
+    expect((m.getDrawing(a)?.styles?.line as { color?: string })?.color).toBe("#123456");
+  });
+
+  it("remaps ids for drawings saved before ids were persisted", () => {
+    const { m } = setup();
+    const a = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    // Age the storage: strip the persisted ids, as any pre-upgrade save has.
+    P.saveDrawings("tab.A", "US100", P.loadDrawings("tab.A", "US100").map((d) => {
+      const aged = { ...d };
+      delete aged.id;
+      return aged;
+    }));
+    const maps: Array<ReadonlyMap<string, string>> = [];
+    const unsub = m.onIdRemap((map) => {
+      maps.push(map);
+    });
+    m.rehydrate();
+    unsub();
+    const na = maps[0]?.get(a);
+    expect(na).toBeTruthy();
+    expect(m.getDrawing(na!)?.name).toBe("segment");
+    // And the rebuild persisted the minted id, so the NEXT rebuild is stable.
+    expect(P.loadDrawings("tab.A", "US100")[0]?.id).toBe(na);
+  });
+
+  it("gives a duplicated stored id's second claimant a fresh one, losing neither", () => {
+    const { m } = setup();
+    m.addDrawing("segment", [{ value: 1 }, { value: 2 }]);
+    m.addDrawing("segment", [{ value: 3 }, { value: 4 }]);
+    const saved = P.loadDrawings("tab.A", "US100");
+    P.saveDrawings("tab.A", "US100", saved.map((d) => ({ ...d, id: saved[0].id })));
+    m.rehydrate();
+    const ids = m.listDrawings().map((d) => d.id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids[0]).toBe(saved[0].id);
+  });
+
+  it("emits nothing across a symbol change, where pairing would be a lie", () => {
+    const { m } = setup();
+    m.addDrawing("segment", [{ value: 1 }, { value: 2 }]);
+    let calls = 0;
+    const unsub = m.onIdRemap(() => {
+      calls++;
+    });
+    m.setEpic("GOLD");
+    m.rehydrate();
+    unsub();
+    expect(calls).toBe(0);
+  });
+
+  it("stops notifying after unsubscribe", () => {
+    const { m } = setup();
+    m.addDrawing("segment", [{ value: 1 }, { value: 2 }]);
+    let calls = 0;
+    const unsub = m.onIdRemap(() => {
+      calls++;
+    });
+    unsub();
+    m.rehydrate();
+    expect(calls).toBe(0);
+  });
+});
+
+describe("OverlayManager pattern ghost (paste, pin, re-align)", () => {
+  // A copied shape: ratios to the first open, exactly as capturePattern stores it.
+  const GHOST = {
+    bars: [
+      { open: 1, high: 1.02, low: 0.99, close: 1.01 },
+      { open: 1.01, high: 1.04, low: 1.0, close: 1.03 },
+      { open: 1.03, high: 1.05, low: 1.01, close: 1.02 },
+    ],
+    epic: "DE40",
+    resolution: "5m",
+    fromTs: 1_700_000_000,
+    toTs: 1_700_000_120,
+  };
+
+  // Three candles under the ghost, at a completely different price level — the
+  // case the whole feature exists for.
+  function seedCandles(chart: FakeChart) {
+    chart.data = [
+      { timestamp: 1_800_000_000, open: 21_000, high: 21_050, low: 20_980, close: 21_030 },
+      { timestamp: 1_800_000_300, open: 21_030, high: 21_090, low: 21_010, close: 21_070 },
+      { timestamp: 1_800_000_600, open: 21_070, high: 21_110, low: 21_040, close: 21_060 },
+    ];
+  }
+
+  function pasted() {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    seedCandles(chart);
+    const id = m.pastePatternGhost(1_800_000_000, 21_000, GHOST)!;
+    return { chart, m, id, ov: ovById(chart, id)! as Record<string, unknown> };
+  }
+
+  it("pastes as a normal drawing, carrying the copied shape on extendData", () => {
+    const { m, id, ov } = pasted();
+    expect(ov.name).toBe("patternGhost");
+    expect(asDrawingExtra(ov.extendData).ghost).toEqual(GHOST);
+    // It is a drawing like any other: persisted, and selected so Delete works.
+    expect(m.listDrawings().some((d) => d.id === id)).toBe(true);
+  });
+
+  it("stays auto-aligned when the drag only slid it along the bars", () => {
+    const { m, id, ov } = pasted();
+    const e = { overlay: ov };
+    (ov.onPressedMoveStart as (x: unknown) => void)(e);
+    // A horizontal drag: the anchor bar changes, the price under the cursor does not.
+    (ov.points as Array<{ value: number }>)[0].value = 21_000;
+    (ov.onPressedMoveEnd as (x: unknown) => void)(e);
+    expect(asDrawingExtra(ov.extendData).ghostPinned).toBeUndefined();
+    expect(m.isPinnedGhost(id)).toBe(false);
+  });
+
+  // The placement the auto-fit was drawing the ghost at, before any drag.
+  function drawnFit(chart: FakeChart) {
+    const actual = chart.data.map((k) => ({
+      open: k.open!, high: k.high!, low: k.low!, close: k.close!,
+    }));
+    return windowMoments(fitToWindow(GHOST.bars, actual)!)!;
+  }
+
+  it("pins the placement it was DRAWN at when the drag moved it vertically", () => {
+    const { chart, m, id, ov } = pasted();
+    const fitBefore = drawnFit(chart);
+    const e = { overlay: ov };
+    (ov.onPressedMoveStart as (x: unknown) => void)(e);
+    (ov.points as Array<{ value: number }>)[0].value = 21_040; // dragged up 40
+    (ov.onPressedMoveEnd as (x: unknown) => void)(e);
+    expect(m.isPinnedGhost(id)).toBe(true);
+    // Re-read: the override wrote a new overlay object, `ov` is the old one.
+    const fit = asDrawingExtra(ovById(chart, id)!.extendData).ghostFit!;
+    // Position carries the drag; SIZE is whatever it was already drawn at. A
+    // bare price anchor kept the first and threw away the second, so a small
+    // nudge could resize the ghost several-fold on release.
+    expect(fit.mean).toBeCloseTo(fitBefore.mean + 40, 6);
+    expect(fit.sd).toBeCloseTo(fitBefore.sd, 6);
+  });
+
+  it("carries a pinned ghost with a later vertical drag, and not a sideways one", () => {
+    const { chart, m, id } = pasted();
+    const drag = (to: number) => {
+      const live = ovById(chart, id)! as Record<string, unknown>;
+      (live.onPressedMoveStart as (x: unknown) => void)({ overlay: live });
+      (live.points as Array<{ value: number }>)[0].value = to;
+      (live.onPressedMoveEnd as (x: unknown) => void)({ overlay: live });
+    };
+    drag(21_040); // pins it
+    const pinnedAt = asDrawingExtra(ovById(chart, id)!.extendData).ghostFit!;
+    drag(21_040); // slid along the bars: same price, so nothing moves
+    expect(asDrawingExtra(ovById(chart, id)!.extendData).ghostFit).toEqual(pinnedAt);
+    drag(21_140); // 100 higher
+    const after = asDrawingExtra(ovById(chart, id)!.extendData).ghostFit!;
+    expect(after.mean).toBeCloseTo(pinnedAt.mean + 100, 6);
+    expect(after.sd).toBeCloseTo(pinnedAt.sd, 6);
+    expect(m.isPinnedGhost(id)).toBe(true);
+  });
+
+  it("repaints a ghost without touching the shape it scores", () => {
+    const { chart, m, id } = pasted();
+    m.setGhostStyle(id, { shape: "line", opacity: 0.9, color: "#9598a1", score: false });
+    const extra = asDrawingExtra(ovById(chart, id)!.extendData);
+    expect(extra.ghostStyle).toEqual({
+      shape: "line",
+      opacity: 0.9,
+      color: "#9598a1",
+      score: false,
+    });
+    expect(extra.ghost).toEqual(GHOST); // the copied candles are untouched
+  });
+
+  it("carries the ghost look through save-as-default and reset", () => {
+    const { m, id } = pasted();
+    m.setGhostStyle(id, { shape: "line", opacity: 0.9, color: "#9598a1", score: false });
+    const cfg = m.getDrawingConfig(id)!;
+    expect(cfg.ghostStyle?.shape).toBe("line");
+    m.applyDrawingConfig(id, { ...cfg, ghostStyle: { ...cfg.ghostStyle!, shape: "candles" } });
+    expect(m.getDrawingConfig(id)!.ghostStyle!.shape).toBe("candles");
+  });
+
+  it("seeds a fresh paste from the saved ghost default", () => {
+    const { chart, m, id } = pasted();
+    m.setGhostStyle(id, { shape: "line", opacity: 0.9, color: "#9598a1", score: false });
+    P.saveDrawingDefault("patternGhost", m.getDrawingConfig(id)!);
+    const next = m.pastePatternGhost(1_800_000_300, 21_030, GHOST)!;
+    expect(asDrawingExtra(ovById(chart, next)!.extendData).ghostStyle?.shape).toBe("line");
+    P.clearDrawingDefault("patternGhost");
+  });
+
+  it("hands a pinned ghost back to the fit on re-align", () => {
+    const { chart, m, id, ov } = pasted();
+    const e = { overlay: ov };
+    (ov.onPressedMoveStart as (x: unknown) => void)(e);
+    (ov.points as Array<{ value: number }>)[0].value = 21_500;
+    (ov.onPressedMoveEnd as (x: unknown) => void)(e);
+    expect(m.isPinnedGhost(id)).toBe(true);
+    m.realignGhost(id);
+    expect(m.isPinnedGhost(id)).toBe(false);
+    const extra = asDrawingExtra(ovById(chart, id)!.extendData);
+    expect(extra.ghostPinned).toBeUndefined();
+    expect(extra.ghostFit).toBeUndefined(); // the frozen placement goes with it
+  });
+
+  it("refuses to paste into a read-only snapshot view", () => {
+    const { chart, m } = setup();
+    m.setResolution("HOUR");
+    seedCandles(chart);
+    m.setReadOnly(true);
+    expect(m.pastePatternGhost(1_800_000_000, 21_000, GHOST)).toBeNull();
+  });
+});
+
+describe("OverlayManager trade drawings (Long/Short Position)", () => {
+  const T = 1_750_000_000_000;
+  const BAR = 60_000;
+
+  // Two clicks place entry and target; the stop point only exists afterwards.
+  function drawTrade(name = "tradeBox") {
+    const { chart, m } = setup();
+    const id = m.addDrawing(name, [
+      { timestamp: T, value: 100 },
+      { timestamp: T + 10 * BAR, value: 102 },
+    ])!;
+    (ovById(chart, id) as { onDrawEnd?: (e: { overlay: { id: string } }) => void }).onDrawEnd?.({
+      overlay: { id },
+    });
+    return { chart, m, id };
+  }
+
+  function pointsOf(m: OverlayManagerT, id: string) {
+    return (m.getDrawing(id)?.points ?? []) as Array<{ timestamp?: number; value?: number }>;
+  }
+
+  it("completes a two-click draw with a stop point at a 1:2 risk/reward", () => {
+    const { m, id } = drawTrade();
+    const pts = pointsOf(m, id);
+    expect(pts).toHaveLength(3);
+    expect(pts[2].value).toBeCloseTo(99);
+  });
+
+  it("puts the stop on the drawing's right edge, so the two zones share a width", () => {
+    const { m, id } = drawTrade();
+    const pts = pointsOf(m, id);
+    expect(pts[2].timestamp).toBe(pts[1].timestamp);
+  });
+
+  it("mirrors the stop for a trade drawn downwards (a short)", () => {
+    const { chart, m } = setup();
+    const id = m.addDrawing("tradeBox", [
+      { timestamp: T, value: 100 },
+      { timestamp: T + 10 * BAR, value: 98 },
+    ])!;
+    (ovById(chart, id) as { onDrawEnd?: (e: { overlay: { id: string } }) => void }).onDrawEnd?.({
+      overlay: { id },
+    });
+    expect(pointsOf(m, id)[2].value).toBeCloseTo(101);
+  });
+
+  it("persists the completed trade with all three levels", () => {
+    const { m, id } = drawTrade();
+    expect(m.getDrawing(id)).not.toBeNull();
+    const saved = P.loadDrawings("tab.A", "US100");
+    expect(saved).toHaveLength(1);
+    expect(saved[0].points).toHaveLength(3);
+  });
+
+  it("drags the stop's edge along when the target is pulled sideways", () => {
+    const { chart, m, id } = drawTrade();
+    const ov = ovById(chart, id) as {
+      onPressedMoveStart?: (e: { overlay: unknown }) => void;
+      onPressedMoveEnd?: (e: { overlay: unknown }) => void;
+      points: Array<{ timestamp?: number; value?: number }>;
+    };
+    onPressedMove(ov, () => {
+      ov.points[1].timestamp = T + 20 * BAR; // klinecharts moved the target only
+    });
+    const pts = pointsOf(m, id);
+    expect(pts[1].timestamp).toBe(T + 20 * BAR);
+    expect(pts[2].timestamp).toBe(T + 20 * BAR);
+    expect(pts[2].value).toBeCloseTo(99); // the level itself is untouched
+  });
+
+  it("leaves a purely vertical level drag alone", () => {
+    const { chart, m, id } = drawTrade();
+    const ov = ovById(chart, id) as {
+      onPressedMoveStart?: (e: { overlay: unknown }) => void;
+      onPressedMoveEnd?: (e: { overlay: unknown }) => void;
+      points: Array<{ timestamp?: number; value?: number }>;
+    };
+    onPressedMove(ov, () => {
+      ov.points[2].value = 97; // stop dragged down, same bar
+    });
+    const pts = pointsOf(m, id);
+    expect(pts[2].value).toBe(97);
+    expect(pts[1].timestamp).toBe(T + 10 * BAR);
+  });
+
+  it("completes a trade placed with only two anchors (agent bridge / paste)", () => {
+    // placeDrawing never fires onDrawEnd, so a two-point trade would otherwise
+    // persist half-drawn and render as a preview forever.
+    const { m } = setup();
+    const id = m.placeDrawing({
+      name: "tradeBox",
+      points: [
+        { timestamp: T, value: 100 },
+        { timestamp: T + 10 * BAR, value: 102 },
+      ],
+    })!;
+    expect(pointsOf(m, id)).toHaveLength(3);
+    expect(P.loadDrawings("tab.A", "US100")[0].points).toHaveLength(3);
+  });
+
+  it("leaves a fully specified trade's own stop alone", () => {
+    const { m } = setup();
+    const id = m.placeDrawing({
+      name: "tradeBox",
+      points: [
+        { timestamp: T, value: 100 },
+        { timestamp: T + 10 * BAR, value: 98 },
+        { timestamp: T + 10 * BAR, value: 100.5 },
+      ],
+    })!;
+    expect(pointsOf(m, id)[2].value).toBe(100.5);
+  });
+
+  it("leaves the shared edge intact when the whole trade is dragged sideways", () => {
+    // Dragging the body moves all three points together, so nothing is torn —
+    // the edge sync must not mistake that for one point escaping.
+    const { chart, m, id } = drawTrade();
+    const ov = ovById(chart, id) as {
+      onPressedMoveStart?: (e: { overlay: unknown }) => void;
+      onPressedMoveEnd?: (e: { overlay: unknown }) => void;
+      points: Array<{ timestamp?: number; value?: number }>;
+    };
+    onPressedMove(ov, () => {
+      for (const p of ov.points) p.timestamp = (p.timestamp ?? 0) + 5 * BAR;
+    });
+    const pts = pointsOf(m, id);
+    expect(pts[0].timestamp).toBe(T + 5 * BAR);
+    expect(pts[1].timestamp).toBe(T + 15 * BAR);
+    expect(pts[2].timestamp).toBe(T + 15 * BAR);
+  });
+
+  it("stores the drawing's trade settings so the labels survive a reload", () => {
+    const { m, id } = drawTrade();
+    m.setTradeConfig(id, { ...asTradeConfig(undefined), showMoney: true, riskPct: 2 });
+    expect(asDrawingExtra(m.getDrawing(id)?.extendData).trade).toMatchObject({
+      showMoney: true,
+      riskPct: 2,
+    });
+    const saved = P.loadDrawings("tab.A", "US100");
+    expect((saved[0].extendData as { trade?: { riskPct?: number } })?.trade?.riskPct).toBe(2);
+  });
+});
+
+// Run a klinecharts press-drag over an overlay: start, mutate the points the way
+// the library would, then release.
+function onPressedMove(
+  ov: {
+    onPressedMoveStart?: (e: { overlay: unknown }) => void;
+    onPressedMoveEnd?: (e: { overlay: unknown }) => void;
+  },
+  move: () => void,
+) {
+  ov.onPressedMoveStart?.({ overlay: ov });
+  move();
+  ov.onPressedMoveEnd?.({ overlay: ov });
+}
+
+describe("OverlayManager trade-drawing defaults and templates", () => {
+  const T = 1_750_000_000_000;
+
+  function tradeWithConfig() {
+    const { chart, m } = setup();
+    const id = m.addDrawing("tradeBox", [
+      { timestamp: T, value: 100 },
+      { timestamp: T + 600_000, value: 102 },
+    ])!;
+    (ovById(chart, id) as { onDrawEnd?: (e: { overlay: { id: string } }) => void }).onDrawEnd?.({
+      overlay: { id },
+    });
+    m.setTradeConfig(id, { ...asTradeConfig(undefined), showPoints: true, riskPct: 3 });
+    return { m, id };
+  }
+
+  it("reads the trade config into a saveable drawing config", () => {
+    const { m, id } = tradeWithConfig();
+    expect(m.getDrawingConfig(id)?.trade).toMatchObject({ showPoints: true, riskPct: 3 });
+  });
+
+  it("applies a saved trade config back onto a drawing", () => {
+    const { m, id } = tradeWithConfig();
+    m.applyDrawingConfig(id, { trade: { ...asTradeConfig(undefined), showMoney: true } });
+    const trade = asDrawingExtra(m.getDrawing(id)?.extendData).trade;
+    expect(trade).toMatchObject({ showMoney: true, showPoints: false });
+  });
+
+  it("leaves other drawing types without a trade config", () => {
+    const { m } = setup();
+    const id = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    expect(m.getDrawingConfig(id)?.trade).toBeUndefined();
+  });
+});
+
+describe("OverlayManager alert drag restores the alert's own anchor", () => {
+  // klinecharts writes dataIndex+timestamp into the point on any drag, and the
+  // built-in priceLine then draws from whatever bar the drop landed on — pan away
+  // and the dashed alert line runs from an arbitrarily distant x every frame. The
+  // drop handler must ALWAYS rewrite the point (not only when the level rounds)
+  // back to the x-start the alert owns: its creation time, or none at all.
+  function dropAfterDrag(chart: FakeChart, id: string, value: number) {
+    const ov = ovById(chart, id)!;
+    (ov.points as Array<Record<string, unknown>>)[0] = {
+      value,
+      dataIndex: 12345,
+      timestamp: 1_700_000_000_000,
+    };
+    (ov as unknown as { onPressedMoveEnd: (e: unknown) => void }).onPressedMoveEnd({ overlay: ov });
+    return ovById(chart, id)!.points as Array<Record<string, unknown>>;
+  }
+
+  it("re-stamps the creation time over the drag's bar anchor", () => {
+    const { chart, m } = setup();
+    m.setPricePrecision(2);
+    const before = Date.now();
+    const id = m.addAlert(70.64, { condition: "crossing", trigger: "every", message: "" })!;
+    const after = dropAfterDrag(chart, id, 70.64);
+    expect(after[0].value).toBe(70.64);
+    expect(after[0].dataIndex).toBeUndefined();
+    expect(after[0].timestamp as number).toBeGreaterThanOrEqual(before);
+  });
+
+  it("strips the anchor entirely when the line spans the pane (startAtCreation off)", () => {
+    const { chart, m } = setup();
+    m.setPricePrecision(2);
+    const id = m.addAlert(70.64, {
+      condition: "crossing", trigger: "every", message: "", startAtCreation: false,
+    })!;
+    const after = dropAfterDrag(chart, id, 70.64);
+    expect(after[0].value).toBe(70.64);
+    expect(after[0].dataIndex).toBeUndefined();
+    expect(after[0].timestamp).toBeUndefined();
+  });
+
+  it("keeps the creation anchor through a ChartCore-driven drag", () => {
+    const { chart, m } = setup();
+    m.setPricePrecision(2);
+    const id = m.addAlert(100, { condition: "crossing", trigger: "every", message: "" })!;
+    const ts = () => (ovById(chart, id)!.points as Array<Record<string, unknown>>)[0].timestamp;
+    const anchor = ts();
+    expect(anchor).toBeGreaterThan(0);
+    m.beginAlertDrag(id);
+    m.dragAlertTo(id, 105.123);
+    expect(ts()).toBe(anchor); // mid-drag too, or the line flashes full-width
+    m.endAlertDrag(id);
+    expect(ts()).toBe(anchor);
+    expect((ovById(chart, id)!.points as Array<Record<string, unknown>>)[0].value).toBe(105.12);
+  });
+});
+
+describe("OverlayManager alert lines start at their creation time", () => {
+  it("anchors a new alert's line to the moment it was created", () => {
+    const { chart, m } = setup();
+    const before = Date.now();
+    const id = m.addAlert(100, { condition: "crossing", trigger: "every", message: "" })!;
+    const pt = (ovById(chart, id)!.points as Array<Record<string, unknown>>)[0];
+    expect(pt.value).toBe(100);
+    expect(pt.timestamp as number).toBeGreaterThanOrEqual(before);
+  });
+
+  it("clamps the anchor to the last bar so the line never starts past the data", () => {
+    const { chart, m } = setup();
+    // 1D bars ending last Friday; "now" (createdAt) is days past the newest bar.
+    // Unclamped, klinecharts extrapolates into the blank space right of the data
+    // and the line starts several bars into the future.
+    const lastBar = Date.now() - 3 * 24 * 60 * 60 * 1000;
+    chart.data = [
+      { timestamp: lastBar - 24 * 60 * 60 * 1000 },
+      { timestamp: lastBar },
+    ];
+    const id = m.addAlert(100, { condition: "crossing", trigger: "every", message: "" })!;
+    const pt = (ovById(chart, id)!.points as Array<Record<string, unknown>>)[0];
+    expect(pt.timestamp).toBe(lastBar);
+  });
+
+  it("keeps the exact creation time when it falls inside the loaded bars", () => {
+    const { chart, m } = setup();
+    chart.data = [{ timestamp: Date.now() + 60_000 }];
+    const before = Date.now();
+    const id = m.addAlert(100, { condition: "crossing", trigger: "every", message: "" })!;
+    const pt = (ovById(chart, id)!.points as Array<Record<string, unknown>>)[0];
+    expect(pt.timestamp as number).toBeGreaterThanOrEqual(before);
+  });
+
+  it("leaves the line value-only when the option is off", () => {
+    const { chart, m } = setup();
+    const id = m.addAlert(100, {
+      condition: "crossing", trigger: "every", message: "", startAtCreation: false,
+    })!;
+    expect((ovById(chart, id)!.points as Array<Record<string, unknown>>)[0].timestamp)
+      .toBeUndefined();
+  });
+
+  it("toggleAlertLineStart flips the anchor in place and reports it via getAlerts", () => {
+    const { chart, m } = setup();
+    const id = m.addAlert(100, { condition: "crossing", trigger: "every", message: "" })!;
+    const flag = () => m.getAlerts().find((a) => a.id === id)!.startAtCreation;
+    const ts = () => (ovById(chart, id)!.points as Array<Record<string, unknown>>)[0].timestamp;
+    expect(flag()).toBe(true);
+    expect(ts()).toBeGreaterThan(0);
+
+    m.toggleAlertLineStart(id);
+    expect(flag()).toBe(false);
+    expect(ts()).toBeUndefined(); // line now spans the pane
+
+    m.toggleAlertLineStart(id);
+    expect(flag()).toBe(true);
+    expect(ts()).toBeGreaterThan(0);
+  });
+
+  it("moves the x-start when the edit modal toggles the option", () => {
+    const { chart, m } = setup();
+    const cfg = { condition: "crossing" as const, trigger: "every" as const, message: "" };
+    const id = m.addAlert(100, cfg)!;
+    m.updateAlert(id, 100, { ...cfg, startAtCreation: false });
+    expect((ovById(chart, id)!.points as Array<Record<string, unknown>>)[0].timestamp)
+      .toBeUndefined();
+    m.updateAlert(id, 100, { ...cfg, startAtCreation: true });
+    expect((ovById(chart, id)!.points as Array<Record<string, unknown>>)[0].timestamp)
+      .toBeGreaterThan(0);
+  });
+});
+
+describe("OverlayManager.lockUnselectedForPress (touch: select before drag)", () => {
+  it("locks every unselected, unlocked drawing and release restores them", () => {
+    const { chart, m } = setup();
+    const a = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const b = m.addDrawing("segment", [{ value: 3 }, { value: 4 }])!;
+    const c = m.addDrawing("segment", [{ value: 5 }, { value: 6 }])!;
+    m.setLock(c, true);
+    m.selectDrawing(a);
+    const release = m.lockUnselectedForPress();
+    expect(ovById(chart, a)!.lock).toBeFalsy(); // selected: still draggable
+    expect(ovById(chart, b)!.lock).toBe(true);
+    release();
+    expect(ovById(chart, a)!.lock).toBeFalsy();
+    expect(ovById(chart, b)!.lock).toBeFalsy();
+    expect(ovById(chart, c)!.lock).toBe(true); // user's own lock untouched
+    release(); // idempotent
+    expect(ovById(chart, b)!.lock).toBeFalsy();
+  });
+
+  it("never saves or reports the hold, even while it lasts", () => {
+    const { m } = setup();
+    const a = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const release = m.lockUnselectedForPress();
+    (m as unknown as { persist(): void }).persist();
+    const saved = P.loadDrawings("tab.A", "US100").find((d) => d.id === a);
+    expect(saved).toBeDefined();
+    expect(saved!.lock).toBeFalsy();
+    expect(m.getDrawing(a)!.lock).toBe(false);
+    expect(m.anyDrawingsLocked()).toBe(false);
+    release();
+  });
+
+  it("keeps a real lock set during the hold after release", () => {
+    const { chart, m } = setup();
+    const a = m.addDrawing("segment", [{ value: 1 }, { value: 2 }])!;
+    const b = m.addDrawing("segment", [{ value: 3 }, { value: 4 }])!;
+    const release = m.lockUnselectedForPress();
+    m.setLock(a, true);
+    m.lockAllDrawings();
+    release();
+    expect(ovById(chart, a)!.lock).toBe(true);
+    expect(ovById(chart, b)!.lock).toBe(true);
+  });
+
+  it("holds unselected alert lines too, but not the selected one", () => {
+    const { chart, m } = setup();
+    const a = m.addAlert(50, { condition: "crossing", trigger: "once", message: "" })!;
+    const b = m.addAlert(60, { condition: "crossing", trigger: "once", message: "" })!;
+    m.selectAlert(a);
+    const release = m.lockUnselectedForPress();
+    expect(ovById(chart, a)!.lock).toBeFalsy();
+    expect(ovById(chart, b)!.lock).toBe(true);
+    release();
+    expect(ovById(chart, b)!.lock).toBeFalsy();
+  });
+});

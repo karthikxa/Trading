@@ -1,0 +1,693 @@
+// Toolbar building blocks shared by the two toolbar variants: the full Toolbar
+// (normal charts) and SnapshotToolbar (read-only snapshot views). Each block is
+// self-contained — it owns its local state and signal subscriptions — so both
+// toolbars compose the exact same DOM for the controls they have in common.
+
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { JSX, MouseEvent } from "react";
+import {
+  periodGroups,
+  periodByResolution,
+  quickBarPeriods,
+  quickBarWithActive,
+  DEFAULT_RESOLUTIONS,
+  isBuiltinResolution,
+  type Instrument,
+  type Period,
+} from "./lib/feed";
+import {
+  alertsChanged,
+  alertsPanelOpen,
+  tradeListPanelOpen,
+  tradePanelOpen,
+  livePanelOpen,
+  toggleSidePanel,
+} from "./lib/signals";
+import { loadTriggered, loadTriggeredSeen } from "./lib/alertsApi";
+import {
+  loadFavoriteResolutions,
+  saveFavoriteResolutions,
+  loadCustomResolutions,
+  saveCustomResolutions,
+} from "./lib/persist";
+import type { ChartController } from "./lib/chartController";
+import { applyCandleFit } from "./chart/candleFit";
+import { BellIcon } from "./lib/menuIcons";
+import SymbolIcon from "./SymbolIcon";
+import Tooltip from "./components/Tooltip";
+import CustomTimeframeForm from "./components/CustomTimeframeForm";
+import { isSynthetic } from "./lib/syntheticRegistry";
+
+// Shared dropdown caret — the same SVG chevron the symbol chip uses, so every
+// toolbar caret renders identically (replacing the plain "▾" text triangles that
+// rendered in a different style beside the SVG one).
+export function Caret({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className ? `tb-caret ${className}` : "tb-caret"}
+      viewBox="0 0 24 24" width="11" height="11" fill="none"
+      stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
+// The toolbar's symbol chip (TV-style resting chip: logo + epic + chevron).
+// The full Toolbar makes it clickable (opens the symbol-search modal); the
+// snapshot toolbar renders it disabled (the snapshot is OF this symbol).
+export function SymbolChip({
+  symbol,
+  title,
+  disabled,
+  onClick,
+}: {
+  symbol: Instrument;
+  title: string;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <Tooltip content={title}>
+      <button className="sym" disabled={disabled} onClick={onClick}>
+        <SymbolIcon epic={symbol.epic} type={symbol.type} className="sym-logo" />
+        <span className="sym-epic">
+          {isSynthetic(symbol.epic) ? (symbol.name ?? symbol.epic) : symbol.epic}
+        </span>
+        <svg className="sym-caret" viewBox="0 0 24 24" width="12" height="12" fill="none"
+          stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"
+          aria-hidden="true">
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+    </Tooltip>
+  );
+}
+
+// Timeframe controls: the merged quick bar (defaults ∪ pinned favorites) plus the
+// TV-style grouped interval dropdown with its per-row favourite stars.
+export function IntervalControls({
+  period,
+  onPeriod,
+}: {
+  period: Period;
+  onPeriod: (p: Period) => void;
+}) {
+  // Favorite timeframes (global preference), merged with the defaults to form the
+  // quick bar. Seeded from localStorage; toggled via the per-row star in the
+  // interval dropdown (defaults are always present and have no star).
+  const [favResolutions, setFavResolutions] = useState<string[]>(loadFavoriteResolutions);
+
+  // Saved custom timeframes (global preference), shown in their own "Custom"
+  // group at the bottom of the interval dropdown, with an "Add custom" form.
+  const [customResolutions, setCustomResolutions] = useState<string[]>(loadCustomResolutions);
+
+  // grouped interval menu (TV-style; quick-bar stays fixed)
+  const [intervalOpen, setIntervalOpen] = useState(false);
+  const intervalMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close the dropdown on click outside. The ref wraps button+dropdown, so
+  // clicking the toggle stays "inside" and doesn't fight the button's own onClick.
+  useEffect(() => {
+    if (!intervalOpen) return;
+    // globalThis.MouseEvent: the bare name is React's synthetic type here.
+    const onDown = (e: globalThis.MouseEvent) => {
+      const t = e.target as Node;
+      if (intervalMenuRef.current && !intervalMenuRef.current.contains(t))
+        setIntervalOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [intervalOpen]);
+
+  // Pin/unpin a timeframe on the quick bar (global preference). Defaults are never
+  // passed here — their buttons/rows offer no context action.
+  function toggleFavResolution(resolution: string) {
+    setFavResolutions((prev) => {
+      const next = prev.includes(resolution)
+        ? prev.filter((r) => r !== resolution)
+        : [...prev, resolution];
+      saveFavoriteResolutions(next);
+      return next;
+    });
+  }
+
+  // Add a custom timeframe (global preference) and select it. A built-in (4H)
+  // or an already-saved custom timeframe just gets selected, not re-added.
+  function addCustomResolution(resolution: string) {
+    const period = periodByResolution(resolution);
+    if (!period) return;
+    if (!isBuiltinResolution(resolution)) {
+      setCustomResolutions((prev) => {
+        if (prev.includes(resolution)) return prev;
+        const next = [...prev, resolution];
+        saveCustomResolutions(next);
+        return next;
+      });
+    }
+    onPeriod(period);
+    setIntervalOpen(false);
+  }
+
+  // Remove a saved custom timeframe, unpinning it from the quick bar too.
+  function removeCustomResolution(resolution: string) {
+    setCustomResolutions((prev) => {
+      const next = prev.filter((r) => r !== resolution);
+      saveCustomResolutions(next);
+      return next;
+    });
+    setFavResolutions((prev) => {
+      if (!prev.includes(resolution)) return prev;
+      const next = prev.filter((r) => r !== resolution);
+      saveFavoriteResolutions(next);
+      return next;
+    });
+  }
+
+  // Merged quick bar: defaults (1m–1W) ∪ pinned favorites, duration-sorted.
+  const quickBar = quickBarPeriods(favResolutions);
+  const intervalGroups = periodGroups(customResolutions);
+
+  return (
+    <div className="periods">
+      {/* The quick bar plus, when the active interval isn't on it (a seconds or
+          custom TF), that interval as a highlighted chip in its duration slot,
+          so the whole row always reads shortest to longest. */}
+      {quickBarWithActive(quickBar, period).map((p) =>
+        p === period && !quickBar.includes(p) ? (
+          <Tooltip key={p.resolution} content={`${p.label} interval`}>
+            <button
+              className="on extra-period"
+              onClick={() => setIntervalOpen((v) => !v)}
+            >
+              {p.label}
+            </button>
+          </Tooltip>
+        ) : (
+          <Tooltip key={p.resolution} content={`${p.label} interval`}>
+            <button
+              className={p.resolution === period.resolution ? "on" : ""}
+              onClick={() => onPeriod(p)}
+            >
+              {p.label}
+            </button>
+          </Tooltip>
+        ),
+      )}
+      {/* TV-style grouped interval menu (adds the live-only seconds group). */}
+      <div className="menu interval-menu" ref={intervalMenuRef}>
+        <Tooltip content="Chart interval">
+          <button
+            className="interval-toggle"
+            onClick={() => setIntervalOpen((v) => !v)}
+          >
+            <Caret />
+          </button>
+        </Tooltip>
+        {intervalOpen && (
+          <div className="dropdown interval-dropdown">
+            {intervalGroups.map((g) => (
+              <div key={g.label} className="interval-group">
+                <div className="interval-group-label">{g.label}</div>
+                <ul>
+                  {g.periods.map((p) => (
+                    <li
+                      key={p.resolution}
+                      className={p.resolution === period.resolution ? "on" : ""}
+                      onClick={() => {
+                        onPeriod(p);
+                        setIntervalOpen(false);
+                      }}
+                    >
+                      <span className="tf-label">
+                        {p.label}
+                        {p.liveOnly && <span className="live-only">live</span>}
+                      </span>
+                      <span className="tf-actions">
+                        {/* Defaults (1m–1W) are always on the quick bar; only the
+                            other intervals get a favourite toggle. The star is
+                            always visible (not hover-revealed) for discoverability. */}
+                        {!DEFAULT_RESOLUTIONS.has(p.resolution) && (
+                          <Tooltip
+                            content={
+                              favResolutions.includes(p.resolution)
+                                ? "Remove from quick bar"
+                                : "Add to quick bar"
+                            }
+                          >
+                            <button
+                              className={
+                                "ind-star tf-star" +
+                                (favResolutions.includes(p.resolution) ? " on" : "")
+                              }
+                              aria-label={
+                                favResolutions.includes(p.resolution)
+                                  ? "Remove from quick bar"
+                                  : "Add to quick bar"
+                              }
+                              aria-pressed={favResolutions.includes(p.resolution)}
+                              onClick={(e) => {
+                                e.stopPropagation(); // toggle only; don't switch interval
+                                toggleFavResolution(p.resolution);
+                              }}
+                            >
+                              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                                <path d="M12 17.3l-5.4 3.3 1.5-6.2L3 10.2l6.3-.5L12 4l2.7 5.7 6.3.5-5.1 4.2 1.5 6.2z" />
+                              </svg>
+                            </button>
+                          </Tooltip>
+                        )}
+                        {g.label === "Custom" && (
+                          <Tooltip content="Delete custom timeframe">
+                            <button
+                              className="tf-delete"
+                              aria-label={`Delete ${p.label}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeCustomResolution(p.resolution);
+                              }}
+                            >
+                              ✕
+                            </button>
+                          </Tooltip>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                {g.label === "Custom" && <CustomTimeframeForm onAdd={addCustomResolution} />}
+              </div>
+            ))}
+            {/* No saved custom timeframes yet: the Custom group is just the form. */}
+            {!intervalGroups.some((g) => g.label === "Custom") && (
+              <div className="interval-group">
+                <div className="interval-group-label">Custom</div>
+                <CustomTimeframeForm onAdd={addCustomResolution} />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Price-scale A / L / I (auto-fit, logarithmic, invert) for the focused cell.
+// All three mirror per-cell controller signals, so the buttons reflect the
+// FOCUSED cell's axis and survive toolbar remounts (the Toolbar/SnapshotToolbar
+// swap) — toolbar-local state here would go stale and autoFit would write the
+// stale scale type back onto the chart.
+export function ScaleControls({ controller }: { controller: ChartController | null }) {
+  const chart = controller?.chart ?? null;
+
+  // "A" auto-scale mode (on = highlighted).
+  const subscribeAuto = useCallback(
+    (cb: () => void) => controller?.autoScale.subscribe(cb) ?? (() => {}),
+    [controller],
+  );
+  const auto = useSyncExternalStore(
+    subscribeAuto,
+    () => controller?.autoScale.value ?? true,
+  );
+  // "L" logarithmic scale (on = highlighted).
+  const subscribeLog = useCallback(
+    (cb: () => void) => controller?.logScale.subscribe(cb) ?? (() => {}),
+    [controller],
+  );
+  const log = useSyncExternalStore(
+    subscribeLog,
+    () => controller?.logScale.value ?? false,
+  );
+  // "I" invert-scale mode (on = highlighted).
+  const subscribeInvert = useCallback(
+    (cb: () => void) => controller?.invertScale.subscribe(cb) ?? (() => {}),
+    [controller],
+  );
+  const inverted = useSyncExternalStore(
+    subscribeInvert,
+    () => controller?.invertScale.value ?? false,
+  );
+  // Stretched price fit (on = highlighted). This is the only always-visible cue
+  // for which fit the price axis is in — the double-click cycle that also sets it
+  // is invisible otherwise.
+  const subscribeFit = useCallback(
+    (cb: () => void) => controller?.priceFitMode.subscribe(cb) ?? (() => {}),
+    [controller],
+  );
+  const stretched = useSyncExternalStore(
+    subscribeFit,
+    () => (controller?.priceFitMode.value ?? "default") === "stretched",
+  );
+
+  // v10: the y-axis kind (normal/logarithm/percentage) is a registered axis named
+  // via overrideYAxis, not a style enum. Swapping the name re-fits the range.
+  function setScale(name: "normal" | "logarithm") {
+    chart?.overrideYAxis({ paneId: "candle_pane", name });
+    controller?.logScale.set(name === "logarithm");
+  }
+
+  function autoFit() {
+    // klinecharts auto-fits the price axis to visible bars; overrideYAxis resets
+    // the auto-calc flag, so writing the default gap both recomputes the range
+    // (clearing any manual zoom, "fit to data") and lands on the default margins.
+    // "A" means the same thing the first price-axis double-click means — if it
+    // preserved the stretched fit the two would disagree about what auto is.
+    if (chart) applyCandleFit(chart, "default");
+    controller?.setPriceFit("default");
+    // Re-enter auto mode (TV-style): stays highlighted until the user manually
+    // scales the price axis again (ChartCore flips it back off).
+    controller?.autoScale.set(true);
+  }
+
+  return (
+    <div className="scale">
+      <Tooltip content="Auto (fits data to screen)">
+        <button
+          className={auto ? "on" : ""}
+          onClick={autoFit}
+        >
+          A
+        </button>
+      </Tooltip>
+      {/* L and I are session-only, unlike the stretch toggle beside them, so each
+          carries the ⚠ note rather than leaving the difference to be discovered on
+          the next reload. */}
+      <Tooltip content="Logarithmic scale" note="Session only (resets on reload)" noteWarn>
+        <button
+          className={log ? "on" : ""}
+          onClick={() => setScale(log ? "normal" : "logarithm")}
+        >
+          L
+        </button>
+      </Tooltip>
+      <Tooltip content="Invert scale (Option+I)" note="Session only (resets on reload)" noteWarn>
+        <button
+          className={inverted ? "on" : ""}
+          onClick={() => controller?.invertScale.set(!controller.invertScale.value)}
+        >
+          I
+        </button>
+      </Tooltip>
+      <Tooltip
+        content="Stretch price scale (candles fill the pane)"
+        note="Double-click the price axis to cycle"
+      >
+        <button
+          className={stretched ? "on" : ""}
+          aria-label="Stretch price scale"
+          onClick={() => controller?.toggleStretchFit()}
+        >
+          <StretchIcon />
+        </button>
+      </Tooltip>
+    </div>
+  );
+}
+
+// Vertical expand glyph for the stretch toggle: a spine with an arrowhead at each
+// end. Inherits the button's dim/lit color through currentColor, so it tracks the
+// same .on highlight the lettered buttons use.
+function StretchIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24" width="13" height="13" fill="none"
+      stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 4v16" />
+      <path d="M8.5 7.5 12 4l3.5 3.5" />
+      <path d="M8.5 16.5 12 20l3.5-3.5" />
+    </svg>
+  );
+}
+
+// Undo / redo for the focused cell's chart content (drawings, indicators, AVWAP
+// anchors). The keyboard path lives in ChartCore; these buttons are the visible
+// affordance for the same per-cell stacks, so the shortcut is spelled out in the
+// tooltip. Disabled (not hidden) when a stack is empty, TradingView-style.
+const MAC = typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform || "");
+const UNDO_KEYS = MAC ? "⌘Z" : "Ctrl+Z";
+const REDO_KEYS = MAC ? "⇧⌘Z" : "Ctrl+Y";
+
+export function HistoryControls({ controller }: { controller: ChartController | null }) {
+  const history = controller?.history ?? null;
+  const subscribe = useCallback(
+    (cb: () => void) => history?.subscribe(cb) ?? (() => {}),
+    [history],
+  );
+  const canUndo = useSyncExternalStore(subscribe, () => history?.canUndo ?? false);
+  const canRedo = useSyncExternalStore(subscribe, () => history?.canRedo ?? false);
+
+  return (
+    <div className="hist-ctrls">
+      <Tooltip content={`Undo (${UNDO_KEYS})`}>
+        <button
+          className="anchor-btn icon-btn"
+          aria-label="Undo"
+          disabled={!canUndo}
+          onClick={() => history?.undo()}
+        >
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+            strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <polyline points="8 5 3 10 8 15" />
+            <path d="M3 10h9a5.5 5.5 0 0 1 0 11h-3" />
+          </svg>
+        </button>
+      </Tooltip>
+      <Tooltip content={`Redo (${REDO_KEYS})`}>
+        <button
+          className="anchor-btn icon-btn"
+          aria-label="Redo"
+          disabled={!canRedo}
+          onClick={() => history?.redo()}
+        >
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+            strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <polyline points="16 5 21 10 16 15" />
+            <path d="M21 10h-9a5.5 5.5 0 0 0 0 11h3" />
+          </svg>
+        </button>
+      </Tooltip>
+    </div>
+  );
+}
+
+// The app-level panel toggles (live trading / trade list / alerts / order
+// ticket): global panels beside the chart, safe in every toolbar variant.
+// Rendered as ONE segmented group because they are one radio set: only a
+// single right-docked panel fits beside the chart, so opening any of them
+// closes whichever was open (lib/sidePanels.ts). The group styling says that
+// where four loose icons could not.
+//
+// Tight bars swap the group for a single "Panels" trigger whose face is the
+// open panel's icon (or a generic sidebar glyph); CSS picks which of the two
+// renderings shows, off the toolbar's container width.
+type PanelId = "live" | "tradeList" | "alerts" | "trade";
+
+function LiveIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true">
+      <path d="M12 2v4m0 12v4m10-10h-4M6 12H2m15.07-5.07-2.83 2.83M9.76 14.24l-2.83 2.83m10.14 0-2.83-2.83M9.76 9.76 6.93 6.93" />
+    </svg>
+  );
+}
+function TradeListIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true">
+      <path d="M4 5h16M4 12h16M4 19h16M4 5v0M8 5v0" />
+      <path d="M4 5h2M4 12h2M4 19h2" strokeWidth="3" />
+    </svg>
+  );
+}
+function TicketIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true">
+      <path d="M3 17l6-6 4 4 7-7M14 8h5v5" />
+    </svg>
+  );
+}
+// Generic face for the collapsed trigger when no panel is open: a right dock.
+function SidebarIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+      stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M15 4v16" />
+    </svg>
+  );
+}
+
+// Unseen alert firings: firings newer than the last time the History tab was
+// viewed. Same rule the alerts sidebar uses for its own History badge, so the
+// two never disagree.
+function useUnseenAlerts(): number {
+  const [n, setN] = useState(() => countUnseen());
+  useEffect(() => alertsChanged.subscribe(() => setN(countUnseen())), []);
+  return n;
+}
+function countUnseen(): number {
+  const seen = loadTriggeredSeen();
+  return loadTriggered().filter((t) => t.time > seen).length;
+}
+
+export function PanelToggles({ dataOnly = false }: { dataOnly?: boolean }) {
+  const [panelOpen, setPanelOpen] = useState(alertsPanelOpen.value);
+  useEffect(() => alertsPanelOpen.subscribe(setPanelOpen), []);
+  const [tradeOpen, setTradeOpen] = useState(tradePanelOpen.value);
+  useEffect(() => tradePanelOpen.subscribe(setTradeOpen), []);
+  const [liveOpen, setLiveOpen] = useState(livePanelOpen.value);
+  useEffect(() => livePanelOpen.subscribe(setLiveOpen), []);
+  const [tradeListOpen, setTradeListOpen] = useState(tradeListPanelOpen.value);
+  useEffect(() => tradeListPanelOpen.subscribe(setTradeListOpen), []);
+  const unseen = useUnseenAlerts();
+
+  // Tight-bar menu.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: globalThis.MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menuOpen]);
+
+  // One row per panel, in bar order. Hidden for a data-only source (Dukascopy
+  // history): there is no account to trade or arm against, so the two dealing
+  // panels go.
+  const panels: { id: PanelId; label: string; tip: string; icon: JSX.Element; on: boolean; cls: string }[] = [
+    ...(dataOnly ? [] : [{
+      id: "live" as const, label: "Live trading", tip: "Show live trading panel",
+      icon: <LiveIcon />, on: liveOpen, cls: "live-toggle",
+    }]),
+    {
+      id: "tradeList" as const, label: "Trade list", tip: "Toggle trade list panel",
+      icon: <TradeListIcon />, on: tradeListOpen, cls: "trade-list-toggle",
+    },
+    {
+      id: "alerts" as const, label: "Alerts", tip: "Show alerts panel",
+      icon: <BellIcon size={16} />, on: panelOpen, cls: "alerts-toggle",
+    },
+    ...(dataOnly ? [] : [{
+      id: "trade" as const, label: "Order ticket", tip: "Show trading panel",
+      icon: <TicketIcon />, on: tradeOpen, cls: "trade-toggle",
+    }]),
+  ];
+  const active = panels.find((p) => p.on) ?? null;
+  const badge = unseen > 0 ? (
+    <span className="tb-badge" aria-label={`${unseen} new alert firings`}>
+      {unseen > 99 ? "99+" : unseen}
+    </span>
+  ) : null;
+
+  return (
+    <div className="menu panels-cluster" ref={menuRef}>
+      <div className="panel-toggles" role="group" aria-label="Side panels">
+        {panels.map((p) => (
+          <Tooltip key={p.id} content={p.tip}>
+            <button
+              className={`anchor-btn ${p.cls}${p.on ? " on" : ""}`}
+              aria-pressed={p.on}
+              onClick={() => toggleSidePanel(p.id)}
+            >
+              {p.icon}
+              {p.id === "alerts" && badge}
+            </button>
+          </Tooltip>
+        ))}
+      </div>
+
+      <Tooltip content={active ? `Panels (${active.label} open)` : "Panels"}>
+        <button
+          className={`anchor-btn panels-menu-btn${active ? " on" : ""}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen((v) => !v)}
+        >
+          {active ? active.icon : <SidebarIcon />}
+          <Caret />
+          {badge}
+        </button>
+      </Tooltip>
+      {menuOpen && (
+        <div className="dropdown dropdown-right panels-dropdown" role="menu">
+          <ul>
+            {panels.map((p) => (
+              <li
+                key={p.id}
+                role="menuitemradio"
+                aria-checked={p.on}
+                className={`study-item${p.on ? " on" : ""}`}
+                onClick={() => { toggleSidePanel(p.id); setMenuOpen(false); }}
+              >
+                <span className="tmpl-ic">{p.icon}</span>
+                <span className="ind-name">{p.label}</span>
+                {p.id === "alerts" && unseen > 0 && <span className="study-hint">{unseen} new</span>}
+                {p.on && <span className="study-check" aria-hidden="true">✓</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Double-click on empty toolbar chrome toggles maximize (OS titlebar-style),
+// mirroring the "Maximize view" button. Ignored when the double-click lands on
+// an interactive control so double-clicking a button/input/menu keeps its own
+// behavior instead of also flipping the view.
+export function toolbarMaximizeDblClick(onToggleMaximize: () => void) {
+  return (e: MouseEvent<HTMLElement>) => {
+    if (
+      (e.target as HTMLElement).closest(
+        'button, input, select, a, label, [role="button"], [role="menu"], [contenteditable]',
+      )
+    ) {
+      return;
+    }
+    onToggleMaximize();
+  };
+}
+
+// Maximize / restore: hides the tab bar to focus the active tab. Icon reflects
+// state (expand when normal, compress when maximized).
+export function MaximizeToggle({
+  maximized,
+  onToggleMaximize,
+}: {
+  maximized: boolean;
+  onToggleMaximize: () => void;
+}) {
+  return (
+    <Tooltip content={maximized ? "Exit maximized view (Esc)" : "Maximize view"}>
+    <button
+      className={`anchor-btn maximize-toggle${maximized ? " on" : ""}`}
+      onClick={onToggleMaximize}
+    >
+      {maximized ? (
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+          stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+          aria-hidden="true">
+          <path d="M9 9H4m5 0V4m0 5L4 4m11 5h5m-5 0V4m0 5 5-5M9 15H4m5 0v5m0-5-5 5m11-5h5m-5 0v5m0-5 5 5" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+          stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+          aria-hidden="true">
+          <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+        </svg>
+      )}
+    </button>
+    </Tooltip>
+  );
+}

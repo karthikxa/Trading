@@ -1,0 +1,1491 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { render, screen, fireEvent, cleanup, within, act, waitFor } from "@testing-library/react";
+import { installMemStorage } from "./lib/testMemStorage";
+
+// jsdom's localStorage isn't wired up in this project's vitest config (see
+// codedConfig.test.ts) — install the in-memory shim before any module reads it,
+// so the coded-mode tests' persistence round-trip actually lands.
+installMemStorage();
+
+// The modal pulls in backtestSeries -> customIndicators, which reads LineType at
+// module load (AVWAP line style table); stub klinecharts' runtime surface like
+// backtestSeries.test.ts / overlays.test.ts / chartOperand.test.ts do.
+vi.mock("klinecharts", () => ({
+  registerIndicator: () => {},
+  registerOverlay: () => {},
+  registerYAxis: () => {},
+  getSupportedIndicators: () => [],
+}));
+
+// Coded-mode tests stub the strategy list so the modal doesn't hit the network.
+// Defaults to an empty list so rules-mode tests (which never touch it) don't
+// have to care.
+const mockStrategies = vi.fn().mockResolvedValue([]);
+// computeStatus gates the Compute: Local|Remote toggle. Default "not configured"
+// so the toggle stays hidden for the tests that don't care; the toggle tests
+// override it per case.
+const mockComputeStatus = vi.fn().mockResolvedValue({ remoteConfigured: false });
+// Managed-host lifecycle: defaults to "unconfigured" (renders no host chip) so
+// tests that don't care see no new UI; the host-chip tests override per case.
+const mockComputeHostState = vi.fn().mockResolvedValue({ state: "unconfigured", detail: null });
+const mockStartComputeHost = vi.fn().mockResolvedValue({ state: "booting" });
+// The Costs tab prefetches the instrument profile once per epic. Default to a
+// broker-sourced profile so the tab renders its values; putCostProfile/refetch
+// default to no-ops the profile-edit test overrides.
+const brokerProfile = {
+  epic: "TEST",
+  spread: 0.8,
+  slippage: { kind: "fixed" as const, value: 0.2, atrMult: 0 },
+  finLongDailyPct: -0.01,
+  finShortDailyPct: 0.01,
+  source: "broker" as const,
+  updatedAt: 123,
+};
+const mockGetCostProfile = vi.fn().mockResolvedValue(brokerProfile);
+const mockPutCostProfile = vi.fn().mockImplementation((_epic, patch) =>
+  Promise.resolve({ ...brokerProfile, ...patch, source: "manual" }),
+);
+const mockRefetchCostProfile = vi.fn().mockResolvedValue({ old: brokerProfile, new: brokerProfile });
+vi.mock("./api", async () => {
+  const actual = await vi.importActual<typeof import("./api")>("./api");
+  return {
+    ...actual,
+    fetchStrategies: (...args: unknown[]) => mockStrategies(...args),
+    computeStatus: (...args: unknown[]) => mockComputeStatus(...args),
+    computeHostState: (...args: unknown[]) => mockComputeHostState(...args),
+    startComputeHost: (...args: unknown[]) => mockStartComputeHost(...args),
+    getCostProfile: (...args: unknown[]) => mockGetCostProfile(...args),
+    putCostProfile: (...args: unknown[]) => mockPutCostProfile(...args),
+    refetchCostProfile: (...args: unknown[]) => mockRefetchCostProfile(...args),
+  };
+});
+
+import BacktestSettingsModal, { resetCostProfileCache } from "./BacktestSettingsModal";
+import { backtestConfigEquals, defaultBacktestConfig, type BacktestConfig } from "./lib/backtestConfig";
+import { SESSION_PRESETS, minToTime, sessionWindowInTz } from "./lib/backtestSchedule";
+import { loadCodedCfg, saveCodedCfg, defaultCodedCfg } from "./lib/codedConfig";
+import { loadBacktestLastUsed } from "./lib/persist/defaults";
+import { putPreset, newPreset } from "./lib/backtestPresets";
+import { sweepStateSignal, sweepAxesSignal, sweepTargetSignal, backtestRunningSignal, backtestCancelRequest, backtestResultSignal, backtestClearRequest } from "./lib/signals";
+import type { SweepRow } from "./api";
+import { saveSweepAxes } from "./lib/sweepMemory";
+
+// The rule editor is a lazy chunk in the app; load it eagerly here so it never
+// resolves after the test (and its environment) has torn down.
+vi.mock("./components/LazyRuleExpressionInput", async () => ({
+  default: (await import("./components/RuleExpressionInput")).default,
+}));
+
+// See VisibilityTab.test.tsx: vitest isn't run with jest-style globals, so RTL's
+// automatic cleanup never registers. Without this each render leaks into the next.
+afterEach(cleanup);
+beforeEach(() => {
+  localStorage.clear();
+  mockStrategies.mockReset().mockResolvedValue([]);
+  mockComputeStatus.mockReset().mockResolvedValue({ remoteConfigured: false });
+  mockComputeHostState.mockReset().mockResolvedValue({ state: "unconfigured", detail: null });
+  mockStartComputeHost.mockReset().mockResolvedValue({ state: "booting" });
+  mockGetCostProfile.mockReset().mockResolvedValue(brokerProfile);
+  mockPutCostProfile
+    .mockReset()
+    .mockImplementation((_epic, patch) => Promise.resolve({ ...brokerProfile, ...patch, source: "manual" }));
+  mockRefetchCostProfile.mockReset().mockResolvedValue({ old: brokerProfile, new: brokerProfile });
+  resetCostProfileCache();
+});
+
+// The rule group whose <div class="bt-section"> heading matches `title`. Each
+// group renders its rows and Add/Paste footer inside that section.
+function groupSection(title: string): HTMLElement {
+  const heading = screen.getByText(title);
+  const section = heading.closest(".bt-section");
+  if (!section) throw new Error(`no section for "${title}"`);
+  return section as HTMLElement;
+}
+
+function ruleRows(section: HTMLElement): HTMLElement[] {
+  return [...section.querySelectorAll(".bt-rule-row")] as HTMLElement[];
+}
+
+function renderModal(initial = defaultBacktestConfig()) {
+  return render(
+    <BacktestSettingsModal
+      initial={initial}
+      epic="TEST"
+      brokerId="capital"
+      resolution="MINUTE"
+      controller={null}
+      chartTimezone="UTC"
+      onRun={vi.fn()}
+      onClose={vi.fn()}
+    />,
+  );
+}
+
+// The footer's Backtest | Sweep mode switch. Sweep setup/results only render in
+// Sweep mode, so the sweep tests flip it via the real control after rendering.
+function modeSeg(): HTMLElement {
+  return document.querySelector(".bt-mode-seg") as HTMLElement;
+}
+function enterSweepMode() {
+  fireEvent.click(within(modeSeg()).getByRole("button", { name: /Sweep/ }));
+}
+function enterBacktestMode() {
+  fireEvent.click(within(modeSeg()).getByRole("button", { name: "Backtest" }));
+}
+function enterWfoMode() {
+  fireEvent.click(within(modeSeg()).getByRole("button", { name: /Walk-fwd/ }));
+}
+// Results are a tab of their own, so anything asserting on the results DOM has
+// to open it first. Scoped to the .bt-htabs nav — "Results" also appears as the
+// docked column's heading.
+function openResults() {
+  const nav = document.querySelector(".bt-htabs") as HTMLElement;
+  fireEvent.click(within(nav).getByRole("button", { name: "Results" }));
+}
+// Presets is its own pane, hidden until selected — and `hidden` takes the whole
+// subtree out of the accessibility tree, so role-based queries cannot see the
+// library at all until this runs.
+function openPresets() {
+  const nav = document.querySelector(".bt-htabs") as HTMLElement;
+  fireEvent.click(within(nav).getByRole("button", { name: "Presets" }));
+}
+
+describe("BacktestSettingsModal period scheduling", () => {
+  it("shows month suggestion chips when the Month tab is active", () => {
+    renderModal();
+    fireEvent.click(screen.getByRole("button", { name: "Month" }));
+    // getByRole throws if absent, so reaching the assertion is the check.
+    expect(screen.getByRole("button", { name: "This month" })).toBeTruthy();
+  });
+
+  it("reveals mask controls and a coverage readout when enabled", () => {
+    renderModal();
+    fireEvent.click(screen.getByLabelText(/only trade during selected windows/i));
+    expect(screen.getByRole("button", { name: "Mon" })).toBeTruthy();
+    // Session presets are a one-shot fill menu now, not a stateful selector.
+    expect(screen.getByRole("button", { name: "Fill from a market session" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Mon" }));
+    expect(screen.getByText(/Active on \d+ of \d+ sampled slots/)).toBeTruthy();
+  });
+
+  it("session fill menu writes the preset's hours, converted to the chart tz, into From/To", () => {
+    renderModal(); // chartTimezone="UTC"
+    fireEvent.click(screen.getByLabelText(/only trade during selected windows/i));
+    fireEvent.click(screen.getByRole("button", { name: "Fill from a market session" }));
+    fireEvent.click(screen.getByText(/^NYSE/));
+    const times = [...document.querySelectorAll(".bt-time-field input")] as HTMLInputElement[];
+    // NYSE 09:30–16:00 New York expressed in UTC (offset varies with DST, so
+    // derive the expectation the same way instead of hard-coding 13:30/14:30).
+    const w = sessionWindowInTz(SESSION_PRESETS.NYSE.window, SESSION_PRESETS.NYSE.tz, "UTC", Date.now())!;
+    expect(times.map((i) => i.value)).toEqual([minToTime(w.startMin), minToTime(w.endMin)]);
+    expect(w.startMin).not.toBe(SESSION_PRESETS.NYSE.window!.startMin); // conversion actually happened
+  });
+
+  it("shows the session-close sub-toggle only when windows are enabled, and it toggles", () => {
+    renderModal();
+    // Hidden until the windows checkbox is on.
+    expect(screen.queryByLabelText(/close open positions at session close/i)).toBeNull();
+    fireEvent.click(screen.getByLabelText(/only trade during selected windows/i));
+    const sub = screen.getByLabelText(/close open positions at session close/i) as HTMLInputElement;
+    // Default off, and toggles on.
+    expect(sub.checked).toBe(false);
+    fireEvent.click(sub);
+    expect(sub.checked).toBe(true);
+  });
+
+  it("keeps the raw windows value while typing and clamps to 2..50 on blur", () => {
+    renderModal();
+    const input = screen.getByPlaceholderText("auto") as HTMLInputElement;
+    // Two-digit values like 15 must survive typing (no per-keystroke clamp up to 2).
+    fireEvent.change(input, { target: { value: "15" } });
+    expect(input.value).toBe("15");
+    // Below-range on blur clamps up to the minimum.
+    fireEvent.change(input, { target: { value: "1" } });
+    expect(input.value).toBe("1");
+    fireEvent.blur(input);
+    expect(input.value).toBe("2");
+    // Above-range on blur clamps down to the maximum.
+    fireEvent.change(input, { target: { value: "99" } });
+    fireEvent.blur(input);
+    expect(input.value).toBe("50");
+  });
+
+  // The timeline must size warm-up from what the run actually requires
+  // (BacktestButton's requiredWarmupBars), not from the ATR-only
+  // longestIndicatorLength — expression rows are the usual source of warm-up,
+  // and reporting "1 bar" for an EMA(21) config misdraws the split entirely.
+  it("counts expression warm-up in the auto-shortest timeline label", () => {
+    renderModal(); // default rules: EMA(9) x> EMA(21), history "minimal"
+    const labels = document.querySelector(".bt-timeline-labels") as HTMLElement;
+    expect(labels.textContent).toContain("21 bars warm-up");
+  });
+
+  it("excludes an @tf pin from the base warm-up label (HTF is backend-sourced)", () => {
+    const cfg = defaultBacktestConfig();
+    cfg.longEntry = { combine: "AND", rules: [{ expr: "crossAbove(EMA(9), EMA(50)@1H)", enabled: true }] };
+    renderModal(cfg);
+    const labels = document.querySelector(".bt-timeline-labels") as HTMLElement;
+    // The pinned EMA(50) warms from the backend's own hourly fetch; the base
+    // ask is driven by the deepest BASE term (the default exit's EMA(21)).
+    expect(labels.textContent).toContain("21 bars warm-up");
+  });
+
+  it("raises the 'N bars' timeline label to the warm-up the run would demand", () => {
+    const cfg = defaultBacktestConfig();
+    cfg.range = { ...cfg.range, history: "bars", historyBars: 5 };
+    renderModal(cfg);
+    const labels = document.querySelector(".bt-timeline-labels") as HTMLElement;
+    expect(labels.textContent).toContain("21 bars warm-up");
+  });
+
+  it("leaves the 'Full' timeline open-ended rather than fabricating a bar count", () => {
+    const cfg = defaultBacktestConfig();
+    cfg.range = { ...cfg.range, history: "full" };
+    renderModal(cfg);
+    const labels = document.querySelector(".bt-timeline-labels") as HTMLElement;
+    expect(labels.textContent).toContain("as much history as the broker has");
+    expect(document.querySelector(".bt-timeline-history.open-ended")).toBeTruthy();
+  });
+});
+
+describe("BacktestSettingsModal panel tabs", () => {
+  it("scrolls between the settings tabs but swaps the body out for Presets", () => {
+    renderModal();
+    const nav = document.querySelector(".bt-htabs") as HTMLElement;
+    const labels = [...nav.querySelectorAll(":scope > button")].map((b) => b.textContent);
+    expect(labels).toEqual(["Period", "Strategy", "Costs", "Results", "Presets"]);
+
+    // The scroll pane holds every tab except Presets, which is its own region.
+    const pane = document.querySelector(".bt-body") as HTMLElement;
+    const presets = document.querySelector(".bt-presets-region") as HTMLElement;
+    expect(pane.contains(presets)).toBe(false);
+    expect(pane.querySelectorAll(".bt-scroll-section")).toHaveLength(4);
+
+    // Presets swaps the panes; the settings are hidden, not unmounted, so the
+    // section refs the scrollspy and the tab jumps need survive the trip.
+    expect(presets.hidden).toBe(true);
+    openPresets();
+    expect(presets.hidden).toBe(false);
+    expect((document.querySelector(".bt-settings-region") as HTMLElement).hidden).toBe(true);
+    expect(document.querySelector(".bt-body")).toBeTruthy();
+
+    // And back: a settings tab returns the body to the scroll pane.
+    openStrategy();
+    expect(presets.hidden).toBe(true);
+    expect((document.querySelector(".bt-settings-region") as HTMLElement).hidden).toBe(false);
+  });
+});
+
+// The rule builder now lives under the "Strategy" vertical tab, so tests must
+// open it before the Long/Short groups exist in the DOM. Scoped to the .bt-htabs
+// nav — the Rules|Strategy mode switch inside the section reuses the same
+// "Strategy" label, so an unscoped query would match both.
+function openStrategy() {
+  const nav = document.querySelector(".bt-htabs") as HTMLElement;
+  fireEvent.click(within(nav).getByRole("button", { name: "Strategy" }));
+}
+
+// Row actions now live behind a ⋮ menu. Open the first row's menu in `section`,
+// then click the named menuitem (the menu is portaled to <body>).
+function ruleAction(section: HTMLElement, name: RegExp | string) {
+  fireEvent.click(within(section).getAllByLabelText("Rule actions")[0]);
+  fireEvent.click(screen.getByRole("menuitem", { name }));
+}
+
+describe("Costs tab instrument profile", () => {
+  function openCosts() {
+    const nav = document.querySelector(".bt-htabs") as HTMLElement;
+    fireEvent.click(within(nav).getByRole("button", { name: "Costs" }));
+  }
+
+  it("Costs tab shows the instrument profile and edits PUT back", async () => {
+    renderModal();
+    openCosts();
+    await waitFor(() =>
+      expect((screen.getByLabelText("Spread") as HTMLInputElement).value).toBe("0.8"),
+    );
+    expect(screen.getByText(/from broker/i)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Spread"), { target: { value: "1.2" } });
+    await waitFor(() =>
+      expect(mockPutCostProfile).toHaveBeenCalledWith("TEST", expect.objectContaining({ spread: 1.2 })),
+    );
+  });
+
+  it("keeps the current config and does not crash when the profile fetch fails", async () => {
+    mockGetCostProfile.mockRejectedValueOnce(new Error("broker 503"));
+    renderModal();
+    openCosts();
+    // Spread stays at the config default (0) instead of a broker value.
+    await waitFor(() => expect(mockGetCostProfile).toHaveBeenCalled());
+    expect((screen.getByLabelText("Spread") as HTMLInputElement).value).toBe("0");
+  });
+});
+
+describe("Baselines toggle", () => {
+  function openCosts() {
+    const nav = document.querySelector(".bt-htabs") as HTMLElement;
+    fireEvent.click(within(nav).getByRole("button", { name: "Costs" }));
+  }
+  function toggle(): HTMLInputElement {
+    return screen.getByRole("checkbox", { name: /Run reference baselines/ }) as HTMLInputElement;
+  }
+  function runFooter() {
+    fireEvent.click(screen.getByRole("button", { name: "Run backtest" }));
+  }
+
+  it("is off by default, and turning it on sends runBaselines: true", () => {
+    const onRun = vi.fn();
+    render(
+      <BacktestSettingsModal
+        initial={defaultBacktestConfig()} epic="TEST" brokerId="capital" resolution="MINUTE"
+        controller={null} chartTimezone="UTC" onRun={onRun} onClose={vi.fn()}
+      />,
+    );
+    openCosts();
+    expect(toggle().checked).toBe(false);
+    runFooter();
+    expect(onRun.mock.calls[0][0].runBaselines).toBeUndefined();
+
+    fireEvent.click(toggle());
+    runFooter();
+    expect(onRun.mock.calls[1][0].runBaselines).toBe(true);
+  });
+
+  it("turning it back off deletes the key rather than storing false", () => {
+    const onRun = vi.fn();
+    render(
+      <BacktestSettingsModal
+        initial={{ ...defaultBacktestConfig(), runBaselines: true }} epic="TEST" brokerId="capital"
+        resolution="MINUTE" controller={null} chartTimezone="UTC" onRun={onRun} onClose={vi.fn()}
+      />,
+    );
+    openCosts();
+    expect(toggle().checked).toBe(true);
+    fireEvent.click(toggle());
+    runFooter();
+    // `false` would make backtestConfigEquals mark every preset saved before
+    // this flag existed as dirty.
+    expect(onRun.mock.calls[0][0].runBaselines).toBeUndefined();
+    // The user-visible consequence: a preset saved before this flag existed is
+    // still equal (no dirty dot) after the on/off round trip.
+    expect(backtestConfigEquals(onRun.mock.calls[0][0], defaultBacktestConfig())).toBe(true);
+  });
+});
+
+describe("BacktestSettingsModal rule duplicate/copy/paste", () => {
+  it("duplicating a rule inserts an independent copy right after it", () => {
+    renderModal();
+    openStrategy();
+    // Long side is shown first; its "Buy to open" group has one rule.
+    const entry = groupSection("Buy to open");
+    expect(ruleRows(entry)).toHaveLength(1);
+    ruleAction(entry, "Duplicate");
+    expect(ruleRows(entry)).toHaveLength(2);
+  });
+
+  it("copy then paste appends the rule to a group on the other side", async () => {
+    renderModal();
+    openStrategy();
+    // Copy the long-entry rule via its row menu (no navigator.clipboard in
+    // jsdom, so this exercises the local-fallback path).
+    ruleAction(groupSection("Buy to open"), "Copy");
+
+    // Switch to the short side and paste into its entry group.
+    fireEvent.click(screen.getByRole("button", { name: /Short/ }));
+    const shortEntry = groupSection("Sell to open");
+    expect(ruleRows(shortEntry)).toHaveLength(1);
+    fireEvent.click(within(shortEntry).getByRole("button", { name: "Paste" }));
+    await waitFor(() => expect(ruleRows(shortEntry)).toHaveLength(2));
+  });
+
+  it("paste with nothing copied leaves the group unchanged", async () => {
+    renderModal();
+    openStrategy();
+    const entry = groupSection("Buy to open");
+    // Paste is always offered (the system clipboard can hold rules copied by
+    // another app instance, which nothing local can know about)…
+    fireEvent.click(within(entry).getByRole("button", { name: "Paste" }));
+    // …but with nothing copied anywhere it appends nothing.
+    await waitFor(() => expect(ruleRows(entry)).toHaveLength(1));
+  });
+
+  it("round-trips through the system clipboard across app instances", async () => {
+    // A fresh render is a separate app instance: no shared React state, only
+    // the (mocked) OS clipboard in between.
+    let clipText = "";
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      clipboard: {
+        writeText: (t: string) => ((clipText = t), Promise.resolve()),
+        readText: () => Promise.resolve(clipText),
+      },
+    });
+    try {
+      renderModal();
+      openStrategy();
+      ruleAction(groupSection("Buy to open"), "Copy");
+      await waitFor(() => expect(clipText).toContain("__autoTraderRules"));
+      cleanup();
+
+      renderModal();
+      openStrategy();
+      const entry = groupSection("Buy to open");
+      expect(ruleRows(entry)).toHaveLength(1);
+      fireEvent.click(within(entry).getByRole("button", { name: "Paste" }));
+      await waitFor(() => expect(ruleRows(entry)).toHaveLength(2));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("disabling a rule keeps it but marks the row disabled", () => {
+    renderModal();
+    openStrategy();
+    const entry = groupSection("Buy to open");
+    expect(ruleRows(entry)).toHaveLength(1);
+    ruleAction(entry, "Disable");
+    // Still present (not removed), now flagged disabled.
+    expect(ruleRows(entry)).toHaveLength(1);
+    expect(entry.querySelector(".bt-rule-disabled")).not.toBeNull();
+  });
+});
+
+describe("BacktestSettingsModal insert palette", () => {
+  // The palette portals to the body, so it lives OUTSIDE the group section —
+  // these assert against the document, not `entry`.
+  function openPalette(section: HTMLElement) {
+    fireEvent.click(within(section).getAllByRole("button", { name: "Insert from palette" })[0]);
+  }
+
+  it("opens the palette modal from a rule row's +", () => {
+    renderModal();
+    openStrategy();
+    expect(document.querySelector(".rule-palette")).toBeNull();
+    openPalette(groupSection("Buy to open"));
+    const palette = document.querySelector(".rule-palette") as HTMLElement;
+    expect(palette).toBeTruthy();
+    expect(within(palette).getByText("Insert into rule 1")).toBeTruthy();
+  });
+
+  it("inserting appends to the row's expression and closes the palette", () => {
+    renderModal();
+    openStrategy();
+    openPalette(groupSection("Buy to open"));
+    const palette = document.querySelector(".rule-palette") as HTMLElement;
+    fireEvent.click(within(palette).getByRole("button", { name: /EMA\(length\)/ }));
+    expect(document.querySelector(".rule-palette")).toBeNull();
+    const row = ruleRows(groupSection("Buy to open"))[0];
+    expect(row.textContent).toContain("EMA(9)");
+  });
+
+  it("Escape closes the palette and leaves the backtest panel open", () => {
+    renderModal();
+    openStrategy();
+    openPalette(groupSection("Buy to open"));
+    expect(document.querySelector(".rule-palette")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(document.querySelector(".rule-palette")).toBeNull();
+    expect(document.querySelector(".bt-cfg-panel")).toBeTruthy();
+  });
+
+  it("deleting a row closes the palette rather than retargeting by index", () => {
+    renderModal();
+    openStrategy();
+    // Three rows with the palette open on the middle one: deleting the first
+    // leaves index 1 in range, so the render guard can't catch the shift — only
+    // removeRule clearing paletteRow keeps the insert off the wrong rule.
+    ruleAction(groupSection("Buy to open"), "Duplicate");
+    ruleAction(groupSection("Buy to open"), "Duplicate");
+    const rows = ruleRows(groupSection("Buy to open"));
+    expect(rows).toHaveLength(3);
+    fireEvent.click(within(rows[1]).getByRole("button", { name: "Insert from palette" }));
+    expect(document.querySelector(".rule-palette")).toBeTruthy();
+    ruleAction(groupSection("Buy to open"), "Remove");
+    expect(document.querySelector(".rule-palette")).toBeNull();
+  });
+
+  it("a disabled row can't open the palette", () => {
+    renderModal();
+    openStrategy();
+    const entry = groupSection("Buy to open");
+    ruleAction(entry, "Disable");
+    const plus = within(entry).getAllByRole("button", { name: "Insert from palette" })[0];
+    expect((plus as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("BacktestSettingsModal results side-by-side column", () => {
+  it("moves results into a docked column and back", () => {
+    renderModal();
+    // Default: results are the last section of the config panel's scroll pane.
+    const region = () => document.querySelector(".bt-results-region") as HTMLElement | null;
+    expect(region()).toBeTruthy();
+    expect(document.querySelector(".bt-results-col")).toBeNull();
+
+    // Turn on side-by-side via the footer toggle (the single opener).
+    fireEvent.click(screen.getByLabelText("Show results in a side column"));
+    const col = document.querySelector(".bt-results-col");
+    expect(col).toBeTruthy();
+    // The results content lives in the column now, not the stacked region — and
+    // with nothing left to show, the Results tab is gone from the nav.
+    expect(region()).toBeNull();
+    const nav = document.querySelector(".bt-htabs") as HTMLElement;
+    expect(within(nav).queryByRole("button", { name: "Results" })).toBeNull();
+    expect(within(col as HTMLElement).getByText(/Run a backtest to see results/)).toBeTruthy();
+
+    // Dock back. Two closers exist while docked (column header + footer toggle).
+    const closers = screen.getAllByLabelText("Dock results back into the panel");
+    expect(closers.length).toBe(2);
+    fireEvent.click(closers[0]);
+    expect(document.querySelector(".bt-results-col")).toBeNull();
+    // Back into the scroll pane, tab and all.
+    expect(within(nav).getByRole("button", { name: "Results" })).toBeTruthy();
+    expect(region()).toBeTruthy();
+  });
+
+  it("hands the tab highlight back when Results is open and the column takes over", () => {
+    renderModal();
+    const nav = () => document.querySelector(".bt-htabs") as HTMLElement;
+    const activeTab = () =>
+      [...nav().querySelectorAll(":scope > button")]
+        .filter((b) => b.className.includes("on"))
+        .map((b) => b.textContent);
+    openResults();
+    expect(activeTab()).toEqual(["Results"]);
+
+    // The Results tab leaves with the results. Something must still be selected —
+    // otherwise the nav highlights a tab that is no longer rendered.
+    fireEvent.click(screen.getByLabelText("Show results in a side column"));
+    expect(within(nav()).queryByRole("button", { name: "Results" })).toBeNull();
+    // Costs, not Presets: Presets is its own pane, so Costs is the last section
+    // the scroll pane clamps into once the results unmount.
+    expect(activeTab()).toEqual(["Costs"]);
+  });
+});
+
+describe("time-window sweep", () => {
+  it("toggles a time-window sweep axis and lists candidate windows inline", () => {
+    const initial = defaultBacktestConfig();
+    initial.range.mask = { enabled: true, timeOfDay: { startMin: 480, endMin: 720 }, tz: "UTC" };
+    renderModal(initial);
+    enterSweepMode();
+    // with an enabled mask whose timeOfDay is 08:00-12:00 UTC
+    const glyph = document.querySelector(".bt-tw-sweep-toggle")!;
+    expect(glyph).toBeTruthy();
+    fireEvent.click(glyph);
+    const editor = document.querySelector(".bt-tw-sweep")!;
+    expect(editor).toBeTruthy();
+    // seeded with the current window
+    expect(editor.textContent).toContain("08:00-12:00 UTC");
+    // a session preset can be added as another option
+    fireEvent.change(editor.querySelector("select")!, { target: { value: "London" } });
+    expect(editor.querySelectorAll(".bt-tw-option").length).toBe(2);
+    // removing an option works
+    fireEvent.click(editor.querySelectorAll(".bt-tw-option button")[0]);
+    expect(editor.querySelectorAll(".bt-tw-option").length).toBe(1);
+  });
+
+  // Fix 1: removing the LAST window option must drop the axis entirely (like the
+  // operator path), not leave a kind:"list" axis with options:[] that makes
+  // comboCount return Infinity and strands an axis slot.
+  it("removing the last window option drops the axis instead of leaving it empty", () => {
+    const initial = defaultBacktestConfig();
+    initial.range.mask = { enabled: true, timeOfDay: { startMin: 480, endMin: 720 }, tz: "UTC" };
+    renderModal(initial);
+    enterSweepMode();
+    fireEvent.click(document.querySelector(".bt-tw-sweep-toggle")!);
+    const editor = document.querySelector(".bt-tw-sweep")!;
+    // seeded with exactly one option (the current window)
+    expect(editor.querySelectorAll(".bt-tw-option").length).toBe(1);
+    // remove that last option
+    fireEvent.click(editor.querySelectorAll(".bt-tw-option button")[0]);
+    // the whole editor is gone (axis removed) and the glyph is no longer "on"
+    expect(document.querySelector(".bt-tw-sweep")).toBeNull();
+    expect(document.querySelector(".bt-tw-sweep-toggle.on")).toBeNull();
+  });
+
+  // Fix 2: the window-sweep editor is gated by the SAME !session condition as the
+  // toggle glyph. Activating a session preset while a timeWindow axis exists must
+  // hide the editor (the axis is kept, not removed: the glyph/editor reappear when
+  // the preset is cleared).
+  it("keeps the window-sweep editor when a loaded preset carries a legacy session", () => {
+    // Sessions are no longer persistent mask state (the fill menu inlines them
+    // into From/To and clears `session`), so a legacy preset that still carries
+    // one must NOT hide the window-sweep controls the way it used to.
+    // A saved preset whose config carries an active session, loadable via the UI.
+    const sessionCfg: BacktestConfig = {
+      ...defaultBacktestConfig(),
+      range: { mode: "bars", bars: 500, history: "full", mask: { enabled: true, session: "NYSE" } },
+    };
+    putPreset(newPreset("session-preset", sessionCfg, { symbol: "TEST", timeframe: "MINUTE" }, 1000));
+
+    const initial = defaultBacktestConfig();
+    initial.range.mask = { enabled: true, timeOfDay: { startMin: 480, endMin: 720 }, tz: "UTC" };
+    renderModal(initial);
+    enterSweepMode();
+
+    // Create the time-window axis: both the glyph and the editor are present
+    // (they share the !session gate).
+    fireEvent.click(document.querySelector(".bt-tw-sweep-toggle")!);
+    expect(document.querySelector(".bt-tw-sweep-toggle")).toBeTruthy();
+    expect(document.querySelector(".bt-tw-sweep")).toBeTruthy();
+
+    // Load the session preset: cfg.range.mask.session becomes truthy.
+    openPresets();
+    const row = [...document.querySelectorAll(".bt-preset-row")].find((r) =>
+      r.textContent?.includes("session-preset"),
+    ) as HTMLElement;
+    fireEvent.click(row.querySelector(".bt-preset-menu-btn") as HTMLElement);
+    fireEvent.click(screen.getByRole("button", { name: "Load" }));
+
+    // Both the glyph and the editor survive the load: no session-based gate.
+    expect(document.querySelector(".bt-tw-sweep-toggle")).toBeTruthy();
+    expect(document.querySelector(".bt-tw-sweep")).toBeTruthy();
+  });
+});
+
+describe("period sweep", () => {
+  it("toggles a period sweep axis with an inline windows stepper", () => {
+    renderModal();
+    enterSweepMode();
+    const glyph = document.querySelector(".bt-period-sweep-toggle")!;
+    expect(glyph).toBeTruthy();
+    fireEvent.click(glyph);
+    const editor = document.querySelector(".bt-period-sweep")!;
+    expect(editor).toBeTruthy();
+    const input = editor.querySelector("input")! as HTMLInputElement;
+    expect(input.value).toBe("4");                      // default N
+    fireEvent.change(input, { target: { value: "6" } });
+    expect((editor.querySelector("input") as HTMLInputElement).value).toBe("6");
+    fireEvent.click(glyph);                              // toggles off
+    expect(document.querySelector(".bt-period-sweep")).toBeNull();
+  });
+});
+
+describe("parked side", () => {
+  it("makes the whole side inert when its trade toggle is off (switch stays live)", () => {
+    renderModal();
+    openStrategy();
+    const sideRules = groupSection("Buy to open").closest(".bt-side-rules") as HTMLElement;
+    expect(sideRules.hasAttribute("inert")).toBe(false);
+    // Toggle the long side off.
+    fireEvent.click(screen.getByRole("switch", { name: "Trade the long side" }));
+    expect(sideRules.hasAttribute("inert")).toBe(true);
+    expect(sideRules.className).toContain("bt-parked");
+  });
+});
+
+describe("parked side sweep axes", () => {
+  afterEach(() => {
+    sweepAxesSignal.set([]);
+  });
+
+  // A side whose trade toggle is off never opens positions, so its rules never
+  // evaluate — sweeping their literals just re-runs identical backtests. The
+  // combo count (and the submitted grid) must exclude those axes, exactly like
+  // axes on an individually disabled rule.
+  it("excludes lit axes on a disabled side from the combo count", () => {
+    // Default config: long entry "EMA(9) x> EMA(21)", short entry "EMA(9) x< EMA(21)",
+    // so ordinals 0/1 exist on row 0 of both sides. 3 long values x 5 short values.
+    saveSweepAxes("rules", [
+      { kind: "range", target: "lit:long.entry.0.0", label: "long EMA", from: 1, to: 3, step: 1 },
+      { kind: "range", target: "lit:short.entry.0.0", label: "short EMA", from: 1, to: 5, step: 1 },
+    ]);
+    const initial = defaultBacktestConfig();
+    initial.shortEnabled = false;
+    renderModal(initial);
+    enterSweepMode();
+    // Only the long axis counts: 3 combos, not 3 x 5 = 15.
+    expect(document.querySelector(".bt-sweep-estimate")!.textContent).toBe("3 combos");
+  });
+
+  it("counts both sides' lit axes when both sides are armed", () => {
+    saveSweepAxes("rules", [
+      { kind: "range", target: "lit:long.entry.0.0", label: "long EMA", from: 1, to: 3, step: 1 },
+      { kind: "range", target: "lit:short.entry.0.0", label: "short EMA", from: 1, to: 5, step: 1 },
+    ]);
+    renderModal();
+    enterSweepMode();
+    expect(document.querySelector(".bt-sweep-estimate")!.textContent).toBe("15 combos");
+  });
+});
+
+describe("coded mode: params, risk, and exit-rule sections", () => {
+  const strategies = [
+    {
+      filename: "ema_cross.py",
+      name: "EMA Cross",
+      description: "",
+      hedged: false,
+      error: null,
+      params: [
+        { name: "ema_fast", label: "Fast EMA", type: "int" as const, default: 9, min: 2, max: 50, step: 1, options: null, help: null },
+        { name: "ema_slow", label: "Slow EMA", type: "int" as const, default: 21, min: 5, max: 100, step: 1, options: null, help: null },
+      ],
+    },
+  ];
+
+  it("coded mode shows params, risk and exit-rule sections editing the backtest set", async () => {
+    mockStrategies.mockResolvedValue(strategies);
+    const initial = { ...defaultBacktestConfig(), mode: "coded" as const, codedStrategy: "ema_cross.py" };
+    renderModal(initial);
+    openStrategy();
+
+    // Params render once the strategy list resolves.
+    expect(await screen.findByText("Fast EMA")).toBeTruthy();
+
+    // Risk sections (one per side) — RiseSection's actual heading copy.
+    expect(screen.getAllByText("Stop & take profit").length).toBeGreaterThan(0);
+
+    // Exit rule-group titles, reused from rules mode.
+    expect(screen.getByText("Sell to close")).toBeTruthy();
+    expect(screen.getByText("Buy to close")).toBeTruthy();
+
+    // Entry groups are hidden in coded mode.
+    expect(screen.queryByText("Buy to open")).toBeNull();
+    expect(screen.queryByText("Sell to open")).toBeNull();
+
+    // Editing a param persists into the "backtest" coded set for this filename.
+    const input = screen.getByDisplayValue("9") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "12" } });
+    fireEvent.blur(input);
+    expect(loadCodedCfg("backtest", "ema_cross.py").params.ema_fast).toBe(12);
+  });
+
+  it("rules mode is unchanged (no params/coded sections)", () => {
+    renderModal();
+    openStrategy();
+    expect(screen.queryByText("Parameters")).toBeNull();
+    expect(screen.getByText("Buy to open")).toBeTruthy();
+  });
+
+  it("param sweep editor renders inline inside the params block", async () => {
+    mockStrategies.mockResolvedValue(strategies);
+    const initial = { ...defaultBacktestConfig(), mode: "coded" as const, codedStrategy: "ema_cross.py" };
+    renderModal(initial);
+    enterSweepMode();
+    openStrategy();
+    expect(await screen.findByText("Fast EMA")).toBeTruthy();
+
+    const params = document.querySelector(".strategy-params") as HTMLElement;
+    expect(params.querySelector(".range-chip")).toBeNull();
+
+    // Toggle the param's sweep glyph on: a RangeChip replaces the value input
+    // INSIDE the params block (inline), not as a sibling after it.
+    fireEvent.click(params.querySelector(".sp-sweep")!);
+    expect(params.querySelector(".range-chip")).toBeTruthy();
+    expect(document.querySelectorAll(".range-chip")).toHaveLength(1);
+
+    // Editing "to" in the chip popover patches the axis: footer combo count
+    // grows past 1 run.
+    fireEvent.click(params.querySelector(".range-chip")!);
+    const nums = [...document.querySelectorAll(".range-chip-field input")] as HTMLInputElement[];
+    fireEvent.change(nums[1], { target: { value: "15" } });
+    fireEvent.blur(nums[1]);
+    expect(document.querySelector(".bt-sweep-estimate")!.textContent).not.toBe("1 combo");
+
+    // Remove from sweep via the popover: chip gone.
+    fireEvent.click(screen.getByRole("button", { name: "Remove from sweep" }));
+    expect(params.querySelector(".range-chip")).toBeNull();
+  });
+
+  it("keeps three sweep axes active at once (no oldest-axis drop)", async () => {
+    mockStrategies.mockResolvedValue(strategies);
+    const initial = { ...defaultBacktestConfig(), mode: "coded" as const, codedStrategy: "ema_cross.py" };
+    renderModal(initial);
+    enterSweepMode();
+    openStrategy();
+    expect(await screen.findByText("Fast EMA")).toBeTruthy();
+
+    const params = document.querySelector(".strategy-params") as HTMLElement;
+    const glyphs = params.querySelectorAll(".sp-sweep");
+    fireEvent.click(glyphs[0]);   // Fast EMA axis
+    fireEvent.click(glyphs[1]);   // Slow EMA axis
+    fireEvent.click(document.querySelector(".bt-period-sweep-toggle")!);   // Period axis
+
+    // All three stay on: both param glyphs and the period toggle.
+    expect(params.querySelectorAll(".sp-sweep.on")).toHaveLength(2);
+    expect(document.querySelector(".bt-period-sweep-toggle")!.className).toContain("on");
+    // Footer combo count reflects all three axes multiplied together.
+    expect(document.querySelector(".bt-sweep-estimate")!.textContent).toMatch(/^\d+ combos$/);
+  });
+});
+
+describe("sweep results: click-to-apply mid-sweep (I2)", () => {
+  const strategies = [
+    {
+      filename: "ema_cross.py", name: "EMA Cross", description: "", hedged: false, error: null,
+      params: [
+        { name: "ema_fast", label: "Fast EMA", type: "int" as const, default: 9, min: 2, max: 50, step: 1, options: null, help: null },
+      ],
+    },
+  ];
+  const rows: SweepRow[] = [
+    { combo: { "param:ema_fast": 12 }, metrics: { net_pnl: 10, n_trades: 3, win_rate: 0.5, max_drawdown: 1, profit_factor: 1.2, avg_win_loss_ratio: null, return_pct: 1 }, error: null, windows: null },
+  ];
+
+  afterEach(() => {
+    sweepStateSignal.set(null);
+    sweepAxesSignal.set([]);
+  });
+
+  it("clicking a sweep row while the sweep is still running does NOT apply the combo", async () => {
+    mockStrategies.mockResolvedValue(strategies);
+    const onRun = vi.fn();
+    const initial = { ...defaultBacktestConfig(), mode: "coded" as const, codedStrategy: "ema_cross.py" };
+    render(
+      <BacktestSettingsModal
+        initial={initial} epic="TEST" brokerId="capital" resolution="MINUTE" controller={null} chartTimezone="UTC"
+        onRun={onRun} onClose={vi.fn()}
+      />,
+    );
+    enterSweepMode();
+    openStrategy();
+    await screen.findByText("Fast EMA");
+    act(() => sweepStateSignal.set({ rows, done: 1, total: 2, running: true }));
+
+    // The disabled state must be visible, not just non-functional.
+    expect(screen.getByText(/Cancel the sweep to apply a combo/)).toBeTruthy();
+    const row = document.querySelector(".sweep-row") as HTMLElement;
+    expect(row.className).toContain("sweep-row-disabled");
+
+    fireEvent.click(row);
+
+    // Mid-sweep click must be a no-op: no re-run requested, no combo persisted.
+    expect(onRun).not.toHaveBeenCalled();
+    expect(loadCodedCfg("backtest", "ema_cross.py").params.ema_fast).toBeUndefined();
+  });
+
+  it("clicking a sweep row after the sweep finishes applies the combo normally", async () => {
+    mockStrategies.mockResolvedValue(strategies);
+    const onRun = vi.fn();
+    const initial = { ...defaultBacktestConfig(), mode: "coded" as const, codedStrategy: "ema_cross.py" };
+    render(
+      <BacktestSettingsModal
+        initial={initial} epic="TEST" brokerId="capital" resolution="MINUTE" controller={null} chartTimezone="UTC"
+        onRun={onRun} onClose={vi.fn()}
+      />,
+    );
+    enterSweepMode();
+    openStrategy();
+    await screen.findByText("Fast EMA");
+    act(() => sweepStateSignal.set({ rows, done: 2, total: 2, running: false }));
+
+    const row = document.querySelector(".sweep-row") as HTMLElement;
+    fireEvent.click(row);
+
+    expect(onRun).toHaveBeenCalledTimes(1);
+    expect(loadCodedCfg("backtest", "ema_cross.py").params.ema_fast).toBe(12);
+  });
+
+  it("keeps the results table mounted across a Backtest↔Sweep flip (no remount freeze)", async () => {
+    mockStrategies.mockResolvedValue(strategies);
+    const initial = { ...defaultBacktestConfig(), mode: "coded" as const, codedStrategy: "ema_cross.py" };
+    render(
+      <BacktestSettingsModal
+        initial={initial} epic="TEST" brokerId="capital" resolution="MINUTE" controller={null} chartTimezone="UTC"
+        onRun={vi.fn()} onClose={vi.fn()}
+      />,
+    );
+    enterSweepMode();
+    openStrategy();
+    await screen.findByText("Fast EMA");
+    act(() => sweepStateSignal.set({ rows, done: 1, total: 1, running: false }));
+
+    // Capture the actual DOM node so we can prove it's the SAME instance (kept
+    // mounted), not a fresh one after an unmount/remount.
+    const table = document.querySelector(".sweep-results") as HTMLElement;
+    expect(table).toBeTruthy();
+
+    // Flip to backtest: the table stays in the DOM, just hidden by its panel.
+    enterBacktestMode();
+    expect(table.isConnected).toBe(true);
+    expect((table.closest(".sweep-panel") as HTMLElement).style.display).toBe("none");
+
+    // Flip back: same node, and now visible.
+    enterSweepMode();
+    expect(document.querySelector(".sweep-results")).toBe(table);
+    expect((table.closest(".sweep-panel") as HTMLElement).style.display).toBe("");
+  });
+});
+
+describe("rules-mode combo apply", () => {
+  // Rules-mode cfg is not persisted to localStorage (unlike coded mode's
+  // loadCodedCfg), so applyRuleSweepCombo's result is observed via the cfg it
+  // hands to run() -> onRun(next). Capturing that argument inspects the resulting
+  // config object itself, not mock-call semantics.
+  function renderRules(initial: BacktestConfig) {
+    const onRun = vi.fn();
+    render(
+      <BacktestSettingsModal
+        initial={initial} epic="TEST" brokerId="capital" resolution="MINUTE" controller={null} chartTimezone="UTC"
+        onRun={onRun} onClose={vi.fn()}
+      />,
+    );
+    enterSweepMode();
+    return onRun;
+  }
+  function applyCombo(onRun: ReturnType<typeof vi.fn>, combo: SweepRow["combo"]) {
+    const rows: SweepRow[] = [
+      { combo, metrics: { net_pnl: 1, n_trades: 1, win_rate: 0.5, max_drawdown: 0, profit_factor: 1, avg_win_loss_ratio: 1, return_pct: 1 }, error: null, windows: null },
+    ];
+    act(() => sweepStateSignal.set({ rows, done: 1, total: 1, running: false }));
+    openResults();
+    fireEvent.click(document.querySelector(".sweep-row") as HTMLElement);
+    expect(onRun).toHaveBeenCalledTimes(1);
+    return onRun.mock.calls[0][0] as BacktestConfig;
+  }
+
+  afterEach(() => {
+    sweepStateSignal.set(null);
+    sweepAxesSignal.set([]);
+  });
+
+  it("period combo switches the range to a custom window (unix seconds -> ms)", () => {
+    const onRun = renderRules(defaultBacktestConfig());
+    const next = applyCombo(onRun, { "period:from": 1751155200, "period:to": 1751587200 });
+    expect(next.range.mode).toBe("custom");
+    expect(next.range.fromMs).toBe(1751155200000);
+    expect(next.range.toMs).toBe(1751587200000);
+  });
+
+  it("timeWindow combo patches the mask window, reads it in the chart tz, and clears any session", () => {
+    const initial = defaultBacktestConfig();
+    initial.range.mask = { enabled: true, session: "NYSE" };
+    const onRun = renderRules(initial);
+    // The combo carries a tz, but the run always stamps the chart timezone
+    // (chartTimezone="UTC" here) onto the mask, so the combo tz is ignored.
+    const next = applyCombo(onRun, {
+      "timeWindow:startMin": 540, "timeWindow:endMin": 1050, "timeWindow:tz": "Europe/London",
+    });
+    expect(next.range.mask?.enabled).toBe(true);
+    expect(next.range.mask?.timeOfDay).toEqual({ startMin: 540, endMin: 1050 });
+    expect(next.range.mask?.tz).toBe("UTC");
+    expect(next.range.mask?.session).toBeUndefined();
+  });
+});
+
+describe("synced long/short SL/TP", () => {
+  // The one visible risk block (rule mode renders one side at a time).
+  const riskSec = () =>
+    screen.getByText("Stop & take profit").closest(".bt-risk") as HTMLElement;
+  const stopSelect = () => riskSec().querySelectorAll("select")[0] as HTMLSelectElement;
+  const syncBox = () => within(riskSec()).getByLabelText(/same for long & short/i) as HTMLInputElement;
+
+  it("defaults on and mirrors an edit to the other side", () => {
+    renderModal();
+    openStrategy();
+    expect(syncBox().checked).toBe(true);
+    fireEvent.change(stopSelect(), { target: { value: "pct" } });
+    fireEvent.click(screen.getByRole("button", { name: /Short/ }));
+    expect(stopSelect().value).toBe("pct");
+  });
+
+  it("stops mirroring once unchecked", () => {
+    renderModal();
+    openStrategy();
+    fireEvent.click(syncBox());
+    fireEvent.change(stopSelect(), { target: { value: "pct" } });
+    fireEvent.click(screen.getByRole("button", { name: /Short/ }));
+    expect(stopSelect().value).toBe("none");
+    expect(syncBox().checked).toBe(false);
+  });
+
+  it("copies the viewed side across on load when synced sides drifted apart", () => {
+    const cfg = defaultBacktestConfig();
+    cfg.longRisk = { stop: { kind: "pct", value: 1.5 }, target: { kind: "pct", value: 3 } };
+    cfg.shortRisk = { stop: { kind: "atr", mult: 2, length: 14 }, target: { kind: "none" } };
+    renderModal(cfg);   // riskSynced absent = on; long is the default viewed side
+    openStrategy();
+    fireEvent.click(screen.getByRole("button", { name: /Short/ }));
+    expect(stopSelect().value).toBe("pct");
+    expect((riskSec().querySelector("input.bt-num") as HTMLInputElement).value).toBe("1.5");
+  });
+
+  it("re-checking the box copies the side being viewed across", () => {
+    const cfg = defaultBacktestConfig();
+    cfg.riskSynced = false;
+    cfg.longRisk = { stop: { kind: "pct", value: 1 }, target: { kind: "pct", value: 2 } };
+    cfg.shortRisk = { stop: { kind: "atr", mult: 2, length: 14 }, target: { kind: "none" } };
+    renderModal(cfg);
+    openStrategy();
+    fireEvent.click(screen.getByRole("button", { name: /Short/ }));
+    fireEvent.click(syncBox());   // enable while looking at the short side
+    fireEvent.click(screen.getByRole("button", { name: /Long/ }));
+    expect(stopSelect().value).toBe("atr");
+  });
+});
+
+describe("inline risk sweep editors", () => {
+  const strategies = [
+    {
+      filename: "ema_cross.py", name: "EMA Cross", description: "", hedged: false, error: null,
+      params: [
+        { name: "ema_fast", label: "Fast EMA", type: "int" as const, default: 9, min: 2, max: 50, step: 1, options: null, help: null },
+      ],
+    },
+  ];
+
+  it("coded mode: a swept stop % renders its chip in place inside the risk block", async () => {
+    mockStrategies.mockResolvedValue(strategies);
+    const initial = { ...defaultBacktestConfig(), mode: "coded" as const, codedStrategy: "ema_cross.py" };
+    renderModal(initial);
+    enterSweepMode();
+    openStrategy();
+    expect(await screen.findByText("Fast EMA")).toBeTruthy();
+
+    // Set the LONG stop kind to % so the value field and its glyph render.
+    const riskBlocks = [...document.querySelectorAll(".bt-risk")] as HTMLElement[];
+    expect(riskBlocks.length).toBe(2);
+    const stopKind = riskBlocks[0].querySelectorAll("select")[0];
+    fireEvent.change(stopKind, { target: { value: "pct" } });
+
+    // Toggle the stop-value sweep glyph on (sync defaults ON, axis canonical on long).
+    fireEvent.click(riskBlocks[0].querySelector(".sp-sweep")!);
+
+    // Chip replaces the value input in the LONG block. Sync mirrors the pct
+    // field to the SHORT block too, so the same canonical axis's chip shows in
+    // both blocks (renders wherever the field renders).
+    expect(riskBlocks[0].querySelector(".range-chip")).toBeTruthy();
+    expect(document.querySelectorAll(".range-chip")).toHaveLength(2);
+  });
+
+  it("rules mode: with sync on, the short tab shows the synced axis's chip too", () => {
+    renderModal();
+    enterSweepMode();
+    openStrategy();
+
+    // Long tab: set stop kind to %, toggle its sweep glyph.
+    const longRisk = document.querySelector(".bt-risk") as HTMLElement;
+    fireEvent.change(longRisk.querySelectorAll("select")[0], { target: { value: "pct" } });
+    fireEvent.click(longRisk.querySelector(".sp-sweep")!);
+    expect(longRisk.querySelector(".range-chip")).toBeTruthy();
+
+    // Switch to the short tab: the same canonical axis's chip is visible there.
+    fireEvent.click(screen.getByRole("button", { name: /Short/ }));
+    const shortRisk = document.querySelector(".bt-risk") as HTMLElement;
+    expect(shortRisk.querySelector(".range-chip")).toBeTruthy();
+  });
+});
+
+describe("persistent sweep setup", () => {
+  afterEach(() => {
+    sweepStateSignal.set(null);
+    sweepAxesSignal.set([]);
+  });
+
+  it("prunes a stored axis whose rule no longer exists", () => {
+    saveSweepAxes("rules", [
+      { kind: "range", target: "rule:long.entry.5.left.length", label: "stale", from: 1, to: 2, step: 1 },
+    ]);
+    renderModal();
+    enterSweepMode();
+    openStrategy();
+    // The stale axis must not survive restore: no editor, and Run sweep stays
+    // unavailable because no axis is configured.
+    expect(document.querySelector(".range-chip")).toBeNull();
+    expect((screen.getByRole("button", { name: "Run sweep" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("prunes a stored param axis the file no longer declares when entering coded mode via the mode switch", async () => {
+    saveSweepAxes("coded.ema_cross.py", [
+      { kind: "range", target: "param:gone", label: "gone", from: 1, to: 2, step: 1 },
+    ]);
+    const strategies = [
+      {
+        filename: "ema_cross.py", name: "EMA Cross", description: "", hedged: false, error: null,
+        params: [
+          { name: "ema_fast", label: "Fast EMA", type: "int" as const, default: 9, min: 2, max: 50, step: 1, options: null, help: null },
+        ],
+      },
+    ];
+    mockStrategies.mockResolvedValue(strategies);
+    renderModal({ ...defaultBacktestConfig(), codedStrategy: "ema_cross.py" });
+    enterSweepMode();
+    openStrategy();
+    const segStrategy = screen
+      .getAllByRole("button", { name: "Built-in" })
+      .find((b) => !b.closest(".bt-htabs"))!;
+    fireEvent.click(segStrategy);
+    // Let the strategy schema land so the param prune can validate against it.
+    // The prune runs in a passive effect after that render, so wait for its
+    // outcome instead of asserting synchronously.
+    await screen.findByText("Fast EMA");
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Run sweep" }) as HTMLButtonElement).disabled).toBe(true));
+    expect(document.querySelector(".range-chip")).toBeNull();
+  });
+});
+
+describe("sweep footer estimate + compute toggle", () => {
+  afterEach(() => {
+    sweepStateSignal.set(null);
+    sweepAxesSignal.set([]);
+    sweepTargetSignal.set("local");
+  });
+
+  // A range axis resolving against the default long-entry rule, big enough to
+  // exceed SWEEP_WARN_COMBOS (1000): 1..2001 step 1 enumerates 2001 combos.
+  const bigAxis = () =>
+    saveSweepAxes("rules", [
+      { kind: "range", target: "rule:long.entry.0.left.length", label: "len", from: 1, to: 2001, step: 1 },
+    ]);
+
+  it("hides the Compute toggle when remote compute is not configured", async () => {
+    mockComputeStatus.mockResolvedValue({ remoteConfigured: false });
+    bigAxis();
+    renderModal();
+    enterSweepMode();
+    // Let the mount fetch resolve; the toggle must stay absent.
+    await waitFor(() => expect(mockComputeStatus).toHaveBeenCalled());
+    expect(document.querySelector(".bt-compute-toggle")).toBeNull();
+  });
+});
+
+// The compute-host status + Start/Stop moved to the toolbar (ComputeHostButton,
+// covered by ComputeHostButton.test.tsx). The sweep footer no longer renders a
+// host chip, so there is nothing to test here.
+
+describe("backtest | sweep mode switch", () => {
+  afterEach(() => {
+    sweepStateSignal.set(null);
+    sweepAxesSignal.set([]);
+  });
+
+  const rows: SweepRow[] = [
+    { combo: { "rule:long.entry.0.left.length": 30 }, metrics: { net_pnl: 1, n_trades: 1, win_rate: 0.5, max_drawdown: 0, profit_factor: 1, avg_win_loss_ratio: 1, return_pct: 1 }, windows: null, error: null },
+  ];
+
+  it("flipping the mode flips the results view without clearing either result set", () => {
+    renderModal();
+    enterSweepMode();
+    act(() => sweepStateSignal.set({ rows, done: 1, total: 1, running: false }));
+    expect((document.querySelector(".sweep-panel") as HTMLElement).style.display).toBe("");
+    enterBacktestMode();
+    // Backtest view shows; the sweep table stays mounted (hidden) behind it, so
+    // the state survives untouched and flipping back is instant, not a remount.
+    expect((document.querySelector(".sweep-panel") as HTMLElement).style.display).toBe("none");
+    expect(sweepStateSignal.value).not.toBeNull();
+    enterSweepMode();
+    expect((document.querySelector(".sweep-panel") as HTMLElement).style.display).toBe("");
+  });
+
+  it("shows sweep progress on the Sweep segment while in Backtest mode", () => {
+    renderModal();
+    act(() => sweepStateSignal.set({ rows, done: 1, total: 4, running: true }));
+    expect(modeSeg().querySelector(".bt-mode-badge")?.textContent).toBe("1/4");
+  });
+});
+
+describe("clear sweep results", () => {
+  afterEach(() => {
+    sweepStateSignal.set(null);
+    sweepAxesSignal.set([]);
+  });
+
+  const rows: SweepRow[] = [
+    { combo: { "rule:long.entry.0.left.length": 30 }, metrics: { net_pnl: 1, n_trades: 1, win_rate: 0.5, max_drawdown: 0, profit_factor: 1, avg_win_loss_ratio: 1, return_pct: 1 }, windows: null, error: null },
+  ];
+
+  it("shows Clear results only when a sweep is finished, and clicking it clears the table", () => {
+    renderModal();
+    enterSweepMode();
+    act(() => sweepStateSignal.set({ rows, done: 1, total: 2, running: true }));
+    // While running: Cancel, no Clear.
+    expect(screen.getByRole("button", { name: "Cancel sweep" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Clear results" })).toBeNull();
+    act(() => sweepStateSignal.set({ rows, done: 2, total: 2, running: false }));
+    expect(screen.queryByRole("button", { name: "Cancel sweep" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Clear results" }));
+    expect(sweepStateSignal.value).toBeNull();
+    expect(document.querySelector(".sweep-panel")).toBeNull();
+  });
+});
+
+describe("cancel backtest", () => {
+  afterEach(() => act(() => backtestRunningSignal.set(false)));
+
+  it("shows Cancel backtest while a run is in flight; clicking it requests a cancel", () => {
+    renderModal();
+    expect(screen.queryByRole("button", { name: "Cancel backtest" })).toBeNull();
+    act(() => backtestRunningSignal.set(true));
+    const before = backtestCancelRequest.value;
+    fireEvent.click(screen.getByRole("button", { name: "Cancel backtest" }));
+    expect(backtestCancelRequest.value).toBe(before + 1);
+    act(() => backtestRunningSignal.set(false));
+    expect(screen.queryByRole("button", { name: "Cancel backtest" })).toBeNull();
+  });
+
+  it("does not offer Cancel backtest when the in-flight run is a sweep", () => {
+    renderModal();
+    // A sweep also sets backtestRunningSignal; viewed from the Backtest tab it
+    // must not grow a Cancel-backtest button that couldn't stop it.
+    act(() => {
+      backtestRunningSignal.set(true);
+      sweepStateSignal.set({ rows: [], done: 0, total: 2, running: true });
+    });
+    expect(screen.queryByRole("button", { name: "Cancel backtest" })).toBeNull();
+    act(() => sweepStateSignal.set(null));
+  });
+});
+
+describe("clear backtest results", () => {
+  beforeEach(() => {
+    // jsdom implements no ResizeObserver; with a result set, BacktestPanel's
+    // trades table mounts and measures its viewport (see BacktestPanel.test.tsx).
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  });
+  afterEach(() => {
+    backtestResultSignal.set(null);
+    backtestRunningSignal.set(false);
+  });
+
+  it("shows Clear results only when an idle backtest result exists, and clicking it requests a clear", () => {
+    renderModal();
+    // No result yet: nothing to clear.
+    expect(screen.queryByRole("button", { name: "Clear results" })).toBeNull();
+    // Same shape as BacktestPanel.test.tsx's BASE — the panel renders the full
+    // summary row and metric table off it, so it must be complete.
+    act(() =>
+      backtestResultSignal.set({
+        epic: "TEST",
+        resolution: "MINUTE",
+        candles: [],
+        markers: [],
+        trades: [],
+        equity: [],
+        summary: { net_pnl: 12500, n_trades: 4, win_rate: 0.5, max_drawdown: 100 },
+        metrics: {
+          return_pct: 416.67, profit_factor: 1.8, expectancy: 3125,
+          avg_win: 5000, avg_loss: 1500, avg_win_loss_ratio: 3.33,
+          largest_win: 7000, largest_loss: 2000, max_drawdown_pct: 12.5,
+          avg_duration_bars: 30, max_consec_wins: 2, max_consec_losses: 1, sharpe: 1.4,
+        },
+      } as never),
+    );
+    // While a run is in flight the slot belongs to Cancel, not Clear.
+    act(() => backtestRunningSignal.set(true));
+    expect(screen.queryByRole("button", { name: "Clear results" })).toBeNull();
+    act(() => backtestRunningSignal.set(false));
+    const before = backtestClearRequest.value;
+    fireEvent.click(screen.getByRole("button", { name: "Clear results" }));
+    // The teardown lives in BacktestButton (it owns the chart); the modal only
+    // asks for it through the same signal as the results pane's ✕.
+    expect(backtestClearRequest.value).toBe(before + 1);
+  });
+});
+
+// The run payload is rebuilt from storage (BacktestButton: loadBacktestLastUsed /
+// loadCodedCfg), not from the modal's React state. So the applyRiskSync copy-on-load
+// normalization must be WRITTEN BACK to storage when it changes anything — otherwise
+// the panel displays the synced risk (e.g. "% from entry") while the run still sends
+// the stored, drifted side (e.g. the old ATR stop).
+describe("risk sync load normalization write-back", () => {
+  const pctRisk = { stop: { kind: "pct" as const, value: 2 }, target: { kind: "none" as const } };
+  const atrRisk = { stop: { kind: "atr" as const, mult: 2, length: 14 }, target: { kind: "none" as const } };
+
+  it("persists the synced rule-mode risk to last-used on open", () => {
+    const initial = defaultBacktestConfig();
+    // riskSynced absent = ON; sides drifted apart (saved before sync existed).
+    initial.longRisk = pctRisk;
+    initial.shortRisk = atrRisk;
+    renderModal(initial);
+    // Long side wins (default viewed side): storage must now carry pct on BOTH sides.
+    expect(loadBacktestLastUsed()?.shortRisk?.stop.kind).toBe("pct");
+  });
+
+  it("persists the synced coded-mode risk back to the per-file store on open", () => {
+    saveCodedCfg("backtest", "desync.py", { ...defaultCodedCfg(), longRisk: pctRisk, shortRisk: atrRisk });
+    const initial = { ...defaultBacktestConfig(), mode: "coded" as const, codedStrategy: "desync.py" };
+    renderModal(initial);
+    expect(loadCodedCfg("backtest", "desync.py").shortRisk?.stop.kind).toBe("pct");
+  });
+});
+
+describe("BacktestSettingsModal timeframe picker", () => {
+  // A config already targeting a custom timeframe since deleted from the saved
+  // list falls out of periodGroups(loadCustomResolutions()) entirely; the
+  // <select> must still surface it as an option (labeled, not raw) rather than
+  // silently showing no matching option while cfg.range.resolution keeps
+  // naming the deleted TF.
+  it("keeps a resolution missing from the saved-custom list selectable", () => {
+    const cfg = defaultBacktestConfig();
+    cfg.range = { ...cfg.range, resolution: "MINUTE_7" };
+    renderModal(cfg);
+    const select = document.querySelector(".bt-tf-select") as HTMLSelectElement;
+    expect(select.value).toBe("MINUTE_7");
+    const opt = [...select.options].find((o) => o.value === "MINUTE_7");
+    expect(opt?.textContent).toBe("7m");
+  });
+
+  // Live-only seconds periods are filtered out of the rendered options, so a
+  // config naming one must count as missing too, or the select has no match.
+  it("keeps a live-only resolution the selects filter out selectable", () => {
+    const cfg = defaultBacktestConfig();
+    cfg.range = { ...cfg.range, resolution: "SECOND_5" };
+    renderModal(cfg);
+    const select = document.querySelector(".bt-tf-select") as HTMLSelectElement;
+    expect(select.value).toBe("SECOND_5");
+    const opts = [...select.options].filter((o) => o.value === "SECOND_5");
+    expect(opts).toHaveLength(1);
+  });
+});
+
+describe("BacktestSettingsModal walk-forward Period layout", () => {
+  it("shows the From/To range picker without selecting Custom, and hides the mode seg + Windows", () => {
+    renderModal();
+    enterWfoMode();
+    // Two datetime-local inputs are always present in WFO mode (Data window).
+    const dataWindow = screen.getByText("Data window").closest(".bt-section") as HTMLElement;
+    expect(within(dataWindow).getByText("From")).toBeTruthy();
+    expect(within(dataWindow).getByText("To")).toBeTruthy();
+    // The Bars/Day/.../Custom mode seg and the Windows label are gone in WFO.
+    expect(screen.queryByRole("button", { name: "Custom" })).toBeNull();
+    expect(screen.queryByText("Windows")).toBeNull();
+  });
+
+  it("a relative chip sets a rolling mode; a calendar chip sets a fixed range", () => {
+    renderModal();
+    enterWfoMode();
+    // Relative: rolling -> the 1M chip highlights (mode lastMonth, no fixed dates).
+    fireEvent.click(screen.getByRole("button", { name: "1M" }));
+    expect(screen.getByRole("button", { name: "1M" }).className).toMatch(/seg-on/);
+    // Calendar: fixed -> a year chip writes explicit dates; the relative chip clears.
+    const yearChip = screen.getAllByRole("button").find((b) => /^\d{4}$/.test(b.textContent ?? ""));
+    expect(yearChip).toBeTruthy();
+    fireEvent.click(yearChip!);
+    expect(screen.getByRole("button", { name: "1M" }).className).not.toMatch(/seg-on/);
+  });
+
+  it("renders the Schedule section with the WfoConfig Train control under it", () => {
+    renderModal();
+    enterWfoMode();
+    expect(screen.getByText("Schedule")).toBeTruthy();
+    expect(screen.getByText("Train")).toBeTruthy();
+  });
+});
+
+// The Backtest | Sweep | Walk-fwd switch is panel-scoped (it changes what the
+// whole panel configures), so it lives in the header line, not among the
+// section tabs — two tab systems in one row read as one and could show two
+// "active tabs" at once (e.g. Presets + Walk-fwd).
+describe("BacktestSettingsModal mode switch placement", () => {
+  it("renders the run-mode switch in the panel header, not the tab bar", () => {
+    renderModal();
+    expect(document.querySelector(".bt-cfg-head .bt-mode-seg")).toBeTruthy();
+    expect(document.querySelector(".bt-htabs .bt-mode-seg")).toBeNull();
+  });
+
+  it("hides the footer run bar while the Presets pane is open", () => {
+    renderModal();
+    expect(document.querySelector(".bt-run-btn")).toBeTruthy();
+    openPresets();
+    // Presets has its own actions (Save/Go live); a mode-bound Run button down
+    // here would act on something the pane isn't showing.
+    expect(document.querySelector(".bt-run-btn")).toBeNull();
+    const nav = document.querySelector(".bt-htabs") as HTMLElement;
+    fireEvent.click(within(nav).getByRole("button", { name: "Period" }));
+    expect(document.querySelector(".bt-run-btn")).toBeTruthy();
+  });
+});
+
+// The range calendar popover (RangeCalendarPopover) is wired in behind a
+// button on the range row. It portals to document.body, so its cells are
+// queried against `document`, not the render container. Assertions go
+// through the Run button's captured config rather than the datetime-local
+// inputs, since those render browser-local while the arithmetic here is
+// pinned to chartTimezone="UTC".
+describe("BacktestSettingsModal range calendar popover", () => {
+  // A fixed custom span (Jan 10..20 2024 inclusive, UTC) so the popover opens
+  // on a known month with deterministic day cells — same fixture shape as
+  // RangeCalendarPopover.test.tsx.
+  function customRangeConfig() {
+    const cfg = defaultBacktestConfig();
+    cfg.range = { ...cfg.range, mode: "custom", fromMs: Date.UTC(2024, 0, 10), toMs: Date.UTC(2024, 0, 21) };
+    return cfg;
+  }
+
+  function openCalendar() {
+    fireEvent.click(screen.getByRole("button", { name: "Open range calendar" }));
+  }
+
+  function cell(ds: string): HTMLElement {
+    const el = document.querySelector(`[data-date="${ds}"]`);
+    if (!el) throw new Error(`no cell for ${ds}`);
+    return el as HTMLElement;
+  }
+
+  function runAndCapture(onRun: ReturnType<typeof vi.fn>): BacktestConfig {
+    fireEvent.click(document.querySelector(".bt-run-btn") as HTMLElement);
+    expect(onRun).toHaveBeenCalled();
+    return onRun.mock.calls[onRun.mock.calls.length - 1][0] as BacktestConfig;
+  }
+
+  it("clicking the calendar button mounts the popover", () => {
+    renderModal(customRangeConfig());
+    expect(document.querySelector(".bt-calendar-pop")).toBeNull();
+    openCalendar();
+    expect(document.querySelector(".bt-calendar-pop")).toBeTruthy();
+  });
+
+  it("clicking the trigger button twice leaves the popover closed", () => {
+    // fireEvent.click alone doesn't reproduce the race (RTL doesn't synthesize
+    // the pointerdown a real click also fires); the second click below fires
+    // both, matching the browser's actual event order (pointerdown, then click).
+    renderModal(customRangeConfig());
+    const btn = screen.getByRole("button", { name: "Open range calendar" });
+    fireEvent.click(btn); // 1st click: opens (popover not yet mounted, no listener race)
+    expect(document.querySelector(".bt-calendar-pop")).toBeTruthy();
+    fireEvent.pointerDown(btn); // capture-phase dismissal listener: must ignore (ignoreRef)
+    fireEvent.click(btn); // then the button's own onClick toggles closed
+    expect(document.querySelector(".bt-calendar-pop")).toBeNull();
+  });
+
+  it("selecting a span in the popover lands in the run config as a custom range", () => {
+    const onRun = vi.fn();
+    render(
+      <BacktestSettingsModal
+        initial={customRangeConfig()} epic="TEST" brokerId="capital" resolution="MINUTE" controller={null}
+        chartTimezone="UTC" onRun={onRun} onClose={vi.fn()}
+      />,
+    );
+    openCalendar();
+    fireEvent.click(cell("2024-01-25")); // outside current span -> arms
+    fireEvent.click(cell("2024-01-28")); // completes the span
+
+    const next = runAndCapture(onRun);
+    expect(next.range.mode).toBe("custom");
+    expect(next.range.fromMs).toBe(Date.UTC(2024, 0, 25));
+    expect(next.range.toMs).toBe(Date.UTC(2024, 0, 29));
+  });
+
+  it("a date-cell exclusion lands in the run config's mask", () => {
+    const onRun = vi.fn();
+    const initial = customRangeConfig();
+    initial.range.mask = { enabled: true };
+    render(
+      <BacktestSettingsModal
+        initial={initial} epic="TEST" brokerId="capital" resolution="MINUTE" controller={null}
+        chartTimezone="UTC" onRun={onRun} onClose={vi.fn()}
+      />,
+    );
+    openCalendar();
+    fireEvent.click(cell("2024-01-15")); // inside Jan 10..20 -> excludeDates toggle
+
+    const next = runAndCapture(onRun);
+    expect(next.range.mask?.excludeDates).toContain("2024-01-15");
+  });
+
+  it("Escape closes the popover", () => {
+    renderModal(customRangeConfig());
+    openCalendar();
+    expect(document.querySelector(".bt-calendar-pop")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.querySelector(".bt-calendar-pop")).toBeNull();
+  });
+});

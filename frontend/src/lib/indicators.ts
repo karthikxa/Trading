@@ -1,0 +1,1436 @@
+// Indicator create/remove/hydrate, extracted from Toolbar so BOTH the focused
+// Toolbar (user add on the focused chart) and ChartCore (hydrate each cell's saved
+// set on mount) drive indicators the same way. Hydration must live in ChartCore —
+// non-focused cells still show their indicators, and the Toolbar only ever binds to
+// the focused cell.
+//
+// MULTI-INSTANCE MODEL. klinecharts keys indicators by `name` within a pane and
+// rejects duplicate names, so to have two EMAs we give each a UNIQUE name (the
+// "instance id", e.g. "EMA#a1b2") and carry the real TYPE in extendData.indType.
+// For our custom types we register a per-instance template (a clone of the base
+// template under the instance id) before createIndicator. Built-in klinecharts
+// types (RSI/MACD/…) are created under their own name as a single instance (one per
+// type) — they have no custom template to clone, and duplicating them isn't a
+// requested feature; their id === type.
+
+import type {
+  Chart,
+  Indicator,
+  IndicatorCreate,
+  IndicatorStyle,
+  IndicatorTemplate,
+} from "klinecharts";
+import { registerIndicator, getSupportedIndicators } from "klinecharts";
+import {
+  OVERLAY_INDICATORS,
+  BASE_TEMPLATES,
+  legendTooltipSource,
+  indTypeOf,
+  SESSIONS_AXIS_NAME,
+  type CustomIndicatorType,
+} from "./customIndicators";
+import { EQUITY_INDICATOR } from "./backtest";
+import { exprInstancesFor, EXPR_INSTANCE_TYPES, type LiveInstance } from "./exprInstances";
+import { sameInstanceConfig, type InstanceAppearance, type PortableInstancePayload } from "./ruleClipboard";
+import { INDICATOR_SPECS, type ExprInstance } from "./expr/catalog";
+import { RESOLUTION_SECONDS } from "./feed";
+import type { SlopeExtend } from "./indicators/slope";
+import type { PivotBandsExtend } from "./indicators/pivotBands"; // erased at build; no runtime edge
+import { INSET_CAPABLE, insetTemplate } from "./indicators/inset";
+import { hiddenAware } from "./indicators/hiddenCalc";
+import { maFigures, maLegendLabel, templateMaKind, type MaExtend } from "./indicators/ma";
+import { dropTrendlineHandles } from "./indicators/trendlines";
+import { dropPaintedLines } from "./indicators/paintedLines";
+import { noteDebugOn } from "./indicators/trendlinesDebugStore";
+import { planPaneReorder, reorderInstanceList } from "./paneOrder";
+import {
+  type VisibilityModel,
+  defaultVisibility,
+  isVisibleOnResolution,
+} from "./visibility";
+import {
+  loadIndicators,
+  loadIndicatorConfigs,
+  saveIndicatorConfig,
+  loadIndicatorDefault,
+  loadAvwapAnchor,
+  deleteIndicatorConfig,
+  type IndicatorInstance,
+  type SavedIndicatorConfig,
+} from "./persist";
+import type { ChartController } from "./chartController";
+import { overrideExtend } from "./overrideExtend";
+export { overrideExtend };
+
+/** extendData keys a live gesture writes (a picked, hovered or glowing line)
+ * and nothing may save, restore or copy: a stale one would leave a line lit
+ * with nothing left to clear it. */
+export const SESSION_GESTURE_KEYS = ["selectedLine", "hoveredLine", "emphasized", "emphasis"] as const;
+
+// v10 replaced v9's chart.getIndicatorByPaneId(paneId, name) with a flat
+// filter-based getIndicators({ paneId, name }). This helper restores the single
+// (paneId, name) → indicator lookup every call site used.
+export function getIndicator(chart: Chart, paneId: string, name: string): Indicator | null {
+  return chart.getIndicators({ paneId, name })[0] ?? null;
+}
+
+// v9's chart.getIndicatorByPaneId() with NO args returned every pane's indicator
+// map (Map<paneId, Map<name, Indicator>>). v10 has no such API, so we rebuild that
+// exact nested shape from the flat getIndicators() array. Keying the inner map by
+// `name` matches v9 (our instance ids ARE the klinecharts indicator names), so
+// every downstream .values()/.keys()/.get()/.has() loop keeps working unchanged.
+export function getIndicatorsByPane(chart: Chart): Map<string, Map<string, Indicator>> {
+  const out = new Map<string, Map<string, Indicator>>();
+  for (const ind of chart.getIndicators()) {
+    let inner = out.get(ind.paneId);
+    if (!inner) {
+      inner = new Map();
+      out.set(ind.paneId, inner);
+    }
+    inner.set(ind.name, ind);
+  }
+  return out;
+}
+
+// True if adding this indicator TYPE opens its own bottom sub-pane (Volume/MACD/RSI…)
+// rather than overlaying the candle pane (EMA/…). Used to auto-expand collapsed
+// sub-panes when the user adds one (seeing a nothing after adding would be confusing).
+export function isSubPaneIndicator(type: string): boolean {
+  return !OVERLAY_INDICATORS.has(type);
+}
+
+// Instance-aware form of isSubPaneIndicator: an inset instance draws in the candle
+// pane, so it must not trigger the "auto-expand collapsed sub-panes" behavior that
+// exists to stop a freshly added pane indicator from landing invisible.
+export function isSubPaneInstance(inst: IndicatorInstance): boolean {
+  return isSubPaneIndicator(inst.type) && inst.inset !== true;
+}
+
+const CUSTOM_TYPES = Object.keys(BASE_TEMPLATES) as CustomIndicatorType[];
+const isCustomType = (type: string): type is CustomIndicatorType =>
+  (CUSTOM_TYPES as string[]).includes(type);
+
+// calcParams we override on built-in klinecharts indicators at creation, to match
+// TradingView's shape rather than klinecharts' defaults. klinecharts' RSI ships
+// with three lengths ([6,12,24] → three lines); TradingView draws a SINGLE RSI of
+// length 14. Because RSI's `regenerateFigures` emits one line per calcParam, a
+// one-element calcParams yields exactly one curve. Only consulted on a fresh add
+// (no saved config); custom types carry their own defaults in BASE_TEMPLATES.
+const DEFAULT_CALC_PARAMS: Record<string, number[]> = {
+  RSI: [14],
+};
+
+// Default calcParams for built-in klinecharts indicator TYPES that we don't
+// override above and that aren't one of our custom types (those carry their
+// own defaults in BASE_TEMPLATES). Needed because an indicator whose settings
+// modal was merely opened gets its calcParams eagerly persisted from the LIVE
+// instance (IndicatorSettings.tsx), which for a built-in type is klinecharts'
+// own default — so the template-merge signature comparison (templates.ts) must
+// know that same default to recognize the saved config as a no-op and avoid
+// treating it as a different indicator than an unconfigured template entry.
+//
+// Values verified against the INSTALLED klinecharts package (not from memory):
+// frontend/node_modules/klinecharts/dist/index.esm.js, each indicator's own
+// `calcParams: [...]` literal a few lines below its `name: '<TYPE>'` line (v9,
+// as of this fix). Every built-in type the app's indicator menu can add is
+// covered (Toolbar.tsx's menu is literally `getSupportedIndicators()`, i.e. ALL
+// registered types minus per-instance "#" ids and our own custom overrides).
+const BUILTIN_CALC_PARAMS: Record<string, number[]> = {
+  AO: [5, 34], // index.esm.js ~L2322 (name 'AO' ~L2320)
+  BIAS: [6, 12, 24], // ~L2394 (name ~L2392)
+  BOLL: [20, 2], // ~L2461 (name ~L2458)
+  BRAR: [26], // ~L2514 (name ~L2512)
+  BBI: [3, 6, 12, 24], // ~L2574 (name ~L2570)
+  CCI: [20], // ~L2631 (name ~L2629)
+  CR: [26, 10, 20, 40, 60], // ~L2693 (name ~L2691)
+  DMA: [10, 50, 10], // ~L2789 (name ~L2787)
+  DMI: [14, 6], // ~L2873 (name ~L2871)
+  EMV: [14, 9], // ~L2980 (name ~L2978)
+  MTM: [12, 6], // ~L3094 (name ~L3092)
+  MACD: [12, 26, 9], // ~L3199 (name ~L3197)
+  OBV: [30], // ~L3297 (name ~L3295)
+  PSY: [12, 6], // ~L3394 (name ~L3392)
+  ROC: [12, 6], // ~L3447 (name ~L3445)
+  SMA: [12, 2], // ~L3572 (name ~L3569)
+  KDJ: [9, 3, 3], // ~L3624 (name ~L3622)
+  SAR: [2, 2, 20], // ~L3670 (name ~L3667)
+  TRIX: [12, 9], // ~L3781 (name ~L3779)
+  VOL: [5, 10, 20], // ~L3881 (name ~L3878)
+  VR: [26, 6], // ~L3942 (name ~L3940)
+  WR: [6, 10, 14], // ~L4022 (name ~L4020)
+  // AVP and PVT ship with NO `calcParams` key at all in their template objects
+  // (verified: no `calcParams:` literal near `name: 'AVP'` ~L2281 or
+  // `name: 'PVT'` ~L3349) — klinecharts' base Indicator constructor defaults an
+  // absent template calcParams to `[]` (index.esm.js ~L1042:
+  // `this.calcParams = calcParams ?? []`). Listed explicitly (not left to the
+  // `undefined` fallback) so a settings-opened instance — which persists the
+  // LIVE `[]` — normalizes to the SAME `[]` a config-less template entry
+  // produces, instead of comparing `[]` against `undefined`.
+  AVP: [],
+  PVT: [],
+};
+
+// The EFFECTIVE default calcParams for a type when an instance carries no saved
+// config: our TradingView-shape overrides first (RSI → [14]), then the custom
+// template's own defaults (EMA → [9], MA → [20], LR → [100,2], …), then
+// klinecharts' own built-in defaults (MACD → [12,26,9], BOLL → [20,2], …) for
+// every other registered type. Both sides of a template-merge signature
+// comparison normalize through this same function, so a config-less template
+// entry matches a settings-opened instance whose persisted calcParams happen to
+// equal the same default. Used by templates.ts's savedIndicatorSignature (via
+// effectiveCalcParams below).
+export function defaultCalcParams(type: string): number[] | undefined {
+  return (
+    DEFAULT_CALC_PARAMS[type] ??
+    (isCustomType(type)
+      ? (BASE_TEMPLATES[type].calcParams as number[] | undefined)
+      : BUILTIN_CALC_PARAMS[type])
+  );
+}
+
+// The EFFECTIVE calcParams for a type given an instance's saved value (or
+// undefined if it has none): mirrors applyIndicator's own stale-config
+// migration (below, ~L312) — a saved array longer than a DEFAULT_CALC_PARAMS
+// override (e.g. a legacy RSI's [6,12,24] against the override's [14]) is
+// sliced down to that length, since that's what actually ends up on the live
+// chart. Falls back to defaultCalcParams(type) when there's no saved value at
+// all. templates.ts's savedIndicatorSignature uses this (not defaultCalcParams
+// directly) so the merge identity sees the same params applyIndicator would
+// actually create, not the raw stored value.
+export function effectiveCalcParams(type: string, saved?: number[]): number[] | undefined {
+  const def = DEFAULT_CALC_PARAMS[type];
+  if (saved && def && saved.length > def.length) return saved.slice(0, def.length);
+  return saved ?? defaultCalcParams(type);
+}
+
+// Default height (CSS px) for a sub-pane indicator's own pane. klinecharts' default
+// is a cramped ~50px; TradingView gives oscillators much more room, so new sub-panes
+// (RSI/MACD/…) open taller. Users can still drag the pane divider to resize.
+const SUBPANE_HEIGHT = 120;
+
+// The Sessions indicator is a fixed compact strip (not a resizable oscillator): a
+// short pane, no numeric y-axis, drag disabled. minHeight is passed explicitly so
+// the sub-30px height isn't clamped by PANE_MIN_HEIGHT.
+const SESSIONS_PANE_HEIGHT = 26;
+function isFixedCompact(type: string): boolean {
+  return type === "SESSIONS";
+}
+
+// Panes the reorder feature must never touch: the candle pane is handled by paneId,
+// and the backtest equity curve is app-owned. Exported so ChartLegend filters on the
+// SAME predicate: the legend's card index and this engine's reorderable order both
+// exclude these, and they must agree or arrow/menu moves go off-by-one. One
+// definition, no drift.
+export const INTERNAL_INDICATORS = new Set<string>([EQUITY_INDICATOR]);
+
+/** The Slope indicator's acceleration companion pane is parent-owned and derived:
+ * its id is minted from the parent's, so it cannot be a fixed set member. */
+export const ACCEL_SUFFIX = "__accel";
+export const accelCompanionId = (parentId: string): string => `${parentId}${ACCEL_SUFFIX}`;
+
+/** Pivot Bands' "Bars Since Pivot" companion pane: same parent-owned, derived
+ * deal as the accel companion above, minted from the parent's id. */
+export const BARS_SINCE_SUFFIX = "__barsSince";
+export const pivotBarsSinceCompanionId = (parentId: string): string =>
+  `${parentId}${BARS_SINCE_SUFFIX}`;
+
+/** Every parent-owned companion suffix. ONE definition: reorder, the legend and
+ * the indicator menu all filter on it, and they must agree or their indices go
+ * off by one. */
+const COMPANION_SUFFIXES = [ACCEL_SUFFIX, BARS_SINCE_SUFFIX];
+
+/** Internal for REORDER and LEGEND purposes: app-owned panes plus the parent-owned
+ * companions. NOTE deliberately NOT used by applyIndicatorVisibility: see the
+ * comment there. The equity pane has no user visibility intent; a companion pane
+ * follows its parent. */
+export const isInternalIndicator = (name: string): boolean =>
+  INTERNAL_INDICATORS.has(name) || COMPANION_SUFFIXES.some((s) => name.endsWith(s));
+
+// Per-instance template names registered this session (see registerInstanceTemplate).
+const mintedInstanceIds = new Set<string>();
+
+/** Is `name` a per-INSTANCE template name rather than an indicator TYPE?
+ *
+ * The indicator menu lists types, but getSupportedIndicators() returns instance
+ * names too. They cannot be told apart by shape — mintInstanceId names the
+ * second instance `${type}2`, so "FVG2" is indistinguishable from a type called
+ * "FVG2" — so this asks the registry, which knows exactly what it registered.
+ * The legacy "<TYPE>#<rand>" form is also matched outright: those ids predate
+ * this bookkeeping and can appear in charts stored by earlier builds.
+ *
+ * Empty until instances register, which is precisely when their names start
+ * appearing in getSupportedIndicators() — the two populate in the same act, so
+ * a name can never leak in the window before it is recorded. */
+export const isMintedInstanceId = (name: string): boolean =>
+  mintedInstanceIds.has(name) || name.includes("#");
+
+// A reorderable sub-pane captured before teardown: its id, current height, and the
+// ordered indicator instances it holds (usually one; a multi-indicator pane moves whole).
+interface PaneSnapshot {
+  paneId: string;
+  height: number;
+  insts: IndicatorInstance[];
+}
+
+// Enumerate the reorderable bottom panes top-to-bottom (skip candle_pane and panes
+// holding only internal indicators), capturing each pane's height + instances.
+// `internal` decides which indicators don't count as pane content: reorder/legend
+// exclude accel companions too (isInternalIndicator), while the double-click
+// collapse must include them (collapsiblePanes below): an accel pane is a real
+// on-screen band the user expects to disappear with the rest.
+function bottomPanes(chart: Chart, internal: (name: string) => boolean): PaneSnapshot[] {
+  const all = getIndicatorsByPane(chart);
+  const out: PaneSnapshot[] = [];
+  for (const [paneId, inds] of all ?? []) {
+    if (paneId === "candle_pane") continue;
+    const insts: IndicatorInstance[] = [];
+    for (const ind of inds.values()) {
+      if (!ind?.name || internal(ind.name)) continue;
+      insts.push({ id: ind.name, type: indTypeOf(ind) });
+    }
+    if (!insts.length) continue; // internal-only pane (e.g. equity)
+    const height = Math.round(chart.getSize(paneId, 'main')?.height ?? SUBPANE_HEIGHT);
+    out.push({ paneId, height, insts });
+  }
+  return out;
+}
+
+function reorderablePanes(chart: Chart): PaneSnapshot[] {
+  return bottomPanes(chart, isInternalIndicator);
+}
+
+// Panes the double-click collapse gesture owns: every bottom sub-pane except the
+// app-owned EQUITY pane, accel companions included.
+function collapsiblePanes(chart: Chart): PaneSnapshot[] {
+  return bottomPanes(chart, (name) => INTERNAL_INDICATORS.has(name));
+}
+
+// The reorderable sub-pane ids, top-to-bottom. Used by the UI to compute a pane's
+// current position (for Move up/down enablement and the drag drop-slot).
+export function subPaneOrder(chart: Chart): string[] {
+  return reorderablePanes(chart).map((p) => p.paneId);
+}
+
+// Reorder the bottom sub-panes so `movingPaneId` lands at `targetIndex`. klinecharts
+// has no pane-move API, so we tear down the panes from the first divergence point down
+// and recreate them (via applyIndicator, rehydrating each instance's saved config and
+// preserving its pane height) in the new order — they re-append below the untouched
+// head panes. Returns the new full instance list for the caller to persist, or null on
+// a no-op. NOTE: the equity pane, if present, is left in place and may end up above the
+// reordered user panes; acceptable for the transient backtest pane.
+export function reorderSubPanes(
+  chart: Chart,
+  scope: string,
+  epic: string,
+  current: IndicatorInstance[],
+  movingPaneId: string,
+  targetIndex: number,
+): IndicatorInstance[] | null {
+  const panes = reorderablePanes(chart);
+  const plan = planPaneReorder(panes.map((p) => p.paneId), movingPaneId, targetIndex);
+  if (!plan) return null;
+  const { desired, divIndex } = plan;
+  const byId = new Map(panes.map((p) => [p.paneId, p]));
+
+  // Tear down every reorderable pane from the divergence point down (current order).
+  for (const p of panes.slice(divIndex))
+    for (const inst of p.insts) chart.removeIndicator({ paneId: p.paneId, name: inst.id });
+
+  // Recreate them in desired order; each opens a fresh pane appended at the bottom.
+  // A multi-indicator pane is regrouped here (2nd+ instance stacks via opts.paneId),
+  // but note hydrateIndicators recreates each persisted instance in its OWN pane — so a
+  // multi-indicator pane's grouping does NOT round-trip through a reload today. Harmless
+  // now (every createIndicator mints its own pane, so such panes don't exist); revisit
+  // if a future feature lets several indicators share one sub-pane.
+  for (const paneId of desired.slice(divIndex)) {
+    const snap = byId.get(paneId);
+    if (!snap) continue;
+    let newPaneId: string | null = null;
+    snap.insts.forEach((inst, i) => {
+      const pid = applyIndicator(chart, scope, epic, inst, {
+        rehydrate: true,
+        ...(i === 0 ? { height: snap.height } : { paneId: newPaneId ?? undefined }),
+      });
+      if (i === 0) newPaneId = pid;
+    });
+  }
+
+  const newSubOrderIds = desired.flatMap((pid) => byId.get(pid)?.insts.map((x) => x.id) ?? []);
+  return reorderInstanceList(current, newSubOrderIds);
+}
+
+// Mint a unique instance id for a type. The bare type name is used for the FIRST
+// instance (so storage stays byte-identical for single-instance users and the
+// migration that maps old name → {id:name,type:name} lines up); later instances
+// get a sequential number ("SLOPE2", "SLOPE3" — the bare name IS number 1),
+// filling the lowest free slot so a deleted pane's number is reused. The id must
+// be a valid, unique klinecharts indicator name; both expression parsers accept
+// a plain alphanumeric id, so no "#" separator is needed (legacy "TYPE#<rand>"
+// ids from earlier builds still load and still parse — the ref grammar keeps
+// the optional # branch).
+// The one exception is a type that is both instance-referenceable and an expr
+// function name (see refCollision below) — it never gets the bare name, so its
+// numbering starts at 1 ("ATR1", "ATR2").
+export function mintInstanceId(chart: Chart, type: string): string {
+  const taken = new Set<string>();
+  const panes = getIndicatorsByPane(chart);
+  for (const inds of panes?.values() ?? []) for (const n of inds.keys()) taken.add(n);
+  // A type that is BOTH instance-referenceable in rules AND a registered expr
+  // FUNCTION name (today: ATR) never gets the bare name: `ATR.14` cannot parse
+  // as a ref (the name resolves to the function), so a pane named "ATR" would
+  // be unreferenceable and the completion popup would suggest unparseable refs.
+  // "ATR1" has no such collision — a digit-bearing name can never be a
+  // registered function. EMA/RSI etc. keep the bare-name fast path — they are
+  // not instance-referenceable, and their bare names are load-bearing for
+  // stored-chart compatibility.
+  // RSI is exempt: the parser reads a bare `RSI.bullDiv` as a ref, and existing
+  // charts already carry a pane named "RSI".
+  const refCollision = type !== "RSI" && EXPR_INSTANCE_TYPES.has(type) && Object.hasOwn(INDICATOR_SPECS, type);
+  if (!refCollision && !taken.has(type)) return type; // first instance keeps the clean name
+  for (let n = refCollision ? 1 : 2; ; n++) {
+    const id = `${type}${n}`;
+    if (!taken.has(id)) return id;
+  }
+}
+
+// Reserved for the expression grammar: registered indicator/wrapper/cross/
+// predicate function names, the count() keyword, the two roots and the logic
+// keywords — none of these can be a rule-referenceable instance name (a ref
+// like "EMA.pivotHigh" would parse as the EMA(...) CALL's name colliding, or
+// as the language's own root/keyword). Generalizes mintInstanceId's
+// ATR-specific refCollision check to a user-TYPED candidate.
+const RESERVED_REF_NAMES: ReadonlySet<string> = new Set<string>([
+  ...Object.keys(INDICATOR_SPECS),
+  "slope", "highest", "lowest", "avg",
+  "crossAbove", "crossBelow",
+  "count", "bullish", "bearish", "barsSinceEntry",
+  "candle", "entry",
+  "and", "AND", "or", "OR", "not", "NOT",
+]);
+
+// A rule-referenceable custom name: the same shape the REF regex's instance
+// group requires (exprInstances.ts) — a name that fails this can never be
+// typed back out of a rule.
+const INSTANCE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export type RenameInstanceError = "invalid" | "taken" | "reserved" | "unchanged";
+
+/** Whether `candidate` is a legal, available reference name for the instance
+ * currently called `currentId` on `chart`. null = valid. Checked against LIVE
+ * panes only (a name freed by deleting its instance is reusable, same as
+ * mintInstanceId's own `taken` set) plus the two things that would actually
+ * break something: a real base-type name (blocks that type ever being added
+ * fresh) and an expr grammar name (unparseable as a ref). */
+export function validateInstanceName(
+  chart: Chart,
+  candidate: string,
+  currentId: string,
+): RenameInstanceError | null {
+  if (candidate === currentId) return "unchanged";
+  if (!INSTANCE_NAME_RE.test(candidate)) return "invalid";
+  if (RESERVED_REF_NAMES.has(candidate) || Object.hasOwn(BASE_TEMPLATES, candidate)) return "reserved";
+  const panes = getIndicatorsByPane(chart);
+  for (const inds of panes?.values() ?? []) if (inds.has(candidate)) return "taken";
+  return null;
+}
+
+// Pull a registerable template off a LIVE indicator instance of `type`. klinecharts
+// doesn't expose its built-in templates (getIndicatorClass is private), but a live
+// instance carries the template-defining properties (calc / figures / series / …),
+// so we copy those to register a fresh same-shape template under a new name. Only
+// the template recipe is copied — per-instance STATE (result / visible / extendData
+// / calcParams overrides) is applied separately by applyIndicator. Returns null if
+// no live instance of that type exists to clone from.
+function cloneTemplateFromLive(
+  chart: Chart,
+  type: string,
+): Omit<IndicatorCreate, "name"> | null {
+  const panes = getIndicatorsByPane(chart);
+  for (const inds of panes?.values() ?? []) {
+    for (const ind of inds.values()) {
+      if (indTypeOf(ind) !== type) continue;
+      return {
+        shortName: ind.shortName,
+        series: ind.series,
+        precision: ind.precision,
+        calcParams: [...(ind.calcParams ?? [])],
+        shouldOhlc: ind.shouldOhlc,
+        shouldFormatBigNumber: ind.shouldFormatBigNumber,
+        minValue: ind.minValue,
+        maxValue: ind.maxValue,
+        // Copy the figure list shallowly so the two templates don't share array
+        // identity (klinecharts may regenerate it per instance via regenerateFigures).
+        figures: ind.figures.map((f) => ({ ...f })),
+        styles: ind.styles ?? undefined,
+        calc: ind.calc,
+        regenerateFigures: ind.regenerateFigures,
+        createTooltipDataSource: ind.createTooltipDataSource,
+        draw: ind.draw,
+      } as Omit<IndicatorCreate, "name">;
+    }
+  }
+  return null;
+}
+
+// Register a per-instance template (a clone of the type's template under the
+// instance id) so createIndicator accepts the id. Idempotent — re-registering the
+// same name just overwrites with an identical clone.
+//  - Custom types: clone our authored BASE_TEMPLATES.
+//  - Built-in types: the bare type name is already registered by klinecharts (first
+//    instance, id === type). For a SECOND+ instance we clone the template off a live
+//    instance of the same type (see cloneTemplateFromLive) — that's how RSI/MACD/…
+//    go multi-instance despite klinecharts hiding their templates.
+function registerInstanceTemplate(
+  chart: Chart,
+  type: string,
+  id: string,
+  inset = false,
+): boolean {
+  // An id that DIFFERS from its type is by definition a per-instance name
+  // ("FVG2", legacy "EMA#a1b2"), and every such name gets registered with
+  // klinecharts — so getSupportedIndicators() returns it next to the real types.
+  // Record it here, at the registration site, because that is the ONE place every
+  // instance passes through: a page reload replays saved ids straight into
+  // applyIndicator without minting, so recording at mintInstanceId would leave
+  // the set empty after every refresh. The first instance (id === type) is
+  // deliberately NOT recorded: it keeps the bare type name, which must stay
+  // listed as an addable type.
+  if (id !== type) mintedInstanceIds.add(id);
+  if (isCustomType(type)) {
+    // Copy `figures` AND `styles.lines` so each instance owns its own arrays. A bare
+    // shallow spread shared one figures array / styles.lines reference across every
+    // instance of a custom type (and even across types — the default line arrays like
+    // MA_DEFAULT_LINE_STYLES are reused), so klinecharts' per-instance regenerateFigures
+    // and per-instance style edits corrupted siblings. Mirrors the figure copy the
+    // built-in path makes in cloneTemplateFromLive.
+    //
+    // Inset instances register the same template with an empty figure list and the
+    // band draw (lib/indicators/inset.ts). Re-registering under the same name is
+    // how a toggle swaps one for the other.
+    const base = (inset ? insetTemplate(type) : null) ?? BASE_TEMPLATES[type];
+    const lines = base.styles?.lines;
+    registerIndicator({
+      // A hidden instance computes nothing (see hiddenCalc.ts). Wrapped here as
+      // well as in registerCustomIndicators because an INSTANCE registers its own
+      // template, inset variants included.
+      ...hiddenAware(base),
+      name: id,
+      figures: base.figures ? base.figures.map((f) => ({ ...f })) : base.figures,
+      styles: base.styles
+        ? { ...base.styles, ...(lines ? { lines: lines.map((l) => ({ ...l })) } : {}) }
+        : base.styles,
+    } as IndicatorTemplate);
+    return true;
+  }
+  if (id === type) return getSupportedIndicators().includes(type);
+  // A template registered earlier this session (the instance is being torn down
+  // and rebuilt, e.g. by undo's syncIndicatorsFromStorage) needs no live donor:
+  // re-registration would only overwrite it with an identical clone.
+  if (getSupportedIndicators().includes(id)) return true;
+  const tmpl = cloneTemplateFromLive(chart, type);
+  if (!tmpl) return false;
+  registerIndicator({ ...tmpl, name: id } as IndicatorTemplate);
+  return true;
+}
+
+// Create one indicator INSTANCE on `chart`, restoring the persisted settings
+// snapshot for `scope` keyed by the instance id. Returns the pane id or null.
+//
+// AVWAP carries a per-epic, per-instance anchor in calcParams[0]: on rehydrate we
+// restore the saved anchor; on a fresh add we start UNPLACED (anchor 0 → no line)
+// so the user clicks a bar to place it. Persisted line styles are applied via
+// overrideIndicator (NOT createIndicator) because saved entries are partial
+// ({color,size}) and override merges them onto the full default line style.
+//
+// `overrideExtend`/`overrideCalcParams` let Paste inject a copied config that isn't
+// in storage yet (the snapshot is applied verbatim, indType is forced to `type`).
+export function applyIndicator(
+  chart: Chart,
+  scope: string,
+  epic: string,
+  inst: IndicatorInstance,
+  opts?: {
+    rehydrate?: boolean;
+    config?: SavedIndicatorConfig; // explicit snapshot (Paste) instead of storage
+    // Reorder support: stack this instance into an existing pane (2nd+ indicator of a
+    // moved multi-indicator pane), and/or open a fresh sub-pane at a preserved height.
+    paneId?: string;
+    height?: number;
+    // The sidebar's master "Hide indicators" switch is on: create this instance
+    // hidden (a one-shot applyIndicatorVisibility sweep can't catch indicators added
+    // after it ran). Intent is seeded into extendData.userVisible so the switch
+    // turning off restores what the indicator would have shown.
+    forceHidden?: boolean;
+  },
+): string | null {
+  const { id, type } = inst;
+  // Inset: draw inside the candle pane's bottom band instead of opening a sub-pane.
+  // Gated on capability so a stale flag on a type we do not own is inert.
+  const inset = inst.inset === true && INSET_CAPABLE.has(type);
+  if (!registerInstanceTemplate(chart, type, id, inset)) return null;
+  // Placement-wise an inset instance IS a candle-pane overlay: same stack, same
+  // pane id, and no sub-pane sizing or y-axis gap.
+  const isOverlay = OVERLAY_INDICATORS.has(type) || inset;
+  // Config resolution, in priority order:
+  //  1. explicit config (Paste / Apply-preset injects a snapshot)
+  //  2. this instance's own saved per-cell config
+  //  3. the TYPE's global default preset — ONLY on a fresh add (not rehydrate), so
+  //     it seeds new instances but never stomps an existing/rehydrated one whose
+  //     config is simply absent (keeps existing charts byte-identical on reload).
+  const saved = opts?.config ?? loadIndicatorConfigs(scope)[id];
+  // A type default seeded this instance and nothing has stored it under this id.
+  // Remembered here (where the source is known) so the create below can persist it:
+  // rehydrate deliberately skips the type default, so without a per-instance copy
+  // the FIRST teardown+recreate — Move up, the inset toggle, a plain reload — drops
+  // back to the bare template. That is how a Slope(2,9,50,100,200) came back as
+  // Slope(9). Same save-after-apply addIndicatorInstance does for a pasted config.
+  const seeded = saved ? undefined : opts?.rehydrate ? undefined : loadIndicatorDefault(type) ?? undefined;
+  const cfg = saved ?? seeded;
+  // Migrate stale saved calcParams to a new shorter default (e.g. an RSI saved
+  // under the old three-length design → single length 14), so existing instances
+  // pick up the TradingView shape on reload instead of redrawing three curves.
+  // The slice rule lives in effectiveCalcParams — the ONE source of truth the
+  // template-merge signature also normalizes through, so what lands on the chart
+  // and what the merge identity sees can never drift apart.
+  if (cfg?.calcParams) {
+    cfg.calcParams = effectiveCalcParams(type, cfg.calcParams);
+  }
+  // indType always reflects the real type; merge it over any saved/copied extendData.
+  const extendData: { userVisible?: boolean; indType: string } = {
+    ...(cfg?.extendData ?? {}),
+    indType: type,
+  };
+  // Derived from the instance, never trusted from the saved snapshot: a stale
+  // `inset` in a config, template or pasted payload must not resurrect the mode.
+  // Deleted rather than set false so non-inset payloads stay byte-identical.
+  if (inset) (extendData as { inset?: boolean }).inset = true;
+  else delete (extendData as { inset?: boolean }).inset;
+  // Trendline pins are SESSION-ONLY: clicking an end handle holds that line open
+  // for as long as the chart lives, and no longer. Nothing writes `pinned` to the
+  // saved config any more, but an older snapshot (or a template / paste copied
+  // from one) can still carry it, so drop it here rather than resurrect pins the
+  // user cannot remember making.
+  delete (extendData as { pinned?: unknown }).pinned;
+  // Same for a picked or glowing line: a selection is a live gesture, not config.
+  for (const k of SESSION_GESTURE_KEYS) delete (extendData as Record<string, unknown>)[k];
+  // Debug mode is a live gesture like a selection: never restored from a
+  // saved config, so it cannot leak into alert snapshots, the public demo,
+  // templates or pastes.
+  delete (extendData as { debug?: unknown }).debug;
+  delete (extendData as { debugRev?: unknown }).debugRev;
+  if (opts?.forceHidden && extendData.userVisible === undefined) {
+    extendData.userVisible = cfg?.visible !== false;
+  }
+  const value = {
+    name: id,
+    createTooltipDataSource: legendTooltipSource,
+    extendData,
+    ...(type === "AVWAP"
+      ? { calcParams: [opts?.rehydrate ? loadAvwapAnchor(scope, epic, id) : (cfg?.calcParams?.[0] ?? 0)] }
+      : cfg?.calcParams
+        ? { calcParams: cfg.calcParams }
+        : DEFAULT_CALC_PARAMS[type]
+          ? { calcParams: DEFAULT_CALC_PARAMS[type] }
+          : {}),
+    ...(opts?.forceHidden || cfg?.visible === false ? { visible: false } : {}),
+  };
+  // A saved maType/envelope must retitle the legend on rehydrate too, not just
+  // when the settings modal touches the instance.
+  if (type === "EMA" || type === "MA") {
+    const mext = extendData as { maType?: string; envelope?: boolean };
+    if (mext.maType || mext.envelope) {
+      const templateKind = templateMaKind(type);
+      // Same rule as makeApplyMa: a never-flipped instance keeps its template
+      // label even if a default maType got persisted by opening the modal.
+      const label = maLegendLabel(mext.maType, templateKind);
+      // Bands stay title-less on a higher timeframe: the MTF path carries the
+      // base line only, so titled band figures would read as permanent "n/a"
+      // legend rows.
+      const mtfTf = (mext as MaExtend).mtf?.timeframe;
+      Object.assign(value, {
+        shortName: label,
+        figures: maFigures(label, mext.envelope === true && !mtfTf),
+      });
+    }
+  }
+  // Overlays stack on the candle pane; sub-pane indicators (RSI/MACD/…) get their own
+  // pane with a taller default than klinecharts' cramped ~50px, so oscillators read
+  // like TradingView's (unless a preserved height is passed in via opts.height). The
+  // user can still drag the divider to resize. `gap` trims klinecharts' default
+  // {top:0.2, bottom:0.1} empty margins so the curve fills the pane (TV-style) instead
+  // of floating with dead space top/bottom. `opts.paneId` stacks this instance into an
+  // already-recreated pane (2nd+ indicator of a moved multi-indicator pane).
+  const stack = isOverlay || !!opts?.paneId;
+  // v10: paneId is folded into the create value (v9 passed it as paneOptions.id).
+  // Sizing (height/minHeight/dragEnabled) moves to a follow-up setPaneOptions keyed by
+  // the returned pane id; gap and the sessions blank-axis name are axis wiring, applied
+  // via overrideYAxis(paneId) once the pane's y-axis exists (see below).
+  const initialPaneId = opts?.paneId ?? (isOverlay ? "candle_pane" : undefined);
+  const paneId = chart.createIndicator(
+    initialPaneId ? { ...value, paneId: initialPaneId } : value,
+    stack,
+  );
+  if (!paneId) return null;
+  // The instance exists: give the type default it was seeded from a home of its own
+  // (see `seeded` above). After the create, never before — a failed create would
+  // otherwise leave a config a later instance of the same id would silently inherit.
+  if (seeded) saveIndicatorConfig(scope, id, seeded);
+  // Only fresh sub-panes (not overlays, not a stack-into-existing) get pane sizing.
+  if (!opts?.paneId && !isOverlay) {
+    if (isFixedCompact(type)) {
+      // Fixed compact strip: short, no numeric y-axis, drag disabled. minHeight is
+      // explicit so the sub-30px height isn't clamped by PANE_MIN_HEIGHT.
+      chart.setPaneOptions({
+        id: paneId,
+        height: opts?.height ?? SESSIONS_PANE_HEIGHT,
+        minHeight: 20,
+        dragEnabled: false,
+      });
+      // v10: gap and the blank-axis name moved off paneOptions onto the y-axis
+      // itself. The name swaps in the registered "sessions" template (createTicks
+      // returns [], so no numeric ticks); gap trims the empty top/bottom margins.
+      chart.overrideYAxis({
+        paneId,
+        name: SESSIONS_AXIS_NAME,
+        gap: { top: 0, bottom: 0 },
+      });
+    } else {
+      chart.setPaneOptions({
+        id: paneId,
+        height: opts?.height ?? SUBPANE_HEIGHT,
+      });
+      // v10: gap moved off paneOptions onto the y-axis. Trims klinecharts' default
+      // {top:0.2, bottom:0.1} margins so the curve fills the pane (TV-style).
+      chart.overrideYAxis({ paneId, gap: { top: 0.08, bottom: 0.08 } });
+    }
+  }
+  // Saved line entries are partial ({color,size}); override merges them onto the
+  // full default line style (DeepPartial — klinecharts fills style/dashedValue).
+  if (cfg?.styles)
+    chart.overrideIndicator({
+      paneId,
+      name: id,
+      styles: cfg.styles as unknown as Partial<IndicatorStyle>,
+    });
+  // The parent Slope owns its acceleration companion. applyIndicator is the ONE
+  // creation choke point (hydrate, reorder, fresh add, paste, templates,
+  // snapshots all route here), so every recreate path re-derives the companion.
+  if (type === "SLOPE") syncAccelCompanion(chart, id);
+  // Same contract for Pivot Bands' optional "Bars Since Pivot" companion.
+  if (type === "PIVOT_BANDS") syncPivotBarsSinceCompanion(chart, id);
+  return paneId;
+}
+
+// Strip the inset PLACEMENT marker off an extendData copy. The accel companion is
+// derived from its parent by spreading the parent's extendData, but the companion
+// always draws in its own sub-pane: carrying the parent's marker over would make
+// isInsetInstance (and the legend helpers that branch on it) treat a sub-pane
+// indicator as inset. Deleted rather than set false, matching applyIndicator, so a
+// non-inset payload stays byte-identical. Mutates the fresh copy it is handed.
+function withoutInset<T extends object>(ext: T): T {
+  delete (ext as { inset?: boolean }).inset;
+  return ext;
+}
+
+// Spawn/tear down a Slope's acceleration companion pane. The companion is DERIVED
+// state: the parent owns showAccel + the accel params, and nothing about the
+// companion is persisted, so there is exactly one source of truth. Remove-then-
+// create is what keeps the companion directly below its parent: reorder recreates
+// parents in order (each pane appended at the bottom) and this runs inside the
+// parent's applyIndicator, so panes land as [P1, A1, P2, A2, ...].
+export function syncAccelCompanion(chart: Chart, parentId: string): void {
+  const companionId = accelCompanionId(parentId);
+  const panes = getIndicatorsByPane(chart);
+  // Pane insertion order top-to-bottom (candle_pane first, then sub-panes): used
+  // to tell whether the companion already sits directly below its parent.
+  const order = [...(panes?.keys() ?? [])];
+  let parent: Indicator | null = null;
+  let parentPaneId: string | null = null;
+  let companionPaneId: string | null = null;
+  for (const [paneId, inds] of panes ?? []) {
+    const p = inds.get(parentId);
+    if (p) {
+      parent = p as Indicator;
+      parentPaneId = paneId;
+    }
+    if (inds.has(companionId)) companionPaneId = paneId;
+  }
+  const ext = (parent?.extendData ?? {}) as SlopeExtend & {
+    userVisible?: boolean;
+    visibility?: VisibilityModel;
+  };
+  // No parent, or accel turned off: drop any stray companion and stop.
+  if (!parent || !ext.showAccel) {
+    if (companionPaneId) chart.removeIndicator({ paneId: companionPaneId, name: companionId });
+    return;
+  }
+  // The companion's config: accelThreshold lands on its `threshold` field so the
+  // reused drawSlope + its auto-scale trick work with no branching. The mtf stash
+  // is copied wholesale (computeAccelCalc reads htfAccelByLine).
+  const nextExt = withoutInset({ ...ext, indType: "SLOPE_ACCEL", threshold: ext.accelThreshold });
+
+  // In-place update when the companion already sits directly below the parent:
+  // override it where it is (no remove-then-create) so a param/style/Cancel edit
+  // can't hop the pane to the bottom of the stack. Carries calcParams (figures
+  // regenerate), extendData, styles and visibility through in one write.
+  const parentIdx = parentPaneId ? order.indexOf(parentPaneId) : -1;
+  const companionIdx = companionPaneId ? order.indexOf(companionPaneId) : -1;
+  if (companionPaneId && parentIdx >= 0 && companionIdx === parentIdx + 1) {
+    chart.overrideIndicator({
+      paneId: companionPaneId,
+      name: companionId,
+      calcParams: parent.calcParams,
+      extendData: nextExt,
+      visible: parent.visible !== false,
+      ...(parent.styles
+        ? { styles: parent.styles as unknown as Partial<IndicatorStyle> }
+        : {}),
+    });
+    return;
+  }
+
+  // Otherwise (first spawn, or a reorder moved the parent so the companion is no
+  // longer directly below it): drop any existing companion and recreate it. Each
+  // createIndicator appends a fresh pane at the bottom; because reorder recreates
+  // parents top-to-bottom, panes land as [P1, A1, P2, A2, ...].
+  if (companionPaneId) chart.removeIndicator({ paneId: companionPaneId, name: companionId });
+  registerInstanceTemplate(chart, "SLOPE_ACCEL", companionId);
+  // NO legendTooltipSource here, unlike applyIndicator: that hook blanks the
+  // canvas legend so the DOM <SubPaneLegend> can replace it, but internal panes
+  // get no DOM card. The companion keeps klinecharts' native canvas legend
+  // (named by the template's shortName "Accel"), same as the EQUITY pane.
+  const newPaneId = chart.createIndicator(
+    {
+      name: companionId,
+      calcParams: parent.calcParams,
+      extendData: nextExt,
+      ...(parent.visible === false ? { visible: false } : {}),
+    },
+    false,
+  );
+  if (newPaneId) {
+    chart.setPaneOptions({ id: newPaneId, height: SUBPANE_HEIGHT });
+    // v10: gap moved off paneOptions onto the y-axis (see applyIndicator).
+    chart.overrideYAxis({ paneId: newPaneId, gap: { top: 0.08, bottom: 0.08 } });
+  }
+  // Match the parent's per-line style overrides so line N is the same color in
+  // both panes. Styles must be applied by overrideIndicator against the pane
+  // createIndicator just returned.
+  if (newPaneId && parent.styles)
+    chart.overrideIndicator({
+      paneId: newPaneId,
+      name: companionId,
+      styles: parent.styles as unknown as Partial<IndicatorStyle>,
+    });
+}
+
+// Mirror a visibility/extendData write from a Slope parent onto its accel
+// companion, if one exists. Unlike syncAccelCompanion (which tears down and
+// recreates the pane), this only overrides the existing companion in place, so
+// there is no pane flicker. No-ops when the companion is absent. The accel
+// threshold remap (the companion's `threshold` guide is the parent's
+// accelThreshold, NOT the parent's slope threshold) lives here as the single
+// copy shared by the eye toggle, the "Show on chart" checkbox, the per-timeframe
+// visibility grid, and the curve right-click hide.
+export function mirrorAccelCompanion(
+  chart: Chart,
+  parentId: string,
+  patch: { extendData?: object; visible?: boolean },
+): void {
+  const companionId = accelCompanionId(parentId);
+  const panes = getIndicatorsByPane(chart);
+  let companionPaneId: string | null = null;
+  for (const [paneId, inds] of panes ?? []) {
+    if (inds.has(companionId)) {
+      companionPaneId = paneId;
+      break;
+    }
+  }
+  if (companionPaneId === null) return;
+  chart.overrideIndicator(
+    {
+      paneId: companionPaneId,
+      name: companionId,
+      ...(patch.visible !== undefined ? { visible: patch.visible } : {}),
+      ...(patch.extendData
+        ? {
+            extendData: withoutInset({
+              ...patch.extendData,
+              indType: "SLOPE_ACCEL",
+              threshold: (patch.extendData as { accelThreshold?: unknown }).accelThreshold,
+            }),
+          }
+        : {}),
+    },
+  );
+}
+
+// Spawn/tear down a Pivot Bands pane's "Bars Since Pivot" companion. Same
+// contract as syncAccelCompanion above: the parent owns showBarsSince and every
+// param, nothing about the companion is persisted, and remove-then-create is
+// what keeps the pane directly below its parent through a reorder.
+export function syncPivotBarsSinceCompanion(chart: Chart, parentId: string): void {
+  const companionId = pivotBarsSinceCompanionId(parentId);
+  const panes = getIndicatorsByPane(chart);
+  // Pane insertion order top-to-bottom: used to tell whether the companion
+  // already sits directly below its parent.
+  const order = [...(panes?.keys() ?? [])];
+  let parent: Indicator | null = null;
+  let parentPaneId: string | null = null;
+  let companionPaneId: string | null = null;
+  for (const [paneId, inds] of panes ?? []) {
+    const p = inds.get(parentId);
+    if (p) {
+      parent = p as Indicator;
+      parentPaneId = paneId;
+    }
+    if (inds.has(companionId)) companionPaneId = paneId;
+  }
+  const ext = (parent?.extendData ?? {}) as PivotBandsExtend & {
+    userVisible?: boolean;
+    visibility?: VisibilityModel;
+  };
+  // No parent, or the pane turned off: drop any stray companion and stop.
+  if (!parent || !ext.showBarsSince) {
+    if (companionPaneId) chart.removeIndicator({ paneId: companionPaneId, name: companionId });
+    return;
+  }
+  const nextExt = pivotBarsSinceExt(ext);
+
+  // In-place update when the companion already sits directly below the parent,
+  // so a param/style/Cancel edit can't hop the pane to the bottom of the stack.
+  // overrideExtend (not a bare overrideIndicator) because the copied extendData
+  // carries the parent's `mtf` stash: klinecharts merges nested objects and
+  // arrays index by index, so a switch back to the chart timeframe would leave
+  // the stale HTF count arrays live and the pane counting in the wrong unit.
+  const parentIdx = parentPaneId ? order.indexOf(parentPaneId) : -1;
+  const companionIdx = companionPaneId ? order.indexOf(companionPaneId) : -1;
+  if (companionPaneId && parentIdx >= 0 && companionIdx === parentIdx + 1) {
+    chart.overrideIndicator({
+      paneId: companionPaneId,
+      name: companionId,
+      calcParams: parent.calcParams,
+      visible: parent.visible !== false,
+      ...(parent.styles
+        ? { styles: parent.styles as unknown as Partial<IndicatorStyle> }
+        : {}),
+    });
+    overrideExtend(chart, companionPaneId, companionId, nextExt as unknown as Record<string, unknown>);
+    return;
+  }
+
+  // Otherwise (first spawn, or a reorder moved the parent so the companion is no
+  // longer directly below it): drop any existing companion and recreate it.
+  if (companionPaneId) chart.removeIndicator({ paneId: companionPaneId, name: companionId });
+  registerInstanceTemplate(chart, "PIVOT_BARS_SINCE", companionId);
+  // NO legendTooltipSource, same as the accel companion: internal panes get no
+  // DOM legend card, so they keep klinecharts' native canvas legend (named by
+  // the template's shortName "Bars Since Pivot").
+  const newPaneId = chart.createIndicator(
+    {
+      name: companionId,
+      calcParams: parent.calcParams,
+      extendData: nextExt as unknown as Record<string, unknown>,
+      ...(parent.visible === false ? { visible: false } : {}),
+    },
+    false,
+  );
+  if (newPaneId) {
+    chart.setPaneOptions({ id: newPaneId, height: SUBPANE_HEIGHT });
+    chart.overrideYAxis({ paneId: newPaneId, gap: { top: 0.08, bottom: 0.08 } });
+  }
+  // Match the parent's per-line style overrides so line N (high side / low side)
+  // is the same color in both panes.
+  if (newPaneId && parent.styles)
+    chart.overrideIndicator({
+      paneId: newPaneId,
+      name: companionId,
+      styles: parent.styles as unknown as Partial<IndicatorStyle>,
+    });
+}
+
+// The companion's extendData, derived from its parent's: the parent's config
+// wholesale, retyped so indTypeOf reports PIVOT_BARS_SINCE, minus the inset
+// placement marker (the companion always draws in its own sub-pane).
+//
+// The parent's per-line hides ride along untouched. They are inert here: their
+// keys name the BANDS' figures (pivotHigh/pivotLow) and this pane's calc emits
+// barsSinceHigh/barsSinceLow unconditionally, never reading lineHidden.
+// Stripping the key would also be a lie on the override path: overrideExtend
+// can only clear keys PRESENT in the patch, so a deleted one survives
+// klinecharts' merge.
+function pivotBarsSinceExt(ext: object): PivotBandsExtend & { indType: string } {
+  return withoutInset({ ...ext, indType: "PIVOT_BARS_SINCE" }) as PivotBandsExtend & {
+    indType: string;
+  };
+}
+
+// Mirror a visibility/extendData write from a Pivot Bands parent onto its
+// bars-since companion, if one exists (in place, so there is no pane flicker). No-ops when
+// the companion is absent. Mirrors mirrorAccelCompanion.
+export function mirrorPivotBarsSinceCompanion(
+  chart: Chart,
+  parentId: string,
+  patch: { extendData?: object; visible?: boolean },
+): void {
+  const companionId = pivotBarsSinceCompanionId(parentId);
+  const panes = getIndicatorsByPane(chart);
+  let companionPaneId: string | null = null;
+  for (const [paneId, inds] of panes ?? []) {
+    if (inds.has(companionId)) {
+      companionPaneId = paneId;
+      break;
+    }
+  }
+  if (companionPaneId === null) return;
+  if (patch.visible !== undefined)
+    chart.overrideIndicator({ paneId: companionPaneId, name: companionId, visible: patch.visible });
+  if (patch.extendData)
+    overrideExtend(
+      chart,
+      companionPaneId,
+      companionId,
+      pivotBarsSinceExt(patch.extendData) as unknown as Record<string, unknown>,
+    );
+}
+
+// Re-derive every indicator's effective on-chart visibility: user intent
+// (extendData.userVisible, default true) AND the interval model matches the current
+// resolution AND the sidebar eye menu's "Hide indicators" master switch isn't masking
+// it. The internal EQUITY backtest pane is not a user indicator — left untouched.
+// Mirrors OverlayManager.applyIntervalVisibility for drawings. Iterates ALL panes via
+// getIndicatorsByPane (every pane's indicator map, rebuilt from getIndicators(); klinecharts
+// has no getPanes()/no-name-per-pane API). A VIEW reaction, not a user edit: it never
+// persists (intent already lives in extendData, written by the settings modal).
+//
+// This is masking-in-place (the pane stays, the curve is hidden) — the sidebar eye.
+// The double-click "hide bottom sub-panes" gesture is a DIFFERENT operation that frees
+// the pane's HEIGHT: see collapseSubPanes/expandSubPanes below.
+export function applyIndicatorVisibility(chart: Chart, resolution: string, allHidden: boolean): void {
+  const panes = getIndicatorsByPane(chart);
+  for (const [paneId, inds] of panes ?? []) {
+    for (const ind of inds.values()) {
+      // NOT isInternalIndicator: the accel companion DOES have user visibility
+      // intent and must follow its parent (syncAccelCompanion copies the parent's
+      // userVisible + visibility model onto it, so this sweep computes the same
+      // answer for both). Skipping it here would leave a stray accel pane on
+      // screen when its Slope is hidden. Only EQUITY is app-owned.
+      if (!ind?.name || INTERNAL_INDICATORS.has(ind.name)) continue;
+      const ext = (ind.extendData ?? {}) as { userVisible?: boolean; visibility?: VisibilityModel };
+      const intent = ext.userVisible ?? ind.visible ?? true;
+      const model = ext.visibility ?? defaultVisibility();
+      const visible = !allHidden && intent && isVisibleOnResolution(model, resolution);
+      // Record intent BEFORE the first mask forces the live flag off: un-masking
+      // derives intent as userVisible ?? visible, and an indicator never individually
+      // toggled has no userVisible yet — its forced-false flag would read back as
+      // intent and the indicator would stay hidden after the mask lifts. Only seed
+      // while masking a never-toggled indicator.
+      const seed =
+        allHidden && ext.userVisible === undefined
+          ? { extendData: { ...ext, userVisible: ind.visible ?? true } }
+          : {};
+      chart.overrideIndicator({ paneId, name: ind.name, visible, ...seed });
+      // A hidden indicator never draws, so its debug strip is dropped here.
+      if (!visible) noteDebugOn(chart, ind.name, false);
+    }
+  }
+}
+
+// Keep every live Slope's (and its accel companion's) barHours in step with the
+// chart's CURRENT resolution — the canonical nominal value (resolution seconds /
+// 3600), never inferred from candle gaps (see resolveBarHours in indicators/slope.ts
+// and the design doc's barHours section: the backend rule path can only compute a
+// nominal width, so the pane must match it bar-for-bar). Mirrors
+// applyIndicatorVisibility's shape: a sweep over the live chart, called by the same
+// resolution-aware caller (useLiveMarketData, after rehydrate and on every period
+// switch) rather than threaded into applyIndicator, which has no reliable resolution
+// at indicator-creation time (rehydrate runs before the chart's period is set).
+// The accel companion is swept explicitly too: syncAccelCompanion only copies the
+// parent's extendData wholesale at (re)creation time, so an already-live companion
+// would otherwise miss a barHours update until its parent is next recreated.
+export function applySlopeBarHours(chart: Chart, resolution: string): void {
+  const secs = RESOLUTION_SECONDS[resolution];
+  if (!secs) return;
+  const barHours = secs / 3600;
+  const panes = getIndicatorsByPane(chart);
+  for (const [paneId, inds] of panes ?? []) {
+    for (const ind of inds.values()) {
+      if (!ind?.name) continue;
+      const ext = (ind.extendData ?? {}) as SlopeExtend & { indType?: string };
+      if (ext.indType !== "SLOPE" && ext.indType !== "SLOPE_ACCEL") continue;
+      if (ext.barHours === barHours) continue; // already correct: skip the recalc
+      chart.overrideIndicator({
+        paneId,
+        name: ind.name,
+        extendData: { ...ext, barHours },
+      });
+    }
+  }
+}
+
+// klinecharts' default pane minHeight (PANE_MIN_HEIGHT), restored when un-collapsing.
+const PANE_MIN_HEIGHT = 30;
+// A sub-pane at/below this height (px) reads as collapsed, not user-sized — used to
+// avoid re-capturing a 1px height as if it were the real one (see collapseSubPanes).
+export const COLLAPSED_PANE_HEIGHT = 3;
+
+// Double-click "hide bottom sub-panes": collapse every reorderable sub-pane
+// (Volume/MACD/RSI…) to ~0px so the candle pane reclaims the height — plain
+// visibility-hiding leaves the empty pane band, which the user explicitly didn't want.
+// klinecharts ignores height:0 (it requires >0), so we use 1px + minHeight:0 and
+// disable the divider drag. Returns the captured prior heights keyed by paneId for
+// expandSubPanes to restore. The internal EQUITY pane is left alone (collapsiblePanes
+// skips it). MUST be called from a fully-expanded state so it captures real heights;
+// a pane already at ~1px is recorded as SUBPANE_HEIGHT so a stray re-capture can't
+// freeze it collapsed forever.
+export function collapseSubPanes(chart: Chart): Map<string, number> {
+  const heights = new Map<string, number>();
+  for (const p of collapsiblePanes(chart)) {
+    heights.set(p.paneId, p.height > COLLAPSED_PANE_HEIGHT ? p.height : SUBPANE_HEIGHT);
+    chart.setPaneOptions({ id: p.paneId, height: 1, minHeight: 0, dragEnabled: false });
+  }
+  return heights;
+}
+
+// Re-assert the collapse WITHOUT capturing heights — for the resolution/rehydrate
+// re-assert, where the live panes may already be at 1px (a plain interval switch) or
+// freshly recreated at the default height (a symbol switch). Either way the caller's
+// saved height map is the source of truth for restore, so we must not overwrite it.
+export function forceCollapseSubPanes(chart: Chart): void {
+  for (const p of collapsiblePanes(chart))
+    chart.setPaneOptions({ id: p.paneId, height: 1, minHeight: 0, dragEnabled: false });
+}
+
+// Un-collapse: restore each sub-pane to its captured height (or the default for a pane
+// created/recreated while collapsed, whose id isn't in the map), re-enabling the
+// divider drag and the normal min height.
+export function expandSubPanes(chart: Chart, heights: Map<string, number>): void {
+  for (const p of collapsiblePanes(chart))
+    chart.setPaneOptions({
+      id: p.paneId,
+      height: heights.get(p.paneId) ?? SUBPANE_HEIGHT,
+      minHeight: PANE_MIN_HEIGHT,
+      dragEnabled: true,
+    });
+}
+
+// Add a fresh instance of `type` (mints a new id). Returns the new instance, or
+// null on failure. Used by the Toolbar menu (always-add) and Paste.
+//
+// opts.resolution is OPTIONAL and purely a convenience: when the caller already has
+// the chart's current resolution in hand (both current callers do), a freshly added
+// Slope gets its barHours immediately via applySlopeBarHours instead of waiting on
+// inferBarHours until the next period-switch sweep. Omitting it is fine — see
+// resolveBarHours's fallback note.
+export function addIndicatorInstance(
+  chart: Chart,
+  scope: string,
+  epic: string,
+  type: string,
+  opts?: { config?: SavedIndicatorConfig; forceHidden?: boolean; resolution?: string; inset?: boolean },
+): IndicatorInstance | null {
+  const inst: IndicatorInstance = { id: mintInstanceId(chart, type), type };
+  // Gated on capability here too (applyIndicator re-checks), so a caller asking
+  // for inset on a type we do not own is inert rather than a lie on the instance.
+  if (opts?.inset && INSET_CAPABLE.has(type)) inst.inset = true;
+  if (!applyIndicator(chart, scope, epic, inst, { config: opts?.config, forceHidden: opts?.forceHidden }))
+    return null;
+  if (opts?.resolution) applySlopeBarHours(chart, opts.resolution);
+  // Paste (and any caller injecting a snapshot) applies the config LIVE but it must
+  // also be persisted under the freshly-minted id. Otherwise a later teardown +
+  // recreate (pane reorder, or a plain reload) rehydrates with no saved config and
+  // falls back to the bare template, silently resetting the pasted settings. Mirrors
+  // the save-after-apply the template/snapshot paths do (templates.ts, snapshots.ts).
+  if (opts?.config) saveIndicatorConfig(scope, inst.id, opts.config);
+  return inst;
+}
+
+// Recreate the panes a pasted rule set references (lib/ruleClipboard.ts payload):
+// for each copied id, reuse ANY live pane that already matches its settings
+// (so pasting the same clipboard twice is idempotent rather than piling up
+// duplicates), recreate it under its own id when that id is free, or mint a
+// fresh id when the id is taken by a differently-configured pane. Returns the
+// old→new id map (identity for recreated panes) so the caller can rewrite the
+// pasted expressions, plus the instances actually added (for
+// controller.indicators + persistence). A pane that fails to apply gets no map
+// entry — its refs stay as copied and the editor lints them as unknown, the
+// same as any missing pane.
+export function importExprInstances(
+  chart: Chart,
+  scope: string,
+  epic: string,
+  indicators: Record<string, PortableInstancePayload>,
+  opts?: { resolution?: string; forceHidden?: boolean },
+): { idMap: Record<string, string>; added: IndicatorInstance[] } {
+  const idMap: Record<string, string> = {};
+  const added: IndicatorInstance[] = [];
+  for (const [id, payload] of Object.entries(indicators)) {
+    const config: SavedIndicatorConfig = {
+      calcParams: payload.calcParams,
+      extendData: payload.extendData as Record<string, unknown>,
+      visible: payload.visible,
+      styles: payload.styles,
+    };
+    // Reuse any pane whose authored settings already match — re-read LIVE each
+    // iteration so a pane created earlier in this loop counts too. Prefer the
+    // copied id itself when several match, keeping the expressions verbatim.
+    const matches = liveExprInstances(chart).filter((li) => sameInstanceConfig(li, payload));
+    const match = matches.find((li) => li.id === id) ?? matches[0];
+    if (match) {
+      idMap[id] = match.id;
+      continue;
+    }
+    if (!getIndicatorById(chart, id)) {
+      // The id is free: recreate the pane under the COPIED id so the pasted
+      // expressions keep working verbatim (same contract as hydrateIndicators
+      // re-applying saved ids).
+      const inst: IndicatorInstance = { id, type: payload.type };
+      if (!applyIndicator(chart, scope, epic, inst, { config, forceHidden: opts?.forceHidden }))
+        continue;
+      if (opts?.resolution) applySlopeBarHours(chart, opts.resolution);
+      saveIndicatorConfig(scope, id, config); // survive teardown/reload, as addIndicatorInstance does
+      idMap[id] = id;
+      added.push(inst);
+      continue;
+    }
+    // The id is taken by a differently-configured pane — leave it alone and add
+    // the copy under a freshly minted id (the caller rewrites the refs).
+    const inst = addIndicatorInstance(chart, scope, epic, payload.type, {
+      config,
+      forceHidden: opts?.forceHidden,
+      resolution: opts?.resolution,
+    });
+    if (inst) {
+      idMap[id] = inst.id;
+      added.push(inst);
+    }
+  }
+  return { idMap, added };
+}
+
+/** The display dressing (visible flag + per-line styles) of each live pane in
+ * `ids`, in the SavedIndicatorConfig shape — what the rule clipboard folds into
+ * its envelope so a recreated pane keeps the user's colors and hidden state.
+ * Mirrors what copyIndicator ships for a standalone indicator copy. */
+export function captureIndicatorAppearance(
+  chart: Chart,
+  ids: Iterable<string>,
+): Record<string, InstanceAppearance> {
+  const out: Record<string, InstanceAppearance> = {};
+  for (const id of ids) {
+    const ind = getIndicatorById(chart, id);
+    if (!ind) continue;
+    out[id] = {
+      visible: ind.visible,
+      styles: ind.styles?.lines
+        ? {
+            lines: ind.styles.lines.map((l) => ({
+              color: l.color,
+              size: l.size,
+              style: l.style as string | undefined,
+              dashedValue: l.dashedValue,
+            })),
+          }
+        : undefined,
+    };
+  }
+  return out;
+}
+
+// Remove an instance by its id across whichever pane holds it (the candle pane for
+// overlays, a dedicated pane for RSI/MACD/etc.). Also drops its saved config.
+export function removeIndicatorById(chart: Chart, scope: string, id: string): void {
+  const panes = getIndicatorsByPane(chart);
+  for (const [paneId, inds] of panes ?? []) {
+    if (inds.has(id)) {
+      chart.removeIndicator({ paneId, name: id });
+      break;
+    }
+  }
+  // A parent owns its companion panes (Slope → accel, Pivot Bands → bars-since):
+  // remove them alongside, or they are orphaned.
+  for (const companionId of [accelCompanionId(id), pivotBarsSinceCompanionId(id)]) {
+    for (const [paneId, inds] of panes ?? []) {
+      if (inds.has(companionId)) {
+        chart.removeIndicator({ paneId, name: companionId });
+        break;
+      }
+    }
+  }
+  // A removed pane never draws again, so its recorded TRENDLINES pin handles
+  // would stay clickable-looking (the cursor turns to a pointer) forever.
+  dropTrendlineHandles(chart, id);
+  dropPaintedLines(chart, id);
+  noteDebugOn(chart, id, false);
+  deleteIndicatorConfig(scope, id);
+}
+
+// Rebuild a cell's saved instance set on a fresh chart. Returns the instances that
+// were successfully restored (the caller mirrors them into controller.indicators).
+export function hydrateIndicators(chart: Chart, scope: string, epic: string): IndicatorInstance[] {
+  const restored: IndicatorInstance[] = [];
+  for (const inst of loadIndicators(scope)) {
+    if (applyIndicator(chart, scope, epic, inst, { rehydrate: true })) restored.push(inst);
+  }
+  return restored;
+}
+
+/** Pure half of syncIndicatorsFromStorage: which live instances to drop, which to
+ *  build (either new or rebuild on config change), and which to keep as-is.
+ *  Splitting build from keep avoids unnecessary pane height/order resets and
+ *  restores the sidebar hide-all state correctly. */
+export function diffIndicatorSync(
+  storedIds: string[],
+  liveIds: string[],
+  rebuildIds: ReadonlySet<string>,
+): { remove: string[]; build: string[]; keep: string[] } {
+  const stored = new Set(storedIds);
+  const live = new Set(liveIds);
+  return {
+    remove: liveIds.filter((id) => !stored.has(id)),
+    build: storedIds.filter((id) => !live.has(id) || rebuildIds.has(id)),
+    keep: storedIds.filter((id) => live.has(id) && !rebuildIds.has(id)),
+  };
+}
+
+/** Reconcile the live chart to the (just-restored) stored indicator state, in
+ *  place — the undo path must never take App's setHydrateEpoch grid remount.
+ *  Callers run inside withHistorySuppressed: removeIndicatorById persists a
+ *  config delete, and the rebuild's own writes must not re-enter history.
+ *  Kept instances preserve pane order and heights; rebuilt instances preserve
+ *  their configs. After rebuild, visibility and hide-all state are re-asserted. */
+export function syncIndicatorsFromStorage(
+  chart: Chart,
+  controller: ChartController,
+  scope: string,
+  epic: string,
+  resolution: string,
+  rebuildIds: ReadonlySet<string>,
+): void {
+  const stored = loadIndicators(scope);
+  const live = controller.indicators.value;
+  const { remove, build, keep } = diffIndicatorSync(
+    stored.map((s) => s.id),
+    live.map((l) => l.id),
+    rebuildIds,
+  );
+  for (const id of remove) removeIndicatorById(chart, scope, id);
+  const next: IndicatorInstance[] = [];
+  for (const inst of stored) {
+    if (keep.includes(inst.id)) {
+      // Kept as-is: no teardown, no rebuild, pane order/height preserved.
+      next.push(inst);
+    } else if (build.includes(inst.id)) {
+      // Tear down any live pane for this id first (removeIndicator, NOT
+      // removeIndicatorById — the restored config must survive), then rebuild
+      // from storage exactly like a reload.
+      const panes = getIndicatorsByPane(chart);
+      for (const [paneId, inds] of panes ?? []) {
+        if (inds.has(inst.id)) {
+          chart.removeIndicator({ paneId, name: inst.id });
+          break;
+        }
+      }
+      if (applyIndicator(chart, scope, epic, inst, { rehydrate: true })) next.push(inst);
+    }
+  }
+  controller.indicators.set(next);
+  // Re-assert visibility and hide-all state after rebuilds, so the sidebar
+  // hide-all switch persists across undo.
+  applyIndicatorVisibility(chart, resolution, controller.indicatorsHidden.value);
+}
+
+/** The indicator instance with this id, wherever it sits. Instance ids are
+ * unique across panes, so the pane is not needed to resolve one — which is what
+ * lets a click on a Slope's accel companion reach its parent (a different pane). */
+export function getIndicatorById(chart: Chart, id: string): Indicator | null {
+  for (const inds of getIndicatorsByPane(chart)?.values() ?? []) {
+    const ind = inds.get(id);
+    if (ind) return ind as Indicator;
+  }
+  return null;
+}
+
+// Rename a rule-referenceable instance's id (the name a rule spells as
+// `<id>.<output>`). klinecharts has no rename API — IndicatorImp.override sets
+// `name`/`id` only ONCE, at construction, and ignores them on every later
+// override — so this tears the pane down and recreates it under the new id,
+// verbatim: same calcParams/extendData/styles/visible, same accel-companion
+// handling (removeIndicatorById/applyIndicator already own that dance, since
+// applyIndicator is the ONE creation choke point). A sub-pane instance's
+// HEIGHT is preserved; its stack POSITION is not (it re-appears at the
+// bottom of the sub-pane stack) — the same trade-off reorderSubPanes already
+// accepts elsewhere, since klinecharts has no pane-move API either.
+//
+// Persists the new id's config under the new key. The caller owns updating
+// its own IndicatorInstance[] list and rewriting any rule text that named the
+// old id — this function only touches the chart and the per-instance config
+// (see lib/renameInstance.ts for the full orchestration).
+export function renameIndicatorInstance(
+  chart: Chart,
+  scope: string,
+  epic: string,
+  oldId: string,
+  newId: string,
+): { ok: true } | { ok: false; error: RenameInstanceError } {
+  const err = validateInstanceName(chart, newId, oldId);
+  if (err) return { ok: false, error: err };
+  const ind = getIndicatorById(chart, oldId);
+  if (!ind) return { ok: false, error: "invalid" };
+  const type = indTypeOf(ind);
+  const config: SavedIndicatorConfig = {
+    calcParams: ind.calcParams as number[],
+    extendData: withoutInset({ ...((ind.extendData as Record<string, unknown> | undefined) ?? {}) }),
+    visible: ind.visible,
+    styles: ind.styles?.lines
+      ? {
+          lines: ind.styles.lines.map((l) => ({
+            color: l.color,
+            size: l.size,
+            style: l.style as string | undefined,
+            dashedValue: l.dashedValue,
+          })),
+        }
+      : undefined,
+  };
+  const height = isSubPaneIndicator(type)
+    ? Math.round(chart.getSize(ind.paneId, "main")?.height ?? SUBPANE_HEIGHT)
+    : undefined;
+  removeIndicatorById(chart, scope, oldId);
+  if (!applyIndicator(chart, scope, epic, { id: newId, type }, { config, height })) {
+    return { ok: false, error: "invalid" };
+  }
+  saveIndicatorConfig(scope, newId, config);
+  return { ok: true };
+}
+
+// --- expression layer: the live pane list -----------------------------------
+// The chart-side half of lib/exprInstances.ts (which stays klinecharts-free).
+// LIVE, not persisted: a pane the user just retuned must ship its CURRENT
+// settings, and the editor must offer the outputs it draws right now.
+
+/** Every user-owned pane flattened to { id, type, calcParams, extendData }.
+ * Skips internal panes — the app-owned equity curve, and accel companions whose
+ * outputs are referenced on their PARENT as `accel0..N`, never on an id of
+ * their own. */
+export function liveExprInstances(chart: Chart): LiveInstance[] {
+  const panes = getIndicatorsByPane(chart);
+  const out: LiveInstance[] = [];
+  for (const inds of panes?.values() ?? []) {
+    for (const ind of inds.values()) {
+      if (!ind?.name || isInternalIndicator(ind.name)) continue;
+      out.push({
+        id: ind.name,
+        type: indTypeOf(ind),
+        calcParams: (ind.calcParams ?? []).map(Number),
+        extendData: ind.extendData,
+      });
+    }
+  }
+  return out;
+}
+
+/** The rule editor's injected instance list (lint + completion) for this chart. */
+export function exprInstancesFromChart(chart: Chart): ExprInstance[] {
+  return exprInstancesFor(liveExprInstances(chart));
+}
