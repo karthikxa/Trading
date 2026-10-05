@@ -170,7 +170,8 @@
     }
     const flyout = document.getElementById('tv-ai-flyout');
     if (flyout) {
-      flyout.style.display = 'none';
+      flyout.classList.add('hidden');
+      flyout.style.setProperty('display', 'none', 'important');
     }
   }
 
@@ -195,7 +196,8 @@
       flyout = createAiFlyout();
       document.body.appendChild(flyout);
     }
-    flyout.style.display = 'flex';
+    flyout.classList.remove('hidden');
+    flyout.style.setProperty('display', 'flex', 'important');
     flyout.style.flexDirection = 'column';
     flyout.style.width = '330px';
     flyout.style.minWidth = '330px';
@@ -312,7 +314,8 @@
         closeAiFlyout();
       };
       closeBtn.addEventListener('click', handleClose);
-      closeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+      closeBtn.addEventListener('pointerdown', handleClose);
+      closeBtn.addEventListener('touchstart', handleClose, { passive: false });
     }
 
     // Handles Presets Event
@@ -836,15 +839,29 @@
     }
   }
 
-  // Close flyout on click outside
+  // Capture-phase listener: ensures Close button always works and clicking outside closes flyout
   document.addEventListener('click', (e) => {
+    const closeTarget = e.target.closest('#ai-fly-close-btn, .ai-fly-close-btn');
+    if (closeTarget) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeAiFlyout();
+      return;
+    }
+    const trigger = e.target.closest('.ai-prediction-btn, .ai-prediction-family .ds-caret');
+    if (trigger && !e.target.closest('#tv-ai-flyout')) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleAiFlyout();
+      return;
+    }
     if (!isFlyoutOpen) return;
     const family = document.querySelector('.ai-prediction-family');
     const flyout = document.getElementById('tv-ai-flyout');
     if (family && !family.contains(e.target) && flyout && !flyout.contains(e.target)) {
       closeAiFlyout();
     }
-  });
+  }, true);
 
   // Hotkey listener: Alt+A and Escape
   window.addEventListener('keydown', (e) => {
@@ -852,6 +869,7 @@
       e.preventDefault();
       toggleAiFlyout();
     } else if (e.key === 'Escape' && isFlyoutOpen) {
+      e.preventDefault();
       closeAiFlyout();
     }
   });
@@ -860,16 +878,6 @@
   window.addEventListener('toggle-ai-flyout', (e) => {
     e?.stopPropagation?.();
     toggleAiFlyout();
-  });
-
-  // Delegated click handler on document to ensure AI button clicks always open flyout
-  document.addEventListener('click', (e) => {
-    const trigger = e.target.closest('.ai-prediction-btn, .ai-prediction-family .ds-caret');
-    if (trigger && !e.target.closest('#tv-ai-flyout')) {
-      e.preventDefault();
-      e.stopPropagation();
-      toggleAiFlyout();
-    }
   });
 
   // Watch for sidebar mounting

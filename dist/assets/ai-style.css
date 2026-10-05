@@ -157,12 +157,19 @@ button.ind-info {
   border-radius: 6px !important;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45) !important;
   padding: 12px 14px !important;
-  display: flex !important;
+  display: flex;
   flex-direction: column !important;
   gap: 10px !important;
   animation: aiFlyoutSlide 0.14s cubic-bezier(0.16, 1, 0.3, 1) !important;
   font-family: var(--font-common, -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif) !important;
   box-sizing: border-box !important;
+}
+
+#tv-ai-flyout.hidden,
+.ai-flyout.hidden {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
 :root[data-theme="light"] #tv-ai-flyout,
