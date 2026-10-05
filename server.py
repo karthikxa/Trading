@@ -340,6 +340,24 @@ def generate_candles_data(epic: str, resolution: str, bars: int = 500) -> List[D
 
 # --- API Endpoints ---
 
+SERVER_START_TIME = time.time()
+
+@app.get("/healthz")
+@app.get("/api/health")
+@app.get("/api/ping")
+async def health_check():
+    """Ultra-fast, zero-overhead health endpoint for cron keep-alive pinging."""
+    return {
+        "status": "ok",
+        "service": "zed-trading",
+        "uptime_sec": round(time.time() - SERVER_START_TIME, 1),
+        "ai_engine": {
+            "kronos": "ready",
+            "laya": "ready"
+        },
+        "timestamp": int(time.time() * 1000)
+    }
+
 @app.get("/api/brokers")
 async def get_brokers():
     return {
