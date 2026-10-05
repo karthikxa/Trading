@@ -8,7 +8,13 @@ import { IMPERSONATE_HEADER, impersonatedUserId } from "./impersonation";
 // usable in the test/node env, where `import.meta.env` may be absent.
 export const API_BASE =
   (import.meta as unknown as { env?: { VITE_API_BASE?: string } }).env
-    ?.VITE_API_BASE ?? "http://localhost:8000";
+    ?.VITE_API_BASE ??
+  (typeof window !== "undefined" &&
+  window.location?.origin &&
+  window.location.origin !== "null" &&
+  !window.location.origin.includes(":5173")
+    ? window.location.origin
+    : "http://localhost:8000");
 
 /**
  * The backend marked this failure as "the user's network blocks the broker"
