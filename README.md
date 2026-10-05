@@ -1,4 +1,4 @@
-# Chartkar — AI-Powered Trading Terminal
+# Zed — AI-Powered Trading Terminal
 
 <div align="center">
 

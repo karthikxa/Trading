@@ -8,7 +8,7 @@
 
 ## 1. Project Overview & Architecture
 
-This repository hosts **Chartkar / Openbots TradingAI**, an ultra-lightweight, high-performance financial trading terminal modeled directly after **TradingView**. It natively integrates two foundation AI models:
+This repository hosts **Zed Trading AI**, an ultra-lightweight, high-performance financial trading terminal modeled directly after **TradingView**. It natively integrates two foundation AI models:
 
 1. **Kronos 102.3M Foundation Forecaster** (`NeoQuasar/Kronos-base`):
    - Autoregressive multi-horizon candlestick prediction model with BSQ 10-bit tokenization.

@@ -1,5 +1,5 @@
 /**
- * Chartkar TradingAI — Full-Featured Terminal Controller
+ * Zed Trading AI — Full-Featured Terminal Controller
  * TradingView-grade features:
  * - Symbol Search (all Indian NSE/BSE + global + crypto + options)
  * - Watchlist with live prices + sparklines
@@ -1806,7 +1806,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Show welcome toast
   setTimeout(() => {
-    showToast('🚀 Chartkar AI Terminal loaded — press / to search symbols', 'info', 4000);
+    showToast('🚀 Zed AI Terminal loaded — press / to search symbols', 'info', 4000);
   }, 1000);
 
 }); // End DOMContentLoaded

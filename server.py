@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
     yield
     print("[Server] Shutting down.")
 
-app = FastAPI(title="Chartkar Trading Terminal (Kronos & Laya Engine)", lifespan=lifespan)
+app = FastAPI(title="Zed Trading Terminal (Kronos & Laya Engine)", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
