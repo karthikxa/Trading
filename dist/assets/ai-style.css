@@ -1,787 +1,22 @@
 /* ==========================================================================
-   TradingView Real Style + coss UI Unified Design System
-   Applies across entire dashboard: Top Toolbar, Left Drawing Bar, Modals,
-   Segmented Controls, Inputs, Dropdowns, Tabs, and AI Assistant Flyout.
+   TradingView-Grade Monochrome Theme & AI Model Prediction (Kronos + Laya)
    ========================================================================== */
 
-/* --------------------------------------------------------------------------
-   1. Design Tokens (TradingView Dark & Light Themes)
-   -------------------------------------------------------------------------- */
+/* 1. Global Color Override: Pure Black & White (No Electric Blue) */
 :root {
-  /* TradingView Monochrome & Dark Architecture */
-  --tv-bg: #131722;
-  --tv-surface: #1e222d;
-  --tv-surface-2: #242832;
-  --tv-surface-hover: #2a2e39;
-  --tv-surface-active: #363a45;
-  --tv-input-bg: #131722;
-  --tv-border: #2a2e39;
-  --tv-border-subtle: #1e222d;
-  --tv-border-hover: #363a45;
-  --tv-border-focus: #2962ff;
-
-  /* Typography Colors */
-  --tv-text-bright: #f0f3fa;
-  --tv-text: #d1d4dc;
-  --tv-text-dim: #787b86;
-  --tv-text-faint: #50535e;
-
-  /* TradingView Brand & Semantic Colors */
-  --tv-blue: #2962ff;
-  --tv-blue-hover: #1e53e5;
-  --tv-blue-active: #1848cc;
-  --tv-blue-soft: rgba(41, 98, 255, 0.12);
-  --tv-green: #089981;
-  --tv-green-hover: #067e6a;
-  --tv-red: #f23645;
-  --tv-red-hover: #d32f2f;
-  --tv-amber: #f7a600;
-
-  /* Geometry & Shadows */
-  --tv-font: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
-  --tv-radius-xs: 2px;
-  --tv-radius-sm: 4px;
-  --tv-radius-md: 6px;
-  --tv-shadow-dropdown: 0 8px 24px rgba(0, 0, 0, 0.45);
-  --tv-shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.6);
-
-  /* Overrides for app base tokens */
-  --bg: #131722 !important;
-  --surface: #1e222d !important;
-  --surface-2: #242832 !important;
-  --input-bg: #131722 !important;
-  --border: #2a2e39 !important;
-  --text: #d1d4dc !important;
-  --text-dim: #787b86 !important;
-  --text-faint: #50535e !important;
-  --accent: #2962ff !important;
-  --accent-text: #ffffff !important;
-  --accent-soft: rgba(41, 98, 255, 0.12) !important;
-  --hover: rgba(255, 255, 255, 0.08) !important;
-  --hover-strong: rgba(255, 255, 255, 0.14) !important;
-  --pos: #089981 !important;
-  --neg: #f23645 !important;
-  --danger: #f23645 !important;
+  --accent: #f0f3fa !important;
+  --accent-text: #131722 !important;
+  --accent-soft: rgba(255, 255, 255, 0.08) !important;
 }
 
 :root[data-theme="light"],
 [data-theme="light"] {
-  --tv-bg: #ffffff;
-  --tv-surface: #f0f3fa;
-  --tv-surface-2: #ffffff;
-  --tv-surface-hover: #e0e3eb;
-  --tv-surface-active: #d1d4dc;
-  --tv-input-bg: #ffffff;
-  --tv-border: #e0e3eb;
-  --tv-border-subtle: #f0f3fa;
-  --tv-border-hover: #d1d4dc;
-  --tv-border-focus: #2962ff;
-
-  --tv-text-bright: #131722;
-  --tv-text: #131722;
-  --tv-text-dim: #787b86;
-  --tv-text-faint: #9598a1;
-
-  --tv-shadow-dropdown: 0 8px 24px rgba(0, 0, 0, 0.12);
-  --tv-shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.2);
-
-  --bg: #ffffff !important;
-  --surface: #f0f3fa !important;
-  --surface-2: #ffffff !important;
-  --input-bg: #ffffff !important;
-  --border: #e0e3eb !important;
-  --text: #131722 !important;
-  --text-dim: #787b86 !important;
-  --text-faint: #9598a1 !important;
-  --accent: #2962ff !important;
+  --accent: #131722 !important;
   --accent-text: #ffffff !important;
-  --accent-soft: rgba(41, 98, 255, 0.08) !important;
-  --hover: rgba(19, 23, 34, 0.06) !important;
-  --hover-strong: rgba(19, 23, 34, 0.12) !important;
+  --accent-soft: rgba(19, 23, 34, 0.08) !important;
 }
 
-/* --------------------------------------------------------------------------
-   2. Base Typography & Antialiasing
-   -------------------------------------------------------------------------- */
-body, button, input, select, textarea, optgroup {
-  font-family: var(--tv-font) !important;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-/* Tabular numbers for all financial & metrics elements */
-.tabular-nums,
-.num-input,
-.ai-candle-number-input,
-.ai-fly-conf,
-.ai-fly-target,
-.ai-fly-levels,
-.stat-val,
-.sweep-val,
-.pos-cell,
-.price-cell {
-  font-variant-numeric: tabular-nums !important;
-}
-
-/* --------------------------------------------------------------------------
-   3. Coss UI Button Specification (Unified Across Dashboard)
-   -------------------------------------------------------------------------- */
-
-/* Common Button Anatomy */
-button,
-.coss-btn,
-.anchor-btn,
-.tb-btn,
-.modal-foot button,
-.ai-fly-actions-row button {
-  box-sizing: border-box !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  gap: 6px !important;
-  font-family: var(--tv-font) !important;
-  font-size: 13px !important;
-  font-weight: 500 !important;
-  line-height: 1 !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-  cursor: pointer !important;
-  user-select: none !important;
-  white-space: nowrap !important;
-  outline: none !important;
-  text-decoration: none !important;
-  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease, transform 0.08s ease !important;
-}
-
-button:active:not(:disabled),
-.coss-btn:active:not(:disabled),
-.anchor-btn:active:not(:disabled) {
-  transform: scale(0.98) !important;
-}
-
-button:disabled,
-.coss-btn:disabled,
-.anchor-btn:disabled {
-  opacity: 0.45 !important;
-  cursor: not-allowed !important;
-  pointer-events: none !important;
-}
-
-/* Variant 1: Primary / Default Action (TradingView Electric Blue) */
-.coss-btn-primary,
-.confirm-primary,
-.ai-fly-btn-predict,
-.bt-run-btn,
-.modal-foot button.confirm-primary,
-.modal-foot button:not(.ghost):not(.confirm-danger):not(.al-trash):not(.rsp-cancel) {
-  background: var(--tv-blue, #2962ff) !important;
-  border: 1px solid var(--tv-blue, #2962ff) !important;
-  color: #ffffff !important;
-  font-weight: 600 !important;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15) !important;
-}
-
-.coss-btn-primary:hover,
-.confirm-primary:hover,
-.ai-fly-btn-predict:hover,
-.bt-run-btn:hover,
-.modal-foot button.confirm-primary:hover,
-.modal-foot button:not(.ghost):not(.confirm-danger):not(.al-trash):not(.rsp-cancel):hover {
-  background: var(--tv-blue-hover, #1e53e5) !important;
-  border-color: var(--tv-blue-hover, #1e53e5) !important;
-  color: #ffffff !important;
-}
-
-.coss-btn-primary:focus-visible,
-.confirm-primary:focus-visible,
-.ai-fly-btn-predict:focus-visible {
-  box-shadow: 0 0 0 2px rgba(41, 98, 255, 0.35) !important;
-}
-
-/* Variant 2: Secondary / Outline Action */
-.coss-btn-secondary,
-.coss-btn-outline,
-.ghost,
-.modal-foot .ghost,
-.ai-fly-btn-clear,
-.custom-tf-cancel,
-.rsp-cancel,
-.bt-presets .ghost,
-.strat-picker-row .anchor-btn {
-  background: transparent !important;
-  border: 1px solid var(--tv-border, #2a2e39) !important;
-  color: var(--tv-text, #d1d4dc) !important;
-}
-
-.coss-btn-secondary:hover,
-.coss-btn-outline:hover,
-.ghost:hover,
-.modal-foot .ghost:hover,
-.ai-fly-btn-clear:hover,
-.custom-tf-cancel:hover,
-.rsp-cancel:hover,
-.bt-presets .ghost:hover,
-.strat-picker-row .anchor-btn:hover {
-  background: var(--tv-surface-hover, #2a2e39) !important;
-  border-color: var(--tv-border-hover, #363a45) !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
-}
-
-:root[data-theme="light"] .coss-btn-secondary,
-:root[data-theme="light"] .ghost,
-:root[data-theme="light"] .ai-fly-btn-clear,
-[data-theme="light"] .coss-btn-secondary,
-[data-theme="light"] .ghost,
-[data-theme="light"] .ai-fly-btn-clear {
-  background: #ffffff !important;
-  border-color: var(--tv-border, #e0e3eb) !important;
-  color: #131722 !important;
-}
-
-:root[data-theme="light"] .coss-btn-secondary:hover,
-:root[data-theme="light"] .ghost:hover,
-:root[data-theme="light"] .ai-fly-btn-clear:hover,
-[data-theme="light"] .coss-btn-secondary:hover,
-[data-theme="light"] .ghost:hover,
-[data-theme="light"] .ai-fly-btn-clear:hover {
-  background: #f0f3fa !important;
-  border-color: #d1d4dc !important;
-  color: #131722 !important;
-}
-
-/* Variant 3: Ghost / Toolbar Action (Border-free with smooth hover) */
-.coss-btn-ghost,
-.toolbar .anchor-btn,
-.anchor-btn,
-.tb-btn,
-.chart-detached-btn {
-  background: transparent !important;
-  border: 1px solid transparent !important;
-  color: var(--tv-text, #d1d4dc) !important;
-}
-
-.coss-btn-ghost:hover:not(:disabled),
-.toolbar .anchor-btn:hover:not(:disabled),
-.anchor-btn:hover:not(:disabled),
-.tb-btn:hover:not(:disabled),
-.chart-detached-btn:hover:not(:disabled) {
-  background: var(--hover, rgba(255, 255, 255, 0.08)) !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
-}
-
-.toolbar .anchor-btn.on,
-.anchor-btn.on,
-.tb-btn.on,
-.study-menu-btn.on,
-.replay-toggle.on,
-.backtest-toggle.on {
-  background: var(--hover-strong, rgba(255, 255, 255, 0.14)) !important;
-  color: var(--tv-blue, #2962ff) !important;
-}
-
-/* Variant 4: Destructive Action (TradingView Red) */
-.coss-btn-destructive,
-.confirm-danger,
-.modal-foot .confirm-danger,
-.danger-btn {
-  background: var(--tv-red, #f23645) !important;
-  border: 1px solid var(--tv-red, #f23645) !important;
-  color: #ffffff !important;
-  font-weight: 600 !important;
-}
-
-.coss-btn-destructive:hover,
-.confirm-danger:hover,
-.modal-foot .confirm-danger:hover {
-  background: var(--tv-red-hover, #d32f2f) !important;
-  border-color: var(--tv-red-hover, #d32f2f) !important;
-  color: #ffffff !important;
-}
-
-/* Variant 5: Order Ticket Direct Actions (Buy & Sell) */
-.rt-buy {
-  background: var(--tv-green, #089981) !important;
-  border: 1px solid var(--tv-green, #089981) !important;
-  color: #ffffff !important;
-  font-weight: 600 !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-}
-.rt-buy:hover:not(:disabled) {
-  background: var(--tv-green-hover, #067e6a) !important;
-}
-
-.rt-sell {
-  background: var(--tv-red, #f23645) !important;
-  border: 1px solid var(--tv-red, #f23645) !important;
-  color: #ffffff !important;
-  font-weight: 600 !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-}
-.rt-sell:hover:not(:disabled) {
-  background: var(--tv-red-hover, #d32f2f) !important;
-}
-
-/* Button Sizing System */
-.coss-btn-xs, .btn-xs {
-  height: 24px !important;
-  padding: 0 8px !important;
-  font-size: 11px !important;
-}
-
-.coss-btn-sm, .btn-sm, .bt-chip, .crb-btn {
-  height: 28px !important;
-  padding: 0 10px !important;
-  font-size: 12px !important;
-}
-
-.coss-btn-md, .btn-md, .modal-foot button, .ai-fly-btn-predict, .ai-fly-btn-clear {
-  height: 32px !important;
-  padding: 0 14px !important;
-  font-size: 13px !important;
-}
-
-.coss-btn-lg, .btn-lg {
-  height: 38px !important;
-  padding: 0 18px !important;
-  font-size: 14px !important;
-}
-
-/* Icon Buttons (Square Centered) */
-.coss-btn-icon,
-.icon-btn,
-.ai-fly-close-btn,
-.ai-step-btn,
-.modal-close,
-.draw-sidebar .ds-btn,
-.draw-sidebar .ai-prediction-btn,
-.modal-foot .al-trash {
-  width: 30px !important;
-  height: 30px !important;
-  min-width: 30px !important;
-  min-height: 30px !important;
-  padding: 0 !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-}
-
-/* --------------------------------------------------------------------------
-   4. Top Toolbar (TradingView Real Style)
-   -------------------------------------------------------------------------- */
-.toolbar {
-  height: 38px !important;
-  background: var(--tv-bg, #131722) !important;
-  border-bottom: 1px solid var(--tv-border, #2a2e39) !important;
-  padding: 0 8px !important;
-  display: flex !important;
-  align-items: center !important;
-  gap: 2px !important;
-  box-sizing: border-box !important;
-}
-
-.toolbar .anchor-btn {
-  height: 28px !important;
-  padding: 0 8px !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-  color: var(--tv-text, #d1d4dc) !important;
-  font-size: 13px !important;
-}
-
-.toolbar .anchor-btn svg {
-  width: 16px !important;
-  height: 16px !important;
-  flex-shrink: 0 !important;
-}
-
-/* Intervals / Timeframe Buttons */
-.intervals button,
-.timeframe-btn {
-  height: 28px !important;
-  padding: 0 6px !important;
-  font-size: 12px !important;
-  font-weight: 500 !important;
-  color: var(--tv-text-dim, #787b86) !important;
-  background: transparent !important;
-  border: none !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-  cursor: pointer !important;
-  transition: all 0.12s ease !important;
-}
-
-.intervals button:hover,
-.timeframe-btn:hover {
-  background: var(--hover, rgba(255, 255, 255, 0.08)) !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
-}
-
-.intervals button.on,
-.intervals button.active,
-.timeframe-btn.active {
-  color: var(--tv-blue, #2962ff) !important;
-  font-weight: 600 !important;
-  background: rgba(41, 98, 255, 0.1) !important;
-}
-
-/* Symbol Chip */
-.sym-chip,
-.symbol-chip {
-  display: inline-flex !important;
-  align-items: center !important;
-  gap: 6px !important;
-  height: 28px !important;
-  padding: 0 8px !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-  background: transparent !important;
-  cursor: pointer !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
-  font-weight: 600 !important;
-  font-size: 13px !important;
-  transition: background 0.12s ease !important;
-}
-
-.sym-chip:hover,
-.symbol-chip:hover {
-  background: var(--hover, rgba(255, 255, 255, 0.08)) !important;
-}
-
-/* --------------------------------------------------------------------------
-   5. Left Drawing Sidebar (TradingView Native Style)
-   -------------------------------------------------------------------------- */
-.draw-sidebar {
-  width: 44px !important;
-  min-width: 44px !important;
-  background: var(--tv-bg, #131722) !important;
-  border-right: 1px solid var(--tv-border, #2a2e39) !important;
-  box-sizing: border-box !important;
-}
-
-.draw-sidebar .ds-btn,
-.draw-sidebar .ai-prediction-btn {
-  width: 32px !important;
-  height: 32px !important;
-  margin: 1px auto !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-  background: transparent !important;
-  border: none !important;
-  color: var(--tv-text-dim, #787b86) !important;
-  cursor: pointer !important;
-  transition: all 0.12s ease !important;
-}
-
-.draw-sidebar .ds-btn:hover,
-.draw-sidebar .ai-prediction-btn:hover {
-  background: var(--hover, rgba(255, 255, 255, 0.08)) !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
-}
-
-.draw-sidebar .ds-btn.on,
-.draw-sidebar .ai-prediction-btn.on {
-  background: var(--hover-strong, rgba(255, 255, 255, 0.14)) !important;
-  color: var(--tv-blue, #2962ff) !important;
-}
-
-.draw-sidebar .ds-caret {
-  width: 12px !important;
-  height: 32px !important;
-  background: transparent !important;
-  border: none !important;
-  color: var(--tv-text-dim, #787b86) !important;
-  cursor: pointer !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  padding: 0 !important;
-  border-radius: 0 var(--tv-radius-sm, 4px) var(--tv-radius-sm, 4px) 0 !important;
-}
-
-.draw-sidebar .ds-caret:hover {
-  background: var(--hover, rgba(255, 255, 255, 0.08)) !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
-}
-
-/* --------------------------------------------------------------------------
-   6. Segmented Controls & Tabs (Coss Component System)
-   -------------------------------------------------------------------------- */
-.seg,
-.bt-seg,
-.heatmap-seg,
-.wfo-seg {
-  background: var(--tv-bg, #131722) !important;
-  border: 1px solid var(--tv-border, #2a2e39) !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-  padding: 2px !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  gap: 2px !important;
-  box-sizing: border-box !important;
-}
-
-.seg button,
-.bt-seg button,
-.heatmap-seg button,
-.wfo-seg button {
-  height: 26px !important;
-  padding: 0 10px !important;
-  border-radius: var(--tv-radius-xs, 2px) !important;
-  border: none !important;
-  background: transparent !important;
-  color: var(--tv-text-dim, #787b86) !important;
-  font-size: 12px !important;
-  font-weight: 500 !important;
-  cursor: pointer !important;
-  transition: all 0.12s ease !important;
-}
-
-.seg button:hover,
-.heatmap-seg button:hover,
-.wfo-seg button:hover {
-  color: var(--tv-text-bright, #f0f3fa) !important;
-}
-
-.seg button.seg-on,
-.bt-seg button.seg-on,
-.heatmap-seg button.seg-on,
-.wfo-seg button.seg-on {
-  background: var(--tv-surface-hover, #2a2e39) !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
-  font-weight: 600 !important;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2) !important;
-}
-
-:root[data-theme="light"] .seg,
-:root[data-theme="light"] .heatmap-seg,
-:root[data-theme="light"] .wfo-seg,
-[data-theme="light"] .seg {
-  background: #f0f3fa !important;
-  border-color: #e0e3eb !important;
-}
-
-:root[data-theme="light"] .seg button.seg-on,
-:root[data-theme="light"] .heatmap-seg button.seg-on,
-:root[data-theme="light"] .wfo-seg button.seg-on,
-[data-theme="light"] .seg button.seg-on {
-  background: #ffffff !important;
-  color: #131722 !important;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
-}
-
-/* Tab Bar (Bottom Dock Tabs) */
-.tab-bar {
-  background: var(--tv-bg, #131722) !important;
-  border-top: 1px solid var(--tv-border, #2a2e39) !important;
-  height: 35px !important;
-  display: flex !important;
-  align-items: stretch !important;
-}
-
-.tab-bar .tab,
-.tab-bar-item {
-  height: 100% !important;
-  padding: 0 14px !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  font-size: 13px !important;
-  font-weight: 500 !important;
-  color: var(--tv-text-dim, #787b86) !important;
-  background: transparent !important;
-  border: none !important;
-  border-bottom: 2px solid transparent !important;
-  cursor: pointer !important;
-  transition: all 0.12s ease !important;
-}
-
-.tab-bar .tab:hover,
-.tab-bar-item:hover {
-  color: var(--tv-text, #d1d4dc) !important;
-}
-
-.tab-bar .tab.on,
-.tab-bar .tab.active,
-.tab-bar-item.on,
-.tab-bar-item.active {
-  color: var(--tv-text-bright, #f0f3fa) !important;
-  border-bottom-color: var(--tv-blue, #2962ff) !important;
-  font-weight: 600 !important;
-}
-
-/* Horizontal Subtabs / Period Tabs */
-.bt-htabs button,
-.pp-tab,
-.subtabs button,
-.periods button,
-.ind-tab {
-  height: 32px !important;
-  padding: 0 12px !important;
-  font-size: 13px !important;
-  font-weight: 500 !important;
-  color: var(--tv-text-dim, #787b86) !important;
-  background: transparent !important;
-  border: none !important;
-  border-bottom: 2px solid transparent !important;
-  cursor: pointer !important;
-  transition: all 0.12s ease !important;
-}
-
-.bt-htabs button:hover,
-.pp-tab:hover,
-.subtabs button:hover,
-.periods button:hover,
-.ind-tab:hover {
-  color: var(--tv-text, #d1d4dc) !important;
-}
-
-.bt-htabs button.on,
-.pp-tab.on,
-.subtabs button.on,
-.periods button.on,
-.ind-tab.on {
-  color: var(--tv-text-bright, #f0f3fa) !important;
-  border-bottom-color: var(--tv-blue, #2962ff) !important;
-  font-weight: 600 !important;
-}
-
-/* --------------------------------------------------------------------------
-   7. Form Controls: Inputs, NumberFields & Selects
-   -------------------------------------------------------------------------- */
-input[type="text"],
-input[type="number"],
-input[type="search"],
-input[type="password"],
-select,
-textarea,
-.num-input,
-.bt-presets input {
-  height: 32px !important;
-  background: var(--tv-input-bg, #131722) !important;
-  border: 1px solid var(--tv-border, #2a2e39) !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-  color: var(--tv-text, #d1d4dc) !important;
-  font-family: var(--tv-font) !important;
-  font-size: 13px !important;
-  padding: 0 10px !important;
-  box-sizing: border-box !important;
-  outline: none !important;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease !important;
-}
-
-input:focus,
-select:focus,
-textarea:focus,
-.num-input:focus {
-  border-color: var(--tv-blue, #2962ff) !important;
-  box-shadow: 0 0 0 1px var(--tv-blue, #2962ff) !important;
-}
-
-:root[data-theme="light"] input,
-:root[data-theme="light"] select,
-:root[data-theme="light"] textarea,
-[data-theme="light"] input,
-[data-theme="light"] select {
-  background: #ffffff !important;
-  border-color: #e0e3eb !important;
-  color: #131722 !important;
-}
-
-:root[data-theme="light"] input:focus,
-:root[data-theme="light"] select:focus,
-[data-theme="light"] input:focus {
-  border-color: #2962ff !important;
-  box-shadow: 0 0 0 1px #2962ff !important;
-}
-
-/* --------------------------------------------------------------------------
-   8. Modals, Dialogs & Confirmation Surfaces (Coss Dialog Specification)
-   -------------------------------------------------------------------------- */
-.modal,
-.confirm-modal,
-.ind-modal,
-.bt-settings-modal,
-.symbol-search-modal,
-.floating-modal {
-  background: var(--tv-surface, #1e222d) !important;
-  border: 1px solid var(--tv-border, #2a2e39) !important;
-  border-radius: var(--tv-radius-md, 6px) !important;
-  box-shadow: var(--tv-shadow-modal, 0 16px 48px rgba(0, 0, 0, 0.6)) !important;
-  color: var(--tv-text, #d1d4dc) !important;
-  box-sizing: border-box !important;
-}
-
-.modal-head,
-.confirm-head {
-  height: 48px !important;
-  padding: 0 16px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: space-between !important;
-  border-bottom: 1px solid var(--tv-border, #2a2e39) !important;
-  font-size: 15px !important;
-  font-weight: 600 !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
-  background: var(--tv-surface, #1e222d) !important;
-}
-
-.modal-foot {
-  height: 52px !important;
-  padding: 0 16px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: flex-end !important;
-  gap: 8px !important;
-  border-top: 1px solid var(--tv-border, #2a2e39) !important;
-  background: var(--tv-surface, #1e222d) !important;
-  box-sizing: border-box !important;
-}
-
-/* --------------------------------------------------------------------------
-   9. Dropdowns, Menus & Tooltips (Coss Popover / Menu Specification)
-   -------------------------------------------------------------------------- */
-.dropdown,
-.context-menu,
-.study-dropdown,
-.popover {
-  background: var(--tv-surface, #1e222d) !important;
-  border: 1px solid var(--tv-border, #2a2e39) !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-  box-shadow: var(--tv-shadow-dropdown, 0 8px 24px rgba(0, 0, 0, 0.45)) !important;
-  padding: 4px !important;
-  box-sizing: border-box !important;
-}
-
-.dropdown ul,
-.context-menu ul {
-  list-style: none !important;
-  padding: 0 !important;
-  margin: 0 !important;
-}
-
-.dropdown li,
-.context-menu li,
-.study-item {
-  height: 32px !important;
-  padding: 0 10px !important;
-  display: flex !important;
-  align-items: center !important;
-  gap: 8px !important;
-  border-radius: var(--tv-radius-xs, 2px) !important;
-  color: var(--tv-text, #d1d4dc) !important;
-  font-size: 13px !important;
-  cursor: pointer !important;
-  transition: background 0.1s ease !important;
-}
-
-.dropdown li:hover,
-.context-menu li:hover,
-.study-item:hover {
-  background: var(--tv-surface-hover, #2a2e39) !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
-}
-
-.study-item.on {
-  color: var(--tv-blue, #2962ff) !important;
-  font-weight: 600 !important;
-}
-
-/* InfoTip (i) Fix */
+/* 2. Fix InfoTip (i) across entire app so it never renders as a filled blue/black box */
 .ind-info,
 .toolbar button.ind-info,
 .toolbar .ind-info,
@@ -791,7 +26,7 @@ textarea:focus,
 .setting-row .ind-info,
 button.ind-info {
   background: transparent !important;
-  color: var(--tv-text-dim, #787b86) !important;
+  color: var(--text-dim) !important;
   border: none !important;
   border-radius: 0 !important;
   padding: 0 !important;
@@ -805,9 +40,16 @@ button.ind-info {
   justify-content: center !important;
   cursor: help !important;
   box-shadow: none !important;
+  line-height: 1 !important;
+  vertical-align: middle !important;
 }
 
-.ind-info svg {
+.ind-info svg,
+.toolbar button.ind-info svg,
+.toolbar .ind-info svg,
+.heatmap-panel .ind-info svg,
+.wfo-label .ind-info svg,
+.dropdown .ind-info svg {
   fill: none !important;
   stroke: currentColor !important;
   stroke-width: 1.6 !important;
@@ -815,33 +57,111 @@ button.ind-info {
   height: 13px !important;
 }
 
-.ind-info:hover {
-  color: var(--tv-text-bright, #f0f3fa) !important;
+.ind-info:hover,
+.toolbar button.ind-info:hover,
+.toolbar .ind-info:hover,
+.heatmap-panel .ind-info:hover,
+.wfo-label .ind-info:hover {
+  background: transparent !important;
+  color: var(--text) !important;
 }
 
-/* --------------------------------------------------------------------------
-   10. AI Assistant Left Flyout (TradingView Native Style)
-   -------------------------------------------------------------------------- */
+/* 3. Segmented Controls & Buttons - High-Contrast Black & White */
+.seg button.seg-on,
+.heatmap-seg button.seg-on,
+.wfo-seg button.seg-on {
+  font-weight: 600 !important;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+:root[data-theme="light"] .seg button.seg-on,
+:root[data-theme="light"] .heatmap-seg button.seg-on,
+:root[data-theme="light"] .wfo-seg button.seg-on,
+[data-theme="light"] .seg button.seg-on,
+[data-theme="light"] .heatmap-seg button.seg-on {
+  background: #131722 !important;
+  color: #ffffff !important;
+}
+
+:root:not([data-theme="light"]) .seg button.seg-on,
+:root:not([data-theme="light"]) .heatmap-seg button.seg-on,
+:root:not([data-theme="light"]) .wfo-seg button.seg-on,
+[data-theme="dark"] .seg button.seg-on,
+[data-theme="dark"] .heatmap-seg button.seg-on {
+  background: #f0f3fa !important;
+  color: #131722 !important;
+}
+
+/* Heatmap dropdown panel polishing */
+.heatmap-panel {
+  min-width: 250px;
+}
+.heatmap-seg button {
+  border-radius: 4px;
+}
+.heatmap-width:focus {
+  outline: none;
+  border-color: var(--text) !important;
+}
+
+/* Active tabs & range indicators in Black / White */
+.bt-htabs button.on,
+.pp-tab.on,
+.subtabs button.on,
+.periods button.on {
+  color: var(--text) !important;
+  border-bottom-color: var(--text) !important;
+}
+.crb-btn.active {
+  color: var(--text) !important;
+  background: var(--hover-strong) !important;
+  font-weight: 600 !important;
+}
+
+/* 4. Left Toolbar AI Family & Trigger Button */
+.draw-sidebar .ds-family.ai-prediction-family {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: 30px;
+}
+
+.draw-sidebar .ds-family .ai-prediction-btn {
+  position: relative;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+
+.draw-sidebar .ds-family .ai-prediction-btn:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.draw-sidebar .ds-family .ai-prediction-btn.on {
+  background: var(--hover-strong) !important;
+  color: var(--text) !important;
+}
+
+/* 5. Left-Side Corner AI Prediction Flyout (TradingView Native Style) */
 #tv-ai-flyout,
 .ai-flyout,
 .ds-flyout.ai-flyout,
 .draw-sidebar .ds-flyout.ai-flyout {
   position: fixed !important;
   z-index: 99999 !important;
-  width: 330px !important;
-  min-width: 330px !important;
-  max-width: 340px !important;
-  background: var(--tv-surface, #1e222d) !important;
-  color: var(--tv-text, #d1d4dc) !important;
-  border: 1px solid var(--tv-border, #2a2e39) !important;
-  border-radius: var(--tv-radius-md, 6px) !important;
-  box-shadow: var(--tv-shadow-modal, 0 16px 48px rgba(0, 0, 0, 0.6)) !important;
-  padding: 14px !important;
+  width: 320px !important;
+  min-width: 320px !important;
+  max-width: 330px !important;
+  background: var(--bg, #101418) !important;
+  color: var(--text, #d1d4dc) !important;
+  border: 1px solid var(--border, #2a2f36) !important;
+  border-radius: 6px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45) !important;
+  padding: 12px 14px !important;
   display: flex;
   flex-direction: column !important;
-  gap: 12px !important;
-  animation: tvAiSlide 0.14s cubic-bezier(0.16, 1, 0.3, 1) !important;
-  font-family: var(--tv-font) !important;
+  gap: 10px !important;
+  animation: aiFlyoutSlide 0.14s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  font-family: var(--font-common, -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif) !important;
   box-sizing: border-box !important;
 }
 
@@ -856,11 +176,11 @@ button.ind-info {
 [data-theme="light"] #tv-ai-flyout {
   background: #ffffff !important;
   color: #131722 !important;
-  border-color: #e0e3eb !important;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18) !important;
+  border-color: #cfd6df !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
 }
 
-@keyframes tvAiSlide {
+@keyframes aiFlyoutSlide {
   from {
     opacity: 0;
     transform: translateX(-4px) scale(0.99);
@@ -871,18 +191,23 @@ button.ind-info {
   }
 }
 
-/* AI Header Section */
+/* Header */
 #tv-ai-flyout .ai-fly-section,
 .ai-fly-section {
   font-size: 11px !important;
   font-weight: 700 !important;
   text-transform: uppercase !important;
-  letter-spacing: 0.5px !important;
-  color: var(--tv-text-dim, #787b86) !important;
+  letter-spacing: 0.4px !important;
+  color: var(--text-dim, #8a93a0) !important;
   display: flex !important;
   align-items: center !important;
   justify-content: space-between !important;
   padding-bottom: 2px !important;
+}
+
+:root[data-theme="light"] .ai-fly-section,
+[data-theme="light"] .ai-fly-section {
+  color: #787b86 !important;
 }
 
 .ai-badge-live {
@@ -890,42 +215,77 @@ button.ind-info {
   font-weight: 600 !important;
   letter-spacing: 0.3px !important;
   padding: 2px 6px !important;
-  border-radius: var(--tv-radius-xs, 2px) !important;
-  background: var(--tv-blue-soft, rgba(41, 98, 255, 0.12)) !important;
-  color: var(--tv-blue, #2962ff) !important;
-  border: 1px solid rgba(41, 98, 255, 0.25) !important;
+  border-radius: 4px !important;
+  background: var(--surface, #161a1f) !important;
+  color: var(--text-dim, #8a93a0) !important;
+  border: 1px solid var(--border, #2a2f36) !important;
   text-transform: uppercase !important;
 }
 
-/* Close Button */
+:root[data-theme="light"] .ai-badge-live,
+[data-theme="light"] .ai-badge-live {
+  background: #f0f3fa !important;
+  border-color: #d1d4dc !important;
+  color: #5a6573 !important;
+}
+
 .ai-fly-close-btn {
   background: transparent !important;
   border: none !important;
-  color: var(--tv-text-dim, #787b86) !important;
+  color: var(--text-dim, #8a93a0) !important;
   cursor: pointer !important;
-  display: inline-flex !important;
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
+  min-height: 26px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  display: flex !important;
   align-items: center !important;
   justify-content: center !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
+  border-radius: 4px !important;
   outline: none !important;
+  box-shadow: none !important;
   pointer-events: auto !important;
   transition: all 0.12s ease !important;
 }
 
+.ai-fly-close-btn svg {
+  pointer-events: none !important;
+}
+
 .ai-fly-close-btn:hover {
-  background: var(--tv-surface-hover, #2a2e39) !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
+}
+
+:root[data-theme="light"] .ai-fly-close-btn,
+[data-theme="light"] .ai-fly-close-btn {
+  color: #787b86 !important;
+}
+
+:root[data-theme="light"] .ai-fly-close-btn:hover,
+[data-theme="light"] .ai-fly-close-btn:hover {
+  background: #e0e3eb !important;
+  color: #131722 !important;
 }
 
 /* Current Symbol Info Card */
+#tv-ai-flyout .ai-graph-info-card,
 .ai-graph-info-card {
-  background: var(--tv-bg, #131722) !important;
-  border: 1px solid var(--tv-border, #2a2e39) !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
+  background: var(--surface, #161a1f) !important;
+  border: 1px solid var(--border, #2a2f36) !important;
+  border-radius: 6px !important;
   padding: 8px 10px !important;
   display: flex !important;
   flex-direction: column !important;
   gap: 2px !important;
+}
+
+:root[data-theme="light"] #tv-ai-flyout .ai-graph-info-card,
+[data-theme="light"] #tv-ai-flyout .ai-graph-info-card {
+  background: #f8f9fd !important;
+  border: 1px solid #e0e3eb !important;
 }
 
 .ai-graph-symbol-row {
@@ -937,25 +297,44 @@ button.ind-info {
 .ai-graph-symbol {
   font-size: 15px !important;
   font-weight: 700 !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
+  color: var(--text, #ffffff) !important;
+  letter-spacing: 0.2px !important;
+}
+
+:root[data-theme="light"] .ai-graph-symbol,
+[data-theme="light"] .ai-graph-symbol {
+  color: #131722 !important;
 }
 
 .ai-graph-tf {
   font-size: 11px !important;
   font-weight: 600 !important;
-  color: var(--tv-blue, #2962ff) !important;
-  background: var(--tv-blue-soft, rgba(41, 98, 255, 0.12)) !important;
+  color: var(--text, #d1d4dc) !important;
+  background: var(--bg, #101418) !important;
   padding: 1px 6px !important;
-  border-radius: var(--tv-radius-xs, 2px) !important;
-  border: 1px solid rgba(41, 98, 255, 0.25) !important;
+  border-radius: 4px !important;
+  border: 1px solid var(--border, #2a2f36) !important;
+}
+
+:root[data-theme="light"] .ai-graph-tf,
+[data-theme="light"] .ai-graph-tf {
+  background: #ffffff !important;
+  border-color: #d1d4dc !important;
+  color: #131722 !important;
 }
 
 .ai-graph-subtext {
   font-size: 11px !important;
-  color: var(--tv-text-dim, #787b86) !important;
+  color: var(--text-faint, #6b7480) !important;
 }
 
-/* Handles / Prediction Horizon */
+:root[data-theme="light"] .ai-graph-subtext,
+[data-theme="light"] .ai-graph-subtext {
+  color: #787b86 !important;
+}
+
+/* Prediction Horizon / Candles Selector */
+#tv-ai-flyout .ai-handles-strip,
 .ai-handles-strip {
   display: flex !important;
   flex-direction: column !important;
@@ -965,41 +344,75 @@ button.ind-info {
 .ai-handles-label {
   font-size: 11px !important;
   font-weight: 600 !important;
-  color: var(--tv-text-dim, #787b86) !important;
+  color: var(--text-dim, #8a93a0) !important;
   display: flex !important;
   align-items: center !important;
   justify-content: space-between !important;
 }
 
+:root[data-theme="light"] .ai-handles-label,
+[data-theme="light"] .ai-handles-label {
+  color: #5a6573 !important;
+}
+
 .ai-handles-hint {
   font-size: 10.5px !important;
-  color: var(--tv-text-faint, #50535e) !important;
+  color: var(--text-faint, #6b7480) !important;
+  font-weight: 400 !important;
+}
+
+:root[data-theme="light"] .ai-handles-hint,
+[data-theme="light"] .ai-handles-hint {
+  color: #787b86 !important;
 }
 
 /* Stepper Input Row */
 .ai-input-stepper-row {
   display: flex !important;
   align-items: center !important;
-  gap: 6px !important;
+  gap: 5px !important;
 }
 
 .ai-candle-number-input {
   flex: 1 !important;
-  height: 32px !important;
-  text-align: center !important;
+  height: 30px !important;
+  background: var(--input-bg, #0d1014) !important;
+  border: 1px solid var(--border, #2a2f36) !important;
+  border-radius: 4px !important;
+  color: var(--text, #ffffff) !important;
   font-size: 14px !important;
   font-weight: 700 !important;
+  padding: 2px 6px !important;
+  text-align: center !important;
   font-variant-numeric: tabular-nums !important;
+  outline: none !important;
+  transition: border-color 0.12s ease !important;
+}
+
+:root[data-theme="light"] .ai-candle-number-input,
+[data-theme="light"] .ai-candle-number-input {
+  background: #ffffff !important;
+  border-color: #cfd6df !important;
+  color: #131722 !important;
+}
+
+.ai-candle-number-input:focus {
+  border-color: var(--text, #ffffff) !important;
+}
+
+:root[data-theme="light"] .ai-candle-number-input:focus,
+[data-theme="light"] .ai-candle-number-input:focus {
+  border-color: #131722 !important;
 }
 
 .ai-step-btn {
-  width: 32px !important;
-  height: 32px !important;
-  background: var(--tv-bg, #131722) !important;
-  border: 1px solid var(--tv-border, #2a2e39) !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-  color: var(--tv-text, #d1d4dc) !important;
-  font-size: 16px !important;
+  width: 30px !important;
+  height: 30px !important;
+  background: var(--surface, #161a1f) !important;
+  border: 1px solid var(--border, #2a2f36) !important;
+  border-radius: 4px !important;
+  color: var(--text, #d1d4dc) !important;
+  font-size: 15px !important;
   font-weight: 600 !important;
   cursor: pointer !important;
   display: flex !important;
@@ -1008,12 +421,27 @@ button.ind-info {
   transition: all 0.12s ease !important;
 }
 
-.ai-step-btn:hover {
-  background: var(--tv-surface-hover, #2a2e39) !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
+:root[data-theme="light"] .ai-step-btn,
+[data-theme="light"] .ai-step-btn {
+  background: #f0f3fa !important;
+  border-color: #d1d4dc !important;
+  color: #131722 !important;
 }
 
-/* Quick Preset Chips */
+.ai-step-btn:hover {
+  background: var(--hover-strong, #1c2127) !important;
+  border-color: #434651 !important;
+  color: #ffffff !important;
+}
+
+:root[data-theme="light"] .ai-step-btn:hover,
+[data-theme="light"] .ai-step-btn:hover {
+  background: #e0e3eb !important;
+  border-color: #b2b5be !important;
+  color: #131722 !important;
+}
+
+/* Quick Preset Chips (TradingView Segmented Style) */
 .ai-handles-row {
   display: flex !important;
   gap: 4px !important;
@@ -1021,40 +449,70 @@ button.ind-info {
 
 .ai-handle-btn {
   flex: 1 !important;
-  height: 28px !important;
-  padding: 0 !important;
-  font-size: 12px !important;
+  padding: 5px 0 !important;
+  font-size: 11.5px !important;
   font-weight: 500 !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-  background: var(--tv-bg, #131722) !important;
-  border: 1px solid var(--tv-border, #2a2e39) !important;
-  color: var(--tv-text-dim, #787b86) !important;
+  border-radius: 4px !important;
+  background: var(--surface, #161a1f) !important;
+  border: 1px solid var(--border, #2a2f36) !important;
+  color: var(--text-dim, #8a93a0) !important;
   cursor: pointer !important;
   transition: all 0.12s ease !important;
   text-align: center !important;
 }
 
+:root[data-theme="light"] .ai-handle-btn,
+[data-theme="light"] .ai-handle-btn {
+  background: #f0f3fa !important;
+  border-color: #d1d4dc !important;
+  color: #131722 !important;
+}
+
 .ai-handle-btn:hover {
-  background: var(--tv-surface-hover, #2a2e39) !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
+  color: var(--text, #ffffff) !important;
+  border-color: #434651 !important;
 }
 
-.ai-handle-btn.active {
-  background: var(--tv-blue, #2962ff) !important;
+:root[data-theme="light"] .ai-handle-btn:hover,
+[data-theme="light"] .ai-handle-btn:hover {
+  background: #e0e3eb !important;
+  color: #131722 !important;
+}
+
+/* Active Chip: Pure High-Contrast Black & White */
+.ai-handle-btn.active,
+:root:not([data-theme="light"]) .ai-handle-btn.active,
+[data-theme="dark"] .ai-handle-btn.active {
+  background: #f0f3fa !important;
+  color: #131722 !important;
+  border-color: #f0f3fa !important;
+  font-weight: 700 !important;
+}
+
+:root[data-theme="light"] .ai-handle-btn.active,
+[data-theme="light"] .ai-handle-btn.active {
+  background: #131722 !important;
   color: #ffffff !important;
-  border-color: var(--tv-blue, #2962ff) !important;
-  font-weight: 600 !important;
+  border-color: #131722 !important;
+  font-weight: 700 !important;
 }
 
-/* Decision Card */
+/* Decision & Target Card */
+#tv-ai-flyout .ai-fly-card,
 .ai-fly-card {
-  background: var(--tv-bg, #131722) !important;
-  border: 1px solid var(--tv-border, #2a2e39) !important;
-  border-radius: var(--tv-radius-sm, 4px) !important;
-  padding: 10px !important;
+  background: var(--surface, #161a1f) !important;
+  border: 1px solid var(--border, #2a2f36) !important;
+  border-radius: 6px !important;
+  padding: 9px 11px !important;
   display: flex !important;
   flex-direction: column !important;
-  gap: 8px !important;
+  gap: 6px !important;
+}
+
+:root[data-theme="light"] #tv-ai-flyout .ai-fly-card,
+[data-theme="light"] #tv-ai-flyout .ai-fly-card {
+  background: #f8f9fd !important;
+  border: 1px solid #e0e3eb !important;
 }
 
 .ai-fly-decision-row {
@@ -1068,89 +526,298 @@ button.ind-info {
   font-weight: 700 !important;
   letter-spacing: 0.4px !important;
   padding: 3px 8px !important;
-  border-radius: var(--tv-radius-xs, 2px) !important;
+  border-radius: 4px !important;
   text-transform: uppercase !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  background: var(--tv-surface-hover, #2a2e39) !important;
+  background: #787b86 !important;
   color: #ffffff !important;
 }
 
-.ai-fly-badge.buy { background: var(--tv-green, #089981) !important; }
-.ai-fly-badge.sell { background: var(--tv-red, #f23645) !important; }
-.ai-fly-badge.hold { background: #787b86 !important; }
+.ai-fly-badge.buy,
+:root[data-theme="light"] .ai-fly-badge.buy,
+[data-theme="light"] .ai-fly-badge.buy {
+  background: #089981 !important;
+  color: #ffffff !important;
+}
+
+.ai-fly-badge.sell,
+:root[data-theme="light"] .ai-fly-badge.sell,
+[data-theme="light"] .ai-fly-badge.sell {
+  background: #f23645 !important;
+  color: #ffffff !important;
+}
+
+.ai-fly-badge.hold,
+:root[data-theme="light"] .ai-fly-badge.hold,
+[data-theme="light"] .ai-fly-badge.hold {
+  background: #787b86 !important;
+  color: #ffffff !important;
+}
 
 .ai-fly-conf {
-  font-size: 12px !important;
+  font-size: 11.5px !important;
   font-weight: 600 !important;
   font-variant-numeric: tabular-nums !important;
-  color: var(--tv-text-dim, #787b86) !important;
+  color: var(--text-dim, #8a93a0) !important;
+}
+
+:root[data-theme="light"] .ai-fly-conf,
+[data-theme="light"] .ai-fly-conf {
+  color: #787b86 !important;
 }
 
 .ai-fly-target-row {
   display: flex !important;
   align-items: baseline !important;
   justify-content: space-between !important;
+  margin-top: 1px !important;
 }
 
 .ai-fly-target {
-  font-size: 20px !important;
+  font-size: 19px !important;
   font-weight: 700 !important;
-  color: var(--tv-text-bright, #f0f3fa) !important;
+  font-variant-numeric: tabular-nums !important;
+  color: var(--text, #ffffff) !important;
+}
+
+:root[data-theme="light"] .ai-fly-target,
+[data-theme="light"] .ai-fly-target {
+  color: #131722 !important;
 }
 
 .ai-fly-ret {
-  font-size: 13px !important;
+  font-size: 12.5px !important;
   font-weight: 600 !important;
 }
 
-.ai-fly-ret.pos { color: var(--tv-green, #089981) !important; }
-.ai-fly-ret.neg { color: var(--tv-red, #f23645) !important; }
+.ai-fly-ret.pos { color: #089981 !important; }
+.ai-fly-ret.neg { color: #f23645 !important; }
 
-/* Levels Grid */
+/* Levels Row (Entry, SL, TP) */
 .ai-fly-levels {
   display: grid !important;
   grid-template-columns: 1fr 1fr !important;
-  gap: 4px 8px !important;
-  font-size: 11.5px !important;
-  background: var(--tv-surface, #1e222d) !important;
-  border: 1px solid var(--tv-border, #2a2e39) !important;
-  border-radius: var(--tv-radius-xs, 2px) !important;
+  gap: 4px 6px !important;
+  font-size: 11px !important;
+  font-variant-numeric: tabular-nums !important;
+  background: var(--bg, #101418) !important;
+  border: 1px solid var(--border, #2a2f36) !important;
+  border-radius: 4px !important;
   padding: 6px 8px !important;
 }
 
+:root[data-theme="light"] .ai-fly-levels,
+[data-theme="light"] .ai-fly-levels {
+  background: #ffffff !important;
+  border-color: #e0e3eb !important;
+}
+
 .ai-fly-level-item span {
-  color: var(--tv-text-dim, #787b86) !important;
+  color: var(--text-dim, #8a93a0) !important;
   margin-right: 4px !important;
 }
 
-.ai-fly-level-item strong {
-  color: var(--tv-text, #d1d4dc) !important;
+:root[data-theme="light"] .ai-fly-level-item span,
+[data-theme="light"] .ai-fly-level-item span {
+  color: #787b86 !important;
 }
 
-.ai-fly-level-item strong.sl { color: var(--tv-red, #f23645) !important; }
-.ai-fly-level-item strong.tp { color: var(--tv-green, #089981) !important; }
+.ai-fly-level-item strong {
+  color: var(--text, #d1d4dc) !important;
+}
 
-/* AI Flyout Actions Row */
+:root[data-theme="light"] .ai-fly-level-item strong,
+[data-theme="light"] .ai-fly-level-item strong {
+  color: #131722 !important;
+}
+
+.ai-fly-level-item strong.sl { color: #f23645 !important; }
+.ai-fly-level-item strong.tp { color: #089981 !important; }
+
+/* Action Buttons (TradingView Black & White Native Style) */
 .ai-fly-actions-row {
   display: flex !important;
-  gap: 8px !important;
+  gap: 6px !important;
   width: 100% !important;
   margin-top: 2px !important;
 }
 
+/* Primary "Analyze" Button */
+#tv-ai-flyout .ai-fly-btn-predict,
 .ai-fly-btn-predict {
   flex: 1 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  padding: 8px 14px !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+  border: none !important;
+  transition: all 0.12s ease !important;
+  letter-spacing: 0.2px !important;
+  box-shadow: none !important;
+  background: #f0f3fa !important;
+  color: #131722 !important;
 }
 
+:root[data-theme="light"] #tv-ai-flyout .ai-fly-btn-predict,
+[data-theme="light"] .ai-fly-btn-predict {
+  background: #131722 !important;
+  color: #ffffff !important;
+}
+
+.ai-fly-btn-predict:hover {
+  background: #ffffff !important;
+}
+
+:root[data-theme="light"] .ai-fly-btn-predict:hover,
+[data-theme="light"] .ai-fly-btn-predict:hover {
+  background: #2a2e39 !important;
+}
+
+.ai-fly-btn-predict:disabled {
+  opacity: 0.45 !important;
+  cursor: not-allowed !important;
+}
+
+/* Secondary "Clear" Button */
+#tv-ai-flyout .ai-fly-btn-clear,
 .ai-fly-btn-clear {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  padding: 8px 12px !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+  border: 1px solid var(--border, #2a2f36) !important;
+  transition: all 0.12s ease !important;
+  background: transparent !important;
+  color: var(--text-dim, #8a93a0) !important;
   flex: 0 0 auto !important;
+  box-shadow: none !important;
 }
 
+:root[data-theme="light"] #tv-ai-flyout .ai-fly-btn-clear,
+[data-theme="light"] .ai-fly-btn-clear {
+  background: #ffffff !important;
+  border-color: #d1d4dc !important;
+  color: #131722 !important;
+}
+
+.ai-fly-btn-clear:hover {
+  background: var(--hover, #1c2127) !important;
+  color: #ffffff !important;
+  border-color: #434651 !important;
+}
+
+:root[data-theme="light"] .ai-fly-btn-clear:hover,
+[data-theme="light"] .ai-fly-btn-clear:hover {
+  background: #f0f3fa !important;
+  border-color: #b2b5be !important;
+  color: #131722 !important;
+}
+
+/* Status Text */
 .ai-fly-status-text {
   font-size: 11px !important;
-  color: var(--tv-text-dim, #787b86) !important;
+  color: var(--text-dim, #8a93a0) !important;
   text-align: center !important;
+  margin-top: 2px !important;
   line-height: 1.3 !important;
+  font-weight: 400 !important;
 }
+
+:root[data-theme="light"] .ai-fly-status-text,
+[data-theme="light"] .ai-fly-status-text {
+  color: #787b86 !important;
+}
+
+/* ==========================================================================
+   4. Settings Modal Height & Alignment Refinements
+   ========================================================================== */
+.modal {
+  max-height: min(520px, 82vh) !important;
+  overflow-y: auto !important;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35) !important;
+}
+
+.modal-head {
+  padding: 12px 16px !important;
+  position: sticky !important;
+  top: 0 !important;
+  background: var(--surface) !important;
+  z-index: 2 !important;
+}
+
+.modal .ind-tabs {
+  position: sticky !important;
+  top: 48px !important;
+  background: var(--surface) !important;
+  z-index: 2 !important;
+  border-bottom: 1px solid var(--border) !important;
+}
+
+/* Alignment fixes for Settings -> Trading and other tabs */
+.modal .setting-row {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 16px !important;
+  padding: 10px 16px !important;
+}
+
+.modal .setting-sub {
+  padding: 14px 16px 4px 16px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: var(--text-dim) !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.03em !important;
+}
+
+.modal .setting-hint {
+  padding: 0 16px 8px 16px !important;
+  margin-top: -3px !important;
+  font-size: 11.5px !important;
+  color: var(--text-faint) !important;
+  line-height: 1.45 !important;
+}
+
+.modal .num-input {
+  text-align: right !important;
+  padding: 5px 8px !important;
+  width: 120px !important;
+  font-size: 13px !important;
+}
+
+/* Close button reliability */
+.ai-fly-close-btn {
+  cursor: pointer !important;
+  position: relative !important;
+  z-index: 100 !important;
+  pointer-events: auto !important;
+}
+
+/* Sleek Settings Gear Icon in TabBar */
+.tab-bar-actions .tabbar-action.gear,
+.tabbar-action.icon-only.gear {
+  font-size: 14px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: var(--text-dim) !important;
+}
+
+.tab-bar-actions .tabbar-action.gear:hover,
+.tabbar-action.icon-only.gear:hover {
+  color: var(--text) !important;
+}
+
+
+
