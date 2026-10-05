@@ -41,8 +41,18 @@
   // Get active KlineCharts instance
   function getActiveChart() {
     if (window.__klinecharts_map && window.__klinecharts_map.size > 0) {
+      const activeDom = document.querySelector('[k-line-chart-id]');
+      if (activeDom) {
+        const id = activeDom.getAttribute('k-line-chart-id');
+        if (window.__klinecharts_map.has(id)) {
+          return window.__klinecharts_map.get(id);
+        }
+      }
       const values = Array.from(window.__klinecharts_map.values());
       return values[values.length - 1];
+    }
+    if (window.chart && typeof window.chart.getDataList === 'function') {
+      return window.chart;
     }
     return null;
   }
@@ -136,46 +146,70 @@
     }
   }
 
+  // Close Flyout
+  function closeAiFlyout() {
+    isFlyoutOpen = false;
+    const family = document.querySelector('.ai-prediction-family');
+    if (family) {
+      const mainBtn = family.querySelector('.ai-prediction-btn');
+      const caretBtn = family.querySelector('.ds-caret');
+      if (mainBtn) mainBtn.classList.remove('on');
+      if (caretBtn) caretBtn.classList.remove('on');
+    }
+    const flyout = document.getElementById('tv-ai-flyout');
+    if (flyout) {
+      flyout.style.display = 'none';
+    }
+  }
+
   // Toggle Left-Side Flyout
   function toggleAiFlyout() {
-    isFlyoutOpen = !isFlyoutOpen;
+    if (isFlyoutOpen) {
+      closeAiFlyout();
+      return;
+    }
+
+    isFlyoutOpen = true;
     const family = document.querySelector('.ai-prediction-family');
     if (!family) return;
 
     const mainBtn = family.querySelector('.ai-prediction-btn');
     const caretBtn = family.querySelector('.ds-caret');
-    if (mainBtn) mainBtn.classList.toggle('on', isFlyoutOpen);
-    if (caretBtn) caretBtn.classList.toggle('on', isFlyoutOpen);
+    if (mainBtn) mainBtn.classList.add('on');
+    if (caretBtn) caretBtn.classList.add('on');
 
     let flyout = document.getElementById('tv-ai-flyout');
-    if (isFlyoutOpen) {
-      if (!flyout) {
-        flyout = createAiFlyout();
-        document.body.appendChild(flyout);
-      }
-      flyout.style.display = 'flex';
-      positionFlyout(flyout, family);
-      updateCurrentGraphHeader();
-      analyzeCurrentGraph();
-    } else {
-      if (flyout) flyout.style.display = 'none';
+    if (!flyout) {
+      flyout = createAiFlyout();
+      document.body.appendChild(flyout);
     }
+    flyout.style.display = 'flex';
+    flyout.style.flexDirection = 'column';
+    flyout.style.width = '330px';
+    flyout.style.minWidth = '330px';
+    flyout.style.maxWidth = '340px';
+    positionFlyout(flyout, family);
+    updateCurrentGraphHeader();
+    // NOTE: Prediction on chart ONLY occurs when user explicitly clicks "Analyze"!
   }
 
   // Position flyout dynamically so it is NEVER clipped at top or bottom
   function positionFlyout(flyout, trigger) {
+    if (!trigger) return;
     const rect = trigger.getBoundingClientRect();
-    const flyoutH = flyout.offsetHeight || 370;
+    const flyoutH = flyout.offsetHeight || 380;
     
     // Align with trigger button center
     let top = rect.top + rect.height / 2 - flyoutH / 2;
-    const minTop = 52; // below top toolbar
+    const minTop = 54; // below top toolbar
     const maxTop = window.innerHeight - flyoutH - 12;
     top = Math.max(minTop, Math.min(top, maxTop));
 
     flyout.style.position = 'fixed';
-    flyout.style.left = `${rect.right + 8}px`;
+    flyout.style.left = `${Math.max(52, rect.right + 8)}px`;
     flyout.style.top = `${top}px`;
+    flyout.style.width = '330px';
+    flyout.style.zIndex = '99999';
   }
 
   // Create Flyout (No external stocks - Current Graph Alone)
@@ -187,8 +221,13 @@
     flyout.innerHTML = `
       <!-- Header -->
       <div class="ai-fly-section">
-        <span>AI PREDICTIONS (KRONOS + LAYA)</span>
-        <span class="ai-badge-live">CURRENT GRAPH</span>
+        <span>AI Predictions</span>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="ai-badge-live">Active</span>
+          <button class="ai-fly-close-btn" id="ai-fly-close-btn" title="Close" aria-label="Close">
+            <svg viewBox="0 0 18 18" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="3" x2="15" y2="15"></line><line x1="15" y1="3" x2="3" y2="15"></line></svg>
+          </button>
+        </div>
       </div>
 
       <!-- Current Graph Alone Card -->
@@ -197,14 +236,14 @@
           <span class="ai-graph-symbol" id="ai-current-symbol">US100</span>
           <span class="ai-graph-tf" id="ai-current-tf">1H</span>
         </div>
-        <div class="ai-graph-subtext">Forecasting active chart continuation</div>
+        <div class="ai-graph-subtext">Active chart continuation forecast</div>
       </div>
 
       <!-- Prediction Horizon / Candles to Predict -->
       <div class="ai-handles-strip">
         <div class="ai-handles-label">
-          <span>CANDLES TO PREDICT</span>
-          <span class="ai-handles-hint" id="ai-handles-hint">5 - 60 candles</span>
+          <span>Candles to Predict</span>
+          <span class="ai-handles-hint" id="ai-handles-hint">5 - 60</span>
         </div>
         
         <!-- Input & Stepper Field -->
@@ -244,12 +283,23 @@
         </div>
       </div>
 
-      <!-- Analyze Button -->
-      <button class="ai-fly-btn-predict" id="ai-fly-predict-btn">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-        <span>⚡ Analyze</span>
-      </button>
+      <!-- Actions Row -->
+      <div class="ai-fly-actions-row">
+        <button class="ai-fly-btn-clear" id="ai-fly-clear-btn" title="Remove prediction from graph">Clear</button>
+        <button class="ai-fly-btn-predict" id="ai-fly-predict-btn">Analyze</button>
+      </div>
+      <div class="ai-fly-status-text" id="ai-fly-status">Click Analyze to project price forecast on chart</div>
     `;
+
+    // Close button event
+    const closeBtn = flyout.querySelector('#ai-fly-close-btn');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeAiFlyout();
+      });
+    }
 
     // Handles Presets Event
     const handleBtns = flyout.querySelectorAll('.ai-handle-btn');
@@ -263,7 +313,6 @@
         const h = parseInt(btn.getAttribute('data-handles') || '20', 10);
         currentHandles = h;
         if (candleInput) candleInput.value = h;
-        analyzeCurrentGraph();
       });
     });
 
@@ -280,7 +329,6 @@
         handleBtns.forEach(b => {
           b.classList.toggle('active', parseInt(b.getAttribute('data-handles'), 10) === val);
         });
-        analyzeCurrentGraph();
       });
     }
 
@@ -296,7 +344,6 @@
         handleBtns.forEach(b => {
           b.classList.toggle('active', parseInt(b.getAttribute('data-handles'), 10) === val);
         });
-        analyzeCurrentGraph();
       });
     }
 
@@ -312,7 +359,15 @@
         handleBtns.forEach(b => {
           b.classList.toggle('active', parseInt(b.getAttribute('data-handles'), 10) === val);
         });
-        analyzeCurrentGraph();
+      });
+    }
+
+    // Clear Button Event
+    const clearBtn = flyout.querySelector('#ai-fly-clear-btn');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        clearGraphPrediction();
       });
     }
 
@@ -352,7 +407,13 @@
     const predictBtn = document.getElementById('ai-fly-predict-btn');
     if (predictBtn) {
       predictBtn.disabled = true;
-      predictBtn.innerHTML = `<span>Analyzing ${currentHandles} Candles…</span>`;
+      predictBtn.innerHTML = `<span>Analyzing…</span>`;
+    }
+
+    const statusEl = document.getElementById('ai-fly-status');
+    if (statusEl) {
+      statusEl.textContent = `Analyzing ${info.ticker} (${currentHandles} candles)…`;
+      statusEl.style.color = 'var(--text-dim, #787b86)';
     }
 
     try {
@@ -363,14 +424,17 @@
         const rawBars = chart.getDataList() || [];
         const baseBars = rawBars.filter(b => !b._isAiForecast);
         if (baseBars.length >= 30) {
-          candlePayload = baseBars.slice(-120).map(b => ({
-            time: new Date(b.timestamp).toISOString(),
-            open: b.open,
-            high: b.high,
-            low: b.low,
-            close: b.close,
-            volume: b.volume || 100
-          }));
+          candlePayload = baseBars.slice(-120).map(b => {
+            const ms = b.timestamp < 1e11 ? b.timestamp * 1000 : b.timestamp;
+            return {
+              time: new Date(ms).toISOString(),
+              open: Number(b.open),
+              high: Number(b.high),
+              low: Number(b.low),
+              close: Number(b.close),
+              volume: Number(b.volume || 100)
+            };
+          });
         }
       }
 
@@ -401,14 +465,16 @@
 
     } catch (err) {
       console.warn('[AI Assistant] Analysis failed:', err);
+      const statusEl = document.getElementById('ai-fly-status');
+      if (statusEl) {
+        statusEl.textContent = `Analysis failed: ${err.message || 'Check connection'}`;
+        statusEl.style.color = '#ef5350';
+      }
     } finally {
       isLoading = false;
       if (predictBtn) {
         predictBtn.disabled = false;
-        predictBtn.innerHTML = `
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-          <span>⚡ Analyze</span>
-        `;
+        predictBtn.innerHTML = `<span>Analyze</span>`;
       }
     }
   }
@@ -454,75 +520,298 @@
     if (rrEl) rrEl.textContent = plan.risk_reward_ratio ? `1:${plan.risk_reward_ratio.split(':')[1] || '2.0'}` : '1:2.0';
   }
 
-  // Project Future Candles and Overlays on Current Graph
-  function projectOnGraph(forecastCandles, metrics, tradePlan) {
-    if (!forecastCandles || forecastCandles.length === 0) return;
-
+  // Remove prediction forecast candles & overlays from graph
+  function clearGraphPrediction() {
     const chart = getActiveChart();
     if (!chart) return;
 
-    const dataList = chart.getDataList() || [];
-    if (dataList.length === 0) return;
-
-    // Filter out previous forecast bars
-    const baseBars = dataList.filter(b => !b._isAiForecast);
-    const lastBar = baseBars[baseBars.length - 1];
-    const stepMs = baseBars.length > 1 ? (lastBar.timestamp - baseBars[baseBars.length - 2].timestamp) : 3600000;
-
-    // Append forecast candles into future
-    const newBars = [...baseBars];
-    forecastCandles.forEach((fc, idx) => {
-      newBars.push({
-        timestamp: lastBar.timestamp + stepMs * (idx + 1),
-        open: fc.open,
-        high: fc.high,
-        low: fc.low,
-        close: fc.close,
-        volume: fc.volume || 100,
-        _isAiForecast: true
-      });
-    });
-
-    if (typeof chart._addData === 'function') {
-      chart._addData(newBars, 'init');
-    }
-
-    // Clean old overlays
+    // Remove all AI prediction overlays
+    try {
+      chart.removeOverlay({ groupId: 'ai_prediction_overlays' });
+    } catch (e) {}
     if (activeOverlayIds.length > 0) {
       activeOverlayIds.forEach(id => {
-        try { chart.removeOverlay(id); } catch (e) {}
+        try { chart.removeOverlay({ id: id }); } catch (e) {}
       });
       activeOverlayIds = [];
     }
 
-    // Add Target 1 Price Line Overlay
+    // Restore chart bars without _isAiForecast
+    const dataList = chart.getDataList() || [];
+    const baseBars = dataList.filter(b => !b._isAiForecast);
+    if (baseBars.length > 0 && baseBars.length !== dataList.length) {
+      const store = (typeof chart.getChartStore === 'function') ? chart.getChartStore() : chart._chartStore;
+      if (store && typeof store._addData === 'function') {
+        store._addData(baseBars, 'init');
+      } else if (typeof chart._addData === 'function') {
+        chart._addData(baseBars, 'init');
+      }
+      try {
+        if (typeof chart.scrollToRealTime === 'function') {
+          chart.scrollToRealTime();
+        }
+      } catch (e) {}
+    }
+
+    const statusEl = document.getElementById('ai-fly-status');
+    if (statusEl) {
+      statusEl.textContent = 'Projection cleared from graph';
+      statusEl.style.color = '#787b86';
+    }
+  }
+
+  // Project Future Candles and Overlays on Current Graph
+  function projectOnGraph(forecastCandles, metrics, tradePlan) {
+    if (!forecastCandles || forecastCandles.length === 0) {
+      console.warn('[AI Assistant] No forecast candles to project');
+      return;
+    }
+
+    const chart = getActiveChart();
+    if (!chart) {
+      console.warn('[AI Assistant] No active chart found for projection');
+      return;
+    }
+
+    const dataList = chart.getDataList() || [];
+    if (dataList.length === 0) {
+      console.warn('[AI Assistant] Chart dataList is empty');
+      return;
+    }
+
+    // Filter out previous forecast bars
+    const baseBars = dataList.filter(b => !b._isAiForecast);
+    const lastBar = baseBars[baseBars.length - 1];
+    if (!lastBar) return;
+
+    // Detect step interval between bars in milliseconds
+    let stepMs = 3600000;
+    if (baseBars.length > 1) {
+      const diff = lastBar.timestamp - baseBars[baseBars.length - 2].timestamp;
+      if (diff > 0) stepMs = diff;
+    }
+
+    // Build new bars array with appended forecast candles
+    const newBars = [...baseBars];
+    const forecastPoints = [
+      {
+        timestamp: lastBar.timestamp,
+        close: Number(lastBar.close),
+        high: Number(lastBar.high),
+        low: Number(lastBar.low)
+      }
+    ];
+
+    forecastCandles.forEach((fc, idx) => {
+      const fTime = lastBar.timestamp + stepMs * (idx + 1);
+      const bar = {
+        timestamp: fTime,
+        open: Number(fc.open),
+        high: Number(fc.high),
+        low: Number(fc.low),
+        close: Number(fc.close),
+        volume: Number(fc.volume || 100),
+        _isAiForecast: true
+      };
+      newBars.push(bar);
+      forecastPoints.push(bar);
+    });
+
+    // Clean old overlays first
+    try {
+      chart.removeOverlay({ groupId: 'ai_prediction_overlays' });
+    } catch (e) {}
+    if (activeOverlayIds.length > 0) {
+      activeOverlayIds.forEach(id => {
+        try { chart.removeOverlay({ id: id }); } catch (e) {}
+      });
+      activeOverlayIds = [];
+    }
+
+    // 1. Inject continuation candles into KlineCharts store
+    const store = (typeof chart.getChartStore === 'function') ? chart.getChartStore() : chart._chartStore;
+    if (store && typeof store._addData === 'function') {
+      store._addData(newBars, 'init');
+    } else if (typeof chart._addData === 'function') {
+      chart._addData(newBars, 'init');
+    }
+
+    // Ensure chart scrolls and leaves comfortable right offset for forecast
+    try {
+      if (typeof chart.setOffsetRightDistance === 'function') {
+        chart.setOffsetRightDistance(120);
+      }
+      if (typeof chart.scrollToDataIndex === 'function') {
+        chart.scrollToDataIndex(newBars.length - 1, 300);
+      } else if (typeof chart.scrollToRealTime === 'function') {
+        chart.scrollToRealTime();
+      }
+      if (typeof chart.updatePane === 'function') {
+        chart.updatePane(0, 'candle_pane');
+      }
+    } catch (e) {
+      console.warn('[AI Assistant] Scroll/layout error:', e);
+    }
+
+    // Determine active theme colors for chart overlays (Black & White TradingView style)
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light' || document.body.getAttribute('data-theme') === 'light';
+    const mainStroke = isLight ? '#131722' : '#f0f3fa';
+    const corridorStroke = isLight ? 'rgba(19, 23, 34, 0.35)' : 'rgba(240, 243, 250, 0.35)';
+    const tagBg = isLight ? '#ffffff' : '#131722';
+    const tagBorder = isLight ? '#131722' : '#f0f3fa';
+    const tagTextCol = isLight ? '#131722' : '#ffffff';
+
+    // 2. Draw trajectory segments connecting candle closes
+    for (let i = 0; i < forecastPoints.length - 1; i++) {
+      const p1 = forecastPoints[i];
+      const p2 = forecastPoints[i + 1];
+      try {
+        const segId = chart.createOverlay({
+          name: 'segment',
+          groupId: 'ai_prediction_overlays',
+          paneId: 'candle_pane',
+          points: [
+            { timestamp: p1.timestamp, value: p1.close },
+            { timestamp: p2.timestamp, value: p2.close }
+          ],
+          styles: {
+            line: {
+              style: 'solid',
+              color: mainStroke,
+              size: 2
+            }
+          }
+        });
+        if (segId) activeOverlayIds.push(segId);
+      } catch (e) {}
+    }
+
+    // 3. Draw upper / lower projection corridor
+    for (let i = 0; i < forecastPoints.length - 1; i++) {
+      const p1 = forecastPoints[i];
+      const p2 = forecastPoints[i + 1];
+      try {
+        const hId = chart.createOverlay({
+          name: 'segment',
+          groupId: 'ai_prediction_overlays',
+          paneId: 'candle_pane',
+          points: [
+            { timestamp: p1.timestamp, value: p1.high },
+            { timestamp: p2.timestamp, value: p2.high }
+          ],
+          styles: {
+            line: {
+              style: 'dashed',
+              color: corridorStroke,
+              size: 1.2,
+              dashedValue: [3, 3]
+            }
+          }
+        });
+        if (hId) activeOverlayIds.push(hId);
+
+        const lId = chart.createOverlay({
+          name: 'segment',
+          groupId: 'ai_prediction_overlays',
+          paneId: 'candle_pane',
+          points: [
+            { timestamp: p1.timestamp, value: p1.low },
+            { timestamp: p2.timestamp, value: p2.low }
+          ],
+          styles: {
+            line: {
+              style: 'dashed',
+              color: corridorStroke,
+              size: 1.2,
+              dashedValue: [3, 3]
+            }
+          }
+        });
+        if (lId) activeOverlayIds.push(lId);
+      } catch (e) {}
+    }
+
+    // 4. Target 1 Price Line
     if (tradePlan && tradePlan.take_profit_1) {
       try {
+        const tp1 = Number(tradePlan.take_profit_1);
         const id1 = chart.createOverlay({
           name: 'priceLine',
-          points: [{ value: tradePlan.take_profit_1 }],
+          groupId: 'ai_prediction_overlays',
+          paneId: 'candle_pane',
+          points: [{ timestamp: lastBar.timestamp, value: tp1 }],
           styles: {
-            line: { style: 'dashed', color: '#26a69a', size: 1.5 },
-            text: { content: `⚡ Target ₹${tradePlan.take_profit_1.toFixed(2)}` }
+            line: { style: 'dashed', color: mainStroke, size: 1.2, dashedValue: [4, 4] },
+            text: { color: isLight ? '#ffffff' : '#131722', backgroundColor: mainStroke, size: 11 }
           }
         });
         if (id1) activeOverlayIds.push(id1);
       } catch (e) {}
     }
 
-    // Add Stop Loss Price Line Overlay
+    // 5. Target 2 Price Line
+    if (tradePlan && tradePlan.take_profit_2) {
+      try {
+        const tp2 = Number(tradePlan.take_profit_2);
+        const idTp2 = chart.createOverlay({
+          name: 'priceLine',
+          groupId: 'ai_prediction_overlays',
+          paneId: 'candle_pane',
+          points: [{ timestamp: lastBar.timestamp, value: tp2 }],
+          styles: {
+            line: { style: 'dashed', color: mainStroke, size: 1, dashedValue: [3, 3] },
+            text: { color: isLight ? '#ffffff' : '#131722', backgroundColor: mainStroke, size: 11 }
+          }
+        });
+        if (idTp2) activeOverlayIds.push(idTp2);
+      } catch (e) {}
+    }
+
+    // 6. Stop Loss Price Line
     if (tradePlan && tradePlan.stop_loss) {
       try {
+        const sl = Number(tradePlan.stop_loss);
         const id2 = chart.createOverlay({
           name: 'priceLine',
-          points: [{ value: tradePlan.stop_loss }],
+          groupId: 'ai_prediction_overlays',
+          paneId: 'candle_pane',
+          points: [{ timestamp: lastBar.timestamp, value: sl }],
           styles: {
-            line: { style: 'dashed', color: '#ef5350', size: 1.5 },
-            text: { content: `🛡️ Stop Loss ₹${tradePlan.stop_loss.toFixed(2)}` }
+            line: { style: 'dashed', color: '#787b86', size: 1.2, dashedValue: [4, 4] },
+            text: { color: '#ffffff', backgroundColor: '#787b86', size: 11 }
           }
         });
         if (id2) activeOverlayIds.push(id2);
       } catch (e) {}
+    }
+
+    // 7. Simple Annotation Tag on final candle
+    const finalPoint = forecastPoints[forecastPoints.length - 1];
+    if (finalPoint) {
+      try {
+        const retPct = (metrics && metrics.forecast_return_pct != null) ? metrics.forecast_return_pct : 0;
+        const sign = retPct >= 0 ? '+' : '';
+        const tagText = `Target ${sign}${retPct.toFixed(2)}%`;
+        const tagId = chart.createOverlay({
+          name: 'simpleAnnotation',
+          groupId: 'ai_prediction_overlays',
+          paneId: 'candle_pane',
+          points: [{ timestamp: finalPoint.timestamp, value: finalPoint.close }],
+          extendData: tagText,
+          styles: {
+            line: { style: 'dashed', color: mainStroke },
+            rect: { color: tagBg, borderColor: tagBorder },
+            text: { color: tagTextCol, size: 11 }
+          }
+        });
+        if (tagId) activeOverlayIds.push(tagId);
+      } catch (e) {}
+    }
+
+    const statusEl = document.getElementById('ai-fly-status');
+    if (statusEl) {
+      statusEl.textContent = `Forecast projected (${forecastCandles.length} candles)`;
+      statusEl.style.color = 'var(--text-dim, #787b86)';
     }
   }
 
@@ -532,7 +821,7 @@
     const family = document.querySelector('.ai-prediction-family');
     const flyout = document.getElementById('tv-ai-flyout');
     if (family && !family.contains(e.target) && flyout && !flyout.contains(e.target)) {
-      toggleAiFlyout();
+      closeAiFlyout();
     }
   });
 

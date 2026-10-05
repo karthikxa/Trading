@@ -30,8 +30,8 @@ interface Props {
 }
 
 const THEMES: { value: Theme; label: string }[] = [
-  { value: "light", label: "☀️ Light" },
-  { value: "dark", label: "🌙 Dark" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
 ];
 
 // Tab strip layout once the tabs outgrow one row (theme.ts TabStrip).

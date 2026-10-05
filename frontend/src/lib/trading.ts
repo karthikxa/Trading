@@ -96,7 +96,7 @@ const BROKER_LABELS: Record<string, string> = {
   // Two Capital feeds: demo (default data host) and live (live host). Distinct
   // labels because they're separate data brokers; the env suffix (Paper/Demo/Live)
   // is a different axis shown on the dock account tabs.
-  capital: "Capital.com (demo)",
+  capital: "Capital.com",
   "capital-live": "Capital.com (live)",
   "ig-demo": "IG (demo)",
   "ig-live": "IG (live)",

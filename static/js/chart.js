@@ -63,6 +63,30 @@ class TradingChart {
     this.render();
   }
 
+  updateLastCandle(candle) {
+    if (!this.historicalCandles || this.historicalCandles.length === 0) {
+      this.historicalCandles = [candle];
+      this.render();
+      return;
+    }
+    const last = this.historicalCandles[this.historicalCandles.length - 1];
+    const isSameBar = (candle.ts && last.ts === candle.ts) || 
+                      (candle.time && last.time === candle.time) ||
+                      (candle.time_sec && last.time_sec === candle.time_sec);
+    if (isSameBar) {
+      last.close = candle.close;
+      last.high = Math.max(last.high, candle.high);
+      last.low = Math.min(last.low, candle.low);
+      last.volume = Math.max(last.volume || 0, candle.volume || last.volume || 100);
+    } else {
+      this.historicalCandles.push(candle);
+      if (this.historicalCandles.length > 1000) {
+        this.historicalCandles.shift();
+      }
+    }
+    this.render();
+  }
+
   initEvents() {
     window.addEventListener('resize', () => this.resize());
     

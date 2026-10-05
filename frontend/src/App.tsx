@@ -957,8 +957,12 @@ export default function App() {
               <button
                 className="tabbar-action icon-only gear"
                 onClick={() => setShowSettings(true)}
+                aria-label="Settings"
               >
-                ⚙
+                <svg viewBox="0 0 18 18" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="9" cy="9" r="2.5" />
+                  <path d="M9 1.5v1.8M9 14.7v1.8M1.5 9h1.8M14.7 9h1.8M3.7 3.7l1.3 1.3M13 13l1.3 1.3M3.7 14.3l1.3-1.3M13 5l1.3-1.3" />
+                </svg>
               </button>
             </Tooltip>
             {/* Active broker / trading account, pinned to the FAR RIGHT of the tab

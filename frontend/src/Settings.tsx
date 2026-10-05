@@ -56,7 +56,7 @@ interface Props {
 
 type Tab = "general" | "alerts" | "trading" | "demo";
 
-const THEMES: Theme[] = ["dark", "light"];
+const THEMES = ["dark", "light", "system"] as const;
 const CLOCKS: { value: Clock; label: string }[] = [
   { value: "24h", label: "24h" },
   { value: "12h", label: "12h" },
@@ -314,7 +314,7 @@ export default function SettingsModal({ settings, onChange, onClose, initialTab 
             ["general", "General"],
             ["alerts", "Alerts"],
             ["trading", "Trading"],
-            ...(isAdmin ? ([["demo", "Public demo"]] as [Tab, string][]) : []),
+            ...(isAdmin ? ([["demo", "Publish"]] as [Tab, string][]) : []),
           ] as [Tab, string][]).map(([t, label]) => (
             <button
               key={t}
@@ -337,7 +337,7 @@ export default function SettingsModal({ settings, onChange, onClose, initialTab 
                     className={settings.theme === t ? "seg-on" : ""}
                     onClick={() => onChange({ ...settings, theme: t })}
                   >
-                    {t === "dark" ? "🌙 Dark" : "☀️ Light"}
+                    {t === "dark" ? "Dark" : t === "light" ? "Light" : "System"}
                   </button>
                 ))}
               </div>

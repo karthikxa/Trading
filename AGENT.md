@@ -51,6 +51,15 @@ This repository hosts **Chartkar / Openbots TradingAI**, an ultra-lightweight, h
 ### E. Ultra-Low Resource Mode (`< 100 MB RAM`)
 - Implemented `LightweightKronosPredictor` and `LightweightLayaRouter` in `engine.py`.
 - Eliminates heavy PyTorch GPU dependencies during normal operation, allowing the entire backend to run at **~91-95 MB RAM** with instant sub-50ms inference.
+- Guaranteed zero OOM on Render 512MB RAM free tier (running memory strictly under 450MB).
+
+### F. TradingView UX Polish & Clean Aesthetics
+- **Standardized Trading Badges**: BUY = Green (`#089981`), SELL = Red (`#f23645`), HOLD = Neutral Grey (`#787b86`).
+- **Explicit Trigger Projection**: Candlestick projections only project to the graph when the user explicitly clicks **"Analyze"**, preventing accidental pre-projections.
+- **Reliable Close Button**: Fixed the AI prediction flyout close button with clean event decoupling and outside-click handling.
+- **Pure Text Theme Selector**: Replaced emojis (`🌙` / `☀️`) with clean **Dark**, **Light**, and **System** mode selectors.
+- **Settings Modal Optimization**: Compact modal height (`max-height: min(520px, 82vh)`) with fixed 16px alignment across trading inputs and hints.
+- **Clean Broker Display**: Removed `(demo)` tags and standardized on clean **Capital.com** execution.
 
 ---
 

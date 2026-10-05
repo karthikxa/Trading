@@ -17,6 +17,7 @@ __pycache__/
 *.pyc
 .system_generated/
 .agents/
+scratch/
 scripts/push_to_github.py
 
 data/
