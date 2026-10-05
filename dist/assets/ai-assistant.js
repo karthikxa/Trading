@@ -40,19 +40,31 @@
 
   // Get active KlineCharts instance
   function getActiveChart() {
-    if (window.__klinecharts_map && window.__klinecharts_map.size > 0) {
-      const activeDom = document.querySelector('[k-line-chart-id]');
-      if (activeDom) {
-        const id = activeDom.getAttribute('k-line-chart-id');
-        if (window.__klinecharts_map.has(id)) {
-          return window.__klinecharts_map.get(id);
-        }
+    if (typeof window !== 'undefined') {
+      if (window.__active_chart && typeof window.__active_chart.getDataList === 'function') {
+        return window.__active_chart;
       }
-      const values = Array.from(window.__klinecharts_map.values());
-      return values[values.length - 1];
-    }
-    if (window.chart && typeof window.chart.getDataList === 'function') {
-      return window.chart;
+      if (window.__klinecharts_map && window.__klinecharts_map.size > 0) {
+        const activeDom = document.querySelector('[k-line-chart-id]');
+        if (activeDom) {
+          if (activeDom.__klinechart__ && typeof activeDom.__klinechart__.getDataList === 'function') {
+            return activeDom.__klinechart__;
+          }
+          const id = activeDom.getAttribute('k-line-chart-id');
+          if (window.__klinecharts_map.has(id)) {
+            return window.__klinecharts_map.get(id);
+          }
+        }
+        const values = Array.from(window.__klinecharts_map.values());
+        if (values.length > 0) return values[values.length - 1];
+      }
+      const dom = document.querySelector('[k-line-chart-id]');
+      if (dom && dom.__klinechart__ && typeof dom.__klinechart__.getDataList === 'function') {
+        return dom.__klinechart__;
+      }
+      if (window.chart && typeof window.chart.getDataList === 'function') {
+        return window.chart;
+      }
     }
     return null;
   }
@@ -224,8 +236,8 @@
         <span>AI Predictions</span>
         <div style="display:flex;align-items:center;gap:6px;">
           <span class="ai-badge-live">Active</span>
-          <button class="ai-fly-close-btn" id="ai-fly-close-btn" title="Close" aria-label="Close">
-            <svg viewBox="0 0 18 18" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="3" x2="15" y2="15"></line><line x1="15" y1="3" x2="3" y2="15"></line></svg>
+          <button class="ai-fly-close-btn" id="ai-fly-close-btn" title="Close" aria-label="Close" type="button" style="pointer-events: auto !important; cursor: pointer !important;">
+            <svg viewBox="0 0 18 18" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="pointer-events: none !important;"><line x1="3" y1="3" x2="15" y2="15"></line><line x1="15" y1="3" x2="3" y2="15"></line></svg>
           </button>
         </div>
       </div>
@@ -294,11 +306,13 @@
     // Close button event
     const closeBtn = flyout.querySelector('#ai-fly-close-btn');
     if (closeBtn) {
-      closeBtn.addEventListener('click', (e) => {
+      const handleClose = (e) => {
         e.preventDefault();
         e.stopPropagation();
         closeAiFlyout();
-      });
+      };
+      closeBtn.addEventListener('click', handleClose);
+      closeBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
     }
 
     // Handles Presets Event
@@ -375,6 +389,7 @@
     const predictBtn = flyout.querySelector('#ai-fly-predict-btn');
     if (predictBtn) {
       predictBtn.addEventListener('click', (e) => {
+        e.preventDefault();
         e.stopPropagation();
         analyzeCurrentGraph();
       });
@@ -569,7 +584,13 @@
 
     const chart = getActiveChart();
     if (!chart) {
-      console.warn('[AI Assistant] No active chart found for projection');
+      console.warn('[AI Assistant] No active chart found for canvas projection, forecast displayed in card');
+      const statusEl = document.getElementById('ai-fly-status');
+      if (statusEl) {
+        const retPct = (metrics && metrics.forecast_return_pct != null) ? metrics.forecast_return_pct : 0;
+        statusEl.textContent = `Forecast ready: ${retPct >= 0 ? '+' : ''}${retPct.toFixed(2)}% return projected in card`;
+        statusEl.style.color = 'var(--text-dim, #787b86)';
+      }
       return;
     }
 
@@ -825,10 +846,28 @@
     }
   });
 
-  // Hotkey listener: Alt+A
+  // Hotkey listener: Alt+A and Escape
   window.addEventListener('keydown', (e) => {
     if (e.altKey && e.code === 'KeyA') {
       e.preventDefault();
+      toggleAiFlyout();
+    } else if (e.key === 'Escape' && isFlyoutOpen) {
+      closeAiFlyout();
+    }
+  });
+
+  // Listen to custom event dispatched by React components (e.g. DrawSidebar.tsx)
+  window.addEventListener('toggle-ai-flyout', (e) => {
+    e?.stopPropagation?.();
+    toggleAiFlyout();
+  });
+
+  // Delegated click handler on document to ensure AI button clicks always open flyout
+  document.addEventListener('click', (e) => {
+    const trigger = e.target.closest('.ai-prediction-btn, .ai-prediction-family .ds-caret');
+    if (trigger && !e.target.closest('#tv-ai-flyout')) {
+      e.preventDefault();
+      e.stopPropagation();
       toggleAiFlyout();
     }
   });

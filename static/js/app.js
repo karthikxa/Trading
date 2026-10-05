@@ -1028,7 +1028,10 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify({
           pair: state.pair,
           timeframe: state.timeframe,
-          candles: candles.map(c => ({ open:c.open, high:c.high, low:c.low, close:c.close, volume:c.volume, time:c.ts || 0 })),
+          candles: candles.map(c => ({
+            open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume,
+            time: c.ts ? new Date(c.ts * 1000).toISOString() : new Date().toISOString()
+          })),
           pred_len: predLen,
           temperature: state.temperature,
           top_p: state.topP
@@ -1036,7 +1039,33 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const raw = await res.json();
+
+      // Normalize engine response schema to flat format expected by updateAIResults
+      const ld = raw.laya_decision || {};
+      const tp = raw.trade_plan || {};
+      const lat = raw.latency || {};
+      const data = {
+        ...raw,
+        // Core fields
+        decision: (ld.action || tp.action || 'HOLD').toUpperCase(),
+        confidence: ld.action_confidence_pct != null ? ld.action_confidence_pct / 100 : 0.65,
+        buy_prob: ld.probabilities ? (ld.probabilities.buy || 0) / 100 : 0.33,
+        sell_prob: ld.probabilities ? (ld.probabilities.sell || 0) / 100 : 0.33,
+        hold_prob: ld.probabilities ? (ld.probabilities.hold || 0) / 100 : 0.34,
+        risk_level: ld.risk_level || 'Moderate',
+        risk_score: ld.risk_score || 1.0,
+        breakout_prob: ld.breakout_prob_pct != null ? ld.breakout_prob_pct / 100 : 0.5,
+        // Trade plan
+        entry_price: tp.entry_price || (raw.metrics && raw.metrics.last_close) || 0,
+        stop_loss: tp.stop_loss || null,
+        take_profit_1: tp.take_profit_1 || null,
+        take_profit_2: tp.take_profit_2 || null,
+        // Latency
+        kronos_latency_ms: lat.kronos_ms || null,
+        laya_latency_ms: lat.laya_ms || null,
+        total_latency_ms: lat.total_ms || null,
+      };
 
       // Update AI bubble
       updateAIResults(data);
@@ -1048,22 +1077,31 @@ document.addEventListener('DOMContentLoaded', () => {
           chart.setData(state.historicalCandles, state.forecastCandles, computeIndicators(state.historicalCandles));
         }
         const horizonBadge = document.getElementById('horizonBadge');
-        if (horizonBadge) { horizonBadge.style.display = 'block'; }
+        if (horizonBadge) horizonBadge.style.display = 'block';
 
-        // Update target row
+        // Update target row (null-safe)
         const lastForecast = data.forecast_candles[data.forecast_candles.length - 1];
         const lastActual = state.historicalCandles[state.historicalCandles.length - 1];
-        document.getElementById('kronosTargetRow').style.display = 'flex';
-        document.getElementById('targetClose').textContent = lastActual.close.toFixed(2);
-        document.getElementById('targetPriceHdr').textContent = lastForecast.close.toFixed(2);
-        const ret = ((lastForecast.close - lastActual.close) / lastActual.close * 100);
-        document.getElementById('targetReturn').textContent = `${ret >= 0 ? '+' : ''}${ret.toFixed(2)}%`;
-        document.getElementById('scaleKronos').style.display = 'block';
-        document.getElementById('kronosTarget').textContent = lastForecast.close.toFixed(2);
-        document.getElementById('kronosCandlesLeft').textContent = `${predLen} candles`;
+        const kronosRow = document.getElementById('kronosTargetRow');
+        if (kronosRow) kronosRow.style.display = 'flex';
+        const targetClose = document.getElementById('targetClose');
+        if (targetClose && lastActual) targetClose.textContent = lastActual.close.toFixed(2);
+        const targetPriceHdr = document.getElementById('targetPriceHdr');
+        if (targetPriceHdr) targetPriceHdr.textContent = lastForecast.close.toFixed(2);
+        if (lastActual) {
+          const ret = ((lastForecast.close - lastActual.close) / lastActual.close * 100);
+          const targetReturn = document.getElementById('targetReturn');
+          if (targetReturn) targetReturn.textContent = `${ret >= 0 ? '+' : ''}${ret.toFixed(2)}%`;
+        }
+        const scaleKronos = document.getElementById('scaleKronos');
+        if (scaleKronos) scaleKronos.style.display = 'block';
+        const kronosTarget = document.getElementById('kronosTarget');
+        if (kronosTarget) kronosTarget.textContent = lastForecast.close.toFixed(2);
+        const kronosCandlesLeft = document.getElementById('kronosCandlesLeft');
+        if (kronosCandlesLeft) kronosCandlesLeft.textContent = `${predLen} candles`;
       }
 
-      showToast(`✓ AI Analysis complete — ${data.decision || 'HOLD'}`, 'success');
+      showToast(`✓ AI Analysis complete — ${data.decision}`, 'success');
 
     } catch (err) {
       console.error('[runForecast]', err);
@@ -1109,14 +1147,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     state.forecastCandles = simData.forecast_candles;
     if (chart) chart.setData(state.historicalCandles, state.forecastCandles, computeIndicators(state.historicalCandles));
-    document.getElementById('horizonBadge').style.display = 'block';
-    document.getElementById('kronosTargetRow').style.display = 'flex';
+    const hBadge = document.getElementById('horizonBadge');
+    if (hBadge) hBadge.style.display = 'block';
+    const kronosRow = document.getElementById('kronosTargetRow');
+    if (kronosRow) kronosRow.style.display = 'flex';
     const lastF = simData.forecast_candles[simData.forecast_candles.length - 1];
     const lastA = state.historicalCandles[state.historicalCandles.length - 1];
-    document.getElementById('targetClose').textContent = lastA.close.toFixed(2);
-    document.getElementById('targetPriceHdr').textContent = lastF.close.toFixed(2);
-    const ret = (lastF.close - lastA.close) / lastA.close * 100;
-    document.getElementById('targetReturn').textContent = `${ret >= 0 ? '+' : ''}${ret.toFixed(2)}%`;
+    const tCloseEl = document.getElementById('targetClose');
+    if (tCloseEl && lastA) tCloseEl.textContent = lastA.close.toFixed(2);
+    const tPriceEl = document.getElementById('targetPriceHdr');
+    if (tPriceEl) tPriceEl.textContent = lastF.close.toFixed(2);
+    if (lastA) {
+      const ret = (lastF.close - lastA.close) / lastA.close * 100;
+      const tRetEl = document.getElementById('targetReturn');
+      if (tRetEl) tRetEl.textContent = `${ret >= 0 ? '+' : ''}${ret.toFixed(2)}%`;
+    }
   }
 
   function generateSimForecast(candles, n) {
@@ -1172,54 +1217,60 @@ document.addEventListener('DOMContentLoaded', () => {
     // Risk & breakout
     const risk = data.risk_level || '--';
     const riskScore = data.risk_score;
-    document.getElementById('riskVal').textContent = risk;
-    document.getElementById('riskSub').textContent = `Score: ${riskScore != null ? riskScore.toFixed(1) : '--'} / 3.0`;
-    document.getElementById('riskVal').className = `metric-value ${risk === 'LOW' ? 'bull' : risk === 'HIGH' ? 'bear' : ''}`;
-    document.getElementById('breakoutVal').textContent = pct(data.breakout_prob);
-    document.getElementById('aiBubbleRisk').textContent = risk;
+    const riskEl = document.getElementById('riskVal');
+    const riskSubEl = document.getElementById('riskSub');
+    if (riskEl) { riskEl.textContent = risk; riskEl.className = `metric-value ${risk === 'LOW' || risk === 'Low' ? 'bull' : risk === 'HIGH' || risk === 'High' ? 'bear' : ''}`; }
+    if (riskSubEl) riskSubEl.textContent = `Score: ${riskScore != null ? Number(riskScore).toFixed(1) : '--'} / 3.0`;
+    const breakoutEl = document.getElementById('breakoutVal');
+    if (breakoutEl) breakoutEl.textContent = pct(data.breakout_prob);
+    const bubbleRiskEl = document.getElementById('aiBubbleRisk');
+    if (bubbleRiskEl) bubbleRiskEl.textContent = risk;
 
     // Trade levels
     const ep = data.entry_price || (state.historicalCandles.length ? state.historicalCandles[state.historicalCandles.length-1].close : 0);
     const sl = data.stop_loss;
     const tp1 = data.take_profit_1;
     const tp2 = data.take_profit_2;
-    const rr = sl && tp1 ? `1 : ${((tp1-ep) / (ep-sl)).toFixed(2)}` : '--';
+    const rr = sl && tp1 && (ep - sl) !== 0 ? `1 : ${(Math.abs(tp1 - ep) / Math.abs(ep - sl)).toFixed(2)}` : '--';
 
-    document.getElementById('tlEntry').textContent = fmt(ep);
-    document.getElementById('tlSL').innerHTML = `${fmt(sl)} <span class="tl-badge sl">SL</span>`;
-    document.getElementById('tlTP1').innerHTML = `${fmt(tp1)} <span class="tl-badge tp">TP1</span>`;
-    document.getElementById('tlTP2').innerHTML = `${fmt(tp2)} <span class="tl-badge tp">TP2</span>`;
-    document.getElementById('tlRR').textContent = rr;
+    const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    const setHTML = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val; };
 
-    document.getElementById('planAction').textContent = dec;
-    document.getElementById('planActionBadge').textContent = dec;
-    document.getElementById('planActionBadge').className = `plan-action-badge ${dec}`;
-    document.getElementById('planEntry').textContent = `₹${fmt(ep)}`;
-    document.getElementById('planSL').textContent = `₹${fmt(sl)}`;
-    document.getElementById('planTP1').textContent = `₹${fmt(tp1)}`;
-    document.getElementById('planTP2').textContent = `₹${fmt(tp2)}`;
-    document.getElementById('planRR').textContent = rr;
+    setEl('tlEntry', fmt(ep));
+    setHTML('tlSL', `${fmt(sl)} <span class="tl-badge sl">SL</span>`);
+    setHTML('tlTP1', `${fmt(tp1)} <span class="tl-badge tp">TP1</span>`);
+    setHTML('tlTP2', `${fmt(tp2)} <span class="tl-badge tp">TP2</span>`);
+    setEl('tlRR', rr);
+
+    setEl('planAction', dec);
+    const planBadgeEl = document.getElementById('planActionBadge');
+    if (planBadgeEl) { planBadgeEl.textContent = dec; planBadgeEl.className = `plan-action-badge ${dec}`; }
+    setEl('planEntry', `₹${fmt(ep)}`);
+    setEl('planSL', `₹${fmt(sl)}`);
+    setEl('planTP1', `₹${fmt(tp1)}`);
+    setEl('planTP2', `₹${fmt(tp2)}`);
+    setEl('planRR', rr);
 
     // Position sizing
     const capital = parseFloat(document.getElementById('planCapital')?.value) || 100000;
     const riskPct = parseFloat(document.getElementById('planRiskPct')?.value) || 1;
     const riskAmount = capital * riskPct / 100;
     const slDist = sl ? Math.abs(ep - sl) : ep * 0.01;
-    const qty = Math.floor(riskAmount / slDist);
-    document.getElementById('planSizing').textContent = `${qty} units (₹${(qty*ep).toLocaleString('en-IN', {maximumFractionDigits:0})})`;
+    const qty = Math.floor(riskAmount / Math.max(slDist, 0.01));
+    setEl('planSizing', `${qty} units (₹${(qty*ep).toLocaleString('en-IN', {maximumFractionDigits:0})})`);
 
     // AI bubble
-    document.getElementById('aiBubbleSL').textContent = fmt(sl);
-    document.getElementById('aiBubbleTP').textContent = fmt(tp1);
-    document.getElementById('aiBubbleBreakout').textContent = pct(data.breakout_prob);
+    setEl('aiBubbleSL', fmt(sl));
+    setEl('aiBubbleTP', fmt(tp1));
+    setEl('aiBubbleBreakout', pct(data.breakout_prob));
 
     // Latency
     const kl = data.kronos_latency_ms;
     const ll = data.laya_latency_ms;
     const tl = data.total_latency_ms;
-    document.getElementById('latencyKronos').textContent = kl ? `${kl.toFixed(0)} ms` : '-- ms';
-    document.getElementById('latencyLaya').textContent = ll ? `${ll.toFixed(0)} ms` : '-- ms';
-    document.getElementById('latencyTotal').textContent = tl ? `${tl.toFixed(0)} ms` : '-- ms';
+    setEl('latencyKronos', kl ? `${Number(kl).toFixed(0)} ms` : '-- ms');
+    setEl('latencyLaya', ll ? `${Number(ll).toFixed(0)} ms` : '-- ms');
+    setEl('latencyTotal', tl ? `${Number(tl).toFixed(0)} ms` : '-- ms');
 
     // Execute buttons
     const buyBtn = document.getElementById('executeBuyBtn');

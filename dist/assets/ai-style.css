@@ -227,8 +227,10 @@ button.ind-info {
   border: none !important;
   color: var(--text-dim, #8a93a0) !important;
   cursor: pointer !important;
-  width: 22px !important;
-  height: 22px !important;
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
+  min-height: 26px !important;
   padding: 0 !important;
   margin: 0 !important;
   display: flex !important;
@@ -237,7 +239,12 @@ button.ind-info {
   border-radius: 4px !important;
   outline: none !important;
   box-shadow: none !important;
+  pointer-events: auto !important;
   transition: all 0.12s ease !important;
+}
+
+.ai-fly-close-btn svg {
+  pointer-events: none !important;
 }
 
 .ai-fly-close-btn:hover {
