@@ -1,0 +1,172 @@
+/* ════════════════════════════════════════════════════════════════ */
+/* TRADINGVIEW UNIVERSAL TOP NAVIGATION BAR                          */
+/* Provides seamless multi-page navigation across all cloned pages  */
+/* ════════════════════════════════════════════════════════════════ */
+
+.tv-universal-nav {
+  position: sticky;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 52px;
+  background: #ffffff;
+  border-bottom: 1px solid #e0e3eb;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  z-index: 9999;
+  font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+  box-sizing: border-box;
+}
+
+.tv-universal-nav__left {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.tv-universal-nav__logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: #131722;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: -0.5px;
+}
+
+.tv-universal-nav__logo svg {
+  display: block;
+}
+
+.tv-universal-nav__links {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tv-universal-nav__item {
+  position: relative;
+}
+
+.tv-universal-nav__link {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  color: #131722;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+  transition: background 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.tv-universal-nav__link:hover {
+  background: #f0f3fa;
+  color: #2962ff;
+}
+
+.tv-universal-nav__link.active {
+  color: #2962ff;
+  font-weight: 600;
+}
+
+/* Dropdown Menu */
+.tv-universal-nav__dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: #ffffff;
+  border: 1px solid #e0e3eb;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  display: none;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 6px 0;
+  z-index: 10000;
+}
+
+.tv-universal-nav__item:hover .tv-universal-nav__dropdown {
+  display: flex;
+}
+
+.tv-universal-nav__dropdown a {
+  padding: 8px 16px;
+  color: #131722;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.15s ease;
+}
+
+.tv-universal-nav__dropdown a:hover {
+  background: #f0f3fa;
+  color: #2962ff;
+}
+
+.tv-universal-nav__right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tv-universal-nav__search-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #f0f3fa;
+  border: 1px solid #e0e3eb;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #787b86;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.tv-universal-nav__search-btn:hover {
+  background: #e0e3eb;
+  border-color: #b2b5be;
+  color: #131722;
+}
+
+.tv-universal-nav__search-btn kbd {
+  background: #ffffff;
+  border: 1px solid #d1d4dc;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 10px;
+  font-family: inherit;
+  font-weight: 600;
+}
+
+.tv-universal-nav__cta {
+  background: #2962ff;
+  color: #ffffff !important;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: 8px;
+  text-decoration: none;
+  transition: background 0.15s ease;
+}
+
+.tv-universal-nav__cta:hover {
+  background: #1e53e5;
+}
+
+/* Prevent loading spinner from obscuring content */
+.tv-space-loader, [role="progressbar"].fullscreen-loader {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

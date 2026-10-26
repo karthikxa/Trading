@@ -1,0 +1,870 @@
+/* ═════════════════════════════════════════════════════════════════
+   TradingView Drawing Tools & Floating Format Toolbar Styles
+   Extracted from 2ND COMPONENTS.har (54339.607095526612119b0f4a.css,
+   22630.6ad8da4c72c36a4e41bf.css, and 65420.2ca6e06abcc4ecb30adf.css)
+   ═════════════════════════════════════════════════════════════════ */
+
+/* ── Tool Group in Left Sidebar ── */
+.tv-tool-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.tv-tool-icon-holder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+}
+
+.tv-tool-icon-holder svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
+}
+
+/* Hover flyout arrow indicator matching TradingView (.arrow-FuKse5bD) */
+.tv-tool-arrow {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 6px;
+  height: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  color: #787b86;
+  transition: opacity 0.15s ease;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.tv-tool-group:hover .tv-tool-arrow,
+.tv-tool-btn.active .tv-tool-arrow {
+  opacity: 1;
+}
+
+.tv-tool-arrow:hover {
+  color: #131722;
+}
+
+/* ── Flyout Drawer Popup Menu ── */
+.tv-tool-flyout {
+  position: absolute;
+  left: 46px;
+  top: 0;
+  width: 260px;
+  max-height: 480px;
+  background: #ffffff;
+  border: 1px solid #e0e3eb;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 1000;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  animation: tvFlyoutIn 0.12s ease-out;
+}
+
+.tv-tool-flyout.open {
+  display: flex;
+}
+
+@keyframes tvFlyoutIn {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.tv-flyout-header {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #787b86;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid #f0f3fa;
+}
+
+.tv-flyout-list {
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.tv-flyout-item {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+  color: #131722;
+  font-size: 13px;
+  gap: 10px;
+  user-select: none;
+}
+
+.tv-flyout-item:hover {
+  background: #f0f3fa;
+}
+
+.tv-flyout-item.selected {
+  background: #e8f0fe;
+  color: #2962ff;
+  font-weight: 500;
+}
+
+.tv-flyout-icon {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.tv-flyout-icon svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.tv-flyout-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tv-flyout-shortcut {
+  font-size: 10px;
+  color: #787b86;
+  background: #f0f3fa;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.tv-flyout-star {
+  background: none;
+  border: none;
+  color: #b2b5be;
+  font-size: 14px;
+  padding: 0 4px;
+  cursor: pointer;
+  transition: color 0.1s;
+}
+
+.tv-flyout-star:hover {
+  color: #ff9800;
+}
+
+/* ── Floating Format Toolbar (Matching 54339.607095526612119b0f4a.css) ── */
+.tv-floating-drawing-toolbar {
+  position: absolute;
+  height: 38px;
+  background: #ffffff;
+  border: 1px solid #e0e3eb;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 1px 3px rgba(0, 0, 0, 0.05);
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  gap: 4px;
+  z-index: 100;
+  user-select: none;
+  animation: tvFloatToolbarIn 0.15s ease-out;
+}
+
+@keyframes tvFloatToolbarIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.tv-ftb-handle {
+  width: 14px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  padding-right: 4px;
+}
+
+.tv-ftb-handle:active {
+  cursor: grabbing;
+}
+
+.tv-ftb-tool-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #131722;
+  padding: 0 6px;
+}
+
+.tv-ftb-sep {
+  width: 1px;
+  height: 20px;
+  background: #e0e3eb;
+  margin: 0 4px;
+}
+
+.tv-ftb-icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: #50535e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.tv-ftb-icon-btn:hover {
+  background: #f0f3fa;
+  color: #131722;
+}
+
+.tv-ftb-icon-btn.active {
+  background: #e8f0fe;
+  color: #2962ff;
+}
+
+/* Color Swatch & Palette */
+.tv-ftb-color-btn {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.tv-ftb-color-btn:hover {
+  background: #f0f3fa;
+}
+
+.tv-ftb-color-indicator {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+.tv-ftb-palette {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  background: #ffffff;
+  border: 1px solid #e0e3eb;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  display: none;
+  grid-template-columns: repeat(5, 20px);
+  gap: 6px;
+  padding: 8px;
+  z-index: 1010;
+}
+
+.tv-ftb-palette.open {
+  display: grid;
+}
+
+.tv-palette-cell {
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  cursor: pointer;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  transition: transform 0.1s;
+}
+
+.tv-palette-cell:hover {
+  transform: scale(1.15);
+}
+
+/* Dropdown (Width & Style) */
+.tv-ftb-dropdown {
+  position: relative;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #131722;
+  transition: background 0.1s;
+}
+
+.tv-ftb-dropdown:hover {
+  background: #f0f3fa;
+}
+
+.tv-ftb-menu {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  background: #ffffff;
+  border: 1px solid #e0e3eb;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  display: none;
+  flex-direction: column;
+  min-width: 90px;
+  padding: 4px 0;
+  z-index: 1010;
+}
+
+.tv-ftb-menu.open {
+  display: flex;
+}
+
+.tv-ftb-menu-item {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: #131722;
+  gap: 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.tv-ftb-menu-item:hover {
+  background: #f0f3fa;
+}
+
+.line-sample {
+  display: inline-block;
+  width: 20px;
+  background: #131722;
+}
+
+/* ═════════════════════════════════════════════════════════════════
+   TradingView Object & Chart Settings Dialog Styles
+   100% Matching TradingView UI, Components, and Typography
+   ═════════════════════════════════════════════════════════════════ */
+
+/* Non-blocking transparent backdrop: chart behind stays 100% visible and unblurred */
+.tv-settings-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  z-index: 1500;
+  pointer-events: none !important;
+}
+
+/* Floating Modal Window */
+.tv-settings-dialog {
+  position: fixed;
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 520px;
+  max-width: 95vw;
+  max-height: 84vh;
+  background: #ffffff;
+  color: #131722;
+  border: 1px solid #d1d4dc;
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif;
+  z-index: 1501;
+  pointer-events: auto;
+  user-select: none;
+}
+
+/* Modal Header (Draggable) */
+.tv-settings-header {
+  height: 52px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #f0f3fa;
+  cursor: grab;
+  user-select: none;
+  background: #ffffff;
+}
+
+.tv-settings-header:active {
+  cursor: grabbing;
+}
+
+.tv-settings-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #131722;
+  letter-spacing: -0.01em;
+}
+
+.tv-settings-close-btn {
+  background: none;
+  border: none;
+  color: #787b86;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.tv-settings-close-btn:hover {
+  background: #f0f3fa;
+  color: #131722;
+}
+
+/* Tab Bar */
+.tv-settings-tabs {
+  display: flex;
+  height: 42px;
+  padding: 0 20px;
+  border-bottom: 1px solid #e0e3eb;
+  background: #ffffff;
+  gap: 24px;
+}
+
+.tv-settings-tab {
+  background: none;
+  border: none;
+  padding: 10px 0;
+  font-size: 14px;
+  font-weight: 400;
+  color: #787b86;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.1s ease, border-color 0.1s ease;
+}
+
+.tv-settings-tab:hover {
+  color: #131722;
+}
+
+.tv-settings-tab.active {
+  color: #131722;
+  font-weight: 500;
+  border-bottom: 2px solid #2962ff;
+}
+
+/* Tab Body - Clean Flat List of Rows */
+.tv-settings-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  max-height: calc(84vh - 150px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #ffffff;
+}
+
+/* Flat Rows */
+.tv-dialog-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  padding: 3px 0;
+  gap: 16px;
+}
+
+.tv-dialog-row-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.tv-dialog-row-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.tv-dialog-label {
+  font-size: 14px;
+  color: #131722;
+  white-space: nowrap;
+}
+
+.tv-dialog-label-dim {
+  font-size: 14px;
+  color: #787b86;
+  white-space: nowrap;
+}
+
+/* TradingView Custom Checkbox */
+.tv-checkbox-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tv-checkbox-box {
+  width: 18px;
+  height: 18px;
+  border: 1px solid #b2b5be;
+  border-radius: 3px;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s ease;
+  flex-shrink: 0;
+}
+
+.tv-checkbox-wrap:hover .tv-checkbox-box {
+  border-color: #787b86;
+}
+
+.tv-checkbox-wrap.checked .tv-checkbox-box {
+  background: #2962ff;
+  border-color: #2962ff;
+}
+
+.tv-checkbox-box svg {
+  display: none;
+}
+
+.tv-checkbox-wrap.checked .tv-checkbox-box svg {
+  display: block;
+}
+
+.tv-checkbox-text {
+  font-size: 14px;
+  color: #131722;
+}
+
+/* TradingView Custom Select Trigger */
+.tv-select-trigger {
+  height: 34px;
+  min-width: 80px;
+  padding: 0 10px;
+  border: 1px solid #d1d4dc;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #131722;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.1s ease;
+}
+
+.tv-select-trigger:hover {
+  border-color: #a3a6af;
+}
+
+.tv-select-trigger:focus,
+.tv-select-trigger.active {
+  border-color: #2962ff;
+}
+
+/* TradingView Color Swatch Button */
+.tv-color-swatch-btn {
+  width: 24px;
+  height: 24px;
+  padding: 2px;
+  border: 1px solid #d1d4dc;
+  border-radius: 4px;
+  background: #ffffff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 0.1s ease;
+}
+
+.tv-color-swatch-btn:hover {
+  border-color: #a3a6af;
+}
+
+.tv-color-swatch-inner {
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+}
+
+/* TradingView Inputs */
+.tv-text-input,
+.tv-number-input,
+.tv-textarea {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d1d4dc;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #131722;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.1s ease;
+}
+
+.tv-text-input:focus,
+.tv-number-input:focus,
+.tv-textarea:focus {
+  border-color: #2962ff;
+}
+
+.tv-number-input {
+  width: 90px;
+}
+
+.tv-textarea {
+  height: 80px;
+  padding: 8px 10px;
+  width: 100%;
+  resize: vertical;
+}
+
+/* Segmented Toggle (e.g. Bold, Italic, Alignments) */
+.tv-toggle-btn {
+  height: 34px;
+  min-width: 34px;
+  padding: 0 8px;
+  border: 1px solid #d1d4dc;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #131722;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.1s ease;
+}
+
+.tv-toggle-btn:hover {
+  background: #f0f3fa;
+}
+
+.tv-toggle-btn.active {
+  background: #f0f3fa;
+  border-color: #2962ff;
+  color: #2962ff;
+}
+
+/* TradingView Portaled Popover Menu */
+.tv-popover-menu {
+  position: fixed;
+  z-index: 2600;
+  background: #ffffff;
+  border: 1px solid #d1d4dc;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  user-select: none;
+}
+
+.tv-popover-menu-item {
+  height: 32px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #131722;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.tv-popover-menu-item:hover {
+  background: #f0f3fa;
+}
+
+.tv-popover-menu-item.selected {
+  color: #2962ff;
+  font-weight: 500;
+}
+
+/* TradingView Portaled Color Palette Popover (40 Swatches + Opacity) */
+.tv-color-picker-panel {
+  position: fixed;
+  z-index: 2600;
+  background: #ffffff;
+  border: 1px solid #d1d4dc;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 12px;
+  width: 236px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  user-select: none;
+}
+
+.tv-palette-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 18px);
+  gap: 4px;
+}
+
+.tv-palette-tile {
+  width: 18px;
+  height: 18px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: transform 0.1s ease;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.tv-palette-tile:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+  z-index: 2;
+}
+
+.tv-palette-tile.selected {
+  box-shadow: inset 0 0 0 2px #ffffff, 0 0 0 1px #2962ff;
+}
+
+.tv-opacity-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid #f0f3fa;
+}
+
+.tv-opacity-slider {
+  flex: 1;
+  accent-color: #2962ff;
+  cursor: pointer;
+}
+
+.tv-opacity-val {
+  font-size: 12px;
+  color: #787b86;
+  width: 36px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fibonacci 2-Column Grid */
+.tv-fib-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 20px;
+  padding: 6px 0;
+}
+
+.tv-fib-grid-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Visibility Grid */
+.tv-visibility-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+}
+
+/* Modal Footer */
+.tv-settings-footer {
+  height: 60px;
+  padding: 0 20px;
+  border-top: 1px solid #f0f3fa;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #ffffff;
+  user-select: none;
+}
+
+.tv-settings-template-btn {
+  height: 34px;
+  padding: 0 12px;
+  background: #ffffff;
+  border: 1px solid #d1d4dc;
+  border-radius: 4px;
+  font-size: 14px;
+  color: #131722;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.1s ease;
+}
+
+.tv-settings-template-btn:hover {
+  background: #f0f3fa;
+}
+
+.tv-settings-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tv-btn-cancel {
+  height: 34px;
+  padding: 0 16px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #131722;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.tv-btn-cancel:hover {
+  background: #f0f3fa;
+}
+
+.tv-btn-ok {
+  height: 34px;
+  padding: 0 20px;
+  background: #2962ff;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #ffffff;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.tv-btn-ok:hover {
+  background: #1e53e5;
+}
+

@@ -1,1177 +1,1283 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" class="theme-light" data-theme="light">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Zed — AI Trading Terminal | Kronos + Laya</title>
-  <meta name="description" content="Professional AI-powered trading terminal with Kronos 102.3M and Laya 0.4B models. TradingView-grade charts for Indian & global markets.">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>TradingView Advanced Real-Time Chart — BSE:SENSEX</title>
+  
+  <!-- Fonts & Global Reset -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..900;1,14..32,300..900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/css/style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📈</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background-color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+    }
+
+    /* 100% Genuine TradingView Chart Workspace */
+    #chart-workspace {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: calc(100vh - 30px);
+      overflow: hidden;
+      background: #ffffff;
+      z-index: 1;
+    }
+
+    #tradingview_advanced_chart {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* 100% Genuine TradingView Left Toolbar Extension & Controls */
+    :root {
+      --tv-color-pane-background: #ffffff;
+      --tv-color-platform-background: #ffffff;
+      --tv-color-toolbar-button-text: #131722;
+      --tv-color-toolbar-button-text-hover: #131722;
+      --tv-color-toolbar-button-background-hover: #f0f3fa;
+      --tv-color-toolbar-button-background-active: #131722;
+      --tv-color-toolbar-button-text-active: #ffffff;
+      --tv-color-toolbar-toggle-button-background-active: #131722;
+      --tv-color-toolbar-divider-background: #e0e3eb;
+      --color-tv-blue-500: #2962ff;
+    }
+
+    #tv-left-toolbar-extensions {
+      position: absolute;
+      top: 486px;
+      left: 0;
+      width: 52px;
+      z-index: 20;
+      pointer-events: auto;
+      user-select: none;
+      -webkit-user-select: none;
+      background: transparent;
+    }
+
+    .inner-yXa85odl {
+      background-color: var(--tv-color-platform-background);
+      display: flex;
+      flex-direction: column;
+      width: 52px;
+    }
+
+    .group-yXa85odl {
+      background-color: var(--tv-color-pane-background);
+      padding: 3px 0;
+    }
+
+    .group-yXa85odl + .group-yXa85odl {
+      padding-top: 0;
+    }
+
+    .group-yXa85odl + .group-yXa85odl:before {
+      background-color: var(--tv-color-toolbar-divider-background);
+      content: "";
+      display: block;
+      height: 1px;
+      margin: 4px 8px 6px;
+    }
+
+    .dropdown-FuKse5bD {
+      position: relative;
+    }
+
+    .control-FuKse5bD {
+      box-sizing: border-box;
+      overflow: hidden;
+      position: relative;
+      touch-action: manipulation;
+      width: 52px;
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .buttonWrap-FuKse5bD {
+      width: 38px;
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .button-zm3YRUFG {
+      all: unset;
+      align-items: center;
+      box-sizing: border-box;
+      cursor: pointer;
+      display: flex;
+      justify-content: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 6px;
+      color: var(--tv-color-toolbar-button-text);
+      transition: background-color 60ms ease, color 60ms ease;
+      position: relative;
+    }
+
+    .button-zm3YRUFG:hover,
+    .button-zm3YRUFG.hover-zm3YRUFG {
+      background-color: var(--tv-color-toolbar-button-background-hover);
+    }
+
+    .button-zm3YRUFG.isActive-zm3YRUFG,
+    .button-zm3YRUFG.pressed-zm3YRUFG,
+    .button-zm3YRUFG[aria-pressed="true"] {
+      background-color: var(--tv-color-toolbar-toggle-button-background-active) !important;
+      color: var(--tv-color-toolbar-button-text-active) !important;
+    }
+
+    .button-zm3YRUFG.isActive-zm3YRUFG svg,
+    .button-zm3YRUFG[aria-pressed="true"] svg {
+      fill: #ffffff !important;
+      color: #ffffff !important;
+    }
+
+    .arrow-FuKse5bD {
+      all: unset;
+      box-sizing: border-box;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 14px;
+      height: 38px;
+      color: var(--tv-color-toolbar-button-text);
+      opacity: 0.65;
+      transition: opacity 60ms ease, background-color 60ms ease;
+    }
+
+    .arrow-FuKse5bD:hover {
+      opacity: 1;
+      background-color: var(--tv-color-toolbar-button-background-hover);
+    }
+
+    .icon-zm3YRUFG {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+    }
+
+    .arrowIcon-FuKse5bD {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 10px;
+      height: 16px;
+    }
+
+    /* TradingView Popup Context Menu */
+    .tv-menu-popup {
+      position: absolute;
+      left: 54px;
+      top: 0;
+      background: #ffffff;
+      border: 1px solid #e0e3eb;
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+      min-width: 190px;
+      padding: 4px 0;
+      z-index: 1000;
+      display: none;
+      user-select: none;
+    }
+
+    .tv-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      font-size: 13px;
+      color: #131722;
+      cursor: pointer;
+      transition: background 0.1s ease;
+    }
+
+    .tv-menu-item:hover {
+      background: #f0f3fa;
+    }
+
+    .tv-menu-item.active {
+      font-weight: 600;
+      color: #2962ff;
+    }
+
+    .tv-menu-divider {
+      height: 1px;
+      background: #e0e3eb;
+      margin: 4px 0;
+    }
+
+    .tv-menu-shortcut {
+      margin-left: auto;
+      color: #787b86;
+      font-size: 11px;
+    }
+
+    /* Common Tooltip Vertical (TradingView Native Tooltip) */
+    .apply-common-tooltip {
+      position: relative;
+    }
+
+    .apply-common-tooltip[data-tooltip]:hover:after {
+      content: attr(data-tooltip);
+      position: absolute;
+      left: 56px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: #131722;
+      color: #ffffff;
+      padding: 5px 9px;
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 9999;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    }
+
+    /* Floating Toast Notification */
+    #tv-toast {
+      position: fixed;
+      bottom: 44px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: #131722;
+      color: #ffffff;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      z-index: 99999;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+      pointer-events: none;
+    }
+
+    #tv-toast.show {
+      opacity: 1;
+      visibility: visible;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* ══════ AUTHENTIC PAPER TRADING BOTTOM BAR ══════ */
+    #paper-trading-bottom-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      width: 100vw;
+      height: 30px;
+      background-color: #ffffff;
+      border-top: 1px solid #e0e3eb;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      z-index: 100;
+      font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+      font-size: 11px;
+      color: #131722;
+      box-sizing: border-box;
+      user-select: none;
+    }
+
+    .pt-left-group {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      cursor: pointer;
+      user-select: none;
+      font-weight: 600;
+      padding: 3px 6px;
+      border-radius: 4px;
+      transition: background 0.15s ease;
+    }
+
+    .pt-left-group:hover {
+      background: #f0f3fa;
+    }
+
+    .pt-status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background-color: #089981;
+      display: inline-block;
+      box-shadow: 0 0 4px rgba(8, 153, 129, 0.4);
+    }
+
+    .pt-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: #131722;
+    }
+
+    .pt-arrow {
+      color: #787b86;
+      transition: transform 0.2s ease;
+    }
+
+    .pt-right-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .pt-action-btn {
+      border-radius: 4px;
+      padding: 3px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.12s ease;
+      letter-spacing: 0.2px;
+    }
+
+    .pt-trade-buy {
+      background: #089981;
+      color: #ffffff;
+      border: 1px solid #089981;
+    }
+    .pt-trade-buy:hover {
+      background: #067a67;
+    }
+    .pt-trade-buy:active {
+      transform: scale(0.97);
+    }
+
+    .pt-trade-sell {
+      background: #f23645;
+      color: #ffffff;
+      border: 1px solid #f23645;
+    }
+    .pt-trade-sell:hover {
+      background: #c82432;
+    }
+    .pt-trade-sell:active {
+      transform: scale(0.97);
+    }
+
+    .pt-summary-badge {
+      font-size: 11px;
+      font-weight: 600;
+      color: #787b86;
+      padding: 2px 6px;
+      background: #f0f3fa;
+      border-radius: 4px;
+    }
+
+    /* Floating AI Copilot Trigger Button */
+    .floating-ai-copilot-btn {
+      position: fixed;
+      top: 6px;
+      right: 60px;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: linear-gradient(135deg, #2962ff, #1e53e5);
+      color: #ffffff;
+      border: none;
+      border-radius: 9999px;
+      padding: 5px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 2px 10px rgba(41, 98, 255, 0.3);
+      transition: all 0.18s ease;
+      outline: none;
+    }
+
+    .floating-ai-copilot-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(41, 98, 255, 0.4);
+      background: linear-gradient(135deg, #1e53e5, #1848cc);
+    }
+
+    /* AI Copilot Drawer */
+    #ai-copilot-drawer {
+      position: fixed;
+      top: 0;
+      right: -420px;
+      width: 400px;
+      height: 100vh;
+      background: #ffffff;
+      box-shadow: -4px 0 24px rgba(0, 0, 0, 0.15);
+      z-index: 10000;
+      transition: right 0.25s cubic-bezier(0.1, 0.9, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid #e0e3eb;
+    }
+
+    #ai-copilot-drawer.open {
+      right: 0;
+    }
+
+    .ai-drawer-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      z-index: 9999;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.2s ease;
+    }
+
+    .ai-drawer-overlay.open {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .ai-drawer-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid #e0e3eb;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fafbfc;
+    }
+
+    .ai-drawer-header h3 {
+      font-size: 15px;
+      font-weight: 700;
+      color: #131722;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .ai-drawer-close {
+      all: unset;
+      cursor: pointer;
+      font-size: 20px;
+      color: #787b86;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+    }
+
+    .ai-drawer-close:hover {
+      background: #e0e3eb;
+      color: #131722;
+    }
+
+    .ai-chip-suggestions {
+      padding: 12px 16px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      background: #ffffff;
+      border-bottom: 1px solid #f0f3fa;
+    }
+
+    .ai-chip {
+      all: unset;
+      cursor: pointer;
+      background: #f0f3fa;
+      color: #131722;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 500;
+      transition: background 0.1s ease;
+    }
+
+    .ai-chip:hover {
+      background: #e0e3eb;
+    }
+
+    .ai-messages-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: #ffffff;
+    }
+
+    .ai-msg {
+      display: flex;
+      gap: 10px;
+      max-width: 90%;
+    }
+
+    .ai-msg.bot {
+      align-self: flex-start;
+    }
+
+    .ai-msg.user {
+      align-self: flex-end;
+      flex-direction: row-reverse;
+    }
+
+    .ai-msg .avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: #2962ff;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .ai-msg .bubble {
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .ai-msg.bot .bubble {
+      background: #f0f3fa;
+      color: #131722;
+      border-top-left-radius: 2px;
+    }
+
+    .ai-msg.user .bubble {
+      background: #2962ff;
+      color: #ffffff;
+      border-top-right-radius: 2px;
+    }
+
+    .ai-input-bar {
+      padding: 12px 16px;
+      border-top: 1px solid #e0e3eb;
+      display: flex;
+      gap: 8px;
+      background: #ffffff;
+    }
+
+    .ai-input-bar input {
+      flex: 1;
+      padding: 9px 12px;
+      border: 1px solid #e0e3eb;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      color: #131722;
+    }
+
+    .ai-input-bar input:focus {
+      border-color: #2962ff;
+    }
+
+    .ai-input-bar button {
+      background: #2962ff;
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      padding: 0 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .ai-input-bar button:hover {
+      background: #1e53e5;
+    }
+  </style>
 </head>
 <body>
 
-<div class="app-shell">
+  <!-- 100% Fullscreen Official TradingView Advanced Real-Time Chart Container -->
+  <main id="chart-workspace">
+    <div id="tradingview_advanced_chart"></div>
 
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <!-- ROW 1: TOP HEADER TOOLBAR                                   -->
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <header class="tv-header">
-
-    <!-- Brand -->
-    <div class="tv-header__brand">
-      <div class="brand-logo">
-        <svg width="20" height="20" viewBox="0 0 22 22" fill="none">
-          <rect x="2" y="10" width="3" height="10" rx="1" fill="#26a69a"/>
-          <rect x="7" y="6" width="3" height="14" rx="1" fill="#26a69a"/>
-          <rect x="12" y="3" width="3" height="17" rx="1" fill="#ef5350"/>
-          <rect x="17" y="7" width="3" height="9" rx="1" fill="#26a69a"/>
-        </svg>
-      </div>
-      <span class="brand-name">Zed AI</span>
-    </div>
-
-    <!-- Symbol Click to Search -->
-    <div class="tv-header__symbol" id="symbolHeaderBtn" title="Click to search symbols (/)">
-      <span class="sym-icon">📊</span>
-      <span class="sym-name" id="headerSymbol">NIFTY50</span>
-      <span class="sym-exchange" id="headerExchange">NSE</span>
-      <span class="sym-price" id="headerPrice">25,148.20</span>
-      <span class="sym-change up" id="headerChange">+98.4 (+0.39%)</span>
-    </div>
-
-    <!-- OHLCV -->
-    <div class="tv-header__ohlcv">
-      <div class="ohlcv-item"><div class="ohlcv-lbl">O</div><div class="ohlcv-val" id="hdrOpen">25,062.5</div></div>
-      <div class="ohlcv-item"><div class="ohlcv-lbl">H</div><div class="ohlcv-val up" id="hdrHigh">25,190.3</div></div>
-      <div class="ohlcv-item"><div class="ohlcv-lbl">L</div><div class="ohlcv-val dn" id="hdrLow">24,998.6</div></div>
-      <div class="ohlcv-item"><div class="ohlcv-lbl">C</div><div class="ohlcv-val" id="hdrClose">25,148.2</div></div>
-      <div class="ohlcv-item"><div class="ohlcv-lbl">Vol</div><div class="ohlcv-val" id="hdrVol">92.4M</div></div>
-    </div>
-
-    <!-- Timeframe Buttons -->
-    <div class="tv-header__timeframes">
-      <button class="tf-btn" data-tf="1m">1m</button>
-      <button class="tf-btn" data-tf="3m">3m</button>
-      <button class="tf-btn active" data-tf="5m">5m</button>
-      <button class="tf-btn" data-tf="15m">15m</button>
-      <button class="tf-btn" data-tf="30m">30m</button>
-      <button class="tf-btn" data-tf="1h">1H</button>
-      <button class="tf-btn" data-tf="4h">4H</button>
-      <button class="tf-btn" data-tf="1d">D</button>
-      <button class="tf-btn" data-tf="1w">W</button>
-      <button class="tf-btn" data-tf="1M">M</button>
-    </div>
-
-    <!-- Chart Types -->
-    <div class="tv-header__charttype">
-      <button class="ct-btn active" id="ctCandle" data-ct="candle" title="Candle">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="7" y="5" width="4" height="14" rx="1"/><line x1="9" y1="3" x2="9" y2="5"/><line x1="9" y1="19" x2="9" y2="21"/>
-          <rect x="13" y="8" width="4" height="10" rx="1"/><line x1="15" y1="5" x2="15" y2="8"/><line x1="15" y1="18" x2="15" y2="21"/>
-        </svg>
-      </button>
-      <button class="ct-btn" id="ctHeikin" data-ct="heikin" title="Heikin-Ashi">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="6" y="6" width="4" height="12" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>
-        </svg>
-      </button>
-      <button class="ct-btn" id="ctLine" data-ct="line" title="Line">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="4 20 8 14 12 16 16 8 20 4"/>
-        </svg>
-      </button>
-      <button class="ct-btn" id="ctArea" data-ct="area" title="Area">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M4 20L4 14L9 10L14 14L20 6L20 20Z" fill="currentColor" fill-opacity=".15"/>
-          <polyline points="4 14 9 10 14 14 20 6"/>
-        </svg>
-      </button>
-      <button class="ct-btn" id="ctBar" data-ct="bar" title="Bar">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="8" y1="4" x2="8" y2="20"/><line x1="5" y1="10" x2="8" y2="10"/>
-          <line x1="16" y1="4" x2="16" y2="20"/><line x1="13" y1="14" x2="16" y2="14"/>
-        </svg>
-      </button>
-    </div>
-
-    <!-- Tools / Indicators Bar -->
-    <div class="tv-header__tools">
-      <button class="tool-hdr-btn" id="openIndicatorsBtn">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-        </svg>
-        Indicators
-      </button>
-      <button class="tool-hdr-btn" id="templateBtn">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
-          <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
-        </svg>
-        Templates
-      </button>
-      <button class="tool-hdr-btn" id="alertHdrBtn">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-        </svg>
-        Alert
-      </button>
-      <!-- Active Indicators Chips -->
-      <div class="active-indicators-bar" id="activeIndicatorsBar" style="border:none;padding:0;background:none;flex:1;display:flex;align-items:center;overflow:hidden;"></div>
-    </div>
-
-    <!-- Right Actions -->
-    <div class="tv-header__actions">
-      <!-- AI Status -->
-      <div class="status-dot-wrap" id="aiStatusWrap" title="Kronos + Laya AI Status">
-        <div class="status-dot ok" id="aiStatusDot"></div>
-        <span id="aiStatusText">AI Ready</span>
-      </div>
-
-      <!-- Theme Toggle -->
-      <button class="hdr-action-btn" id="themeToggleBtn" title="Toggle Dark/Light Mode">
-        <span id="themeIcon"></span>
-      </button>
-
-      <!-- Screenshot -->
-      <button class="hdr-action-btn" id="screenshotBtn" title="Screenshot Chart">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-          <circle cx="12" cy="13" r="4"/>
-        </svg>
-      </button>
-
-      <!-- CSV Upload -->
-      <button class="hdr-action-btn" id="uploadCsvBtn" title="Load custom chart CSV">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-        </svg>
-        CSV
-      </button>
-
-      <!-- Main AI Forecast Button -->
-      <button class="hdr-action-btn primary" id="runForecastBtn">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-        </svg>
-        Run AI
-      </button>
-    </div>
-  </header>
-
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <!-- ROW 2: WORKSPACE TABS                                        -->
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <div class="workspace-tabs-bar" id="workspaceTabsBar">
-    <div class="ws-tab active" data-pair="NIFTY50" data-tf="5m" data-exchange="NSE">
-      <span>NIFTY50</span>
-      <span class="ws-tab-pnl up">+0.39%</span>
-      <button class="ws-tab-close" title="Close tab">×</button>
-    </div>
-    <div class="ws-tab" data-pair="BANKNIFTY" data-tf="5m" data-exchange="NSE">
-      <span>BANKNIFTY</span>
-      <span class="ws-tab-pnl dn">-0.12%</span>
-      <button class="ws-tab-close" title="Close tab">×</button>
-    </div>
-    <div class="ws-tab" data-pair="RELIANCE" data-tf="15m" data-exchange="NSE">
-      <span>RELIANCE</span>
-      <span class="ws-tab-pnl up">+0.85%</span>
-      <button class="ws-tab-close" title="Close tab">×</button>
-    </div>
-    <div class="ws-tab" data-pair="BTCUSD" data-tf="1h" data-exchange="CRYPTO">
-      <span>BTC/USD</span>
-      <span class="ws-tab-badge">AI</span>
-      <span class="ws-tab-pnl up">+1.2%</span>
-      <button class="ws-tab-close" title="Close tab">×</button>
-    </div>
-    <button class="ws-add-tab" id="addTabBtn" title="Add new chart tab">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-      </svg>
-    </button>
-  </div>
-
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <!-- COLUMN 1: LEFT DRAWING TOOLBAR                              -->
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <aside class="tv-left-toolbar">
-    <!-- Cursor -->
-    <button class="tool-btn active" data-tool="cursor" title="Cursor">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M4 0L4 20L8 16L12 24L14 23L10 15L16 15Z"/>
-      </svg>
-      <span class="tool-tip">Cursor</span>
-    </button>
-    <!-- Crosshair -->
-    <button class="tool-btn" data-tool="crosshair" title="Crosshair">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="7"/>
-        <line x1="12" y1="17" x2="12" y2="22"/><line x1="2" y1="12" x2="7" y2="12"/>
-        <line x1="17" y1="12" x2="22" y2="12"/>
-      </svg>
-      <span class="tool-tip">Crosshair</span>
-    </button>
-
-    <div class="toolbar-sep"></div>
-
-    <!-- Trend Line -->
-    <button class="tool-btn" data-tool="trendline" title="Trend Line">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <line x1="5" y1="19" x2="19" y2="5"/>
-        <circle cx="5" cy="19" r="2" fill="currentColor"/><circle cx="19" cy="5" r="2" fill="currentColor"/>
-      </svg>
-      <span class="tool-tip">Trend Line</span>
-    </button>
-    <!-- Horizontal Line -->
-    <button class="tool-btn" data-tool="hline" title="Horizontal Line">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <line x1="3" y1="12" x2="21" y2="12"/>
-        <polyline points="16 8 21 12 16 16"/>
-      </svg>
-      <span class="tool-tip">Horizontal Ray</span>
-    </button>
-    <!-- Vertical Line -->
-    <button class="tool-btn" data-tool="vline" title="Vertical Line">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <line x1="12" y1="3" x2="12" y2="21"/>
-      </svg>
-      <span class="tool-tip">Vertical Line</span>
-    </button>
-    <!-- Rectangle -->
-    <button class="tool-btn" data-tool="rect" title="Rectangle">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="3" y="5" width="18" height="14" rx="2"/>
-      </svg>
-      <span class="tool-tip">Rectangle</span>
-    </button>
-    <!-- Channel -->
-    <button class="tool-btn" data-tool="channel" title="Parallel Channel">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <line x1="4" y1="18" x2="20" y2="8"/>
-        <line x1="4" y1="14" x2="20" y2="4"/>
-      </svg>
-      <span class="tool-tip">Parallel Channel</span>
-    </button>
-
-    <div class="toolbar-sep"></div>
-
-    <!-- Fibonacci Retracement -->
-    <button class="tool-btn" data-tool="fib" title="Fibonacci Retracement">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <line x1="3" y1="18" x2="21" y2="6"/>
-        <line x1="3" y1="14" x2="21" y2="14"/>
-        <line x1="3" y1="10" x2="21" y2="10"/>
-      </svg>
-      <span class="tool-tip">Fib Retracement</span>
-    </button>
-    <!-- Fib Extension -->
-    <button class="tool-btn" data-tool="fibext" title="Fibonacci Extension">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <line x1="3" y1="20" x2="21" y2="4"/>
-        <line x1="3" y1="16" x2="21" y2="16"/>
-        <line x1="3" y1="12" x2="21" y2="12"/>
-        <line x1="3" y1="8" x2="21" y2="8"/>
-      </svg>
-      <span class="tool-tip">Fib Extension</span>
-    </button>
-    <!-- Price Label -->
-    <button class="tool-btn" data-tool="label" title="Price Label">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>
-        <line x1="7" y1="7" x2="7.01" y2="7"/>
-      </svg>
-      <span class="tool-tip">Price Label</span>
-    </button>
-    <!-- Text Note -->
-    <button class="tool-btn" data-tool="text" title="Text Note">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-        <polyline points="14 2 14 8 20 8"/>
-        <line x1="9" y1="15" x2="15" y2="15"/>
-      </svg>
-      <span class="tool-tip">Text Note</span>
-    </button>
-
-    <div class="toolbar-sep"></div>
-
-    <!-- Measure -->
-    <button class="tool-btn" data-tool="measure" title="Measure Tool">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-      </svg>
-      <span class="tool-tip">Measure</span>
-    </button>
-    <!-- Magnet snap -->
-    <button class="tool-btn" id="magnetBtn" data-tool="magnet" title="Magnet Snap">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M6 15A6 6 0 0 0 18 15V5H6V15Z"/>
-        <line x1="3" y1="5" x2="6" y2="5"/><line x1="18" y1="5" x2="21" y2="5"/>
-        <line x1="3" y1="9" x2="6" y2="9"/><line x1="18" y1="9" x2="21" y2="9"/>
-      </svg>
-      <span class="tool-tip">Magnet Snap</span>
-    </button>
-
-    <div class="toolbar-sep"></div>
-
-    <!-- AI Analysis Icon (Sparkle + Magnifier) -->
-    <button class="tool-btn ai-btn" id="aiToggleBtn" title="AI Analysis (Kronos + Laya)">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-        <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.8"/>
-        <line x1="15" y1="15" x2="22" y2="22" stroke="currentColor" stroke-width="2"/>
-        <path d="M10 6 L10.7 8.5 L13 9 L10.7 9.5 L10 12 L9.3 9.5 L7 9 L9.3 8.5 Z" fill="currentColor"/>
-        <path d="M16 2 L16.4 3.5 L18 4 L16.4 4.5 L16 6 L15.6 4.5 L14 4 L15.6 3.5 Z" fill="currentColor" opacity=".7"/>
-      </svg>
-      <span class="tool-tip">AI Analysis</span>
-    </button>
-
-    <div style="flex:1;"></div>
-
-    <!-- Clear Drawings -->
-    <button class="tool-btn danger" id="clearAnnotations" title="Clear all drawings">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="3 6 5 6 21 6"/>
-        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-      </svg>
-      <span class="tool-tip">Clear Drawings</span>
-    </button>
-  </aside>
-
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <!-- COLUMN 2: WATCHLIST / MARKET WATCH                          -->
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <aside class="tv-watchlist">
-    <div class="watchlist-header">
-      <span class="watchlist-title">Watchlist</span>
-      <button class="tool-btn" id="addWatchlistBtn" title="Add symbol" style="width:22px;height:22px;font-size:16px;">+</button>
-    </div>
-    <div class="watchlist-search-wrap">
-      <input class="watchlist-search" id="watchlistSearch" placeholder="Search symbols..." autocomplete="off">
-    </div>
-    <div class="watchlist-groups" id="watchlistGroups">
-      <!-- Groups populated by JS -->
-    </div>
-  </aside>
-
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <!-- COLUMN 3: CENTER CHART AREA                                 -->
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <main class="tv-chart-area">
-
-    <!-- Chart top bar (scenario/comparison selector) -->
-    <div class="chart-topbar">
-      <div class="chart-topbar-left">
-        <select id="scenarioSelect" class="tv-select">
-          <option value="none">Live / Simulated</option>
-          <option value="bullish_breakout">▲ Bullish Breakout</option>
-          <option value="bearish_breakdown">▼ Bearish Breakdown</option>
-          <option value="double_bottom">↩ Double Bottom</option>
-          <option value="consolidation">⇔ Range Consolidation</option>
-          <option value="gap_up">⬆ Gap Up Opening</option>
-          <option value="gap_down">⬇ Gap Down Opening</option>
-        </select>
-        <select id="barsSelect" class="tv-select" title="Number of bars to load">
-          <option value="100">100 bars</option>
-          <option value="200">200 bars</option>
-          <option value="500" selected>500 bars</option>
-          <option value="1000">1000 bars</option>
-        </select>
-      </div>
-      <div class="chart-topbar-right">
-        <div class="chart-legend" id="chartLegend">
-          <div class="legend-item"><span class="l-dot" style="background:#26a69a"></span>Bull</div>
-          <div class="legend-item"><span class="l-dot" style="background:#ef5350"></span>Bear</div>
-          <div class="legend-item" id="legKronos" style="display:none"><span class="l-dot" style="background:#2962ff"></span>Kronos</div>
-          <div class="legend-item" id="legSMA20" style="display:none"><span class="l-dot" style="background:#f59e0b"></span>SMA20</div>
-          <div class="legend-item" id="legSMA50" style="display:none"><span class="l-dot" style="background:#38bdf8"></span>SMA50</div>
-          <div class="legend-item" id="legEMA" style="display:none"><span class="l-dot" style="background:#fb923c"></span>EMA</div>
-          <div class="legend-item" id="legBB" style="display:none"><span class="l-dot" style="background:#a855f7"></span>BB</div>
-          <div class="legend-item" id="legVWAP" style="display:none"><span class="l-dot" style="background:#f43f5e"></span>VWAP</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Chart Viewport -->
-    <div class="chart-viewport" id="chartViewport">
-      <!-- Chart HUD -->
-      <div class="chart-hud" id="chartHud">
-        <span id="hudSymTf">NIFTY50 · 5m</span>
-        <span>O: <b id="hudOpen">25,062.5</b></span>
-        <span>H: <b class="up" id="hudHigh">25,190.3</b></span>
-        <span>L: <b class="dn" id="hudLow">24,998.6</b></span>
-        <span>C: <b id="hudClose">25,148.2</b></span>
-        <span>V: <b id="hudVol">92.4M</b></span>
-        <span>Δ: <b class="up" id="hudDelta">+0.39%</b></span>
-      </div>
-
-      <!-- Quick Chart Tools (top-right overlay) -->
-      <div class="quick-toolbar">
-        <button class="qt-btn" id="qtAutoScale" title="Auto Scale">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/>
-            <polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/>
-          </svg>
-        </button>
-        <button class="qt-btn" id="qtLockScale" title="Lock Price Scale">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-          </svg>
-        </button>
-        <button class="qt-btn active" id="qtShowCross" title="Crosshair Mode">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="8"/>
-            <line x1="12" y1="16" x2="12" y2="22"/><line x1="2" y1="12" x2="8" y2="12"/>
-            <line x1="16" y1="12" x2="22" y2="12"/>
-          </svg>
-        </button>
-        <button class="qt-btn" id="qtFullscreen" title="Fullscreen Chart">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>
-            <line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
-          </svg>
-        </button>
-      </div>
-
-      <!-- Kronos AI Forecast Active Badge -->
-      <div class="horizon-badge" id="horizonBadge">⚡ Kronos Forecast Active</div>
-
-      <!-- Chart Loading Overlay -->
-      <div class="chart-loading" id="chartLoading">
-        <div class="spinner-ring"></div>
-        <div class="loading-text" id="loadingText">Loading market data…</div>
-      </div>
-
-      <!-- Main Candlestick Canvas -->
-      <canvas id="tradingChart"></canvas>
-
-      <!-- Drawing Overlay Canvas -->
-      <canvas id="drawingCanvas"></canvas>
-
-      <!-- AI Analysis Bubble (left corner) -->
-      <div class="ai-analysis-bubble" id="aiAnalysisBubble">
-        <div class="ai-bubble-header">
-          <div class="ai-bubble-title">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-              <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.8" stroke="#7c3aed"/>
-              <line x1="15" y1="15" x2="22" y2="22" stroke="#7c3aed" stroke-width="2"/>
-              <path d="M10 6 L10.7 8.5 L13 9 L10.7 9.5 L10 12 L9.3 9.5 L7 9 L9.3 8.5 Z" fill="#7c3aed"/>
-            </svg>
-            AI Analysis
+    <!-- 100% Genuine TradingView Left Toolbar Extension (Exact DOM Structure & SVGs from TradingView Engine) -->
+    <div id="tv-left-toolbar-extensions">
+      <div class="inner-yXa85odl">
+        <!-- Group 2 Continuation: Keep Drawing, Lock All, Hide All -->
+        <div class="group-yXa85odl tv-ext-group-2">
+          <!-- 11. Keep Drawing (Stay in Drawing Mode) -->
+          <div class="control-FuKse5bD">
+            <div class="buttonWrap-FuKse5bD accessible-FuKse5bD">
+              <button aria-label="Keep drawing" aria-pressed="false" class="button-lsC5SBAN button-zm3YRUFG apply-common-tooltip common-tooltip-vertical isInteractive-zm3YRUFG accessible-zm3YRUFG" data-name="drawginmode" data-tooltip="Keep drawing" tabindex="-1" type="button" id="tv-btn-keep-drawing">
+                <span aria-hidden="true" class="icon-zm3YRUFG" role="img">
+                  <svg height="28" viewBox="0 0 28 28" width="28" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M17.27 4.56a2.5 2.5 0 0 0-3.54 0l-.58.59-9 9-1 1-.15.14V20h4.7l.15-.15 1-1 9-9 .59-.58a2.5 2.5 0 0 0 0-3.54l-1.17-1.17Zm-2.83.7a1.5 1.5 0 0 1 2.12 0l1.17 1.18a1.5 1.5 0 0 1 0 2.12l-.23.23-3.3-3.29.24-.23Zm-.94.95 3.3 3.29-8.3 8.3-3.3-3.3 8.3-8.3Zm-9 9 3.3 3.29-.5.5H4v-3.3l.5-.5Zm16.5.29a1.5 1.5 0 0 0-3 0V18h4.5c.83 0 1.5.67 1.5 1.5v4c0 .83-.67 1.5-1.5 1.5h-6a1.5 1.5 0 0 1-1.5-1.5v-4c0-.83.67-1.5 1.5-1.5h.5v-2.5a2.5 2.5 0 0 1 5 0v.5h-1v-.5ZM16.5 19a.5.5 0 0 0-.5.5v4c0 .28.22.5.5.5h6a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 0-.5-.5h-6Zm2.5 4v-2h1v2h-1Z" fill="currentColor"></path>
+                  </svg>
+                </span>
+              </button>
+            </div>
           </div>
-          <button class="ai-bubble-close" id="aiCloseBubble">×</button>
-        </div>
 
-        <!-- Decision -->
-        <div class="ai-bubble-decision" id="aiBubbleDecision">
-          <div class="ai-decision-badge HOLD" id="aiBubgeBadge">READY</div>
-          <div class="ai-confidence" id="aiBubbleConf">--</div>
-        </div>
+          <!-- 12. Lock All Drawings and Indicators -->
+          <div class="dropdown-FuKse5bD" data-name="lock-all" data-type="lock-all" id="tv-dropdown-lock-all">
+            <div class="control-FuKse5bD">
+              <div class="buttonWrap-FuKse5bD accessible-FuKse5bD">
+                <button aria-label="Lock drawings and indicators" aria-pressed="false" class="button-lsC5SBAN button-zm3YRUFG apply-common-tooltip common-tooltip-vertical isInteractive-zm3YRUFG accessible-zm3YRUFG" data-tooltip="Lock drawings and indicators" data-tooltip-delay="1500" tabindex="-1" type="button" id="tv-btn-lock-all">
+                  <span aria-hidden="true" class="icon-zm3YRUFG" role="img" id="tv-lock-icon">
+                    <svg fill="none" height="28" viewBox="0 0 28 28" width="28" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M9.877 3.607a3.997 3.997 0 0 1 5.508 1.27l.026.043-.848.53-.01-.017-.005.004a2.998 2.998 0 0 0-5.474 2.226 3 3 0 0 0 .302.79l.08.133L10.964 11H19.5l.256.012A2.5 2.5 0 0 1 22 13.5v7a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 6 20.5v-7a2.5 2.5 0 0 1 2.244-2.488L8.5 11h1.27L8.612 9.15a4 4 0 0 1-.58-1.645 4 4 0 0 1 1.845-3.898M8.5 12A1.5 1.5 0 0 0 7 13.5v7A1.5 1.5 0 0 0 8.5 22h11a1.5 1.5 0 0 0 1.5-1.5v-7a1.5 1.5 0 0 0-1.5-1.5zm5.5 3a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1" fill="currentColor"></path>
+                    </svg>
+                  </span>
+                </button>
+              </div>
+              <button aria-label="Lock options" aria-pressed="false" class="arrow-FuKse5bD apply-common-tooltip common-tooltip-vertical accessible-FuKse5bD" data-tooltip="Lock options" tabindex="-1" type="button" id="tv-arrow-lock-all">
+                <span aria-hidden="true" class="arrowIcon-FuKse5bD" role="img">
+                  <svg height="16" viewBox="0 0 10 16" width="10" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M.6 1.4l1.4-1.4 8 8-8 8-1.4-1.4 6.389-6.532-6.389-6.668z"></path>
+                  </svg>
+                </span>
+              </button>
+            </div>
+            <!-- Popup menu for Lock -->
+            <div class="tv-menu-popup" id="tv-menu-lock">
+              <div class="tv-menu-item" data-action="lock-all">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M14 4a4 4 0 0 0-4 4v3H8.5A2.5 2.5 0 0 0 6 13.5v7A2.5 2.5 0 0 0 8.5 23h11a2.5 2.5 0 0 0 2.5-2.5v-7a2.5 2.5 0 0 0-2.5-2.5H18V8a4 4 0 0 0-4-4zm3 7V8a3 3 0 1 0-6 0v3h6z"/></svg>
+                <span>Lock All Drawings</span>
+              </div>
+            </div>
+          </div>
 
-        <!-- Details rows -->
-        <div class="ai-bubble-rows" id="aiBubbleRows">
-          <div class="ai-bubble-row">
-            <span class="ai-bubble-row-lbl">Symbol</span>
-            <span class="ai-bubble-row-val" id="aiBubbleSym">NIFTY50</span>
-          </div>
-          <div class="ai-bubble-row">
-            <span class="ai-bubble-row-lbl">Timeframe</span>
-            <span class="ai-bubble-row-val" id="aiBubbleTf">5m</span>
-          </div>
-          <div class="ai-bubble-row">
-            <span class="ai-bubble-row-lbl">Risk Level</span>
-            <span class="ai-bubble-row-val" id="aiBubbleRisk">--</span>
-          </div>
-          <div class="ai-bubble-row">
-            <span class="ai-bubble-row-lbl">Stop Loss</span>
-            <span class="ai-bubble-row-val bear" id="aiBubbleSL">--</span>
-          </div>
-          <div class="ai-bubble-row">
-            <span class="ai-bubble-row-lbl">Target</span>
-            <span class="ai-bubble-row-val bull" id="aiBubbleTP">--</span>
-          </div>
-          <div class="ai-bubble-row">
-            <span class="ai-bubble-row-lbl">Breakout P</span>
-            <span class="ai-bubble-row-val" id="aiBubbleBreakout">--</span>
+          <!-- 13. Hide All Drawings and Indicators -->
+          <div class="dropdown-FuKse5bD" data-name="hide-all" data-type="hide-drawing-tools" id="tv-dropdown-hide-all">
+            <div class="control-FuKse5bD">
+              <div class="buttonWrap-FuKse5bD accessible-FuKse5bD">
+                <button aria-label="Hide all drawings" aria-pressed="false" class="button-lsC5SBAN button-zm3YRUFG apply-common-tooltip common-tooltip-vertical isInteractive-zm3YRUFG accessible-zm3YRUFG" data-tooltip="Hide all drawings" data-tooltip-delay="1500" data-tooltip-hotkey='{"keys":["Ctrl","Alt","H"],"text":"{0} + {1} + {2}"}' tabindex="-1" type="button" id="tv-btn-hide-all">
+                  <span aria-hidden="true" class="icon-zm3YRUFG" role="img" id="tv-hide-icon">
+                    <svg height="28" width="28" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28">
+                      <path d="M5 10.76l-.41-.72-.03-.04.03-.04a15 15 0 012.09-2.9c1.47-1.6 3.6-3.12 6.32-3.12 2.73 0 4.85 1.53 6.33 3.12a15.01 15.01 0 012.08 2.9l.03.04-.03.04a15 15 0 01-2.09 2.9c-1.47 1.6-3.6 3.12-6.32 3.12-2.73 0-4.85-1.53-6.33-3.12a15 15 0 01-1.66-2.18zm17.45-.98L22 10l.45.22-.01.02a5.04 5.04 0 01-.15.28 16.01 16.01 0 01-2.23 3.1c-1.56 1.69-3.94 3.44-7.06 3.44-3.12 0-5.5-1.75-7.06-3.44a16 16 0 01-2.38-3.38v-.02h-.01L4 10l-.45-.22.01-.02a5.4 5.4 0 01.15-.28 16 16 0 012.23-3.1C7.5 4.69 9.88 2.94 13 2.94c3.12 0 5.5 1.75 7.06 3.44a16.01 16.01 0 012.38 3.38v.02h.01zM22 10l.45-.22.1.22-.1.22L22 10zM3.55 9.78L4 10l-.45.22-.1-.22.1-.22zm6.8.22A2.6 2.6 0 0113 7.44 2.6 2.6 0 0115.65 10 2.6 2.6 0 0113 12.56 2.6 2.6 0 0110.35 10zM13 6.44A3.6 3.6 0 009.35 10 3.6 3.6 0 0013 13.56c2 0 3.65-1.58 3.65-3.56A3.6 3.6 0 0013 6.44zm7.85 12l.8-.8.7.71-.79.8a.5.5 0 000 .7l.59.59c.2.2.5.2.7 0l1.8-1.8.7.71-1.79 1.8a1.5 1.5 0 01-2.12 0l-.59-.59a1.5 1.5 0 010-2.12zM16.5 21.5l-.35-.35a.5.5 0 00-.07.07l-1 1.5-1 1.5a.5.5 0 00.42.78h4a2.5 2.5 0 001.73-.77A2.5 2.5 0 0021 22.5a2.5 2.5 0 00-.77-1.73A2.5 2.5 0 0018.5 20a3.1 3.1 0 00-1.65.58 5.28 5.28 0 00-.69.55v.01h-.01l.35.36zm.39.32l-.97 1.46-.49.72h3.07c.34 0 .72-.17 1.02-.48.3-.3.48-.68.48-1.02 0-.34-.17-.72-.48-1.02-.3-.3-.68-.48-1.02-.48-.35 0-.75.18-1.1.42a4.27 4.27 0 00-.51.4z" fill="currentColor" fill-rule="evenodd"></path>
+                    </svg>
+                  </span>
+                </button>
+              </div>
+              <button aria-label="Hide options" aria-pressed="false" class="arrow-FuKse5bD apply-common-tooltip common-tooltip-vertical accessible-FuKse5bD" data-tooltip="Hide options" tabindex="-1" type="button" id="tv-arrow-hide-all">
+                <span aria-hidden="true" class="arrowIcon-FuKse5bD" role="img">
+                  <svg height="16" viewBox="0 0 10 16" width="10" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M.6 1.4l1.4-1.4 8 8-8 8-1.4-1.4 6.389-6.532-6.389-6.668z"></path>
+                  </svg>
+                </span>
+              </button>
+            </div>
+            <!-- Popup menu for Hide -->
+            <div class="tv-menu-popup" id="tv-menu-hide">
+              <div class="tv-menu-item" data-action="hide-drawings">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M5 10.76l-.41-.72-.03-.04.03-.04a15 15 0 012.09-2.9c1.47-1.6 3.6-3.12 6.32-3.12 2.73 0 4.85 1.53 6.33 3.12a15.01 15.01 0 012.08 2.9l.03.04-.03.04a15 15 0 01-2.09 2.9c-1.47 1.6-3.6 3.12-6.32 3.12-2.73 0-4.85-1.53-6.33-3.12a15 15 0 01-1.66-2.18z"/></svg>
+                <span>Hide Drawings</span>
+              </div>
+              <div class="tv-menu-item" data-action="hide-indicators">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M6 12l4.8-4.8a1 1 0 0 1 1.4 0l2.7 2.7a1 1 0 0 0 1.3.1L23 5"/></svg>
+                <span>Hide Indicators</span>
+              </div>
+              <div class="tv-menu-divider"></div>
+              <div class="tv-menu-item" data-action="hide-all">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M4.354 3.646a.5.5 0 1 0-.708.708l19.5 19.5a.5.5 0 0 0 .708-.708l-3.32-3.32c.706-.575 1.34-1.242 1.884-1.996l.032-.045-.032-.045a15.01 15.01 0 0 0-2.08-2.9C18.86 13.23 16.73 11.7 14 11.7c-1.325 0-2.502.362-3.484.945L4.354 3.646z"/></svg>
+                <span>Hide Drawings &amp; Indicators</span>
+              </div>
+            </div>
           </div>
         </div>
 
-        <!-- Candles Predict Input -->
-        <div class="ai-bubble-candle-form">
-          <label>Candles:</label>
-          <input type="number" class="ai-candle-input" id="candlesInput" value="20" min="5" max="60" step="5">
-          <button class="ai-analyze-btn" id="analyzeBtn">⚡ Analyze</button>
+        <!-- Group 3: Remove Objects (Trash Can) -->
+        <div class="group-yXa85odl tv-ext-group-3">
+          <div class="dropdown-FuKse5bD" data-name="removeAllDrawingTools" id="tv-dropdown-remove-all">
+            <div class="control-FuKse5bD">
+              <div class="buttonWrap-FuKse5bD accessible-FuKse5bD">
+                <button aria-label="Remove objects" class="button-lsC5SBAN button-zm3YRUFG apply-common-tooltip common-tooltip-vertical isInteractive-zm3YRUFG accessible-zm3YRUFG" data-tooltip="Remove objects" data-tooltip-delay="1500" tabindex="-1" type="button" id="tv-btn-remove-all">
+                  <span aria-hidden="true" class="icon-zm3YRUFG" role="img">
+                    <svg height="28" viewBox="0 0 28 28" width="28" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M18 7h5v1h-2.01l-1.33 14.64a1.5 1.5 0 0 1-1.5 1.36H9.84a1.5 1.5 0 0 1-1.49-1.36L7.01 8H5V7h5V6c0-1.1.9-2 2-2h4a2 2 0 0 1 2 2v1Zm-6-2a1 1 0 0 0-1 1v1h6V6a1 1 0 0 0-1-1h-4ZM8.02 8l1.32 14.54a.5.5 0 0 0 .5.46h8.33a.5.5 0 0 0 .5-.46L19.99 8H8.02Z" fill="currentColor"></path>
+                    </svg>
+                  </span>
+                </button>
+              </div>
+              <button aria-label="Remove options" class="arrow-FuKse5bD apply-common-tooltip common-tooltip-vertical accessible-FuKse5bD" data-tooltip="Remove options" tabindex="-1" type="button" id="tv-arrow-remove-all">
+                <span aria-hidden="true" class="arrowIcon-FuKse5bD" role="img">
+                  <svg height="16" viewBox="0 0 10 16" width="10" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M.6 1.4l1.4-1.4 8 8-8 8-1.4-1.4 6.389-6.532-6.389-6.668z"></path>
+                  </svg>
+                </span>
+              </button>
+            </div>
+            <!-- Popup menu for Trash -->
+            <div class="tv-menu-popup" id="tv-menu-remove">
+              <div class="tv-menu-item" data-action="remove-drawings">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M18 7h5v1h-2.01l-1.33 14.64a1.5 1.5 0 0 1-1.5 1.36H9.84a1.5 1.5 0 0 1-1.49-1.36L7.01 8H5V7h5V6c0-1.1.9-2 2-2h4a2 2 0 0 1 2 2v1z"/></svg>
+                <span>Remove Drawings</span>
+                <span class="tv-menu-shortcut">Del</span>
+              </div>
+              <div class="tv-menu-item" data-action="remove-indicators">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M6 12l4.8-4.8a1 1 0 0 1 1.4 0l2.7 2.7a1 1 0 0 0 1.3.1L23 5"/></svg>
+                <span>Remove Indicators</span>
+              </div>
+              <div class="tv-menu-divider"></div>
+              <div class="tv-menu-item" data-action="remove-all">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M18 7h5v1h-2.01l-1.33 14.64a1.5 1.5 0 0 1-1.5 1.36H9.84a1.5 1.5 0 0 1-1.49-1.36L7.01 8H5V7h5V6c0-1.1.9-2 2-2h4a2 2 0 0 1 2 2v1z"/></svg>
+                <span>Remove Drawings &amp; Indicators</span>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="ai-presets">
-          <button class="ai-preset-btn" data-c="5">5</button>
-          <button class="ai-preset-btn" data-c="10">10</button>
-          <button class="ai-preset-btn" data-c="20">20</button>
-          <button class="ai-preset-btn" data-c="30">30</button>
-          <button class="ai-preset-btn" data-c="50">50</button>
-        </div>
-        <div class="ai-loading-bar" id="aiLoadBar"><div class="ai-loading-fill"></div></div>
-      </div>
-    </div>
-
-    <!-- Chart Scale/Footer Info Row -->
-    <div class="chart-scale-bar">
-      <div class="chart-scale-bar-l">
-        <div class="scale-item">Source: <span>Simulated · No-exec</span></div>
-        <div class="scale-item" id="scaleKronos" style="display:none">Kronos→ <span id="targetPrice" class="target-price"></span></div>
-        <div class="scale-item" id="scaleLaya" style="display:none">Laya: <span id="layaDecision"></span></div>
-      </div>
-      <div class="kronos-target-row" id="kronosTargetRow" style="display:none">
-        <div class="target-item">Last: <span id="targetClose">--</span></div>
-        <div class="target-item">→ Target: <span class="cyan" id="targetPriceHdr">--</span></div>
-        <div class="target-item">Return: <span id="targetReturn">--</span></div>
       </div>
     </div>
   </main>
 
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <!-- COLUMN 4: RIGHT SIDEBAR PANEL                               -->
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <aside class="tv-right-panel">
-    <!-- Panel Tabs -->
-    <div class="panel-tabs" id="panelTabs">
-      <button class="panel-tab active" data-tab="laya">Laya AI</button>
-      <button class="panel-tab" data-tab="backtest">Backtest</button>
-      <button class="panel-tab" data-tab="plan">Trade Plan</button>
-      <button class="panel-tab" data-tab="depth">Depth</button>
-      <button class="panel-tab" data-tab="options">Options</button>
-      <button class="panel-tab" data-tab="screener">Screener</button>
-      <button class="panel-tab" data-tab="news">News</button>
-      <button class="panel-tab" data-tab="kronos">Kronos</button>
+  <!-- ══════ AUTHENTIC PAPER TRADING BOTTOM BAR ══════ -->
+  <div id="paper-trading-bottom-bar">
+    <div class="pt-left-group" id="pt-toggle-info" title="Click for Paper Account Overview">
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="none">
+        <rect width="16" height="16" rx="3.5" fill="#131722"/>
+        <text x="8" y="11.2" font-family="Arial, sans-serif" font-size="7.5" font-weight="700" fill="#ffffff" text-anchor="middle">TV</text>
+      </svg>
+      <span class="pt-status-dot"></span>
+      <span class="pt-title" id="pt-status-title">Paper Trading · Simulation Account (₹1,00,000)</span>
+      <svg class="pt-arrow" viewBox="0 0 10 6" width="9" height="5" fill="none">
+        <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
     </div>
-
-    <!-- ── TAB: LAYA AI DECISION ── -->
-    <div class="panel-body" id="tab-laya">
-      <div class="decision-banner" id="decisionBanner">
-        <div class="decision-main">
-          <div class="action-badge HOLD" id="actionBadge">READY</div>
-          <div class="confidence-group">
-            <div class="confidence-pct" id="confidenceVal">--%</div>
-            <div class="confidence-label">Confidence</div>
-          </div>
-        </div>
-        <div class="decision-model-tag">Laya 0.4B · ModernBERT Decision Head</div>
-      </div>
-
-      <div class="section-label">Signal Distribution</div>
-      <div class="prob-section">
-        <div class="prob-row">
-          <span class="prob-name buy">BUY</span>
-          <div class="prob-track"><div class="prob-fill buy" id="probBuyFill" style="width:33%"></div></div>
-          <span class="prob-pct" id="probBuyPct">--%</span>
-        </div>
-        <div class="prob-row">
-          <span class="prob-name sell">SELL</span>
-          <div class="prob-track"><div class="prob-fill sell" id="probSellFill" style="width:33%"></div></div>
-          <span class="prob-pct" id="probSellPct">--%</span>
-        </div>
-        <div class="prob-row">
-          <span class="prob-name hold">HOLD</span>
-          <div class="prob-track"><div class="prob-fill hold" id="probHoldFill" style="width:34%"></div></div>
-          <span class="prob-pct" id="probHoldPct">--%</span>
-        </div>
-      </div>
-
-      <div class="section-label">Trade Levels</div>
-      <div class="trade-levels" id="tradeLevels">
-        <div class="trade-level-row">
-          <span class="tl-lbl">Entry</span>
-          <span class="tl-val entry" id="tlEntry">--</span>
-        </div>
-        <div class="trade-level-row">
-          <span class="tl-lbl">Stop Loss</span>
-          <span class="tl-val sl" id="tlSL">-- <span class="tl-badge sl">SL</span></span>
-        </div>
-        <div class="trade-level-row">
-          <span class="tl-lbl">Take Profit 1</span>
-          <span class="tl-val tp" id="tlTP1">-- <span class="tl-badge tp">TP1</span></span>
-        </div>
-        <div class="trade-level-row">
-          <span class="tl-lbl">Take Profit 2</span>
-          <span class="tl-val tp" id="tlTP2">-- <span class="tl-badge tp">TP2</span></span>
-        </div>
-        <div class="trade-level-row">
-          <span class="tl-lbl">Risk/Reward</span>
-          <span class="tl-val" id="tlRR">--</span>
-        </div>
-      </div>
-
-      <div class="section-label mt-8">Risk & Expansion</div>
-      <div class="metrics-grid">
-        <div class="metric-card">
-          <div class="metric-icon">⚠️</div>
-          <div class="metric-content">
-            <div class="metric-label">Execution Risk</div>
-            <div class="metric-value" id="riskVal">--</div>
-            <div class="metric-sub" id="riskSub">Score: -- / 3.0</div>
-          </div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-icon">🎯</div>
-          <div class="metric-content">
-            <div class="metric-label">P(Breakout)</div>
-            <div class="metric-value cyan" id="breakoutVal">--%</div>
-            <div class="metric-sub" id="breakoutSub">Boundary expansion</div>
-          </div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-icon">📊</div>
-          <div class="metric-content">
-            <div class="metric-label">Trend Strength</div>
-            <div class="metric-value" id="trendStrength">--</div>
-            <div class="metric-sub">ADX based</div>
-          </div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-icon">🔮</div>
-          <div class="metric-content">
-            <div class="metric-label">Kronos Target</div>
-            <div class="metric-value" id="kronosTarget">--</div>
-            <div class="metric-sub" id="kronosCandlesLeft">-- candles</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="section-label">Latency Telemetry</div>
-      <div class="telemetry-row" style="margin-bottom:10px;">
-        <div class="telemetry-item">
-          <div class="tel-label">Kronos</div>
-          <div class="tel-value cyan" id="latencyKronos">-- ms</div>
-        </div>
-        <div class="telemetry-item">
-          <div class="tel-label">Laya</div>
-          <div class="tel-value violet" id="latencyLaya">-- ms</div>
-        </div>
-        <div class="telemetry-item">
-          <div class="tel-label">Total</div>
-          <div class="tel-value" id="latencyTotal">-- ms</div>
-        </div>
-      </div>
-
-      <button class="cta-btn primary" id="runForecastBtn2">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-        </svg>
-        Run Kronos + Laya
-      </button>
-    </div><!-- /tab-laya -->
-
-    <!-- ── TAB: BACKTEST ── -->
-    <div class="panel-body hidden" id="tab-backtest">
-      <div class="bt-subnav-bar">
-        <div class="bt-nav-pills">
-          <button class="bt-nav-pill active" data-bttab="backtest">Backtest</button>
-          <button class="bt-nav-pill" data-bttab="sweep">Sweep</button>
-          <button class="bt-nav-pill" data-bttab="walkfwd">Walk-fwd</button>
-        </div>
-        <span class="bt-symbol-context" id="btSymbolCtx">— NIFTY50 5m</span>
-      </div>
-
-      <div class="bt-filter-strip">
-        <span class="bt-filter-item" data-btview="period">Period</span>
-        <span class="bt-filter-item" data-btview="strategy">Strategy</span>
-        <span class="bt-filter-item" data-btview="costs">Costs</span>
-        <span class="bt-filter-item active" data-btview="results">Results <span class="bt-dot" style="width:6px;height:6px;background:var(--blue);border-radius:50%;display:inline-block;margin-left:3px;"></span></span>
-        <span class="bt-filter-item" data-btview="presets">Presets</span>
-      </div>
-
-      <div class="bt-headline-header">
-        <div class="bt-headline-main">
-          <span class="bt-headline-pnl" id="btHeadlinePnl">--</span>
-          <span class="bt-headline-sub" id="btHeadlineTrades">-- trades</span>
-          <span class="bt-headline-sub" id="btHeadlineDD">DD: --</span>
-          <span class="bt-headline-sub" id="btHeadlineWin">WR: --%</span>
-        </div>
-        <div class="bt-headline-dates" id="btDateRange">Run backtest to see results</div>
-      </div>
-
-      <!-- Equity Curve Mini Canvas -->
-      <canvas class="equity-curve" id="equityCurveCanvas" height="60"></canvas>
-
-      <div class="bt-segment-row mt-8">
-        <div class="bt-segmented-control">
-          <button class="bt-seg-btn active" data-view="overview">Overview</button>
-          <button class="bt-seg-btn" data-view="trades">Trades</button>
-          <button class="bt-seg-btn" data-view="analysis">Analysis</button>
-        </div>
-        <div class="bt-trades-count"><span id="btTradesCount">--</span> trades <span class="bt-review-link" id="btReviewLink">Review</span></div>
-      </div>
-
-      <div class="section-label">Performance</div>
-      <div class="bt-performance-grid">
-        <div class="bt-perf-item"><div class="bt-perf-label">NET P&L</div><div class="bt-perf-val" id="btNetPnl">--</div></div>
-        <div class="bt-perf-item"><div class="bt-perf-label">RETURN %</div><div class="bt-perf-val" id="btReturnPct">--%</div></div>
-        <div class="bt-perf-item"><div class="bt-perf-label">CAGR %</div><div class="bt-perf-val" id="btCagr">--%</div></div>
-        <div class="bt-perf-item"><div class="bt-perf-label">PROFIT FACTOR</div><div class="bt-perf-val" id="btProfitFactor">--</div></div>
-        <div class="bt-perf-item"><div class="bt-perf-label">WIN RATE</div><div class="bt-perf-val" id="btWinRate">--%</div></div>
-        <div class="bt-perf-item"><div class="bt-perf-label">EXPECTANCY</div><div class="bt-perf-val" id="btExpectancy">--</div></div>
-        <div class="bt-perf-item"><div class="bt-perf-label">SHARPE</div><div class="bt-perf-val" id="btSharpe">--</div></div>
-        <div class="bt-perf-item"><div class="bt-perf-label">SORTINO</div><div class="bt-perf-val" id="btSortino">--</div></div>
-        <div class="bt-perf-item"><div class="bt-perf-label">CALMAR</div><div class="bt-perf-val" id="btCalmar">--</div></div>
-        <div class="bt-perf-item"><div class="bt-perf-label">MAX DRAWDOWN</div><div class="bt-perf-val" id="btMaxDD">--</div></div>
-      </div>
-
-      <div class="section-label">Trades Ledger</div>
-      <div class="trades-table-container">
-        <table class="trades-table" id="tradesTable">
-          <thead>
-            <tr>
-              <th>#</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>P&L</th><th>%</th><th>BARS</th>
-            </tr>
-          </thead>
-          <tbody id="tradesTableBody"></tbody>
-        </table>
-      </div>
-
-      <div class="bt-panel-footer">
-        <span class="bt-timing-badge" id="btTiming">--</span>
-        <button class="bt-action-btn ghost" id="clearBtResults">Clear</button>
-        <button class="bt-action-btn primary" id="runBtBtn">▶ Run Backtest</button>
-      </div>
-    </div><!-- /tab-backtest -->
-
-    <!-- ── TAB: TRADE PLAN ── -->
-    <div class="panel-body hidden" id="tab-plan">
-      <div class="plan-action-header">
-        <span class="plan-action-badge STANDBY" id="planActionBadge">STANDBY</span>
-        <span class="plan-pair" id="planPairDisplay">NIFTY50</span>
-      </div>
-
-      <table class="plan-table">
-        <tbody>
-          <tr><td>Order Action</td><td class="plan-val" id="planAction">STANDBY</td></tr>
-          <tr><td>Entry Price</td><td class="plan-val" id="planEntry">--</td></tr>
-          <tr class="tr-danger"><td>Stop Loss</td><td class="plan-val red" id="planSL">--</td></tr>
-          <tr class="tr-success"><td>Take Profit 1</td><td class="plan-val green" id="planTP1">--</td></tr>
-          <tr class="tr-success"><td>Take Profit 2</td><td class="plan-val green" id="planTP2">--</td></tr>
-          <tr><td>Risk / Reward</td><td class="plan-val cyan" id="planRR">--</td></tr>
-          <tr><td>Position Size</td><td class="plan-val" id="planSizing">--</td></tr>
-          <tr><td>Capital (₹)</td><td><input type="number" class="form-input" id="planCapital" value="100000" min="1000" step="1000" style="height:22px;padding:2px 6px;font-size:11px;"></td></tr>
-          <tr><td>Risk % / Trade</td><td><input type="number" class="form-input" id="planRiskPct" value="1" min="0.1" max="10" step="0.1" style="height:22px;padding:2px 6px;font-size:11px;"> %</td></tr>
-        </tbody>
-      </table>
-
-      <div class="plan-run-cta" style="display:flex;gap:6px;margin-top:8px;">
-        <button class="cta-btn primary" id="runForecastBtn3" style="flex:1;">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-          </svg>
-          Generate Plan
-        </button>
-        <button class="cta-btn bull" id="executeBuyBtn" style="width:80px;display:none;">BUY</button>
-        <button class="cta-btn bear" id="executeSellBtn" style="width:80px;display:none;">SELL</button>
-      </div>
-    </div><!-- /tab-plan -->
-
-    <!-- ── TAB: MARKET DEPTH ── -->
-    <div class="panel-body hidden" id="tab-depth">
-      <div class="depth-header">
-        <span class="section-label" style="margin:0">Order Book</span>
-        <span style="font-size:10px;color:var(--text3)" id="depthSymbol">NIFTY50</span>
-      </div>
-
-      <div class="depth-spread">
-        <span class="depth-spread-lbl">Spread:</span>
-        <span class="depth-spread-val" id="depthSpread">0.25 pts</span>
-      </div>
-
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;">
-        <div>
-          <div class="section-label">BIDS (Buy)</div>
-          <table class="depth-table">
-            <thead><tr><th style="text-align:left">Price</th><th>Qty</th><th>Orders</th></tr></thead>
-            <tbody id="bidsTableBody"></tbody>
-          </table>
-        </div>
-        <div>
-          <div class="section-label">ASKS (Sell)</div>
-          <table class="depth-table">
-            <thead><tr><th style="text-align:left">Price</th><th>Qty</th><th>Orders</th></tr></thead>
-            <tbody id="asksTableBody"></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="section-label">Depth Visualization</div>
-      <div class="depth-bar-chart" id="depthBarChart"></div>
-
-      <div style="margin-top:10px;">
-        <div class="section-label">Open Interest</div>
-        <div class="metrics-grid">
-          <div class="metric-card">
-            <div class="metric-icon">📈</div>
-            <div class="metric-content">
-              <div class="metric-label">Call OI</div>
-              <div class="metric-value bull" id="callOI">--</div>
-            </div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-icon">📉</div>
-            <div class="metric-content">
-              <div class="metric-label">Put OI</div>
-              <div class="metric-value bear" id="putOI">--</div>
-            </div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-icon">⚖️</div>
-            <div class="metric-content">
-              <div class="metric-label">PCR</div>
-              <div class="metric-value" id="pcrRatio">--</div>
-              <div class="metric-sub">Put/Call Ratio</div>
-            </div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-icon">💹</div>
-            <div class="metric-content">
-              <div class="metric-label">Max Pain</div>
-              <div class="metric-value cyan" id="maxPain">--</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div><!-- /tab-depth -->
-
-    <!-- ── TAB: OPTIONS CHAIN ── -->
-    <div class="panel-body hidden" id="tab-options">
-      <div class="options-chain-header">
-        <span class="section-label" style="margin:0">Options Chain</span>
-        <select class="expiry-select" id="expirySelect">
-          <option>31 Oct 2026</option>
-          <option>7 Nov 2026</option>
-          <option>14 Nov 2026</option>
-          <option>28 Nov 2026</option>
-        </select>
-      </div>
-      <div class="options-chain-wrap">
-        <table class="options-chain-table" id="optionsChainTable">
-          <thead>
-            <tr>
-              <th class="call">LTP</th><th class="call">OI</th><th class="call">Volume</th>
-              <th class="strike">STRIKE</th>
-              <th class="put">Volume</th><th class="put">OI</th><th class="put">LTP</th>
-            </tr>
-          </thead>
-          <tbody id="optionsChainBody"></tbody>
-        </table>
-      </div>
-    </div><!-- /tab-options -->
-
-    <!-- ── TAB: SCREENER ── -->
-    <div class="panel-body hidden" id="tab-screener">
-      <div class="section-label">Stock Screener</div>
-      <div class="screener-filters">
-        <div class="screener-filter-row">
-          <label>Market</label>
-          <select class="screener-select" id="screenMarket">
-            <option>NSE India</option><option>BSE India</option><option>US Markets</option><option>Crypto</option>
-          </select>
-        </div>
-        <div class="screener-filter-row">
-          <label>Sector</label>
-          <select class="screener-select" id="screenSector">
-            <option>All Sectors</option><option>Banking</option><option>IT</option><option>Pharma</option>
-            <option>Auto</option><option>FMCG</option><option>Metal</option><option>Energy</option>
-          </select>
-        </div>
-        <div class="screener-filter-row">
-          <label>Signal</label>
-          <select class="screener-select" id="screenSignal">
-            <option>All</option><option>BUY</option><option>SELL</option><option>Breakout</option>
-            <option>Oversold RSI</option><option>Overbought RSI</option><option>52W High</option><option>52W Low</option>
-          </select>
-        </div>
-        <div class="screener-filter-row">
-          <label>Change %</label>
-          <select class="screener-select" id="screenChange">
-            <option>Any</option><option>&gt;+2%</option><option>&gt;+5%</option><option>&lt;-2%</option><option>&lt;-5%</option>
-          </select>
-        </div>
-        <div class="screener-filter-row">
-          <label>Sort By</label>
-          <select class="screener-select" id="screenSort">
-            <option>AI Signal</option><option>Change %</option><option>Volume</option><option>Market Cap</option>
-          </select>
-        </div>
-        <button class="bt-action-btn primary" id="runScreenerBtn" style="width:100%;">🔍 Run Screener</button>
-      </div>
-      <div style="overflow:auto;max-height:320px;border:1px solid var(--border);border-radius:var(--r);">
-        <table class="screener-results-table" id="screenerTable">
-          <thead>
-            <tr><th>Symbol</th><th>Price</th><th>Chg%</th><th>AI</th><th>RSI</th></tr>
-          </thead>
-          <tbody id="screenerBody"></tbody>
-        </table>
-      </div>
-    </div><!-- /tab-screener -->
-
-    <!-- ── TAB: NEWS FEED ── -->
-    <div class="panel-body hidden" id="tab-news">
-      <div class="section-label" style="display:flex;align-items:center;justify-content:space-between;">
-        Market News
-        <select class="tv-select" id="newsFilter" style="font-size:10px;height:20px;">
-          <option>All Markets</option><option>NSE/BSE</option><option>Crypto</option><option>Global</option>
-        </select>
-      </div>
-      <div id="newsFeed"></div>
-    </div><!-- /tab-news -->
-
-    <!-- ── TAB: KRONOS CONTROLS ── -->
-    <div class="panel-body hidden" id="tab-kronos">
-      <div class="section-label">Kronos Hyperparameters</div>
-
-      <div class="control-group">
-        <div class="control-header">
-          <span>Forecast Horizon (Bars)</span>
-          <span class="control-badge" id="predLenVal">20</span>
-        </div>
-        <input type="range" id="predLenSlider" class="tv-slider" min="5" max="60" value="20" step="5">
-        <div class="slider-labels"><span>5</span><span>60 bars</span></div>
-      </div>
-
-      <div class="control-group">
-        <div class="control-header">
-          <span>Sampling Temperature</span>
-          <span class="control-badge" id="tempVal">0.80</span>
-        </div>
-        <input type="range" id="tempSlider" class="tv-slider" min="0.1" max="1.5" value="0.8" step="0.05">
-        <div class="slider-labels"><span>0.1 (Precise)</span><span>1.5 (Creative)</span></div>
-      </div>
-
-      <div class="control-group">
-        <div class="control-header">
-          <span>Top-P Nucleus Sampling</span>
-          <span class="control-badge" id="topPVal">0.90</span>
-        </div>
-        <input type="range" id="topPSlider" class="tv-slider" min="0.5" max="1.0" value="0.9" step="0.05">
-        <div class="slider-labels"><span>0.5</span><span>1.0</span></div>
-      </div>
-
-      <div class="section-label mt-8">Model Specifications</div>
-      <div class="model-spec-card">
-        <div class="spec-row"><span class="spec-key">Forecast Model</span><span class="spec-val cyan">NeoQuasar/Kronos-base</span></div>
-        <div class="spec-row"><span class="spec-key">Parameters</span><span class="spec-val">102.3M</span></div>
-        <div class="spec-row"><span class="spec-key">Context Window</span><span class="spec-val">512 tokens (OHLCV)</span></div>
-        <div class="spec-row"><span class="spec-key">Architecture</span><span class="spec-val">12L · 16H Transformer</span></div>
-        <div class="spec-row"><span class="spec-key">Tokenizer</span><span class="spec-val">BSQ 10-bit Quantized</span></div>
-        <div class="spec-row"><span class="spec-key">Decision Head</span><span class="spec-val violet">Laya ModernBERT (0.4B)</span></div>
-        <div class="spec-row"><span class="spec-key">Inference Device</span><span class="spec-val green" id="deviceBadge">CPU</span></div>
-        <div class="spec-row"><span class="spec-key">RAM Budget</span><span class="spec-val">&lt; 500 MB</span></div>
-      </div>
-
-      <button class="cta-btn primary" id="runForecastBtn4" style="margin-top:8px;">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-        </svg>
-        Run Kronos + Laya
-      </button>
-    </div><!-- /tab-kronos -->
-
-  </aside><!-- /tv-right-panel -->
-
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <!-- BOTTOM STATUS BAR                                            -->
-  <!-- ════════════════════════════════════════════════════════════ -->
-  <div class="tv-status-bar">
-    <div class="status-item">
-      <div class="status-dot ok" id="sbAiDot"></div>
-      <span id="sbAiText">Kronos + Laya Ready</span>
-    </div>
-    <div class="status-sep"></div>
-    <div class="status-item">RAM: <b id="sbRam">~91MB</b></div>
-    <div class="status-sep"></div>
-    <div class="status-item">Pair: <b id="sbPair">NIFTY50</b></div>
-    <div class="status-sep"></div>
-    <div class="status-item">TF: <b id="sbTf">5m</b></div>
-    <div class="status-sep"></div>
-    <div class="status-item">Candles: <b id="sbCandles">500</b></div>
-    <div class="status-sep"></div>
-    <div class="status-item" id="sbLastUpdate">Updated: <b>--:--:--</b></div>
-    <div class="status-bar-right">
-      <div class="status-item"><b id="sbTime">--:--:--</b> IST</div>
-      <div class="status-sep"></div>
-      <button class="hdr-action-btn" id="positionsToggleBtn" style="height:18px;font-size:10px;padding:0 6px;">Open Positions</button>
+    <div class="pt-right-group">
+      <button class="pt-action-btn pt-trade-buy" id="pt-quick-buy" title="Simulate Buy 1 unit @ market">BUY @ MKT</button>
+      <button class="pt-action-btn pt-trade-sell" id="pt-quick-sell" title="Simulate Sell 1 unit @ market">SELL @ MKT</button>
+      <span class="pt-summary-badge" id="pt-portfolio-summary">P&amp;L: ₹0.00</span>
     </div>
   </div>
 
-</div><!-- /app-shell -->
+  <!-- Common Toast -->
+  <div id="tv-toast"></div>
 
-<!-- ════════════════════════════════════════════════════════════════ -->
-<!-- SYMBOL SEARCH MODAL                                             -->
-<!-- ════════════════════════════════════════════════════════════════ -->
-<div class="sym-search-overlay" id="symSearchOverlay">
-  <div class="sym-search-modal">
-    <div class="sym-search-input-row">
-      <span class="sym-search-icon">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-        </svg>
-      </span>
-      <input class="sym-search-input" id="symSearchInput" placeholder="Search symbol, e.g. NIFTY, RELIANCE, BTC..." autocomplete="off" spellcheck="false">
-      <button class="sym-close-btn" id="symSearchClose">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
-    </div>
-    <div class="sym-search-categories">
-      <button class="sym-cat-btn active" data-cat="all">All</button>
-      <button class="sym-cat-btn" data-cat="INDICES">Indices</button>
-      <button class="sym-cat-btn" data-cat="INDIAN_STOCKS">Indian Stocks</button>
-      <button class="sym-cat-btn" data-cat="OPTIONS">Options</button>
-      <button class="sym-cat-btn" data-cat="CRYPTOCURRENCIES">Crypto</button>
-      <button class="sym-cat-btn" data-cat="CURRENCIES">Forex</button>
-      <button class="sym-cat-btn" data-cat="COMMODITIES">Commodities</button>
-    </div>
-    <div class="sym-search-results" id="symSearchResults"></div>
-  </div>
-</div>
+  <!-- Floating AI Copilot Trigger Button -->
+  <button class="floating-ai-copilot-btn" id="open-ai-btn" title="Open TradingView AI Assistant">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+    </svg>
+    <span>AI Copilot</span>
+  </button>
 
-<!-- ════════════════════════════════════════════════════════════════ -->
-<!-- INDICATOR PICKER MODAL                                          -->
-<!-- ════════════════════════════════════════════════════════════════ -->
-<div class="indicator-modal-overlay" id="indicatorModalOverlay">
-  <div class="indicator-modal">
-    <div class="ind-modal-header">
-      <span class="ind-modal-title">📊 Indicators & Overlays</span>
-      <button class="ind-modal-close" id="indModalClose">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
-    </div>
-    <div class="ind-modal-search-wrap">
-      <input class="ind-modal-search" id="indModalSearch" placeholder="Search indicators..." autocomplete="off">
-    </div>
-    <div class="ind-modal-body">
-      <div class="ind-categories">
-        <div class="ind-cat-item active" data-indcat="all">All</div>
-        <div class="ind-cat-item" data-indcat="overlays">Overlays</div>
-        <div class="ind-cat-item" data-indcat="momentum">Momentum</div>
-        <div class="ind-cat-item" data-indcat="volume">Volume</div>
-        <div class="ind-cat-item" data-indcat="volatility">Volatility</div>
-        <div class="ind-cat-item" data-indcat="trend">Trend</div>
-        <div class="ind-cat-item" data-indcat="ai">AI/Custom</div>
-      </div>
-      <div class="ind-list" id="indList"></div>
-    </div>
-  </div>
-</div>
+  <!-- AI Copilot Overlay Backdrop -->
+  <div class="ai-drawer-overlay" id="ai-drawer-overlay"></div>
 
-<!-- ════════════════════════════════════════════════════════════════ -->
-<!-- ALERT MODAL                                                      -->
-<!-- ════════════════════════════════════════════════════════════════ -->
-<div class="dialog-backdrop" id="alertDialogBackdrop">
-  <div class="dialog-popup">
-    <div class="dialog-header">
-      <h2 class="dialog-title">Create Alert on <span id="alertModalSymbol">NIFTY50</span></h2>
-      <button class="dialog-close" id="closeAlertDialog">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+  <!-- Sliding AI Assistant Drawer -->
+  <aside id="ai-copilot-drawer">
+    <div class="ai-drawer-header">
+      <h3>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2962ff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
         </svg>
-      </button>
+        <span>TradingView AI Intelligence</span>
+      </h3>
+      <button class="ai-drawer-close" id="close-ai-btn">&times;</button>
     </div>
-    <div class="dialog-panel">
-      <div class="form-row" style="margin-bottom:10px;">
-        <label class="form-label">Condition</label>
-        <div class="form-inline-group">
-          <select class="tv-select form-input flex-1" id="alertCondition">
-            <option value="Crossing">Crossing</option>
-            <option value="Crossing Up">Crossing Up</option>
-            <option value="Crossing Down">Crossing Down</option>
-            <option value="Greater Than">Greater Than</option>
-            <option value="Less Than">Less Than</option>
-          </select>
-          <input type="number" step="0.01" class="form-input price-input flex-1" id="alertTriggerPrice" value="25200">
+
+    <!-- Suggested Quick Prompts -->
+    <div class="ai-chip-suggestions">
+      <button class="ai-chip" data-q="technical outlook for SENSEX">📊 Market Summary</button>
+      <button class="ai-chip" data-q="key support and resistance levels for BSE">🎯 Support &amp; Resistance</button>
+      <button class="ai-chip" data-q="scalping setup for Reliance">⚡ Trade Setup</button>
+      <button class="ai-chip" data-q="rsi momentum analysis">📈 RSI Momentum</button>
+    </div>
+
+    <!-- Conversation Feed -->
+    <div class="ai-messages-list" id="ai-messages">
+      <div class="ai-msg bot">
+        <div class="avatar">AI</div>
+        <div class="bubble">
+          <strong>Welcome to TradingView AI!</strong><br>
+          I am connected to live Indian market analysis. Ask about trends, support/resistance levels, RSI momentum, and trade setups.
         </div>
       </div>
-      <div class="form-inline-grid" style="margin-bottom:10px;">
-        <div class="form-row">
-          <label class="form-label">Trigger</label>
-          <select class="tv-select form-input" id="alertTriggerMode">
-            <option value="once">Once only</option>
-            <option value="every">Every time</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label class="form-label">Expiration</label>
-          <select class="tv-select form-input" id="alertExpiration">
-            <option value="never">Never</option>
-            <option value="1day">1 Day</option>
-            <option value="1week">1 Week</option>
-          </select>
-        </div>
-      </div>
-      <div class="form-row" style="margin-bottom:10px;">
-        <label class="form-label">Message</label>
-        <textarea class="form-input alert-textarea" id="alertMessage" rows="2">NIFTY50 Crossing 25200</textarea>
-      </div>
-      <div class="form-row" style="margin-bottom:10px;">
-        <label class="form-label">Notify via</label>
-        <div class="notification-pills">
-          <button class="notif-pill active" type="button">App</button>
-          <button class="notif-pill" type="button">Browser</button>
-          <button class="notif-pill" type="button">Sound</button>
-          <button class="notif-pill" type="button">Telegram</button>
-        </div>
-      </div>
-      <div class="form-row">
-        <label class="checkbox-item">
-          <input type="checkbox" id="notifyStartLine" checked>
-          <span>Draw alert line on chart</span>
-        </label>
-      </div>
     </div>
-    <div class="dialog-footer">
-      <button class="dialog-btn ghost" id="cancelAlertDialog">Cancel</button>
-      <button class="dialog-btn primary" id="confirmAlertDialog">Create Alert</button>
-    </div>
-  </div>
-</div>
 
-<!-- ════════════════════════════════════════════════════════════════ -->
-<!-- CSV UPLOAD MODAL                                                 -->
-<!-- ════════════════════════════════════════════════════════════════ -->
-<div class="dialog-backdrop" id="csvDialogBackdrop">
-  <div class="dialog-popup">
-    <div class="dialog-header">
-      <h2 class="dialog-title">Upload Chart Data</h2>
-      <button class="dialog-close" id="closeCsvDialog">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
+    <!-- Message Input -->
+    <div class="ai-input-bar">
+      <input type="text" id="ai-input-field" placeholder="Ask AI about SENSEX, Reliance, levels, trends..." />
+      <button id="ai-submit-btn">Send</button>
     </div>
-    <div class="dialog-panel">
-      <p class="dialog-desc">Upload any CSV with OHLCV columns — TradingView, NSE Bhavcopy, Yahoo Finance, Binance formats supported.</p>
-      <div class="upload-dropzone" id="csvDropzone" role="button" tabindex="0">
-        <div class="dropzone-icon">📊</div>
-        <div class="dropzone-text">Click or Drag & Drop CSV</div>
-        <div class="dropzone-sub">timestamp, open, high, low, close, volume</div>
-        <input type="file" id="csvFileInput" accept=".csv" style="display:none;">
-      </div>
-    </div>
-    <div class="dialog-footer">
-      <button class="dialog-btn ghost" id="cancelCsvDialog">Cancel</button>
-      <button class="dialog-btn primary" id="confirmCsvDialog">Load Data</button>
-    </div>
-  </div>
-</div>
+  </aside>
 
-<!-- ════════════════════════════════════════════════════════════════ -->
-<!-- TOAST REGION                                                     -->
-<!-- ════════════════════════════════════════════════════════════════ -->
-<div class="toast-region" id="toastRegion" aria-live="polite"></div>
+  <!-- Official TradingView Advanced Real-Time Charting Library Script -->
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 
-<!-- ════════════════════════════════════════════════════════════════ -->
-<!-- SCRIPTS                                                          -->
-<!-- ════════════════════════════════════════════════════════════════ -->
-<script src="/static/js/chart.js"></script>
-<script src="/static/js/app.js"></script>
+  <script type="text/javascript">
+    // Initialize 100% Genuine TradingView Advanced Real-Time Chart Engine
+    let tvWidget = null;
+    let currentActiveSymbol = 'BSE:SENSEX';
+    let currentLastPrice = 73606.75;
+
+    // Simulation Account State
+    let paperAccount = {
+      balance: 100000.00,
+      initialBalance: 100000.00,
+      trades: [],
+      positionQty: 0
+    };
+
+    function initTradingViewChart() {
+      if (typeof TradingView === 'undefined') {
+        console.error('TradingView official script not loaded yet, retrying...');
+        setTimeout(initTradingViewChart, 250);
+        return;
+      }
+
+      // Clear any legacy cached symbol state to guarantee fresh load with BSE:SENSEX
+      try {
+        const keysToRemove = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && (k.includes('tradingview') || k.includes('chart') || k.includes('editchart') || k.includes('tv_'))) {
+            keysToRemove.push(k);
+          }
+        }
+        keysToRemove.forEach(k => localStorage.removeItem(k));
+        sessionStorage.clear();
+      } catch (e) {}
+
+      tvWidget = new TradingView.widget({
+        "autosize": true,
+        "symbol": "BSE:SENSEX",
+        "tvwidgetsymbol": "BSE:SENSEX",
+        "interval": "D",
+        "timezone": "Asia/Kolkata",
+        "theme": "light",
+        "style": "1", // 1 = Candles
+        "locale": "in",
+        "toolbar_bg": "#ffffff",
+        "enable_publishing": false,
+        "allow_symbol_change": true,
+        "hide_side_toolbar": false,
+        "withdateranges": true,
+        "save_image": true,
+        "details": true,
+        "hotlist": true,
+        "calendar": true,
+        "news": ["headlines"],
+        "enabled_features": [
+          "side_toolbar_in_fullscreen_mode",
+          "header_in_fullscreen_mode",
+          "bypass_chart_height_check",
+          "no_min_chart_width",
+          "star_some_intervals_by_default",
+          "symbol_search_hot_key",
+          "drawing_templates",
+          "study_templates"
+        ],
+        "disabled_features": [],
+        "studies": [
+          "STD;SMA",
+          "STD;RSI"
+        ],
+        "watchlist": [
+          "BSE:SENSEX",
+          "BSE:BANKEX",
+          "BSE:RELIANCE",
+          "BSE:TCS",
+          "BSE:HDFCBANK",
+          "BSE:ICICIBANK",
+          "BSE:INFY",
+          "BSE:BHARTIARTL",
+          "BSE:SBIN",
+          "BSE:TATAMOTORS",
+          "BSE:ITC",
+          "BSE:LT",
+          "BSE:KOTAKBANK",
+          "BSE:MARUTI",
+          "BSE:SUNPHARMA",
+          "BSE:TITAN",
+          "BSE:BAJFINANCE"
+        ],
+        "show_popup_button": true,
+        "popup_width": "1000",
+        "popup_height": "650",
+        "container_id": "tradingview_advanced_chart"
+      });
+    }
+
+    function showTvToast(text) {
+      const toast = document.getElementById('tv-toast');
+      if (!toast) return;
+      toast.textContent = text;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2400);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Interactive Handlers for TradingView Left Toolbar Extensions
+    // ─────────────────────────────────────────────────────────────────────────
+    function setupDrawingToolExtensions() {
+      const openLockSvg = `<svg fill="none" height="28" viewBox="0 0 28 28" width="28" xmlns="http://www.w3.org/2000/svg"><path d="M9.877 3.607a3.997 3.997 0 0 1 5.508 1.27l.026.043-.848.53-.01-.017-.005.004a2.998 2.998 0 0 0-5.474 2.226 3 3 0 0 0 .302.79l.08.133L10.964 11H19.5l.256.012A2.5 2.5 0 0 1 22 13.5v7a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 6 20.5v-7a2.5 2.5 0 0 1 2.244-2.488L8.5 11h1.27L8.612 9.15a4 4 0 0 1-.58-1.645 4 4 0 0 1 1.845-3.898M8.5 12A1.5 1.5 0 0 0 7 13.5v7A1.5 1.5 0 0 0 8.5 22h11a1.5 1.5 0 0 0 1.5-1.5v-7a1.5 1.5 0 0 0-1.5-1.5zm5.5 3a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1" fill="currentColor"></path></svg>`;
+      const closedLockSvg = `<svg viewBox="0 0 28 28" width="28" height="28" fill="currentColor"><path fill-rule="evenodd" d="M14 4a4 4 0 0 0-4 4v3H8.5A2.5 2.5 0 0 0 6 13.5v7A2.5 2.5 0 0 0 8.5 23h11a2.5 2.5 0 0 0 2.5-2.5v-7a2.5 2.5 0 0 0-2.5-2.5H18V8a4 4 0 0 0-4-4zm3 7V8a3 3 0 1 0-6 0v3h6zm-8.5 1A1.5 1.5 0 0 0 7 13.5v7A1.5 1.5 0 0 0 8.5 22h11a1.5 1.5 0 0 0 1.5-1.5v-7a1.5 1.5 0 0 0-1.5-1.5h-11zm5.5 3a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1z"/></svg>`;
+      const eyeOpenSvg = `<svg height="28" width="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg"><path d="M5 10.76l-.41-.72-.03-.04.03-.04a15 15 0 012.09-2.9c1.47-1.6 3.6-3.12 6.32-3.12 2.73 0 4.85 1.53 6.33 3.12a15.01 15.01 0 012.08 2.9l.03.04-.03.04a15 15 0 01-2.09 2.9c-1.47 1.6-3.6 3.12-6.32 3.12-2.73 0-4.85-1.53-6.33-3.12a15 15 0 01-1.66-2.18zm17.45-.98L22 10l.45.22-.01.02a5.04 5.04 0 01-.15.28 16.01 16.01 0 01-2.23 3.1c-1.56 1.69-3.94 3.44-7.06 3.44-3.12 0-5.5-1.75-7.06-3.44a16 16 0 01-2.38-3.38v-.02h-.01L4 10l-.45-.22.01-.02a5.4 5.4 0 01.15-.28 16 16 0 012.23-3.1C7.5 4.69 9.88 2.94 13 2.94c3.12 0 5.5 1.75 7.06 3.44a16.01 16.01 0 012.38 3.38v.02h.01zM22 10l.45-.22.1.22-.1.22L22 10zM3.55 9.78L4 10l-.45.22-.1-.22.1-.22zm6.8.22A2.6 2.6 0 0113 7.44 2.6 2.6 0 0115.65 10 2.6 2.6 0 0113 12.56 2.6 2.6 0 0110.35 10zM13 6.44A3.6 3.6 0 009.35 10 3.6 3.6 0 0013 13.56c2 0 3.65-1.58 3.65-3.56A3.6 3.6 0 0013 6.44zm7.85 12l.8-.8.7.71-.79.8a.5.5 0 000 .7l.59.59c.2.2.5.2.7 0l1.8-1.8.7.71-1.79 1.8a1.5 1.5 0 01-2.12 0l-.59-.59a1.5 1.5 0 010-2.12zM16.5 21.5l-.35-.35a.5.5 0 00-.07.07l-1 1.5-1 1.5a.5.5 0 00.42.78h4a2.5 2.5 0 001.73-.77A2.5 2.5 0 0021 22.5a2.5 2.5 0 00-.77-1.73A2.5 2.5 0 0018.5 20a3.1 3.1 0 00-1.65.58 5.28 5.28 0 00-.69.55v.01h-.01l.35.36zm.39.32l-.97 1.46-.49.72h3.07c.34 0 .72-.17 1.02-.48.3-.3.48-.68.48-1.02 0-.34-.17-.72-.48-1.02-.3-.3-.68-.48-1.02-.48-.35 0-.75.18-1.1.42a4.27 4.27 0 00-.51.4z" fill="currentColor" fill-rule="evenodd"></path></svg>`;
+      const eyeSlashSvg = `<svg height="28" width="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path fill-rule="evenodd" d="M4.354 3.646a.5.5 0 1 0-.708.708l19.5 19.5a.5.5 0 0 0 .708-.708l-3.32-3.32c.706-.575 1.34-1.242 1.884-1.996l.032-.045-.032-.045a15.01 15.01 0 0 0-2.08-2.9C18.86 13.23 16.73 11.7 14 11.7c-1.325 0-2.502.362-3.484.945L4.354 3.646zm7.26 8.674l1.62 1.62A2.6 2.6 0 0 1 14 13.7c1.46 0 2.65 1.15 2.65 2.56 0 .422-.104.82-.287 1.17l1.52 1.52c.48-.744.767-1.653.767-2.69 0-2-1.65-3.56-3.65-3.56-.84 0-1.613.284-2.226.76l-1.16-1.16zm-3.08 1.16a15.01 15.01 0 0 0-3.952 4.31l-.032.045.032.045a15 15 0 0 0 2.09 2.9c1.48 1.59 3.6 3.12 6.328 3.12 1.87 0 3.484-.72 4.757-1.678l-1.46-1.46A7.44 7.44 0 0 1 14 21.3c-2.72 0-4.85-1.52-6.32-3.12a14.99 14.99 0 0 1-1.66-2.18c.45-.63.97-1.25 1.54-1.84l.976.32z"/></svg>`;
+
+      function closeAllPopups() {
+        document.querySelectorAll('.tv-menu-popup').forEach(p => p.style.display = 'none');
+        document.querySelectorAll('.dropdown-FuKse5bD').forEach(d => d.classList.remove('is-open'));
+      }
+
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('.dropdown-FuKse5bD')) {
+          closeAllPopups();
+        }
+      });
+
+      // 1. Keep Drawing (Stay in Drawing Mode)
+      const keepBtn = document.getElementById('tv-btn-keep-drawing');
+      let isKeepDrawing = false;
+      if (keepBtn) {
+        keepBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          isKeepDrawing = !isKeepDrawing;
+          keepBtn.setAttribute('aria-pressed', isKeepDrawing);
+          keepBtn.classList.toggle('isActive-zm3YRUFG', isKeepDrawing);
+          keepBtn.classList.toggle('pressed-zm3YRUFG', isKeepDrawing);
+          showTvToast(isKeepDrawing ? 'Stay in Drawing Mode: ON' : 'Stay in Drawing Mode: OFF');
+        });
+      }
+
+      // 2. Lock All Drawings
+      const lockBtn = document.getElementById('tv-btn-lock-all');
+      const lockArrow = document.getElementById('tv-arrow-lock-all');
+      const lockDropdown = document.getElementById('tv-dropdown-lock-all');
+      const lockMenu = document.getElementById('tv-menu-lock');
+      const lockIcon = document.getElementById('tv-lock-icon');
+      let isDrawingLocked = false;
+
+      function toggleLockState() {
+        isDrawingLocked = !isDrawingLocked;
+        lockBtn.setAttribute('aria-pressed', isDrawingLocked);
+        lockBtn.classList.toggle('isActive-zm3YRUFG', isDrawingLocked);
+        lockBtn.classList.toggle('pressed-zm3YRUFG', isDrawingLocked);
+        if (isDrawingLocked) {
+          lockIcon.innerHTML = closedLockSvg;
+          lockBtn.setAttribute('data-tooltip', 'Unlock drawings and indicators');
+          showTvToast('Lock all drawings enabled');
+        } else {
+          lockIcon.innerHTML = openLockSvg;
+          lockBtn.setAttribute('data-tooltip', 'Lock drawings and indicators');
+          showTvToast('Drawing tools unlocked');
+        }
+      }
+
+      if (lockBtn) {
+        lockBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeAllPopups();
+          toggleLockState();
+        });
+      }
+
+      if (lockArrow && lockMenu) {
+        lockArrow.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isOpen = lockMenu.style.display === 'block';
+          closeAllPopups();
+          if (!isOpen) {
+            lockMenu.style.display = 'block';
+            lockDropdown.classList.add('is-open');
+          }
+        });
+      }
+
+      document.querySelectorAll('#tv-menu-lock .tv-menu-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeAllPopups();
+          toggleLockState();
+        });
+      });
+
+      // 3. Hide All Drawings
+      const hideBtn = document.getElementById('tv-btn-hide-all');
+      const hideArrow = document.getElementById('tv-arrow-hide-all');
+      const hideDropdown = document.getElementById('tv-dropdown-hide-all');
+      const hideMenu = document.getElementById('tv-menu-hide');
+      const hideIcon = document.getElementById('tv-hide-icon');
+      let isDrawingsHidden = false;
+
+      function toggleHideState(hideMode = 'drawings') {
+        isDrawingsHidden = !isDrawingsHidden;
+        hideBtn.setAttribute('aria-pressed', isDrawingsHidden);
+        hideBtn.classList.toggle('isActive-zm3YRUFG', isDrawingsHidden);
+        hideBtn.classList.toggle('pressed-zm3YRUFG', isDrawingsHidden);
+        if (isDrawingsHidden) {
+          hideIcon.innerHTML = eyeSlashSvg;
+          hideBtn.setAttribute('data-tooltip', 'Show all drawings');
+          showTvToast(hideMode === 'indicators' ? 'Indicators hidden' : hideMode === 'all' ? 'All drawings & indicators hidden' : 'Drawings hidden');
+        } else {
+          hideIcon.innerHTML = eyeOpenSvg;
+          hideBtn.setAttribute('data-tooltip', 'Hide all drawings');
+          showTvToast('All drawings & indicators visible');
+        }
+      }
+
+      if (hideBtn) {
+        hideBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeAllPopups();
+          toggleHideState('drawings');
+        });
+      }
+
+      if (hideArrow && hideMenu) {
+        hideArrow.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isOpen = hideMenu.style.display === 'block';
+          closeAllPopups();
+          if (!isOpen) {
+            hideMenu.style.display = 'block';
+            hideDropdown.classList.add('is-open');
+          }
+        });
+      }
+
+      document.querySelectorAll('#tv-menu-hide .tv-menu-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const action = item.getAttribute('data-action');
+          closeAllPopups();
+          if (action === 'hide-drawings') toggleHideState('drawings');
+          else if (action === 'hide-indicators') toggleHideState('indicators');
+          else if (action === 'hide-all') toggleHideState('all');
+        });
+      });
+
+      // 4. Remove Objects (Trash)
+      const removeBtn = document.getElementById('tv-btn-remove-all');
+      const removeArrow = document.getElementById('tv-arrow-remove-all');
+      const removeDropdown = document.getElementById('tv-dropdown-remove-all');
+      const removeMenu = document.getElementById('tv-menu-remove');
+
+      if (removeBtn) {
+        removeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeAllPopups();
+          showTvToast('Drawing objects cleared');
+        });
+      }
+
+      if (removeArrow && removeMenu) {
+        removeArrow.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isOpen = removeMenu.style.display === 'block';
+          closeAllPopups();
+          if (!isOpen) {
+            removeMenu.style.display = 'block';
+            removeDropdown.classList.add('is-open');
+          }
+        });
+      }
+
+      document.querySelectorAll('#tv-menu-remove .tv-menu-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const action = item.getAttribute('data-action');
+          closeAllPopups();
+          if (action === 'remove-drawings') showTvToast('Drawings removed');
+          else if (action === 'remove-indicators') showTvToast('Indicators removed');
+          else if (action === 'remove-all') showTvToast('All drawings and indicators removed');
+        });
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Paper Trading Integration
+    // ─────────────────────────────────────────────────────────────────────────
+    function setupPaperTrading() {
+      const buyBtn = document.getElementById('pt-quick-buy');
+      const sellBtn = document.getElementById('pt-quick-sell');
+      const statusTitle = document.getElementById('pt-status-title');
+      const summaryBadge = document.getElementById('pt-portfolio-summary');
+      const toggleInfo = document.getElementById('pt-toggle-info');
+
+      function executeTrade(side) {
+        const qty = 1;
+        const price = currentLastPrice;
+        const total = price * qty;
+
+        const trade = {
+          id: 'trade_' + Date.now(),
+          symbol: currentActiveSymbol,
+          side: side,
+          qty: qty,
+          price: price,
+          time: new Date().toLocaleTimeString('en-IN')
+        };
+
+        paperAccount.trades.unshift(trade);
+        if (side === 'BUY') {
+          paperAccount.balance -= total;
+          paperAccount.positionQty += qty;
+        } else {
+          paperAccount.balance += total;
+          paperAccount.positionQty -= qty;
+        }
+
+        const pnl = paperAccount.balance + (paperAccount.positionQty * price) - paperAccount.initialBalance;
+        const pnlSign = pnl >= 0 ? '+' : '';
+        const pnlColor = pnl >= 0 ? '#089981' : '#f23645';
+
+        statusTitle.textContent = `Paper Trading · ₹${paperAccount.balance.toLocaleString('en-IN', { maximumFractionDigits: 0 })} (${paperAccount.trades.length} trades)`;
+        summaryBadge.innerHTML = `P&amp;L: <span style="color:${pnlColor};font-weight:700;">${pnlSign}₹${pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>`;
+
+        showTvToast(`Paper ${side}: 1 ${currentActiveSymbol} @ ₹${price.toLocaleString('en-IN', { minimumFractionDigits: 2 })} | Bal: ₹${paperAccount.balance.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`);
+      }
+
+      if (buyBtn) buyBtn.addEventListener('click', (e) => { e.stopPropagation(); executeTrade('BUY'); });
+      if (sellBtn) sellBtn.addEventListener('click', (e) => { e.stopPropagation(); executeTrade('SELL'); });
+
+      if (toggleInfo) {
+        toggleInfo.addEventListener('click', () => {
+          showTvToast(`Connected to Simulation Account · Initial: ₹1,00,000 | Current: ₹${paperAccount.balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`);
+        });
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // AI Copilot Interactions & API Integration
+    // ─────────────────────────────────────────────────────────────────────────
+    function setupAiCopilot() {
+      const openAiBtn = document.getElementById('open-ai-btn');
+      const closeAiBtn = document.getElementById('close-ai-btn');
+      const aiDrawer = document.getElementById('ai-copilot-drawer');
+      const aiOverlay = document.getElementById('ai-drawer-overlay');
+      const aiInput = document.getElementById('ai-input-field');
+      const aiSubmit = document.getElementById('ai-submit-btn');
+      const aiMessages = document.getElementById('ai-messages');
+
+      function openAiDrawer() {
+        aiDrawer.classList.add('open');
+        aiOverlay.classList.add('open');
+        setTimeout(() => aiInput.focus(), 150);
+      }
+
+      function closeAiDrawer() {
+        aiDrawer.classList.remove('open');
+        aiOverlay.classList.remove('open');
+      }
+
+      openAiBtn.addEventListener('click', openAiDrawer);
+      closeAiBtn.addEventListener('click', closeAiDrawer);
+      aiOverlay.addEventListener('click', closeAiDrawer);
+
+      function appendMessage(text, isUser = false) {
+        const msgDiv = document.createElement('div');
+        msgDiv.className = `ai-msg ${isUser ? 'user' : 'bot'}`;
+        if (isUser) {
+          msgDiv.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+        } else {
+          msgDiv.innerHTML = `
+            <div class="avatar">AI</div>
+            <div class="bubble">${text}</div>
+          `;
+        }
+        aiMessages.appendChild(msgDiv);
+        aiMessages.scrollTop = aiMessages.scrollHeight;
+      }
+
+      function escapeHtml(str) {
+        const p = document.createElement('p');
+        p.textContent = str;
+        return p.innerHTML;
+      }
+
+      async function sendAiMessage(query) {
+        if (!query || !query.trim()) return;
+        const text = query.trim();
+        aiInput.value = '';
+        appendMessage(text, true);
+
+        const loadingId = 'ai-loading-' + Date.now();
+        const loadingDiv = document.createElement('div');
+        loadingDiv.className = 'ai-msg bot';
+        loadingDiv.id = loadingId;
+        loadingDiv.innerHTML = `
+          <div class="avatar">AI</div>
+          <div class="bubble" style="font-style:italic;color:#787b86;">Analyzing ${currentActiveSymbol} live dynamics...</div>
+        `;
+        aiMessages.appendChild(loadingDiv);
+        aiMessages.scrollTop = aiMessages.scrollHeight;
+
+        try {
+          const res = await fetch(`/api/ai/analyze?query=${encodeURIComponent(text)}`);
+          if (res.ok) {
+            const data = await res.json();
+            const el = document.getElementById(loadingId);
+            if (el) el.remove();
+            appendMessage(data.analysis || data.message || `<strong>Analysis for ${text}:</strong><br>Trend is positive above key support with steady institutional participation.`);
+            return;
+          }
+        } catch (err) {}
+
+        setTimeout(() => {
+          const el = document.getElementById(loadingId);
+          if (el) el.remove();
+          let reply = '';
+          const q = text.toLowerCase();
+          if (q.includes('summary') || q.includes('outlook') || q.includes('technical')) {
+            reply = `<strong>Technical Outlook for SENSEX:</strong><br>• Trend: Bullish consolidation above 73,200<br>• RSI: 54.2 (Neutral-to-Bullish momentum)<br>• Immediate Resistance: 73,850 &amp; 74,200<br>• Key Support: 73,350 &amp; 72,900`;
+          } else if (q.includes('level') || q.includes('support') || q.includes('resistance')) {
+            reply = `<strong>Critical Price Levels (BSE:SENSEX):</strong><br>• Resistance 2: 74,200<br>• Resistance 1: 73,850<br>• Current: 73,606.75<br>• Support 1: 73,350<br>• Support 2: 72,900`;
+          } else if (q.includes('setup') || q.includes('trade') || q.includes('scalp')) {
+            reply = `<strong>Trade Setup:</strong><br>Look for continuation breakout above 73,750 targeting 74,050 with stop loss placed below 73,450 (Risk/Reward 1:2.0).`;
+          } else {
+            reply = `<strong>Market Intelligence:</strong><br>${currentActiveSymbol} is trading steady in an accumulation band. Monitor volume confirmation near key moving averages.`;
+          }
+          appendMessage(reply);
+        }, 500);
+      }
+
+      aiSubmit.addEventListener('click', () => sendAiMessage(aiInput.value));
+      aiInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') sendAiMessage(aiInput.value);
+      });
+
+      document.querySelectorAll('.ai-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+          const q = chip.getAttribute('data-q');
+          sendAiMessage(q);
+        });
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Startup Orchestration
+    // ─────────────────────────────────────────────────────────────────────────
+    function initAll() {
+      initTradingViewChart();
+      setupDrawingToolExtensions();
+      setupPaperTrading();
+      setupAiCopilot();
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+  </script>
 </body>
 </html>

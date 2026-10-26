@@ -1,0 +1,2000 @@
+[
+  {
+    "id": 11,
+    "filename": "16242.d0142d8fa7ee8b7ed0c1.js",
+    "size": 1347954,
+    "url": "/static/tv_js/bundles/16242.d0142d8fa7ee8b7ed0c1.js"
+  },
+  {
+    "id": 328,
+    "filename": "trading.e9641ecd4a7800d608c6.js",
+    "size": 775623,
+    "url": "/static/tv_js/bundles/trading.e9641ecd4a7800d608c6.js"
+  },
+  {
+    "id": 326,
+    "filename": "trading-order-ticket.19ab3427999ebe683c9b.js",
+    "size": 558791,
+    "url": "/static/tv_js/bundles/trading-order-ticket.19ab3427999ebe683c9b.js"
+  },
+  {
+    "id": 86,
+    "filename": "62219.4992eba7eb647aef3a91.js",
+    "size": 403323,
+    "url": "/static/tv_js/bundles/62219.4992eba7eb647aef3a91.js"
+  },
+  {
+    "id": 144,
+    "filename": "95474.97d8ef11fe53bddd88e5.js",
+    "size": 353049,
+    "url": "/static/tv_js/bundles/95474.97d8ef11fe53bddd88e5.js"
+  },
+  {
+    "id": 315,
+    "filename": "symbol-search-dialog.4c70f83475fb21af281d.js",
+    "size": 306492,
+    "url": "/static/tv_js/bundles/symbol-search-dialog.4c70f83475fb21af281d.js"
+  },
+  {
+    "id": 312,
+    "filename": "studies.bfe9c35f65b964a653a7.js",
+    "size": 223846,
+    "url": "/static/tv_js/bundles/studies.bfe9c35f65b964a653a7.js"
+  },
+  {
+    "id": 190,
+    "filename": "chart-widget-gui.938777e3e9996db75298.js",
+    "size": 203481,
+    "url": "/static/tv_js/bundles/chart-widget-gui.938777e3e9996db75298.js"
+  },
+  {
+    "id": 113,
+    "filename": "77412.e4cbac44a076ba3cc2b9.js",
+    "size": 194012,
+    "url": "/static/tv_js/bundles/77412.e4cbac44a076ba3cc2b9.js"
+  },
+  {
+    "id": 269,
+    "filename": "floating-toolbars.7a4c73b11592ed0b9552.js",
+    "size": 188813,
+    "url": "/static/tv_js/bundles/floating-toolbars.7a4c73b11592ed0b9552.js"
+  },
+  {
+    "id": 306,
+    "filename": "replay.fa595730af2be9587a21.js",
+    "size": 180403,
+    "url": "/static/tv_js/bundles/replay.fa595730af2be9587a21.js"
+  },
+  {
+    "id": 80,
+    "filename": "59000.e36dd9182c1cdfdb652a.js",
+    "size": 177881,
+    "url": "/static/tv_js/bundles/59000.e36dd9182c1cdfdb652a.js"
+  },
+  {
+    "id": 307,
+    "filename": "runtime.9c97097330f148acfdb9.js",
+    "size": 175499,
+    "url": "/static/tv_js/bundles/runtime.9c97097330f148acfdb9.js"
+  },
+  {
+    "id": 40,
+    "filename": "33578.4beaccc07cbca0e0a104.js",
+    "size": 172657,
+    "url": "/static/tv_js/bundles/33578.4beaccc07cbca0e0a104.js"
+  },
+  {
+    "id": 319,
+    "filename": "top-left-button.e870c2c731585a8c5b92.js",
+    "size": 166049,
+    "url": "/static/tv_js/bundles/top-left-button.e870c2c731585a8c5b92.js"
+  },
+  {
+    "id": 107,
+    "filename": "75508.5cc896bf73411df238c0.js",
+    "size": 150785,
+    "url": "/static/tv_js/bundles/75508.5cc896bf73411df238c0.js"
+  },
+  {
+    "id": 324,
+    "filename": "trading-groups.9f3da9ee3722c868fb6b.js",
+    "size": 142626,
+    "url": "/static/tv_js/bundles/trading-groups.9f3da9ee3722c868fb6b.js"
+  },
+  {
+    "id": 47,
+    "filename": "36801.c080a8f9a2378999ee82.js",
+    "size": 142344,
+    "url": "/static/tv_js/bundles/36801.c080a8f9a2378999ee82.js"
+  },
+  {
+    "id": 0,
+    "filename": "10092.88646279cfdebde858f1.js",
+    "size": 141034,
+    "url": "/static/tv_js/bundles/10092.88646279cfdebde858f1.js"
+  },
+  {
+    "id": 104,
+    "filename": "74056.dcce8d6b1a3f0ae61990.js",
+    "size": 135720,
+    "url": "/static/tv_js/bundles/74056.dcce8d6b1a3f0ae61990.js"
+  },
+  {
+    "id": 50,
+    "filename": "40569.5979f423383e4b570d82.js",
+    "size": 132925,
+    "url": "/static/tv_js/bundles/40569.5979f423383e4b570d82.js"
+  },
+  {
+    "id": 8,
+    "filename": "14041.9a9e08dd2261a49814f5.js",
+    "size": 132835,
+    "url": "/static/tv_js/bundles/14041.9a9e08dd2261a49814f5.js"
+  },
+  {
+    "id": 103,
+    "filename": "74039.c559eca1b5ff65a74137.js",
+    "size": 123707,
+    "url": "/static/tv_js/bundles/74039.c559eca1b5ff65a74137.js"
+  },
+  {
+    "id": 282,
+    "filename": "main_chart.e6aff77fecfb8bf02c97.js",
+    "size": 120067,
+    "url": "/static/tv_js/bundles/main_chart.e6aff77fecfb8bf02c97.js"
+  },
+  {
+    "id": 213,
+    "filename": "en.30617.0047cc8087b8ca2d54a6.js",
+    "size": 115317,
+    "url": "/static/tv_js/bundles/en.30617.0047cc8087b8ca2d54a6.js"
+  },
+  {
+    "id": 313,
+    "filename": "study-pane-views.195c0c636b52387447c3.js",
+    "size": 110137,
+    "url": "/static/tv_js/bundles/study-pane-views.195c0c636b52387447c3.js"
+  },
+  {
+    "id": 314,
+    "filename": "symbol-list-service.697cbd70e558ed5928b1.js",
+    "size": 107215,
+    "url": "/static/tv_js/bundles/symbol-list-service.697cbd70e558ed5928b1.js"
+  },
+  {
+    "id": 238,
+    "filename": "en.65123.1ed72ad97f36d88f8699.js",
+    "size": 100351,
+    "url": "/static/tv_js/bundles/en.65123.1ed72ad97f36d88f8699.js"
+  },
+  {
+    "id": 27,
+    "filename": "24962.f82248135baebcf30345.js",
+    "size": 99287,
+    "url": "/static/tv_js/bundles/24962.f82248135baebcf30345.js"
+  },
+  {
+    "id": 271,
+    "filename": "footer-widget.7521e7b1bd89b00d8337.js",
+    "size": 95756,
+    "url": "/static/tv_js/bundles/footer-widget.7521e7b1bd89b00d8337.js"
+  },
+  {
+    "id": 146,
+    "filename": "9553.5f42f1149c24d13a662c.js",
+    "size": 94288,
+    "url": "/static/tv_js/bundles/9553.5f42f1149c24d13a662c.js"
+  },
+  {
+    "id": 197,
+    "filename": "drawing-toolbar.d3a1aa03814f7d29bf5c.js",
+    "size": 91677,
+    "url": "/static/tv_js/bundles/drawing-toolbar.d3a1aa03814f7d29bf5c.js"
+  },
+  {
+    "id": 330,
+    "filename": "watchlist-widget.d0ce0b4990ec42b183b7.js",
+    "size": 91469,
+    "url": "/static/tv_js/bundles/watchlist-widget.d0ce0b4990ec42b183b7.js"
+  },
+  {
+    "id": 166,
+    "filename": "alerts-manage-widget-impl.86fea5bd11031980f237.js",
+    "size": 90718,
+    "url": "/static/tv_js/bundles/alerts-manage-widget-impl.86fea5bd11031980f237.js"
+  },
+  {
+    "id": 124,
+    "filename": "83156.093c7e24a3cbb7352650.js",
+    "size": 88995,
+    "url": "/static/tv_js/bundles/83156.093c7e24a3cbb7352650.js"
+  },
+  {
+    "id": 183,
+    "filename": "chart-bottom-toolbar.80f7ebad4bbb9fe3cc7f.js",
+    "size": 87470,
+    "url": "/static/tv_js/bundles/chart-bottom-toolbar.80f7ebad4bbb9fe3cc7f.js"
+  },
+  {
+    "id": 152,
+    "filename": "97858.f4678d6eed8fbfdb7b28.js",
+    "size": 84967,
+    "url": "/static/tv_js/bundles/97858.f4678d6eed8fbfdb7b28.js"
+  },
+  {
+    "id": 165,
+    "filename": "alerts-log-widget-impl.1febe613e443112ec26d.js",
+    "size": 83176,
+    "url": "/static/tv_js/bundles/alerts-log-widget-impl.1febe613e443112ec26d.js"
+  },
+  {
+    "id": 332,
+    "filename": "widgetbar.53073267b82b93c8ec4f.js",
+    "size": 79033,
+    "url": "/static/tv_js/bundles/widgetbar.53073267b82b93c8ec4f.js"
+  },
+  {
+    "id": 277,
+    "filename": "line-tools-icons.968f0cc9c384399925db.js",
+    "size": 76661,
+    "url": "/static/tv_js/bundles/line-tools-icons.968f0cc9c384399925db.js"
+  },
+  {
+    "id": 25,
+    "filename": "23411.f63a3217ca815efdd020.js",
+    "size": 75684,
+    "url": "/static/tv_js/bundles/23411.f63a3217ca815efdd020.js"
+  },
+  {
+    "id": 272,
+    "filename": "full-toolset.3f510d8b1795aebd8ea4.js",
+    "size": 73542,
+    "url": "/static/tv_js/bundles/full-toolset.3f510d8b1795aebd8ea4.js"
+  },
+  {
+    "id": 91,
+    "filename": "66286.a14476d96a060e963ddb.js",
+    "size": 72846,
+    "url": "/static/tv_js/bundles/66286.a14476d96a060e963ddb.js"
+  },
+  {
+    "id": 119,
+    "filename": "80588.251ab72278410b0abb58.js",
+    "size": 71927,
+    "url": "/static/tv_js/bundles/80588.251ab72278410b0abb58.js"
+  },
+  {
+    "id": 172,
+    "filename": "alerts-widget-impl.371966bd25cde5cf0f01.js",
+    "size": 71806,
+    "url": "/static/tv_js/bundles/alerts-widget-impl.371966bd25cde5cf0f01.js"
+  },
+  {
+    "id": 156,
+    "filename": "9926.c02706a5fef41e9bad5a.js",
+    "size": 70081,
+    "url": "/static/tv_js/bundles/9926.c02706a5fef41e9bad5a.js"
+  },
+  {
+    "id": 49,
+    "filename": "4048.f483006207163740dc2c.js",
+    "size": 68940,
+    "url": "/static/tv_js/bundles/4048.f483006207163740dc2c.js"
+  },
+  {
+    "id": 139,
+    "filename": "9412.00c0e5f4ab04801674af.js",
+    "size": 68908,
+    "url": "/static/tv_js/bundles/9412.00c0e5f4ab04801674af.js"
+  },
+  {
+    "id": 88,
+    "filename": "65234.a474632dfc6119fd8bb4.js",
+    "size": 68529,
+    "url": "/static/tv_js/bundles/65234.a474632dfc6119fd8bb4.js"
+  },
+  {
+    "id": 56,
+    "filename": "4391.f300f27f9d1e10ad5268.js",
+    "size": 66293,
+    "url": "/static/tv_js/bundles/4391.f300f27f9d1e10ad5268.js"
+  },
+  {
+    "id": 39,
+    "filename": "3233.9b7a39c96314fca6b5c6.js",
+    "size": 64161,
+    "url": "/static/tv_js/bundles/3233.9b7a39c96314fca6b5c6.js"
+  },
+  {
+    "id": 234,
+    "filename": "en.62352.d2c6f22f4f3ab680aacc.js",
+    "size": 63341,
+    "url": "/static/tv_js/bundles/en.62352.d2c6f22f4f3ab680aacc.js"
+  },
+  {
+    "id": 93,
+    "filename": "67910.ed49c8fdeeaefa22efbc.js",
+    "size": 57770,
+    "url": "/static/tv_js/bundles/67910.ed49c8fdeeaefa22efbc.js"
+  },
+  {
+    "id": 274,
+    "filename": "header-toolbar.d868298609028f8242d7.js",
+    "size": 57466,
+    "url": "/static/tv_js/bundles/header-toolbar.d868298609028f8242d7.js"
+  },
+  {
+    "id": 216,
+    "filename": "en.40088.7d060b46e6c7b2eebea5.js",
+    "size": 55560,
+    "url": "/static/tv_js/bundles/en.40088.7d060b46e6c7b2eebea5.js"
+  },
+  {
+    "id": 17,
+    "filename": "19691.ecd820310d1ef22b8e84.js",
+    "size": 54370,
+    "url": "/static/tv_js/bundles/19691.ecd820310d1ef22b8e84.js"
+  },
+  {
+    "id": 70,
+    "filename": "49278.c8f6b8d4318ab079403c.js",
+    "size": 52890,
+    "url": "/static/tv_js/bundles/49278.c8f6b8d4318ab079403c.js"
+  },
+  {
+    "id": 187,
+    "filename": "chart-renderer.d8756444fd0f1bf667b9.js",
+    "size": 52820,
+    "url": "/static/tv_js/bundles/chart-renderer.d8756444fd0f1bf667b9.js"
+  },
+  {
+    "id": 98,
+    "filename": "69717.2b886053de31a0f255c2.js",
+    "size": 52675,
+    "url": "/static/tv_js/bundles/69717.2b886053de31a0f255c2.js"
+  },
+  {
+    "id": 123,
+    "filename": "82411.5e9c15a6eb79890c1936.js",
+    "size": 52391,
+    "url": "/static/tv_js/bundles/82411.5e9c15a6eb79890c1936.js"
+  },
+  {
+    "id": 63,
+    "filename": "46014.0643dcf4a37ade3d3c27.js",
+    "size": 52163,
+    "url": "/static/tv_js/bundles/46014.0643dcf4a37ade3d3c27.js"
+  },
+  {
+    "id": 130,
+    "filename": "89238.c9d80abbe17df328fcb9.js",
+    "size": 52053,
+    "url": "/static/tv_js/bundles/89238.c9d80abbe17df328fcb9.js"
+  },
+  {
+    "id": 317,
+    "filename": "toast-ad.c166c16068fe164e2619.js",
+    "size": 51317,
+    "url": "/static/tv_js/bundles/toast-ad.c166c16068fe164e2619.js"
+  },
+  {
+    "id": 67,
+    "filename": "48813.2cb8b7800ac97c358576.js",
+    "size": 51258,
+    "url": "/static/tv_js/bundles/48813.2cb8b7800ac97c358576.js"
+  },
+  {
+    "id": 34,
+    "filename": "29831.bf45113cf9405e67f073.js",
+    "size": 51232,
+    "url": "/static/tv_js/bundles/29831.bf45113cf9405e67f073.js"
+  },
+  {
+    "id": 236,
+    "filename": "en.64495.09c204aad5d64e157c59.js",
+    "size": 50894,
+    "url": "/static/tv_js/bundles/en.64495.09c204aad5d64e157c59.js"
+  },
+  {
+    "id": 24,
+    "filename": "23221.bb3043b17dfd713ffea6.js",
+    "size": 50882,
+    "url": "/static/tv_js/bundles/23221.bb3043b17dfd713ffea6.js"
+  },
+  {
+    "id": 138,
+    "filename": "94106.ffdcbfcb7d8d209367b3.js",
+    "size": 50661,
+    "url": "/static/tv_js/bundles/94106.ffdcbfcb7d8d209367b3.js"
+  },
+  {
+    "id": 264,
+    "filename": "end-of-series-banner.f929a2f8c6cc039b77e8.js",
+    "size": 50628,
+    "url": "/static/tv_js/bundles/end-of-series-banner.f929a2f8c6cc039b77e8.js"
+  },
+  {
+    "id": 127,
+    "filename": "86178.a88469ee22bcf781daef.js",
+    "size": 50026,
+    "url": "/static/tv_js/bundles/86178.a88469ee22bcf781daef.js"
+  },
+  {
+    "id": 29,
+    "filename": "26911.068cef20bada95e8abd4.js",
+    "size": 47915,
+    "url": "/static/tv_js/bundles/26911.068cef20bada95e8abd4.js"
+  },
+  {
+    "id": 60,
+    "filename": "45516.39c4808aac72e30922f8.js",
+    "size": 46588,
+    "url": "/static/tv_js/bundles/45516.39c4808aac72e30922f8.js"
+  },
+  {
+    "id": 65,
+    "filename": "48084.5f6c0eda1a249ff8ffc5.js",
+    "size": 46147,
+    "url": "/static/tv_js/bundles/48084.5f6c0eda1a249ff8ffc5.js"
+  },
+  {
+    "id": 82,
+    "filename": "60704.a72791eeb87cb980a72f.js",
+    "size": 46077,
+    "url": "/static/tv_js/bundles/60704.a72791eeb87cb980a72f.js"
+  },
+  {
+    "id": 69,
+    "filename": "49161.1d239c7dc63494013aa0.js",
+    "size": 45656,
+    "url": "/static/tv_js/bundles/49161.1d239c7dc63494013aa0.js"
+  },
+  {
+    "id": 116,
+    "filename": "80082.10442649edba080db03d.js",
+    "size": 45268,
+    "url": "/static/tv_js/bundles/80082.10442649edba080db03d.js"
+  },
+  {
+    "id": 151,
+    "filename": "97726.2ed4cdc3c2535077a1fe.js",
+    "size": 44962,
+    "url": "/static/tv_js/bundles/97726.2ed4cdc3c2535077a1fe.js"
+  },
+  {
+    "id": 96,
+    "filename": "69236.120b38c8d5798682242e.js",
+    "size": 44582,
+    "url": "/static/tv_js/bundles/69236.120b38c8d5798682242e.js"
+  },
+  {
+    "id": 279,
+    "filename": "lollipop-chart-events.ab16b92f9ecd2863ec31.js",
+    "size": 44226,
+    "url": "/static/tv_js/bundles/lollipop-chart-events.ab16b92f9ecd2863ec31.js"
+  },
+  {
+    "id": 252,
+    "filename": "en.84693.28926e29be9e0f178237.js",
+    "size": 42265,
+    "url": "/static/tv_js/bundles/en.84693.28926e29be9e0f178237.js"
+  },
+  {
+    "id": 133,
+    "filename": "90599.8455f62e57bce5283ef2.js",
+    "size": 42243,
+    "url": "/static/tv_js/bundles/90599.8455f62e57bce5283ef2.js"
+  },
+  {
+    "id": 132,
+    "filename": "903.367f150544449e3d94b8.js",
+    "size": 41135,
+    "url": "/static/tv_js/bundles/903.367f150544449e3d94b8.js"
+  },
+  {
+    "id": 154,
+    "filename": "98186.a831eadfc7601ab0dca4.js",
+    "size": 40895,
+    "url": "/static/tv_js/bundles/98186.a831eadfc7601ab0dca4.js"
+  },
+  {
+    "id": 59,
+    "filename": "45440.8f9f5ddb920d86176dec.js",
+    "size": 40200,
+    "url": "/static/tv_js/bundles/45440.8f9f5ddb920d86176dec.js"
+  },
+  {
+    "id": 22,
+    "filename": "22236.49d029936adcc4ff01ac.js",
+    "size": 40188,
+    "url": "/static/tv_js/bundles/22236.49d029936adcc4ff01ac.js"
+  },
+  {
+    "id": 266,
+    "filename": "facade-widget-alerts-collection.f24e8551394b1cb89f5f.js",
+    "size": 38692,
+    "url": "/static/tv_js/bundles/facade-widget-alerts-collection.f24e8551394b1cb89f5f.js"
+  },
+  {
+    "id": 121,
+    "filename": "80933.c7209754575d7e43f3bd.js",
+    "size": 38508,
+    "url": "/static/tv_js/bundles/80933.c7209754575d7e43f3bd.js"
+  },
+  {
+    "id": 26,
+    "filename": "24750.417d9b7ffd1638f3eda7.js",
+    "size": 38187,
+    "url": "/static/tv_js/bundles/24750.417d9b7ffd1638f3eda7.js"
+  },
+  {
+    "id": 188,
+    "filename": "chart-source-ids-getter.b6b8ab1f44dace517d2b.js",
+    "size": 37903,
+    "url": "/static/tv_js/bundles/chart-source-ids-getter.b6b8ab1f44dace517d2b.js"
+  },
+  {
+    "id": 115,
+    "filename": "79027.5dab767bb49b0bdff455.js",
+    "size": 37233,
+    "url": "/static/tv_js/bundles/79027.5dab767bb49b0bdff455.js"
+  },
+  {
+    "id": 38,
+    "filename": "31481.e490bfa8c6c52d535ada.js",
+    "size": 37168,
+    "url": "/static/tv_js/bundles/31481.e490bfa8c6c52d535ada.js"
+  },
+  {
+    "id": 43,
+    "filename": "33947.3135fdc801e58a639645.js",
+    "size": 36925,
+    "url": "/static/tv_js/bundles/33947.3135fdc801e58a639645.js"
+  },
+  {
+    "id": 171,
+    "filename": "alerts-unread-buffers.4e14342a9b15c5b32e6b.js",
+    "size": 36818,
+    "url": "/static/tv_js/bundles/alerts-unread-buffers.4e14342a9b15c5b32e6b.js"
+  },
+  {
+    "id": 48,
+    "filename": "38340.b0fe29e34f21b5f4cbb9.js",
+    "size": 36695,
+    "url": "/static/tv_js/bundles/38340.b0fe29e34f21b5f4cbb9.js"
+  },
+  {
+    "id": 112,
+    "filename": "77092.0384958d44fcf11aaecc.js",
+    "size": 36655,
+    "url": "/static/tv_js/bundles/77092.0384958d44fcf11aaecc.js"
+  },
+  {
+    "id": 210,
+    "filename": "en.24860.8c23966a4d5f815255c4.js",
+    "size": 36528,
+    "url": "/static/tv_js/bundles/en.24860.8c23966a4d5f815255c4.js"
+  },
+  {
+    "id": 110,
+    "filename": "76820.ac94a175c68c1daf79d5.js",
+    "size": 36399,
+    "url": "/static/tv_js/bundles/76820.ac94a175c68c1daf79d5.js"
+  },
+  {
+    "id": 81,
+    "filename": "59386.5cb9247764284e288ec3.js",
+    "size": 36319,
+    "url": "/static/tv_js/bundles/59386.5cb9247764284e288ec3.js"
+  },
+  {
+    "id": 145,
+    "filename": "95500.46991449119d9a346862.js",
+    "size": 36095,
+    "url": "/static/tv_js/bundles/95500.46991449119d9a346862.js"
+  },
+  {
+    "id": 136,
+    "filename": "93610.d168842d4e19285becea.js",
+    "size": 35638,
+    "url": "/static/tv_js/bundles/93610.d168842d4e19285becea.js"
+  },
+  {
+    "id": 157,
+    "filename": "99790.7301682652c013dbc79a.js",
+    "size": 35446,
+    "url": "/static/tv_js/bundles/99790.7301682652c013dbc79a.js"
+  },
+  {
+    "id": 167,
+    "filename": "alerts-notifications.f22c5946f742d4c4ca68.js",
+    "size": 35006,
+    "url": "/static/tv_js/bundles/alerts-notifications.f22c5946f742d4c4ca68.js"
+  },
+  {
+    "id": 51,
+    "filename": "41142.992b91ad0025ffbf8dff.js",
+    "size": 34862,
+    "url": "/static/tv_js/bundles/41142.992b91ad0025ffbf8dff.js"
+  },
+  {
+    "id": 180,
+    "filename": "branding-source.cc5b32ae234be28fa610.js",
+    "size": 34820,
+    "url": "/static/tv_js/bundles/branding-source.cc5b32ae234be28fa610.js"
+  },
+  {
+    "id": 105,
+    "filename": "74950.217e623d9a61986fc04d.js",
+    "size": 34769,
+    "url": "/static/tv_js/bundles/74950.217e623d9a61986fc04d.js"
+  },
+  {
+    "id": 35,
+    "filename": "29989.e98059f097866256ba5d.js",
+    "size": 34246,
+    "url": "/static/tv_js/bundles/29989.e98059f097866256ba5d.js"
+  },
+  {
+    "id": 99,
+    "filename": "70621.417fe7b948b192ae27c1.js",
+    "size": 33791,
+    "url": "/static/tv_js/bundles/70621.417fe7b948b192ae27c1.js"
+  },
+  {
+    "id": 33,
+    "filename": "29296.7f564c3c17caf7930c69.js",
+    "size": 33555,
+    "url": "/static/tv_js/bundles/29296.7f564c3c17caf7930c69.js"
+  },
+  {
+    "id": 18,
+    "filename": "20297.7c15fd0af3be63a8901b.js",
+    "size": 33237,
+    "url": "/static/tv_js/bundles/20297.7c15fd0af3be63a8901b.js"
+  },
+  {
+    "id": 53,
+    "filename": "42132.ed07907a361851690dd0.js",
+    "size": 33162,
+    "url": "/static/tv_js/bundles/42132.ed07907a361851690dd0.js"
+  },
+  {
+    "id": 4,
+    "filename": "12094.b05635a4745bd7b60909.js",
+    "size": 33136,
+    "url": "/static/tv_js/bundles/12094.b05635a4745bd7b60909.js"
+  },
+  {
+    "id": 182,
+    "filename": "chart-alerts-facade.2bd7a5a4f8a97849c63c.js",
+    "size": 33076,
+    "url": "/static/tv_js/bundles/chart-alerts-facade.2bd7a5a4f8a97849c63c.js"
+  },
+  {
+    "id": 122,
+    "filename": "80950.79c9d1ada850e80f1fcf.js",
+    "size": 32882,
+    "url": "/static/tv_js/bundles/80950.79c9d1ada850e80f1fcf.js"
+  },
+  {
+    "id": 137,
+    "filename": "94029.e278e238db2c19d35c44.js",
+    "size": 32654,
+    "url": "/static/tv_js/bundles/94029.e278e238db2c19d35c44.js"
+  },
+  {
+    "id": 3,
+    "filename": "11585.c32a8164f1880e4e32e8.js",
+    "size": 32038,
+    "url": "/static/tv_js/bundles/11585.c32a8164f1880e4e32e8.js"
+  },
+  {
+    "id": 120,
+    "filename": "80776.a33002fb60395c1a2096.js",
+    "size": 31638,
+    "url": "/static/tv_js/bundles/80776.a33002fb60395c1a2096.js"
+  },
+  {
+    "id": 149,
+    "filename": "96817.676c2797c213cde2333a.js",
+    "size": 31541,
+    "url": "/static/tv_js/bundles/96817.676c2797c213cde2333a.js"
+  },
+  {
+    "id": 90,
+    "filename": "65775.bbbb2e982d3fabcd915e.js",
+    "size": 31164,
+    "url": "/static/tv_js/bundles/65775.bbbb2e982d3fabcd915e.js"
+  },
+  {
+    "id": 13,
+    "filename": "17627.2b4abdc443f20ce1c7c1.js",
+    "size": 30861,
+    "url": "/static/tv_js/bundles/17627.2b4abdc443f20ce1c7c1.js"
+  },
+  {
+    "id": 153,
+    "filename": "98060.60bad212d1850912d2b3.js",
+    "size": 30801,
+    "url": "/static/tv_js/bundles/98060.60bad212d1850912d2b3.js"
+  },
+  {
+    "id": 77,
+    "filename": "55385.d5e2421d4f59dc38d560.js",
+    "size": 30778,
+    "url": "/static/tv_js/bundles/55385.d5e2421d4f59dc38d560.js"
+  },
+  {
+    "id": 14,
+    "filename": "18014.0ce1cfcf524e19320452.js",
+    "size": 30721,
+    "url": "/static/tv_js/bundles/18014.0ce1cfcf524e19320452.js"
+  },
+  {
+    "id": 44,
+    "filename": "35216.4a21c77c9b134e5a10fd.js",
+    "size": 30227,
+    "url": "/static/tv_js/bundles/35216.4a21c77c9b134e5a10fd.js"
+  },
+  {
+    "id": 111,
+    "filename": "76853.1ef8ee4c156bae2ceac3.js",
+    "size": 30169,
+    "url": "/static/tv_js/bundles/76853.1ef8ee4c156bae2ceac3.js"
+  },
+  {
+    "id": 194,
+    "filename": "conversion.61422883f3576d6606c7.js",
+    "size": 29974,
+    "url": "/static/tv_js/bundles/conversion.61422883f3576d6606c7.js"
+  },
+  {
+    "id": 155,
+    "filename": "98550.fb5ca3044929a318689c.js",
+    "size": 29002,
+    "url": "/static/tv_js/bundles/98550.fb5ca3044929a318689c.js"
+  },
+  {
+    "id": 37,
+    "filename": "30778.068281a35109b81c1b09.js",
+    "size": 28432,
+    "url": "/static/tv_js/bundles/30778.068281a35109b81c1b09.js"
+  },
+  {
+    "id": 150,
+    "filename": "97598.8d9f434591ed9530c537.js",
+    "size": 28418,
+    "url": "/static/tv_js/bundles/97598.8d9f434591ed9530c537.js"
+  },
+  {
+    "id": 95,
+    "filename": "68938.3630db1b5ae4bd7921a0.js",
+    "size": 28206,
+    "url": "/static/tv_js/bundles/68938.3630db1b5ae4bd7921a0.js"
+  },
+  {
+    "id": 28,
+    "filename": "26366.6f972a62b2343aaddb4e.js",
+    "size": 28093,
+    "url": "/static/tv_js/bundles/26366.6f972a62b2343aaddb4e.js"
+  },
+  {
+    "id": 102,
+    "filename": "7282.ab71847456c522b8bddb.js",
+    "size": 28016,
+    "url": "/static/tv_js/bundles/7282.ab71847456c522b8bddb.js"
+  },
+  {
+    "id": 106,
+    "filename": "75019.30fd6564ebfd3d31de07.js",
+    "size": 27733,
+    "url": "/static/tv_js/bundles/75019.30fd6564ebfd3d31de07.js"
+  },
+  {
+    "id": 299,
+    "filename": "products-button.72b00d22d3db5fb0c3d5.js",
+    "size": 27678,
+    "url": "/static/tv_js/bundles/products-button.72b00d22d3db5fb0c3d5.js"
+  },
+  {
+    "id": 68,
+    "filename": "48960.d06accea9424b95d3afe.js",
+    "size": 27399,
+    "url": "/static/tv_js/bundles/48960.d06accea9424b95d3afe.js"
+  },
+  {
+    "id": 89,
+    "filename": "65377.e0ee488bc9015dfe8c41.js",
+    "size": 27134,
+    "url": "/static/tv_js/bundles/65377.e0ee488bc9015dfe8c41.js"
+  },
+  {
+    "id": 5,
+    "filename": "12432.280882443821e23202c0.js",
+    "size": 27131,
+    "url": "/static/tv_js/bundles/12432.280882443821e23202c0.js"
+  },
+  {
+    "id": 131,
+    "filename": "90189.c6ce25ebdb7adb029f81.js",
+    "size": 27127,
+    "url": "/static/tv_js/bundles/90189.c6ce25ebdb7adb029f81.js"
+  },
+  {
+    "id": 30,
+    "filename": "27457.4b65b1d702827dd60ee5.js",
+    "size": 26809,
+    "url": "/static/tv_js/bundles/27457.4b65b1d702827dd60ee5.js"
+  },
+  {
+    "id": 21,
+    "filename": "21796.de8045a18590e60f2828.js",
+    "size": 26766,
+    "url": "/static/tv_js/bundles/21796.de8045a18590e60f2828.js"
+  },
+  {
+    "id": 135,
+    "filename": "92005.632183ae5505103ec16d.js",
+    "size": 26607,
+    "url": "/static/tv_js/bundles/92005.632183ae5505103ec16d.js"
+  },
+  {
+    "id": 31,
+    "filename": "29050.31403d2ec74f03639bbd.js",
+    "size": 26330,
+    "url": "/static/tv_js/bundles/29050.31403d2ec74f03639bbd.js"
+  },
+  {
+    "id": 321,
+    "filename": "trading-bottom-widget-model.a4d96a23359ee4c9a6ce.js",
+    "size": 26293,
+    "url": "/static/tv_js/bundles/trading-bottom-widget-model.a4d96a23359ee4c9a6ce.js"
+  },
+  {
+    "id": 108,
+    "filename": "75581.d30ca6df10c0b34a0ca7.js",
+    "size": 26248,
+    "url": "/static/tv_js/bundles/75581.d30ca6df10c0b34a0ca7.js"
+  },
+  {
+    "id": 168,
+    "filename": "alerts-rest-api.9092d8bfd1069c30500b.js",
+    "size": 26072,
+    "url": "/static/tv_js/bundles/alerts-rest-api.9092d8bfd1069c30500b.js"
+  },
+  {
+    "id": 301,
+    "filename": "published-charts-timeline-tooltip.f4b7a297ca00e11be725.js",
+    "size": 25956,
+    "url": "/static/tv_js/bundles/published-charts-timeline-tooltip.f4b7a297ca00e11be725.js"
+  },
+  {
+    "id": 2,
+    "filename": "11057.4494f3361dc5f44d8e76.js",
+    "size": 25795,
+    "url": "/static/tv_js/bundles/11057.4494f3361dc5f44d8e76.js"
+  },
+  {
+    "id": 177,
+    "filename": "bottom-pine-tiles.9d40d97507f8ba9a2509.js",
+    "size": 25460,
+    "url": "/static/tv_js/bundles/bottom-pine-tiles.9d40d97507f8ba9a2509.js"
+  },
+  {
+    "id": 20,
+    "filename": "21294.d1190c662e4217aefdcc.js",
+    "size": 25320,
+    "url": "/static/tv_js/bundles/21294.d1190c662e4217aefdcc.js"
+  },
+  {
+    "id": 92,
+    "filename": "67445.437e496db24b926c228b.js",
+    "size": 25193,
+    "url": "/static/tv_js/bundles/67445.437e496db24b926c228b.js"
+  },
+  {
+    "id": 289,
+    "filename": "overnight-primary-exchange-snackbar-controller.ff885e48ea3c679e2a6d.js",
+    "size": 25049,
+    "url": "/static/tv_js/bundles/overnight-primary-exchange-snackbar-controller.ff885e48ea3c679e2a6d.js"
+  },
+  {
+    "id": 303,
+    "filename": "react-popper.5a7b4a98df2a7149c8b3.js",
+    "size": 24629,
+    "url": "/static/tv_js/bundles/react-popper.5a7b4a98df2a7149c8b3.js"
+  },
+  {
+    "id": 23,
+    "filename": "22378.5a81cacbc02410ef2dcc.js",
+    "size": 24477,
+    "url": "/static/tv_js/bundles/22378.5a81cacbc02410ef2dcc.js"
+  },
+  {
+    "id": 117,
+    "filename": "80139.3711c5c4a63673c0083e.js",
+    "size": 24148,
+    "url": "/static/tv_js/bundles/80139.3711c5c4a63673c0083e.js"
+  },
+  {
+    "id": 36,
+    "filename": "30725.691b7deccb4899e7bb6d.js",
+    "size": 24065,
+    "url": "/static/tv_js/bundles/30725.691b7deccb4899e7bb6d.js"
+  },
+  {
+    "id": 101,
+    "filename": "715.c97f0a80aaf99639ec14.js",
+    "size": 23647,
+    "url": "/static/tv_js/bundles/715.c97f0a80aaf99639ec14.js"
+  },
+  {
+    "id": 97,
+    "filename": "69540.9b85898891fc4375373a.js",
+    "size": 23644,
+    "url": "/static/tv_js/bundles/69540.9b85898891fc4375373a.js"
+  },
+  {
+    "id": 9,
+    "filename": "1421.32feee68370388ad7294.js",
+    "size": 23546,
+    "url": "/static/tv_js/bundles/1421.32feee68370388ad7294.js"
+  },
+  {
+    "id": 147,
+    "filename": "96081.b1f0c4060adb758a7acc.js",
+    "size": 23388,
+    "url": "/static/tv_js/bundles/96081.b1f0c4060adb758a7acc.js"
+  },
+  {
+    "id": 181,
+    "filename": "change-interval-dialog.945902d33e9ad6437ee8.js",
+    "size": 23345,
+    "url": "/static/tv_js/bundles/change-interval-dialog.945902d33e9ad6437ee8.js"
+  },
+  {
+    "id": 73,
+    "filename": "5090.4d9e1c6b118b1509b03f.js",
+    "size": 22475,
+    "url": "/static/tv_js/bundles/5090.4d9e1c6b118b1509b03f.js"
+  },
+  {
+    "id": 16,
+    "filename": "18648.07ae90a414e6e7cc962c.js",
+    "size": 22410,
+    "url": "/static/tv_js/bundles/18648.07ae90a414e6e7cc962c.js"
+  },
+  {
+    "id": 118,
+    "filename": "80322.a869383a3377980a7203.js",
+    "size": 22244,
+    "url": "/static/tv_js/bundles/80322.a869383a3377980a7203.js"
+  },
+  {
+    "id": 302,
+    "filename": "pushstream-multiplexer.d4dda121a47fc44cf3d4.js",
+    "size": 21977,
+    "url": "/static/tv_js/bundles/pushstream-multiplexer.d4dda121a47fc44cf3d4.js"
+  },
+  {
+    "id": 94,
+    "filename": "6846.8c81cbd3ab54c4799fca.js",
+    "size": 21967,
+    "url": "/static/tv_js/bundles/6846.8c81cbd3ab54c4799fca.js"
+  },
+  {
+    "id": 129,
+    "filename": "87856.f5f88245a9f6a941b119.js",
+    "size": 21864,
+    "url": "/static/tv_js/bundles/87856.f5f88245a9f6a941b119.js"
+  },
+  {
+    "id": 62,
+    "filename": "45885.f5357dbfbf6ad85daf52.js",
+    "size": 20925,
+    "url": "/static/tv_js/bundles/45885.f5357dbfbf6ad85daf52.js"
+  },
+  {
+    "id": 128,
+    "filename": "86500.81454376bfc04254a64c.js",
+    "size": 20235,
+    "url": "/static/tv_js/bundles/86500.81454376bfc04254a64c.js"
+  },
+  {
+    "id": 318,
+    "filename": "toasts-groupable-layer-chart.47344851a7bfa37f04fb.js",
+    "size": 20176,
+    "url": "/static/tv_js/bundles/toasts-groupable-layer-chart.47344851a7bfa37f04fb.js"
+  },
+  {
+    "id": 142,
+    "filename": "9475.73b3f16e9b8f52b1c0de.js",
+    "size": 20022,
+    "url": "/static/tv_js/bundles/9475.73b3f16e9b8f52b1c0de.js"
+  },
+  {
+    "id": 140,
+    "filename": "94686.6084e078b5782f9f06df.js",
+    "size": 19783,
+    "url": "/static/tv_js/bundles/94686.6084e078b5782f9f06df.js"
+  },
+  {
+    "id": 184,
+    "filename": "chart-events-service.788f9a98829b3a0d29ec.js",
+    "size": 19756,
+    "url": "/static/tv_js/bundles/chart-events-service.788f9a98829b3a0d29ec.js"
+  },
+  {
+    "id": 298,
+    "filename": "primary-listing-tooltip.9f4dafb642dc09038620.js",
+    "size": 19613,
+    "url": "/static/tv_js/bundles/primary-listing-tooltip.9f4dafb642dc09038620.js"
+  },
+  {
+    "id": 134,
+    "filename": "9186.052082c8356290cc3244.js",
+    "size": 19070,
+    "url": "/static/tv_js/bundles/9186.052082c8356290cc3244.js"
+  },
+  {
+    "id": 281,
+    "filename": "lollipop-latest-updates.d0fa2e2c4bf246c35d22.js",
+    "size": 18858,
+    "url": "/static/tv_js/bundles/lollipop-latest-updates.d0fa2e2c4bf246c35d22.js"
+  },
+  {
+    "id": 15,
+    "filename": "18512.f1706367abfd314fd0a3.js",
+    "size": 18830,
+    "url": "/static/tv_js/bundles/18512.f1706367abfd314fd0a3.js"
+  },
+  {
+    "id": 1,
+    "filename": "10549.6a3ba553791fc73be58c.js",
+    "size": 18775,
+    "url": "/static/tv_js/bundles/10549.6a3ba553791fc73be58c.js"
+  },
+  {
+    "id": 52,
+    "filename": "41424.3b59c1b21ab0653c5338.js",
+    "size": 18714,
+    "url": "/static/tv_js/bundles/41424.3b59c1b21ab0653c5338.js"
+  },
+  {
+    "id": 288,
+    "filename": "open-support-dialog-on-load.4427d878f3688b0d6736.js",
+    "size": 18558,
+    "url": "/static/tv_js/bundles/open-support-dialog-on-load.4427d878f3688b0d6736.js"
+  },
+  {
+    "id": 7,
+    "filename": "13805.93e478525070bf8e9c97.js",
+    "size": 18458,
+    "url": "/static/tv_js/bundles/13805.93e478525070bf8e9c97.js"
+  },
+  {
+    "id": 164,
+    "filename": "alerts-get-watchlists-states.8e609541ad895b3a09cb.js",
+    "size": 18444,
+    "url": "/static/tv_js/bundles/alerts-get-watchlists-states.8e609541ad895b3a09cb.js"
+  },
+  {
+    "id": 46,
+    "filename": "36017.44b9488e781a1ef655c5.js",
+    "size": 18438,
+    "url": "/static/tv_js/bundles/36017.44b9488e781a1ef655c5.js"
+  },
+  {
+    "id": 320,
+    "filename": "tpo-study.9db25e45fde52b0894c1.js",
+    "size": 18423,
+    "url": "/static/tv_js/bundles/tpo-study.9db25e45fde52b0894c1.js"
+  },
+  {
+    "id": 159,
+    "filename": "alerts-action-creators.4eb114c5afb9c02a60a7.js",
+    "size": 18210,
+    "url": "/static/tv_js/bundles/alerts-action-creators.4eb114c5afb9c02a60a7.js"
+  },
+  {
+    "id": 179,
+    "filename": "bottom-widgetbar.84fd7fb30eed01c12d66.js",
+    "size": 17529,
+    "url": "/static/tv_js/bundles/bottom-widgetbar.84fd7fb30eed01c12d66.js"
+  },
+  {
+    "id": 42,
+    "filename": "33847.1e7fa9610773b1fd55aa.js",
+    "size": 17281,
+    "url": "/static/tv_js/bundles/33847.1e7fa9610773b1fd55aa.js"
+  },
+  {
+    "id": 284,
+    "filename": "news-symbol-thread-service.056ed14f499bfbdd159c.js",
+    "size": 17166,
+    "url": "/static/tv_js/bundles/news-symbol-thread-service.056ed14f499bfbdd159c.js"
+  },
+  {
+    "id": 273,
+    "filename": "gift-notification.912373cf85adfe391858.js",
+    "size": 17075,
+    "url": "/static/tv_js/bundles/gift-notification.912373cf85adfe391858.js"
+  },
+  {
+    "id": 322,
+    "filename": "trading-bottom-widget.4141f805d40c2b55d05c.js",
+    "size": 16862,
+    "url": "/static/tv_js/bundles/trading-bottom-widget.4141f805d40c2b55d05c.js"
+  },
+  {
+    "id": 310,
+    "filename": "snowplow-tracker.5e7b628883f2d65bcc62.js",
+    "size": 16700,
+    "url": "/static/tv_js/bundles/snowplow-tracker.5e7b628883f2d65bcc62.js"
+  },
+  {
+    "id": 176,
+    "filename": "bottom-backtesting-widget.75fae75f847e0bff86b9.js",
+    "size": 16376,
+    "url": "/static/tv_js/bundles/bottom-backtesting-widget.75fae75f847e0bff86b9.js"
+  },
+  {
+    "id": 57,
+    "filename": "44037.4d86dce0165dbfce6e41.js",
+    "size": 16237,
+    "url": "/static/tv_js/bundles/44037.4d86dce0165dbfce6e41.js"
+  },
+  {
+    "id": 329,
+    "filename": "volume-footprint-study.0f6414246ce97456dcf3.js",
+    "size": 16226,
+    "url": "/static/tv_js/bundles/volume-footprint-study.0f6414246ce97456dcf3.js"
+  },
+  {
+    "id": 10,
+    "filename": "14846.96dccf13f9fdabdf9594.js",
+    "size": 16052,
+    "url": "/static/tv_js/bundles/14846.96dccf13f9fdabdf9594.js"
+  },
+  {
+    "id": 109,
+    "filename": "76174.78f4e01206d1321a0a0e.js",
+    "size": 16048,
+    "url": "/static/tv_js/bundles/76174.78f4e01206d1321a0a0e.js"
+  },
+  {
+    "id": 323,
+    "filename": "trading-custom-sources.9494bb095bef2044ce39.js",
+    "size": 15513,
+    "url": "/static/tv_js/bundles/trading-custom-sources.9494bb095bef2044ce39.js"
+  },
+  {
+    "id": 125,
+    "filename": "83215.87e79482037173211652.js",
+    "size": 14633,
+    "url": "/static/tv_js/bundles/83215.87e79482037173211652.js"
+  },
+  {
+    "id": 267,
+    "filename": "fires-action-creators.ae75e5e075f06c35216b.js",
+    "size": 14580,
+    "url": "/static/tv_js/bundles/fires-action-creators.ae75e5e075f06c35216b.js"
+  },
+  {
+    "id": 143,
+    "filename": "95327.390a8a785eefbc07e626.js",
+    "size": 14572,
+    "url": "/static/tv_js/bundles/95327.390a8a785eefbc07e626.js"
+  },
+  {
+    "id": 54,
+    "filename": "42930.ab75be13e11adaf42f3b.js",
+    "size": 14567,
+    "url": "/static/tv_js/bundles/42930.ab75be13e11adaf42f3b.js"
+  },
+  {
+    "id": 79,
+    "filename": "58658.49929346ca3366693d00.js",
+    "size": 14509,
+    "url": "/static/tv_js/bundles/58658.49929346ca3366693d00.js"
+  },
+  {
+    "id": 214,
+    "filename": "en.31357.6c12836d4c9556a081dd.js",
+    "size": 14445,
+    "url": "/static/tv_js/bundles/en.31357.6c12836d4c9556a081dd.js"
+  },
+  {
+    "id": 193,
+    "filename": "community-notifications-service-impl.52ca1a1f7b80bbf9a79d.js",
+    "size": 14402,
+    "url": "/static/tv_js/bundles/community-notifications-service-impl.52ca1a1f7b80bbf9a79d.js"
+  },
+  {
+    "id": 72,
+    "filename": "50088.81837c94c1c8b5b2ec3f.js",
+    "size": 14314,
+    "url": "/static/tv_js/bundles/50088.81837c94c1c8b5b2ec3f.js"
+  },
+  {
+    "id": 74,
+    "filename": "50982.5df93b08504387871367.js",
+    "size": 14155,
+    "url": "/static/tv_js/bundles/50982.5df93b08504387871367.js"
+  },
+  {
+    "id": 58,
+    "filename": "45000.3170e7fdb3612c10c700.js",
+    "size": 14069,
+    "url": "/static/tv_js/bundles/45000.3170e7fdb3612c10c700.js"
+  },
+  {
+    "id": 64,
+    "filename": "46355.88b5b113e2223f1279b0.js",
+    "size": 13137,
+    "url": "/static/tv_js/bundles/46355.88b5b113e2223f1279b0.js"
+  },
+  {
+    "id": 290,
+    "filename": "paper-competition-popup.ca83b1cc849346f84be5.js",
+    "size": 13105,
+    "url": "/static/tv_js/bundles/paper-competition-popup.ca83b1cc849346f84be5.js"
+  },
+  {
+    "id": 268,
+    "filename": "fires-actions.2ed030d46694d81d1bb2.js",
+    "size": 13009,
+    "url": "/static/tv_js/bundles/fires-actions.2ed030d46694d81d1bb2.js"
+  },
+  {
+    "id": 83,
+    "filename": "60937.0264ec64d6252e86531c.js",
+    "size": 13006,
+    "url": "/static/tv_js/bundles/60937.0264ec64d6252e86531c.js"
+  },
+  {
+    "id": 287,
+    "filename": "open-payment-order-dialog-on-load.e633d67d3e2aeec30489.js",
+    "size": 12909,
+    "url": "/static/tv_js/bundles/open-payment-order-dialog-on-load.e633d67d3e2aeec30489.js"
+  },
+  {
+    "id": 174,
+    "filename": "backtesting-widget-tab-model.826aabffddd88ca910b7.js",
+    "size": 12849,
+    "url": "/static/tv_js/bundles/backtesting-widget-tab-model.826aabffddd88ca910b7.js"
+  },
+  {
+    "id": 237,
+    "filename": "en.64523.58ad3327bbb1256a1790.js",
+    "size": 12701,
+    "url": "/static/tv_js/bundles/en.64523.58ad3327bbb1256a1790.js"
+  },
+  {
+    "id": 222,
+    "filename": "en.49818.a90e3ef334c9573dd2d8.js",
+    "size": 12678,
+    "url": "/static/tv_js/bundles/en.49818.a90e3ef334c9573dd2d8.js"
+  },
+  {
+    "id": 196,
+    "filename": "delay-status-pane-view.4c6bfb70d3c6e34e39c9.js",
+    "size": 12510,
+    "url": "/static/tv_js/bundles/delay-status-pane-view.4c6bfb70d3c6e34e39c9.js"
+  },
+  {
+    "id": 240,
+    "filename": "en.66791.4694d4eabe83020b8905.js",
+    "size": 12483,
+    "url": "/static/tv_js/bundles/en.66791.4694d4eabe83020b8905.js"
+  },
+  {
+    "id": 293,
+    "filename": "pine-editor-bottom-widget-model.7aed971eda19930d2a9a.js",
+    "size": 12306,
+    "url": "/static/tv_js/bundles/pine-editor-bottom-widget-model.7aed971eda19930d2a9a.js"
+  },
+  {
+    "id": 243,
+    "filename": "en.73979.6b816a983cc56fac20fe.js",
+    "size": 12257,
+    "url": "/static/tv_js/bundles/en.73979.6b816a983cc56fac20fe.js"
+  },
+  {
+    "id": 265,
+    "filename": "error-renderer.1788e4b613471fdb8497.js",
+    "size": 12257,
+    "url": "/static/tv_js/bundles/error-renderer.1788e4b613471fdb8497.js"
+  },
+  {
+    "id": 262,
+    "filename": "en.93023.d9c413bb5f6166364b7b.js",
+    "size": 12022,
+    "url": "/static/tv_js/bundles/en.93023.d9c413bb5f6166364b7b.js"
+  },
+  {
+    "id": 161,
+    "filename": "alerts-collection.beccdc07f64bae9edcb3.js",
+    "size": 11630,
+    "url": "/static/tv_js/bundles/alerts-collection.beccdc07f64bae9edcb3.js"
+  },
+  {
+    "id": 100,
+    "filename": "71402.5214c0a9c80da9154673.js",
+    "size": 11589,
+    "url": "/static/tv_js/bundles/71402.5214c0a9c80da9154673.js"
+  },
+  {
+    "id": 41,
+    "filename": "33637.c7ce3ee8091331abe2c9.js",
+    "size": 11484,
+    "url": "/static/tv_js/bundles/33637.c7ce3ee8091331abe2c9.js"
+  },
+  {
+    "id": 141,
+    "filename": "94748.de37313ca986b9d4f7a3.js",
+    "size": 11476,
+    "url": "/static/tv_js/bundles/94748.de37313ca986b9d4f7a3.js"
+  },
+  {
+    "id": 126,
+    "filename": "83764.dbca165894be549acfb3.js",
+    "size": 11460,
+    "url": "/static/tv_js/bundles/83764.dbca165894be549acfb3.js"
+  },
+  {
+    "id": 71,
+    "filename": "49463.381a2124425a179ac600.js",
+    "size": 10993,
+    "url": "/static/tv_js/bundles/49463.381a2124425a179ac600.js"
+  },
+  {
+    "id": 278,
+    "filename": "login-dialog.27bca46eef1f946d6971.js",
+    "size": 10939,
+    "url": "/static/tv_js/bundles/login-dialog.27bca46eef1f946d6971.js"
+  },
+  {
+    "id": 66,
+    "filename": "48745.30c227f7a285852e77a5.js",
+    "size": 10747,
+    "url": "/static/tv_js/bundles/48745.30c227f7a285852e77a5.js"
+  },
+  {
+    "id": 309,
+    "filename": "site-models.29410effb5eaf54e5e92.js",
+    "size": 10593,
+    "url": "/static/tv_js/bundles/site-models.29410effb5eaf54e5e92.js"
+  },
+  {
+    "id": 212,
+    "filename": "en.30445.736001e231be9ef5d9eb.js",
+    "size": 10296,
+    "url": "/static/tv_js/bundles/en.30445.736001e231be9ef5d9eb.js"
+  },
+  {
+    "id": 85,
+    "filename": "62025.b73922b51a97e7e0292e.js",
+    "size": 9861,
+    "url": "/static/tv_js/bundles/62025.b73922b51a97e7e0292e.js"
+  },
+  {
+    "id": 87,
+    "filename": "62253.c3df721720480c870a24.js",
+    "size": 9743,
+    "url": "/static/tv_js/bundles/62253.c3df721720480c870a24.js"
+  },
+  {
+    "id": 55,
+    "filename": "4328.96995778b0b5ce48a9d8.js",
+    "size": 9701,
+    "url": "/static/tv_js/bundles/4328.96995778b0b5ce48a9d8.js"
+  },
+  {
+    "id": 84,
+    "filename": "61048.b8723c3821cd58e57010.js",
+    "size": 9575,
+    "url": "/static/tv_js/bundles/61048.b8723c3821cd58e57010.js"
+  },
+  {
+    "id": 192,
+    "filename": "community-chats-engine.cd6b53da65d5d9992da3.js",
+    "size": 9508,
+    "url": "/static/tv_js/bundles/community-chats-engine.cd6b53da65d5d9992da3.js"
+  },
+  {
+    "id": 211,
+    "filename": "en.26672.f2cf59667e4e04e17b5c.js",
+    "size": 9481,
+    "url": "/static/tv_js/bundles/en.26672.f2cf59667e4e04e17b5c.js"
+  },
+  {
+    "id": 263,
+    "filename": "en.95069.90e5f73af58683dfba32.js",
+    "size": 9194,
+    "url": "/static/tv_js/bundles/en.95069.90e5f73af58683dfba32.js"
+  },
+  {
+    "id": 305,
+    "filename": "replay-trading-widget-tab-model.fe91819866bd03b8ff44.js",
+    "size": 9029,
+    "url": "/static/tv_js/bundles/replay-trading-widget-tab-model.fe91819866bd03b8ff44.js"
+  },
+  {
+    "id": 169,
+    "filename": "alerts-session.662b4168e1be05a4fe88.js",
+    "size": 9019,
+    "url": "/static/tv_js/bundles/alerts-session.662b4168e1be05a4fe88.js"
+  },
+  {
+    "id": 198,
+    "filename": "en.11534.6669213a102a60c4168e.js",
+    "size": 8958,
+    "url": "/static/tv_js/bundles/en.11534.6669213a102a60c4168e.js"
+  },
+  {
+    "id": 32,
+    "filename": "29091.ab9dfc12bd39a43edef2.js",
+    "size": 8942,
+    "url": "/static/tv_js/bundles/29091.ab9dfc12bd39a43edef2.js"
+  },
+  {
+    "id": 75,
+    "filename": "51472.ab9dfc12bd39a43edef2.js",
+    "size": 8942,
+    "url": "/static/tv_js/bundles/51472.ab9dfc12bd39a43edef2.js"
+  },
+  {
+    "id": 227,
+    "filename": "en.54209.6e51c57e4e5c3b6f56bf.js",
+    "size": 8849,
+    "url": "/static/tv_js/bundles/en.54209.6e51c57e4e5c3b6f56bf.js"
+  },
+  {
+    "id": 12,
+    "filename": "16817.34c3aab92ccd63e14e35.js",
+    "size": 8729,
+    "url": "/static/tv_js/bundles/16817.34c3aab92ccd63e14e35.js"
+  },
+  {
+    "id": 148,
+    "filename": "96421.03ac8cdcc6b21da35a6b.js",
+    "size": 8670,
+    "url": "/static/tv_js/bundles/96421.03ac8cdcc6b21da35a6b.js"
+  },
+  {
+    "id": 19,
+    "filename": "21055.79dc8db8a8a1f9b45923.js",
+    "size": 8540,
+    "url": "/static/tv_js/bundles/21055.79dc8db8a8a1f9b45923.js"
+  },
+  {
+    "id": 242,
+    "filename": "en.68617.8db0799d9f9bea0cfd79.js",
+    "size": 8525,
+    "url": "/static/tv_js/bundles/en.68617.8db0799d9f9bea0cfd79.js"
+  },
+  {
+    "id": 186,
+    "filename": "chart-news.aadd521b62207b0562cd.js",
+    "size": 8446,
+    "url": "/static/tv_js/bundles/chart-news.aadd521b62207b0562cd.js"
+  },
+  {
+    "id": 114,
+    "filename": "77586.fddd64b37c49b9c89aef.js",
+    "size": 8243,
+    "url": "/static/tv_js/bundles/77586.fddd64b37c49b9c89aef.js"
+  },
+  {
+    "id": 6,
+    "filename": "13433.f06558d414dc30301be2.js",
+    "size": 8101,
+    "url": "/static/tv_js/bundles/13433.f06558d414dc30301be2.js"
+  },
+  {
+    "id": 331,
+    "filename": "widgetbar-platform-configuration.a963a54849c3edd57bbe.js",
+    "size": 7913,
+    "url": "/static/tv_js/bundles/widgetbar-platform-configuration.a963a54849c3edd57bbe.js"
+  },
+  {
+    "id": 280,
+    "filename": "lollipop-futures-contract-expiration.3b43ad6b30b77ffb71b6.js",
+    "size": 7894,
+    "url": "/static/tv_js/bundles/lollipop-futures-contract-expiration.3b43ad6b30b77ffb71b6.js"
+  },
+  {
+    "id": 325,
+    "filename": "trading-informer.ac899a0e4692ef28dc8c.js",
+    "size": 7654,
+    "url": "/static/tv_js/bundles/trading-informer.ac899a0e4692ef28dc8c.js"
+  },
+  {
+    "id": 160,
+    "filename": "alerts-actions.58a6441675e7f90fae74.js",
+    "size": 7241,
+    "url": "/static/tv_js/bundles/alerts-actions.58a6441675e7f90fae74.js"
+  },
+  {
+    "id": 294,
+    "filename": "pine-editor-bottom.8ef4d63829c7cd34cd6a.js",
+    "size": 7179,
+    "url": "/static/tv_js/bundles/pine-editor-bottom.8ef4d63829c7cd34cd6a.js"
+  },
+  {
+    "id": 158,
+    "filename": "advanced-chart-lollipops.1c0cc357377b915a3796.js",
+    "size": 6824,
+    "url": "/static/tv_js/bundles/advanced-chart-lollipops.1c0cc357377b915a3796.js"
+  },
+  {
+    "id": 170,
+    "filename": "alerts-trackers.72bcd5ac459981f2fdbd.js",
+    "size": 6797,
+    "url": "/static/tv_js/bundles/alerts-trackers.72bcd5ac459981f2fdbd.js"
+  },
+  {
+    "id": 195,
+    "filename": "cookies-notification.a26a50041a411c360da0.js",
+    "size": 6469,
+    "url": "/static/tv_js/bundles/cookies-notification.a26a50041a411c360da0.js"
+  },
+  {
+    "id": 204,
+    "filename": "en.1769.abfb3432011f141f2b2b.js",
+    "size": 6251,
+    "url": "/static/tv_js/bundles/en.1769.abfb3432011f141f2b2b.js"
+  },
+  {
+    "id": 61,
+    "filename": "45566.76f629074d388ae41e02.js",
+    "size": 6130,
+    "url": "/static/tv_js/bundles/45566.76f629074d388ae41e02.js"
+  },
+  {
+    "id": 45,
+    "filename": "35813.d6d410c0b7c2737dfa64.js",
+    "size": 5552,
+    "url": "/static/tv_js/bundles/35813.d6d410c0b7c2737dfa64.js"
+  },
+  {
+    "id": 203,
+    "filename": "en.16168.9a687c17bded3c1ca06b.js",
+    "size": 5294,
+    "url": "/static/tv_js/bundles/en.16168.9a687c17bded3c1ca06b.js"
+  },
+  {
+    "id": 78,
+    "filename": "56889.359e521d7cb612eb9e5c.js",
+    "size": 5100,
+    "url": "/static/tv_js/bundles/56889.359e521d7cb612eb9e5c.js"
+  },
+  {
+    "id": 291,
+    "filename": "persistent-logger.f26fa10687d448448617.js",
+    "size": 5037,
+    "url": "/static/tv_js/bundles/persistent-logger.f26fa10687d448448617.js"
+  },
+  {
+    "id": 76,
+    "filename": "53757.feaf403a32e0459a396a.js",
+    "size": 4772,
+    "url": "/static/tv_js/bundles/53757.feaf403a32e0459a396a.js"
+  },
+  {
+    "id": 248,
+    "filename": "en.83584.02c613766bccda8669a6.js",
+    "size": 4634,
+    "url": "/static/tv_js/bundles/en.83584.02c613766bccda8669a6.js"
+  },
+  {
+    "id": 215,
+    "filename": "en.34521.bdcd5f20c3b6f4260b3e.js",
+    "size": 4466,
+    "url": "/static/tv_js/bundles/en.34521.bdcd5f20c3b6f4260b3e.js"
+  },
+  {
+    "id": 295,
+    "filename": "pine-tiles-tab-model.cce9bd8e569ddd9ee808.js",
+    "size": 4450,
+    "url": "/static/tv_js/bundles/pine-tiles-tab-model.cce9bd8e569ddd9ee808.js"
+  },
+  {
+    "id": 244,
+    "filename": "en.75365.b07d848171cf92656791.js",
+    "size": 4356,
+    "url": "/static/tv_js/bundles/en.75365.b07d848171cf92656791.js"
+  },
+  {
+    "id": 297,
+    "filename": "price-scale-mode-buttons-renderer.21606e41802b8bcfb486.js",
+    "size": 4289,
+    "url": "/static/tv_js/bundles/price-scale-mode-buttons-renderer.21606e41802b8bcfb486.js"
+  },
+  {
+    "id": 202,
+    "filename": "en.1593.4ac10e944e260669ae87.js",
+    "size": 4241,
+    "url": "/static/tv_js/bundles/en.1593.4ac10e944e260669ae87.js"
+  },
+  {
+    "id": 191,
+    "filename": "clear-old-settings.726f6570241e4929d13f.js",
+    "size": 4204,
+    "url": "/static/tv_js/bundles/clear-old-settings.726f6570241e4929d13f.js"
+  },
+  {
+    "id": 251,
+    "filename": "en.84466.9177e62cffcc91177666.js",
+    "size": 3881,
+    "url": "/static/tv_js/bundles/en.84466.9177e62cffcc91177666.js"
+  },
+  {
+    "id": 173,
+    "filename": "backtesting-widget-controller.4c5cfe9e70e133d476df.js",
+    "size": 3848,
+    "url": "/static/tv_js/bundles/backtesting-widget-controller.4c5cfe9e70e133d476df.js"
+  },
+  {
+    "id": 232,
+    "filename": "en.61404.5422b51afa2a9415d409.js",
+    "size": 3661,
+    "url": "/static/tv_js/bundles/en.61404.5422b51afa2a9415d409.js"
+  },
+  {
+    "id": 230,
+    "filename": "en.57246.cbc079a9a8415babf1c2.js",
+    "size": 3545,
+    "url": "/static/tv_js/bundles/en.57246.cbc079a9a8415babf1c2.js"
+  },
+  {
+    "id": 162,
+    "filename": "alerts-error-presenter.f3a4bc1e6542024628aa.js",
+    "size": 3502,
+    "url": "/static/tv_js/bundles/alerts-error-presenter.f3a4bc1e6542024628aa.js"
+  },
+  {
+    "id": 189,
+    "filename": "chart-toolbar-hosts.626edeb53a3ceb1f7bd5.js",
+    "size": 3318,
+    "url": "/static/tv_js/bundles/chart-toolbar-hosts.626edeb53a3ceb1f7bd5.js"
+  },
+  {
+    "id": 308,
+    "filename": "script-editor-widget-controller.b5b7c30e8a29d408002a.js",
+    "size": 3195,
+    "url": "/static/tv_js/bundles/script-editor-widget-controller.b5b7c30e8a29d408002a.js"
+  },
+  {
+    "id": 239,
+    "filename": "en.66769.0a89200626ddd85948f0.js",
+    "size": 3180,
+    "url": "/static/tv_js/bundles/en.66769.0a89200626ddd85948f0.js"
+  },
+  {
+    "id": 225,
+    "filename": "en.52994.828a2300601879677f65.js",
+    "size": 3118,
+    "url": "/static/tv_js/bundles/en.52994.828a2300601879677f65.js"
+  },
+  {
+    "id": 276,
+    "filename": "init-global-alerts-hotkeys.9bc81d58ff6bef7fdb68.js",
+    "size": 2822,
+    "url": "/static/tv_js/bundles/init-global-alerts-hotkeys.9bc81d58ff6bef7fdb68.js"
+  },
+  {
+    "id": 221,
+    "filename": "en.4696.ec774136e85e933163cc.js",
+    "size": 2757,
+    "url": "/static/tv_js/bundles/en.4696.ec774136e85e933163cc.js"
+  },
+  {
+    "id": 270,
+    "filename": "footer-widget-tab-model.e9280a2aa716a0023fda.js",
+    "size": 2668,
+    "url": "/static/tv_js/bundles/footer-widget-tab-model.e9280a2aa716a0023fda.js"
+  },
+  {
+    "id": 178,
+    "filename": "bottom-replay-trading-widget.37525eb1a78c622a7caf.js",
+    "size": 2658,
+    "url": "/static/tv_js/bundles/bottom-replay-trading-widget.37525eb1a78c622a7caf.js"
+  },
+  {
+    "id": 327,
+    "filename": "trading-widget-controller.dd3fbef37f7a06a82606.js",
+    "size": 2353,
+    "url": "/static/tv_js/bundles/trading-widget-controller.dd3fbef37f7a06a82606.js"
+  },
+  {
+    "id": 304,
+    "filename": "replay-trading-widget-controller.e7f1c9c75dc8a9870009.js",
+    "size": 2254,
+    "url": "/static/tv_js/bundles/replay-trading-widget-controller.e7f1c9c75dc8a9870009.js"
+  },
+  {
+    "id": 185,
+    "filename": "chart-lottie-animation.967e9da0fe7c33a7a192.js",
+    "size": 2165,
+    "url": "/static/tv_js/bundles/chart-lottie-animation.967e9da0fe7c33a7a192.js"
+  },
+  {
+    "id": 217,
+    "filename": "en.40770.be61bd38819f2e14230e.js",
+    "size": 2065,
+    "url": "/static/tv_js/bundles/en.40770.be61bd38819f2e14230e.js"
+  },
+  {
+    "id": 224,
+    "filename": "en.52882.2898e638a68180ed6df4.js",
+    "size": 1863,
+    "url": "/static/tv_js/bundles/en.52882.2898e638a68180ed6df4.js"
+  },
+  {
+    "id": 286,
+    "filename": "open-partner-program-dialog-on-load.dca6a65e43c3eae9e133.js",
+    "size": 1614,
+    "url": "/static/tv_js/bundles/open-partner-program-dialog-on-load.dca6a65e43c3eae9e133.js"
+  },
+  {
+    "id": 231,
+    "filename": "en.57784.0272f2c8b9ad54038ee5.js",
+    "size": 1598,
+    "url": "/static/tv_js/bundles/en.57784.0272f2c8b9ad54038ee5.js"
+  },
+  {
+    "id": 275,
+    "filename": "hip3-disclaimer.7c9a7cd30096a91b4598.js",
+    "size": 1583,
+    "url": "/static/tv_js/bundles/hip3-disclaimer.7c9a7cd30096a91b4598.js"
+  },
+  {
+    "id": 283,
+    "filename": "news-notification-system.76543ba1db8c533b3383.js",
+    "size": 1457,
+    "url": "/static/tv_js/bundles/news-notification-system.76543ba1db8c533b3383.js"
+  },
+  {
+    "id": 235,
+    "filename": "en.64288.4d83fa565fcd11768188.js",
+    "size": 1400,
+    "url": "/static/tv_js/bundles/en.64288.4d83fa565fcd11768188.js"
+  },
+  {
+    "id": 226,
+    "filename": "en.53828.959c6a727d325dc85704.js",
+    "size": 1309,
+    "url": "/static/tv_js/bundles/en.53828.959c6a727d325dc85704.js"
+  },
+  {
+    "id": 311,
+    "filename": "spinner-renderer.18ab97cc819610dd650e.js",
+    "size": 1296,
+    "url": "/static/tv_js/bundles/spinner-renderer.18ab97cc819610dd650e.js"
+  },
+  {
+    "id": 296,
+    "filename": "pine-tiles-widget-controller.462c34fc6bb729bd3f61.js",
+    "size": 1262,
+    "url": "/static/tv_js/bundles/pine-tiles-widget-controller.462c34fc6bb729bd3f61.js"
+  },
+  {
+    "id": 245,
+    "filename": "en.80471.d18ebb6796f9ce6c3a90.js",
+    "size": 1246,
+    "url": "/static/tv_js/bundles/en.80471.d18ebb6796f9ce6c3a90.js"
+  },
+  {
+    "id": 256,
+    "filename": "en.88997.7e604aee902b46989e46.js",
+    "size": 1132,
+    "url": "/static/tv_js/bundles/en.88997.7e604aee902b46989e46.js"
+  },
+  {
+    "id": 285,
+    "filename": "open-coins-dialog-on-load.be8f93b23c355b7270d4.js",
+    "size": 1077,
+    "url": "/static/tv_js/bundles/open-coins-dialog-on-load.be8f93b23c355b7270d4.js"
+  },
+  {
+    "id": 163,
+    "filename": "alerts-fires-focus-handler.6cc29257cb28ae440139.js",
+    "size": 1063,
+    "url": "/static/tv_js/bundles/alerts-fires-focus-handler.6cc29257cb28ae440139.js"
+  },
+  {
+    "id": 253,
+    "filename": "en.8563.f233e628c8ba2df67dca.js",
+    "size": 985,
+    "url": "/static/tv_js/bundles/en.8563.f233e628c8ba2df67dca.js"
+  },
+  {
+    "id": 205,
+    "filename": "en.18456.ea7ace482edb88a692c3.js",
+    "size": 983,
+    "url": "/static/tv_js/bundles/en.18456.ea7ace482edb88a692c3.js"
+  },
+  {
+    "id": 199,
+    "filename": "en.11560.b9a23d0492d5dc39ed5a.js",
+    "size": 863,
+    "url": "/static/tv_js/bundles/en.11560.b9a23d0492d5dc39ed5a.js"
+  },
+  {
+    "id": 260,
+    "filename": "en.91081.e07c8c256eb94c5a00fc.js",
+    "size": 782,
+    "url": "/static/tv_js/bundles/en.91081.e07c8c256eb94c5a00fc.js"
+  },
+  {
+    "id": 255,
+    "filename": "en.87758.7a37015f8d88e3bccfdf.js",
+    "size": 704,
+    "url": "/static/tv_js/bundles/en.87758.7a37015f8d88e3bccfdf.js"
+  },
+  {
+    "id": 220,
+    "filename": "en.45225.dd43d94e17959dca8880.js",
+    "size": 666,
+    "url": "/static/tv_js/bundles/en.45225.dd43d94e17959dca8880.js"
+  },
+  {
+    "id": 292,
+    "filename": "pine-dialog-open-state.591b09fd6154f65af7fe.js",
+    "size": 603,
+    "url": "/static/tv_js/bundles/pine-dialog-open-state.591b09fd6154f65af7fe.js"
+  },
+  {
+    "id": 206,
+    "filename": "en.19912.47181db3ad1a39834ebe.js",
+    "size": 601,
+    "url": "/static/tv_js/bundles/en.19912.47181db3ad1a39834ebe.js"
+  },
+  {
+    "id": 316,
+    "filename": "timer.worker.846b2d86580396ac0c79.js",
+    "size": 588,
+    "url": "/static/tv_js/bundles/timer.worker.846b2d86580396ac0c79.js"
+  },
+  {
+    "id": 300,
+    "filename": "promo_footer.6730c279420aa0f494b8.js",
+    "size": 555,
+    "url": "/static/tv_js/bundles/promo_footer.6730c279420aa0f494b8.js"
+  },
+  {
+    "id": 175,
+    "filename": "base-widget-controller.5ae01f1b5a4e8c241a92.js",
+    "size": 513,
+    "url": "/static/tv_js/bundles/base-widget-controller.5ae01f1b5a4e8c241a92.js"
+  },
+  {
+    "id": 249,
+    "filename": "en.84256.fac253b535423cf6a573.js",
+    "size": 503,
+    "url": "/static/tv_js/bundles/en.84256.fac253b535423cf6a573.js"
+  },
+  {
+    "id": 228,
+    "filename": "en.56801.7000f708eb6f471b0d7f.js",
+    "size": 462,
+    "url": "/static/tv_js/bundles/en.56801.7000f708eb6f471b0d7f.js"
+  },
+  {
+    "id": 254,
+    "filename": "en.85733.431a4d4758050b3f9121.js",
+    "size": 418,
+    "url": "/static/tv_js/bundles/en.85733.431a4d4758050b3f9121.js"
+  },
+  {
+    "id": 261,
+    "filename": "en.9208.e690bdca530244a0601c.js",
+    "size": 414,
+    "url": "/static/tv_js/bundles/en.9208.e690bdca530244a0601c.js"
+  },
+  {
+    "id": 257,
+    "filename": "en.89618.fe292496e4f33bc5290b.js",
+    "size": 351,
+    "url": "/static/tv_js/bundles/en.89618.fe292496e4f33bc5290b.js"
+  },
+  {
+    "id": 246,
+    "filename": "en.81822.1364600e95d2c691df38.js",
+    "size": 350,
+    "url": "/static/tv_js/bundles/en.81822.1364600e95d2c691df38.js"
+  },
+  {
+    "id": 233,
+    "filename": "en.61436.32c965f13592f940872a.js",
+    "size": 317,
+    "url": "/static/tv_js/bundles/en.61436.32c965f13592f940872a.js"
+  },
+  {
+    "id": 201,
+    "filename": "en.14835.d7148a9ddad43ff6b0c8.js",
+    "size": 305,
+    "url": "/static/tv_js/bundles/en.14835.d7148a9ddad43ff6b0c8.js"
+  },
+  {
+    "id": 223,
+    "filename": "en.50955.2fbefb4137b2b399f894.js",
+    "size": 279,
+    "url": "/static/tv_js/bundles/en.50955.2fbefb4137b2b399f894.js"
+  },
+  {
+    "id": 229,
+    "filename": "en.5692.95c59a5914564b228052.js",
+    "size": 261,
+    "url": "/static/tv_js/bundles/en.5692.95c59a5914564b228052.js"
+  },
+  {
+    "id": 241,
+    "filename": "en.66922.894331e295264ece89bc.js",
+    "size": 242,
+    "url": "/static/tv_js/bundles/en.66922.894331e295264ece89bc.js"
+  },
+  {
+    "id": 200,
+    "filename": "en.14622.e092a3fe139ca2adec1b.js",
+    "size": 221,
+    "url": "/static/tv_js/bundles/en.14622.e092a3fe139ca2adec1b.js"
+  },
+  {
+    "id": 209,
+    "filename": "en.22510.c6272459a17c5398fd7b.js",
+    "size": 221,
+    "url": "/static/tv_js/bundles/en.22510.c6272459a17c5398fd7b.js"
+  },
+  {
+    "id": 258,
+    "filename": "en.90186.47b89b91dfb55cf079cb.js",
+    "size": 204,
+    "url": "/static/tv_js/bundles/en.90186.47b89b91dfb55cf079cb.js"
+  },
+  {
+    "id": 208,
+    "filename": "en.22321.36989da53e21727ab2ae.js",
+    "size": 168,
+    "url": "/static/tv_js/bundles/en.22321.36989da53e21727ab2ae.js"
+  },
+  {
+    "id": 219,
+    "filename": "en.44497.abf4d0d1445b28d3e718.js",
+    "size": 140,
+    "url": "/static/tv_js/bundles/en.44497.abf4d0d1445b28d3e718.js"
+  },
+  {
+    "id": 247,
+    "filename": "en.83083.884016f6dba1a094ec54.js",
+    "size": 127,
+    "url": "/static/tv_js/bundles/en.83083.884016f6dba1a094ec54.js"
+  },
+  {
+    "id": 207,
+    "filename": "en.20580.bfd6ac269501f970cffb.js",
+    "size": 122,
+    "url": "/static/tv_js/bundles/en.20580.bfd6ac269501f970cffb.js"
+  },
+  {
+    "id": 218,
+    "filename": "en.40910.8125c65fc7488264d78d.js",
+    "size": 122,
+    "url": "/static/tv_js/bundles/en.40910.8125c65fc7488264d78d.js"
+  },
+  {
+    "id": 250,
+    "filename": "en.84355.1070ba135c1b9e2dfd92.js",
+    "size": 120,
+    "url": "/static/tv_js/bundles/en.84355.1070ba135c1b9e2dfd92.js"
+  },
+  {
+    "id": 259,
+    "filename": "en.90846.5138b3277204ca5a102b.js",
+    "size": 120,
+    "url": "/static/tv_js/bundles/en.90846.5138b3277204ca5a102b.js"
+  }
+]

@@ -1,0 +1,6257 @@
+[
+  {
+    "id": 0,
+    "filename": "general_icon_000_40x40.svg",
+    "category": "general",
+    "width": "40",
+    "height": "40",
+    "viewBox": "0 0 40 40",
+    "raw_file": "svg_000_40x40_0_0_40_40.svg"
+  },
+  {
+    "id": 1,
+    "filename": "drawing_drawing_1_87x108.svg",
+    "category": "drawing",
+    "width": "87",
+    "height": "108",
+    "viewBox": "0 0 87 108",
+    "raw_file": "svg_001_87x108_0_0_87_108.svg"
+  },
+  {
+    "id": 2,
+    "filename": "general_icon_002_40x40.svg",
+    "category": "general",
+    "width": "40",
+    "height": "40",
+    "viewBox": "0 0 40 40",
+    "raw_file": "svg_002_40x40_0_0_40_40.svg"
+  },
+  {
+    "id": 3,
+    "filename": "general_icon_003_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_003_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 4,
+    "filename": "general_icon_004_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_004_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 5,
+    "filename": "general_icon_005_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_005_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 6,
+    "filename": "general_icon_006_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_006_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 7,
+    "filename": "general_icon_007_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_007_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 8,
+    "filename": "general_icon_008_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_008_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 9,
+    "filename": "general_icon_009_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_009_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 10,
+    "filename": "general_icon_010_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_010_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 11,
+    "filename": "general_icon_011_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_011_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 12,
+    "filename": "general_icon_012_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_012_x_.svg"
+  },
+  {
+    "id": 13,
+    "filename": "general_icon_013_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_013_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 14,
+    "filename": "general_icon_014_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_014_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 15,
+    "filename": "general_icon_015_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_015_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 16,
+    "filename": "general_icon_016_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_016_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 17,
+    "filename": "general_icon_017_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_017_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 18,
+    "filename": "general_icon_018_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_018_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 19,
+    "filename": "general_icon_019_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_019_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 20,
+    "filename": "general_icon_020_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_020_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 21,
+    "filename": "general_icon_021_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_021_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 22,
+    "filename": "general_icon_022_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_022_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 23,
+    "filename": "general_icon_023_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_023_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 24,
+    "filename": "general_icon_024_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_024_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 25,
+    "filename": "general_icon_025_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_025_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 26,
+    "filename": "general_icon_026_120x120.svg",
+    "category": "general",
+    "width": "120",
+    "height": "120",
+    "viewBox": "0 0 120 120",
+    "raw_file": "svg_026_120x120_0_0_120_120.svg"
+  },
+  {
+    "id": 27,
+    "filename": "brand_nifty_logo_50x50.svg",
+    "category": "brand",
+    "width": "50",
+    "height": "50",
+    "viewBox": "0 0 50 50",
+    "raw_file": "svg_027_50x50_0_0_50_50.svg"
+  },
+  {
+    "id": 28,
+    "filename": "general_icon_028_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_028_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 29,
+    "filename": "general_icon_029_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_029_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 30,
+    "filename": "general_icon_030_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_030_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 31,
+    "filename": "general_icon_031_12x12.svg",
+    "category": "general",
+    "width": "12",
+    "height": "12",
+    "viewBox": "0 0 12 12",
+    "raw_file": "svg_031_12x12_0_0_12_12.svg"
+  },
+  {
+    "id": 32,
+    "filename": "general_icon_032_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_032_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 33,
+    "filename": "general_icon_033_16x8.svg",
+    "category": "general",
+    "width": "16",
+    "height": "8",
+    "viewBox": "0 0 16 8",
+    "raw_file": "svg_033_16x8_0_0_16_8.svg"
+  },
+  {
+    "id": 34,
+    "filename": "general_icon_034_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_034_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 35,
+    "filename": "drawing_drawing_35_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_035_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 36,
+    "filename": "general_icon_036_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_036_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 37,
+    "filename": "general_icon_037_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_037_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 38,
+    "filename": "general_icon_038_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_038_18x18_.svg"
+  },
+  {
+    "id": 39,
+    "filename": "general_icon_039_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_039_18x18_.svg"
+  },
+  {
+    "id": 40,
+    "filename": "general_icon_040_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_040_18x18_.svg"
+  },
+  {
+    "id": 41,
+    "filename": "general_icon_041_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_041_18x18_.svg"
+  },
+  {
+    "id": 42,
+    "filename": "general_icon_042_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_042_18x18_.svg"
+  },
+  {
+    "id": 43,
+    "filename": "general_icon_043_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_043_18x18_.svg"
+  },
+  {
+    "id": 44,
+    "filename": "general_icon_044_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_044_18x18_.svg"
+  },
+  {
+    "id": 45,
+    "filename": "general_icon_045_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_045_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 46,
+    "filename": "general_icon_046_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_046_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 47,
+    "filename": "general_icon_047_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_047_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 48,
+    "filename": "general_icon_048_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_048_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 49,
+    "filename": "general_icon_049_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_049_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 50,
+    "filename": "drawing_drawing_50_14x14.svg",
+    "category": "drawing",
+    "width": "14",
+    "height": "14",
+    "viewBox": "0 0 14 14",
+    "raw_file": "svg_050_14x14_.svg"
+  },
+  {
+    "id": 51,
+    "filename": "general_icon_051_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_051_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 52,
+    "filename": "general_icon_052_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_052_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 53,
+    "filename": "general_icon_053_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_053_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 54,
+    "filename": "general_icon_054_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_054_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 55,
+    "filename": "general_icon_055_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_055_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 56,
+    "filename": "general_icon_056_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_056_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 57,
+    "filename": "general_icon_057_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_057_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 58,
+    "filename": "general_icon_058_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_058_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 59,
+    "filename": "general_icon_059_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_059_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 60,
+    "filename": "general_icon_060_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_060_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 61,
+    "filename": "general_icon_061_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_061_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 62,
+    "filename": "general_icon_062_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_062_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 63,
+    "filename": "general_icon_063_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_063_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 64,
+    "filename": "general_icon_064_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_064_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 65,
+    "filename": "general_icon_065_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_065_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 66,
+    "filename": "general_icon_066_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_066_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 67,
+    "filename": "general_icon_067_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_067_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 68,
+    "filename": "general_icon_068_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_068_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 69,
+    "filename": "general_icon_069_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_069_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 70,
+    "filename": "general_icon_070_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_070_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 71,
+    "filename": "general_icon_071_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_071_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 72,
+    "filename": "general_icon_072_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_072_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 73,
+    "filename": "general_icon_073_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_073_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 74,
+    "filename": "general_icon_074_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_074_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 75,
+    "filename": "general_icon_075_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_075_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 76,
+    "filename": "general_icon_076_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_076_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 77,
+    "filename": "general_icon_077_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_077_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 78,
+    "filename": "general_icon_078_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_078_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 79,
+    "filename": "general_icon_079_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_079_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 80,
+    "filename": "general_icon_080_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_080_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 81,
+    "filename": "general_icon_081_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_081_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 82,
+    "filename": "general_icon_082_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_082_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 83,
+    "filename": "general_icon_083_11x9.svg",
+    "category": "general",
+    "width": "11",
+    "height": "9",
+    "viewBox": "0 0 11 9",
+    "raw_file": "svg_083_11x9_0_0_11_9.svg"
+  },
+  {
+    "id": 84,
+    "filename": "general_icon_084_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_084_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 85,
+    "filename": "general_icon_085_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_085_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 86,
+    "filename": "general_icon_086_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_086_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 87,
+    "filename": "general_icon_087_22x19.svg",
+    "category": "general",
+    "width": "22",
+    "height": "19",
+    "viewBox": "0 0 22 19",
+    "raw_file": "svg_087_22x19_0_0_22_19.svg"
+  },
+  {
+    "id": 88,
+    "filename": "general_icon_088_35x19.svg",
+    "category": "general",
+    "width": "35",
+    "height": "19",
+    "viewBox": "0 0 35 19",
+    "raw_file": "svg_088_35x19_0_0_35_19.svg"
+  },
+  {
+    "id": 89,
+    "filename": "brand_nifty_logo_50x19.svg",
+    "category": "brand",
+    "width": "50",
+    "height": "19",
+    "viewBox": "0 0 50 19",
+    "raw_file": "svg_089_50x19_0_0_50_19.svg"
+  },
+  {
+    "id": 90,
+    "filename": "general_icon_090_89x19.svg",
+    "category": "general",
+    "width": "89",
+    "height": "19",
+    "viewBox": "0 0 89 19",
+    "raw_file": "svg_090_89x19_0_0_89_19.svg"
+  },
+  {
+    "id": 91,
+    "filename": "general_icon_091_126x24.svg",
+    "category": "general",
+    "width": "126",
+    "height": "24",
+    "viewBox": "0 1 126 24",
+    "raw_file": "svg_091_126x24_0_1_126_24.svg"
+  },
+  {
+    "id": 92,
+    "filename": "general_icon_092_40x32.svg",
+    "category": "general",
+    "width": "40",
+    "height": "32",
+    "viewBox": "0 0 40 32",
+    "raw_file": "svg_092_40x32_0_0_40_32.svg"
+  },
+  {
+    "id": 93,
+    "filename": "brand_nifty_logo_89x32.svg",
+    "category": "brand",
+    "width": "89",
+    "height": "32",
+    "viewBox": "0 0 89 32",
+    "raw_file": "svg_093_89x32_0_0_89_32.svg"
+  },
+  {
+    "id": 94,
+    "filename": "general_icon_094_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_094_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 95,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_095_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 96,
+    "filename": "general_icon_096_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_096_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 97,
+    "filename": "general_icon_097_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_097_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 98,
+    "filename": "general_icon_098_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_098_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 99,
+    "filename": "general_icon_099_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_099_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 100,
+    "filename": "general_icon_100_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_100_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 101,
+    "filename": "general_icon_101_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_101_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 102,
+    "filename": "general_icon_102_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_102_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 103,
+    "filename": "general_icon_103_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_103_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 104,
+    "filename": "general_icon_104_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_104_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 105,
+    "filename": "general_icon_105_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_105_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 106,
+    "filename": "general_icon_106_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_106_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 107,
+    "filename": "general_icon_107_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_107_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 108,
+    "filename": "general_icon_108_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_108_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 109,
+    "filename": "general_icon_109_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_109_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 110,
+    "filename": "general_icon_110_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_110_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 111,
+    "filename": "general_icon_111_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_111_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 112,
+    "filename": "general_icon_112_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_112_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 113,
+    "filename": "general_icon_113_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_113_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 114,
+    "filename": "general_icon_114_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_114_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 115,
+    "filename": "general_icon_115_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_115_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 116,
+    "filename": "general_icon_116_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_116_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 117,
+    "filename": "general_icon_117_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_117_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 118,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_118_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 119,
+    "filename": "general_icon_119_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_119_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 120,
+    "filename": "general_icon_120_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_120_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 121,
+    "filename": "general_icon_121_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_121_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 122,
+    "filename": "general_icon_122_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_122_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 123,
+    "filename": "general_icon_123_1.2x24.svg",
+    "category": "general",
+    "width": "1.2",
+    "height": "24",
+    "viewBox": "0 0 14 14",
+    "raw_file": "svg_123_x_0_0_14_14.svg"
+  },
+  {
+    "id": 124,
+    "filename": "general_icon_124_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_124_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 125,
+    "filename": "general_icon_125_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_125_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 126,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_126_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 127,
+    "filename": "general_icon_127_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_127_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 128,
+    "filename": "general_icon_128_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_128_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 129,
+    "filename": "general_icon_129_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_129_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 130,
+    "filename": "general_icon_130_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_130_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 131,
+    "filename": "general_icon_131_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_131_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 132,
+    "filename": "general_icon_132_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_132_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 133,
+    "filename": "general_icon_133_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_133_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 134,
+    "filename": "general_icon_134_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_134_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 135,
+    "filename": "general_icon_135_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_135_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 136,
+    "filename": "general_icon_136_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_136_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 137,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_137_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 138,
+    "filename": "general_icon_138_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_138_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 139,
+    "filename": "general_icon_139_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_139_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 140,
+    "filename": "general_icon_140_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_140_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 141,
+    "filename": "general_icon_141_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_141_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 142,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_142_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 143,
+    "filename": "general_icon_143_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_143_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 144,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_144_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 145,
+    "filename": "drawing_drawing_145_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_145_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 146,
+    "filename": "drawing_drawing_146_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_146_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 147,
+    "filename": "general_icon_147_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_147_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 148,
+    "filename": "general_icon_148_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_148_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 149,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_149_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 150,
+    "filename": "general_icon_150_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_150_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 151,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_151_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 152,
+    "filename": "general_icon_152_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_152_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 153,
+    "filename": "general_icon_153_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_153_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 154,
+    "filename": "general_icon_154_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_154_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 155,
+    "filename": "general_icon_155_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_155_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 156,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_156_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 157,
+    "filename": "general_icon_157_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_157_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 158,
+    "filename": "general_icon_158_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_158_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 159,
+    "filename": "drawing_drawing_159_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_159_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 160,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_160_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 161,
+    "filename": "general_icon_161_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_161_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 162,
+    "filename": "general_icon_162_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_162_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 163,
+    "filename": "general_icon_163_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_163_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 164,
+    "filename": "general_icon_164_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_164_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 165,
+    "filename": "general_icon_165_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_165_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 166,
+    "filename": "general_icon_166_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_166_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 167,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_167_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 168,
+    "filename": "drawing_drawing_168_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_168_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 169,
+    "filename": "general_icon_169_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_169_28x28_.svg"
+  },
+  {
+    "id": 170,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_170_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 171,
+    "filename": "drawing_drawing_171_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_171_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 172,
+    "filename": "general_icon_172_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_172_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 173,
+    "filename": "brand_nifty_logo_25x23.svg",
+    "category": "brand",
+    "width": "25",
+    "height": "23",
+    "viewBox": "0 0 25 23",
+    "raw_file": "svg_173_25x23_0_0_25_23.svg"
+  },
+  {
+    "id": 174,
+    "filename": "general_icon_174_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_174_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 175,
+    "filename": "general_icon_175_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_175_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 176,
+    "filename": "general_icon_176_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_176_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 177,
+    "filename": "general_icon_177_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_177_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 178,
+    "filename": "general_icon_178_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_178_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 179,
+    "filename": "drawing_drawing_179_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_179_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 180,
+    "filename": "general_icon_180_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_180_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 181,
+    "filename": "general_icon_181_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_181_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 182,
+    "filename": "general_icon_182_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_182_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 183,
+    "filename": "drawing_drawing_183_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_183_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 184,
+    "filename": "general_icon_184_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_184_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 185,
+    "filename": "general_icon_185_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_185_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 186,
+    "filename": "general_icon_186_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_186_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 187,
+    "filename": "general_icon_187_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_187_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 188,
+    "filename": "general_icon_188_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_188_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 189,
+    "filename": "drawing_drawing_189_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_189_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 190,
+    "filename": "general_icon_190_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_190_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 191,
+    "filename": "general_icon_191_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_191_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 192,
+    "filename": "drawing_drawing_192_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_192_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 193,
+    "filename": "general_icon_193_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_193_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 194,
+    "filename": "general_icon_194_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_194_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 195,
+    "filename": "general_icon_195_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_195_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 196,
+    "filename": "general_icon_196_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_196_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 197,
+    "filename": "drawing_drawing_197_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_197_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 198,
+    "filename": "general_icon_198_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_198_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 199,
+    "filename": "general_icon_199_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_199_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 200,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_200_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 201,
+    "filename": "general_icon_201_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_201_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 202,
+    "filename": "general_icon_202_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_202_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 203,
+    "filename": "general_icon_203_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_203_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 204,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_204_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 205,
+    "filename": "general_icon_205_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_205_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 206,
+    "filename": "general_icon_206_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_206_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 207,
+    "filename": "drawing_drawing_207_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_207_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 208,
+    "filename": "general_icon_208_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_208_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 209,
+    "filename": "general_icon_209_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_209_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 210,
+    "filename": "general_icon_210_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_210_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 211,
+    "filename": "general_icon_211_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_211_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 212,
+    "filename": "general_icon_212_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_212_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 213,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_213_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 214,
+    "filename": "general_icon_214_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_214_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 215,
+    "filename": "drawing_drawing_215_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_215_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 216,
+    "filename": "general_icon_216_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_216_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 217,
+    "filename": "general_icon_217_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_217_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 218,
+    "filename": "general_icon_218_10x16.svg",
+    "category": "general",
+    "width": "10",
+    "height": "16",
+    "viewBox": "0 0 10 16",
+    "raw_file": "svg_218_10x16_0_0_10_16.svg"
+  },
+  {
+    "id": 219,
+    "filename": "general_icon_219_20x20.svg",
+    "category": "general",
+    "width": "20",
+    "height": "20",
+    "viewBox": "0 0 20 20",
+    "raw_file": "svg_219_20x20_0_0_20_20.svg"
+  },
+  {
+    "id": 220,
+    "filename": "drawing_drawing_220_8x12.svg",
+    "category": "drawing",
+    "width": "8",
+    "height": "12",
+    "viewBox": "0 0 8 12",
+    "raw_file": "svg_220_8x12_0_0_8_12.svg"
+  },
+  {
+    "id": 221,
+    "filename": "general_icon_221_13x15.svg",
+    "category": "general",
+    "width": "13",
+    "height": "15",
+    "viewBox": "0 0 13 15",
+    "raw_file": "svg_221_13x15_0_0_13_15.svg"
+  },
+  {
+    "id": 222,
+    "filename": "general_icon_222_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_222_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 223,
+    "filename": "general_icon_223_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_223_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 224,
+    "filename": "drawing_drawing_224_18x1.svg",
+    "category": "drawing",
+    "width": "18",
+    "height": "1",
+    "viewBox": "0 0 18 1",
+    "raw_file": "svg_224_18x1_0_0_18_1.svg"
+  },
+  {
+    "id": 225,
+    "filename": "drawing_drawing_225_18x2.svg",
+    "category": "drawing",
+    "width": "18",
+    "height": "2",
+    "viewBox": "0 0 18 2",
+    "raw_file": "svg_225_18x2_0_0_18_2.svg"
+  },
+  {
+    "id": 226,
+    "filename": "drawing_drawing_226_18x3.svg",
+    "category": "drawing",
+    "width": "18",
+    "height": "3",
+    "viewBox": "0 0 18 3",
+    "raw_file": "svg_226_18x3_0_0_18_3.svg"
+  },
+  {
+    "id": 227,
+    "filename": "drawing_drawing_227_18x4.svg",
+    "category": "drawing",
+    "width": "18",
+    "height": "4",
+    "viewBox": "0 0 18 4",
+    "raw_file": "svg_227_18x4_0_0_18_4.svg"
+  },
+  {
+    "id": 228,
+    "filename": "drawing_drawing_228_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_228_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 229,
+    "filename": "drawing_drawing_229_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_229_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 230,
+    "filename": "general_icon_230_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_230_28x28_.svg"
+  },
+  {
+    "id": 231,
+    "filename": "general_icon_231_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_231_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 232,
+    "filename": "general_icon_232_30x30.svg",
+    "category": "general",
+    "width": "30",
+    "height": "30",
+    "viewBox": "0 0 30 30",
+    "raw_file": "svg_232_30x30_0_0_30_30.svg"
+  },
+  {
+    "id": 233,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_233_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 234,
+    "filename": "general_icon_234_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_234_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 235,
+    "filename": "general_icon_235_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_235_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 236,
+    "filename": "brand_nifty_logo_29x31.svg",
+    "category": "brand",
+    "width": "29",
+    "height": "31",
+    "viewBox": "0 0 29 31",
+    "raw_file": "svg_236_29x31_0_0_29_31.svg"
+  },
+  {
+    "id": 237,
+    "filename": "general_icon_237_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_237_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 238,
+    "filename": "general_icon_238_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_238_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 239,
+    "filename": "general_icon_239_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_239_28x28_.svg"
+  },
+  {
+    "id": 240,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_240_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 241,
+    "filename": "general_icon_241_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_241_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 242,
+    "filename": "general_icon_242_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_242_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 243,
+    "filename": "general_icon_243_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_243_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 244,
+    "filename": "general_icon_244_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_244_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 245,
+    "filename": "general_icon_245_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_245_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 246,
+    "filename": "general_icon_246_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_246_28x28_.svg"
+  },
+  {
+    "id": 247,
+    "filename": "general_icon_247_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_247_28x28_.svg"
+  },
+  {
+    "id": 248,
+    "filename": "general_icon_248_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_248_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 249,
+    "filename": "general_icon_249_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_249_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 250,
+    "filename": "general_icon_250_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_250_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 251,
+    "filename": "general_icon_251_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_251_28x28_.svg"
+  },
+  {
+    "id": 252,
+    "filename": "general_icon_252_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_252_28x28_.svg"
+  },
+  {
+    "id": 253,
+    "filename": "general_icon_253_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_253_28x28_.svg"
+  },
+  {
+    "id": 254,
+    "filename": "general_icon_254_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_254_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 255,
+    "filename": "general_icon_255_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_255_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 256,
+    "filename": "general_icon_256_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_256_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 257,
+    "filename": "general_icon_257_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_257_28x28_.svg"
+  },
+  {
+    "id": 258,
+    "filename": "general_icon_258_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_258_28x28_.svg"
+  },
+  {
+    "id": 259,
+    "filename": "general_icon_259_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_259_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 260,
+    "filename": "general_icon_260_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_260_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 261,
+    "filename": "general_icon_261_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_261_28x28_.svg"
+  },
+  {
+    "id": 262,
+    "filename": "general_icon_262_16x16.svg",
+    "category": "general",
+    "width": "16",
+    "height": "16",
+    "viewBox": "0 0 16 16",
+    "raw_file": "svg_262_16x16_0_0_16_16.svg"
+  },
+  {
+    "id": 263,
+    "filename": "general_icon_263_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_263_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 264,
+    "filename": "general_icon_264_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_264_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 265,
+    "filename": "general_icon_265_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_265_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 266,
+    "filename": "general_icon_266_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_266_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 267,
+    "filename": "general_icon_267_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_267_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 268,
+    "filename": "general_icon_268_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_268_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 269,
+    "filename": "general_icon_269_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_269_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 270,
+    "filename": "general_icon_270_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_270_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 271,
+    "filename": "general_icon_271_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_271_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 272,
+    "filename": "general_icon_272_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_272_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 273,
+    "filename": "general_icon_273_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_273_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 274,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_274_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 275,
+    "filename": "general_icon_275_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_275_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 276,
+    "filename": "drawing_drawing_276_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_276_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 277,
+    "filename": "general_icon_277_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 16 16",
+    "raw_file": "svg_277_x_0_0_16_16.svg"
+  },
+  {
+    "id": 278,
+    "filename": "general_icon_278_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 16 16",
+    "raw_file": "svg_278_x_0_0_16_16.svg"
+  },
+  {
+    "id": 279,
+    "filename": "general_icon_279_14x12.svg",
+    "category": "general",
+    "width": "14",
+    "height": "12",
+    "viewBox": "0 0 14 12",
+    "raw_file": "svg_279_14x12_0_0_14_12.svg"
+  },
+  {
+    "id": 280,
+    "filename": "general_icon_280_17x17.svg",
+    "category": "general",
+    "width": "17",
+    "height": "17",
+    "viewBox": "0 0 17 17",
+    "raw_file": "svg_280_17x17_0_0_17_17.svg"
+  },
+  {
+    "id": 281,
+    "filename": "general_icon_281_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_281_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 282,
+    "filename": "general_icon_282_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_282_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 283,
+    "filename": "general_icon_283_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_283_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 284,
+    "filename": "general_icon_284_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_284_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 285,
+    "filename": "general_icon_285_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_285_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 286,
+    "filename": "general_icon_286_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_286_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 287,
+    "filename": "general_icon_287_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_287_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 288,
+    "filename": "general_icon_288_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_288_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 289,
+    "filename": "general_icon_289_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_289_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 290,
+    "filename": "general_icon_290_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_290_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 291,
+    "filename": "general_icon_291_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_291_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 292,
+    "filename": "general_icon_292_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_292_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 293,
+    "filename": "general_icon_293_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_293_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 294,
+    "filename": "general_icon_294_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_294_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 295,
+    "filename": "general_icon_295_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_295_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 296,
+    "filename": "general_icon_296_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_296_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 297,
+    "filename": "general_icon_297_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_297_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 298,
+    "filename": "general_icon_298_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_298_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 299,
+    "filename": "general_icon_299_14x14.svg",
+    "category": "general",
+    "width": "14",
+    "height": "14",
+    "viewBox": "0 0 14 14",
+    "raw_file": "svg_299_14x14_0_0_14_14.svg"
+  },
+  {
+    "id": 300,
+    "filename": "general_icon_300_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_300_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 301,
+    "filename": "general_icon_301_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_301_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 302,
+    "filename": "general_icon_302_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_302_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 303,
+    "filename": "general_icon_303_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_303_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 304,
+    "filename": "general_icon_304_58x64.svg",
+    "category": "general",
+    "width": "58",
+    "height": "64",
+    "viewBox": "0 0 58 64",
+    "raw_file": "svg_304_58x64_0_0_58_64.svg"
+  },
+  {
+    "id": 305,
+    "filename": "general_icon_305_56x54.svg",
+    "category": "general",
+    "width": "56",
+    "height": "54",
+    "viewBox": "0 0 56 54",
+    "raw_file": "svg_305_56x54_0_0_56_54.svg"
+  },
+  {
+    "id": 306,
+    "filename": "brand_nifty_logo_72x72.svg",
+    "category": "brand",
+    "width": "72",
+    "height": "72",
+    "viewBox": "0 0 72 72",
+    "raw_file": "svg_306_72x72_0_0_72_72.svg"
+  },
+  {
+    "id": 307,
+    "filename": "general_icon_307_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_307_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 308,
+    "filename": "general_icon_308_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_308_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 309,
+    "filename": "general_icon_309_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_309_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 310,
+    "filename": "general_icon_310_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_310_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 311,
+    "filename": "general_icon_311_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_311_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 312,
+    "filename": "general_icon_312_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_312_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 313,
+    "filename": "general_icon_313_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_313_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 314,
+    "filename": "general_icon_314_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_314_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 315,
+    "filename": "general_icon_315_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_315_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 316,
+    "filename": "general_icon_316_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_316_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 317,
+    "filename": "general_icon_317_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_317_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 318,
+    "filename": "general_icon_318_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_318_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 319,
+    "filename": "general_icon_319_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_319_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 320,
+    "filename": "general_icon_320_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_320_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 321,
+    "filename": "general_icon_321_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_321_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 322,
+    "filename": "general_icon_322_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_322_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 323,
+    "filename": "general_icon_323_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_323_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 324,
+    "filename": "general_icon_324_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_324_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 325,
+    "filename": "general_icon_325_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_325_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 326,
+    "filename": "general_icon_326_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_326_18x18_.svg"
+  },
+  {
+    "id": 327,
+    "filename": "general_icon_327_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_327_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 328,
+    "filename": "general_icon_328_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_328_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 329,
+    "filename": "general_icon_329_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_329_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 330,
+    "filename": "general_icon_330_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_330_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 331,
+    "filename": "general_icon_331_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_331_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 332,
+    "filename": "general_icon_332_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_332_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 333,
+    "filename": "general_icon_333_12x12.svg",
+    "category": "general",
+    "width": "12",
+    "height": "12",
+    "viewBox": "0 0 12 12",
+    "raw_file": "svg_333_12x12_.svg"
+  },
+  {
+    "id": 334,
+    "filename": "brand_nifty_logo_12x12.svg",
+    "category": "brand",
+    "width": "12",
+    "height": "12",
+    "viewBox": "0 0 12 12",
+    "raw_file": "svg_334_12x12_.svg"
+  },
+  {
+    "id": 335,
+    "filename": "general_icon_335_11x20.svg",
+    "category": "general",
+    "width": "11",
+    "height": "20",
+    "viewBox": "0 0 11 20",
+    "raw_file": "svg_335_11x20_.svg"
+  },
+  {
+    "id": 336,
+    "filename": "general_icon_336_7x9.svg",
+    "category": "general",
+    "width": "7",
+    "height": "9",
+    "viewBox": "0 0 7 9",
+    "raw_file": "svg_336_7x9_0_0_7_9.svg"
+  },
+  {
+    "id": 337,
+    "filename": "general_icon_337_7x9.svg",
+    "category": "general",
+    "width": "7",
+    "height": "9",
+    "viewBox": "0 0 7 9",
+    "raw_file": "svg_337_7x9_0_0_7_9.svg"
+  },
+  {
+    "id": 338,
+    "filename": "general_icon_338_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_338_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 339,
+    "filename": "drawing_drawing_339_12x12.svg",
+    "category": "drawing",
+    "width": "12",
+    "height": "12",
+    "viewBox": "0 0 12 12",
+    "raw_file": "svg_339_12x12_.svg"
+  },
+  {
+    "id": 340,
+    "filename": "general_icon_340_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_340_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 341,
+    "filename": "general_icon_341_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_341_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 342,
+    "filename": "general_icon_342_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_342_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 343,
+    "filename": "general_icon_343_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_343_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 344,
+    "filename": "general_icon_344_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_344_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 345,
+    "filename": "general_icon_345_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_345_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 346,
+    "filename": "general_icon_346_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_346_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 347,
+    "filename": "general_icon_347_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_347_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 348,
+    "filename": "general_icon_348_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_348_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 349,
+    "filename": "brand_nifty_logo_16x16.svg",
+    "category": "brand",
+    "width": "16",
+    "height": "16",
+    "viewBox": "0 0 16 16",
+    "raw_file": "svg_349_16x16_.svg"
+  },
+  {
+    "id": 350,
+    "filename": "general_icon_350_120x120.svg",
+    "category": "general",
+    "width": "120",
+    "height": "120",
+    "viewBox": "0 0 120 120",
+    "raw_file": "svg_350_120x120_0_0_120_120.svg"
+  },
+  {
+    "id": 351,
+    "filename": "general_icon_351_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_351_28x28_.svg"
+  },
+  {
+    "id": 352,
+    "filename": "general_icon_352_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_352_28x28_.svg"
+  },
+  {
+    "id": 353,
+    "filename": "general_icon_353_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_353_28x28_.svg"
+  },
+  {
+    "id": 354,
+    "filename": "general_icon_354_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_354_28x28_.svg"
+  },
+  {
+    "id": 355,
+    "filename": "general_icon_355_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_355_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 356,
+    "filename": "brand_nifty_logo_120x120.svg",
+    "category": "brand",
+    "width": "120",
+    "height": "120",
+    "viewBox": "0 0 120 120",
+    "raw_file": "svg_356_120x120_0_0_120_120.svg"
+  },
+  {
+    "id": 357,
+    "filename": "general_icon_357_16x16.svg",
+    "category": "general",
+    "width": "16",
+    "height": "16",
+    "viewBox": "0 0 16 16",
+    "raw_file": "svg_357_16x16_0_0_16_16.svg"
+  },
+  {
+    "id": 358,
+    "filename": "general_icon_358_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_358_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 359,
+    "filename": "general_icon_359_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_359_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 360,
+    "filename": "general_icon_360_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_360_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 361,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_361_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 362,
+    "filename": "general_icon_362_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_362_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 363,
+    "filename": "general_icon_363_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_363_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 364,
+    "filename": "general_icon_364_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_364_28x28_.svg"
+  },
+  {
+    "id": 365,
+    "filename": "general_icon_365_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_365_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 366,
+    "filename": "general_icon_366_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_366_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 367,
+    "filename": "general_icon_367_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_367_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 368,
+    "filename": "general_icon_368_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_368_28x28_.svg"
+  },
+  {
+    "id": 369,
+    "filename": "general_icon_369_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_369_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 370,
+    "filename": "general_icon_370_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_370_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 371,
+    "filename": "general_icon_371_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_371_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 372,
+    "filename": "general_icon_372_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_372_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 373,
+    "filename": "general_icon_373_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_373_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 374,
+    "filename": "general_icon_374_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_374_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 375,
+    "filename": "general_icon_375_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_375_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 376,
+    "filename": "general_icon_376_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_376_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 377,
+    "filename": "general_icon_377_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_377_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 378,
+    "filename": "general_icon_378_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_378_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 379,
+    "filename": "general_icon_379_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_379_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 380,
+    "filename": "general_icon_380_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_380_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 381,
+    "filename": "general_icon_381_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_381_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 382,
+    "filename": "general_icon_382_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_382_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 383,
+    "filename": "general_icon_383_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_383_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 384,
+    "filename": "general_icon_384_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_384_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 385,
+    "filename": "general_icon_385_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_385_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 386,
+    "filename": "general_icon_386_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_386_28x28_.svg"
+  },
+  {
+    "id": 387,
+    "filename": "general_icon_387_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_387_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 388,
+    "filename": "general_icon_388_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_388_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 389,
+    "filename": "brand_nifty_logo_18x18.svg",
+    "category": "brand",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_389_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 390,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_390_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 391,
+    "filename": "general_icon_391_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_391_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 392,
+    "filename": "general_icon_392_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_392_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 393,
+    "filename": "general_icon_393_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_393_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 394,
+    "filename": "general_icon_394_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_394_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 395,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_395_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 396,
+    "filename": "general_icon_396_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_396_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 397,
+    "filename": "general_icon_397_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_397_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 398,
+    "filename": "general_icon_398_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_398_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 399,
+    "filename": "general_icon_399_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_399_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 400,
+    "filename": "general_icon_400_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_400_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 401,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_401_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 402,
+    "filename": "general_icon_402_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_402_28x28_.svg"
+  },
+  {
+    "id": 403,
+    "filename": "general_icon_403_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_403_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 404,
+    "filename": "general_icon_404_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_404_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 405,
+    "filename": "general_icon_405_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_405_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 406,
+    "filename": "general_icon_406_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_406_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 407,
+    "filename": "general_icon_407_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_407_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 408,
+    "filename": "general_icon_408_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_408_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 409,
+    "filename": "general_icon_409_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_409_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 410,
+    "filename": "general_icon_410_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_410_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 411,
+    "filename": "general_icon_411_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_411_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 412,
+    "filename": "general_icon_412_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_412_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 413,
+    "filename": "general_icon_413_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_413_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 414,
+    "filename": "general_icon_414_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_414_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 415,
+    "filename": "general_icon_415_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_415_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 416,
+    "filename": "general_icon_416_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_416_28x28_.svg"
+  },
+  {
+    "id": 417,
+    "filename": "general_icon_417_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_417_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 418,
+    "filename": "general_icon_418_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_418_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 419,
+    "filename": "general_icon_419_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_419_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 420,
+    "filename": "general_icon_420_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_420_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 421,
+    "filename": "general_icon_421_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_421_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 422,
+    "filename": "general_icon_422_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_422_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 423,
+    "filename": "general_icon_423_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_423_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 424,
+    "filename": "general_icon_424_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_424_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 425,
+    "filename": "general_icon_425_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_425_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 426,
+    "filename": "general_icon_426_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_426_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 427,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_427_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 428,
+    "filename": "general_icon_428_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_428_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 429,
+    "filename": "general_icon_429_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_429_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 430,
+    "filename": "general_icon_430_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_430_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 431,
+    "filename": "general_icon_431_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_431_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 432,
+    "filename": "general_icon_432_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_432_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 433,
+    "filename": "general_icon_433_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_433_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 434,
+    "filename": "general_icon_434_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_434_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 435,
+    "filename": "general_icon_435_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_435_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 436,
+    "filename": "general_icon_436_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_436_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 437,
+    "filename": "general_icon_437_19x17.svg",
+    "category": "general",
+    "width": "19",
+    "height": "17",
+    "viewBox": "0 0 19 17",
+    "raw_file": "svg_437_19x17_0_0_19_17.svg"
+  },
+  {
+    "id": 438,
+    "filename": "general_icon_438_19x17.svg",
+    "category": "general",
+    "width": "19",
+    "height": "17",
+    "viewBox": "0 0 19 17",
+    "raw_file": "svg_438_19x17_0_0_19_17.svg"
+  },
+  {
+    "id": 439,
+    "filename": "general_icon_439_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_439_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 440,
+    "filename": "general_icon_440_19x17.svg",
+    "category": "general",
+    "width": "19",
+    "height": "17",
+    "viewBox": "0 0 19 17",
+    "raw_file": "svg_440_19x17_0_0_19_17.svg"
+  },
+  {
+    "id": 441,
+    "filename": "general_icon_441_19x17.svg",
+    "category": "general",
+    "width": "19",
+    "height": "17",
+    "viewBox": "0 0 19 17",
+    "raw_file": "svg_441_19x17_0_0_19_17.svg"
+  },
+  {
+    "id": 442,
+    "filename": "general_icon_442_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_442_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 443,
+    "filename": "general_icon_443_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_443_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 444,
+    "filename": "general_icon_444_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_444_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 445,
+    "filename": "general_icon_445_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_445_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 446,
+    "filename": "general_icon_446_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_446_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 447,
+    "filename": "general_icon_447_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_447_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 448,
+    "filename": "general_icon_448_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_448_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 449,
+    "filename": "general_icon_449_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_449_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 450,
+    "filename": "general_icon_450_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_450_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 451,
+    "filename": "general_icon_451_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_451_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 452,
+    "filename": "general_icon_452_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_452_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 453,
+    "filename": "general_icon_453_19x17.svg",
+    "category": "general",
+    "width": "19",
+    "height": "17",
+    "viewBox": "0 0 19 17",
+    "raw_file": "svg_453_19x17_0_0_19_17.svg"
+  },
+  {
+    "id": 454,
+    "filename": "general_icon_454_19x17.svg",
+    "category": "general",
+    "width": "19",
+    "height": "17",
+    "viewBox": "0 0 19 17",
+    "raw_file": "svg_454_19x17_0_0_19_17.svg"
+  },
+  {
+    "id": 455,
+    "filename": "general_icon_455_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_455_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 456,
+    "filename": "general_icon_456_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_456_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 457,
+    "filename": "general_icon_457_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_457_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 458,
+    "filename": "general_icon_458_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_458_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 459,
+    "filename": "general_icon_459_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_459_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 460,
+    "filename": "general_icon_460_19x17.svg",
+    "category": "general",
+    "width": "19",
+    "height": "17",
+    "viewBox": "0 0 19 17",
+    "raw_file": "svg_460_19x17_0_0_19_17.svg"
+  },
+  {
+    "id": 461,
+    "filename": "general_icon_461_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_461_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 462,
+    "filename": "general_icon_462_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_462_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 463,
+    "filename": "general_icon_463_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_463_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 464,
+    "filename": "general_icon_464_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_464_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 465,
+    "filename": "general_icon_465_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_465_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 466,
+    "filename": "general_icon_466_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_466_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 467,
+    "filename": "general_icon_467_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_467_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 468,
+    "filename": "general_icon_468_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_468_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 469,
+    "filename": "general_icon_469_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_469_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 470,
+    "filename": "general_icon_470_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_470_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 471,
+    "filename": "drawing_drawing_471_21x19.svg",
+    "category": "drawing",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_471_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 472,
+    "filename": "drawing_drawing_472_21x19.svg",
+    "category": "drawing",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_472_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 473,
+    "filename": "drawing_drawing_473_21x19.svg",
+    "category": "drawing",
+    "width": "21",
+    "height": "19",
+    "viewBox": "0 0 21 19",
+    "raw_file": "svg_473_21x19_0_0_21_19.svg"
+  },
+  {
+    "id": 474,
+    "filename": "general_icon_474_19x17.svg",
+    "category": "general",
+    "width": "19",
+    "height": "17",
+    "viewBox": "0 0 19 17",
+    "raw_file": "svg_474_19x17_0_0_19_17.svg"
+  },
+  {
+    "id": 475,
+    "filename": "general_icon_475_21x19.svg",
+    "category": "general",
+    "width": "21",
+    "height": "19",
+    "viewBox": "-1 -1 21 19",
+    "raw_file": "svg_475_21x19_-1_-1_21_19.svg"
+  },
+  {
+    "id": 476,
+    "filename": "general_icon_476_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_476_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 477,
+    "filename": "general_icon_477_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_477_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 478,
+    "filename": "drawing_drawing_478_21x21.svg",
+    "category": "drawing",
+    "width": "21",
+    "height": "21",
+    "viewBox": "0 0 21 21",
+    "raw_file": "svg_478_21x21_0_0_21_21.svg"
+  },
+  {
+    "id": 479,
+    "filename": "general_icon_479_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_479_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 480,
+    "filename": "general_icon_480_13x13.svg",
+    "category": "general",
+    "width": "13",
+    "height": "13",
+    "viewBox": "0 0 13 13",
+    "raw_file": "svg_480_13x13_0_0_13_13.svg"
+  },
+  {
+    "id": 481,
+    "filename": "general_icon_481_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_481_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 482,
+    "filename": "general_icon_482_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_482_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 483,
+    "filename": "general_icon_483_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_483_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 484,
+    "filename": "general_icon_484_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_484_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 485,
+    "filename": "general_icon_485_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_485_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 486,
+    "filename": "general_icon_486_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_486_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 487,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_487_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 488,
+    "filename": "general_icon_488_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_488_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 489,
+    "filename": "general_icon_489_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_489_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 490,
+    "filename": "general_icon_490_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_490_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 491,
+    "filename": "general_icon_491_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_491_28x28_.svg"
+  },
+  {
+    "id": 492,
+    "filename": "general_icon_492_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_492_28x28_.svg"
+  },
+  {
+    "id": 493,
+    "filename": "general_icon_493_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_493_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 494,
+    "filename": "general_icon_494_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_494_28x28_.svg"
+  },
+  {
+    "id": 495,
+    "filename": "general_icon_495_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_495_28x28_.svg"
+  },
+  {
+    "id": 496,
+    "filename": "general_icon_496_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_496_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 497,
+    "filename": "drawing_drawing_497_72x72.svg",
+    "category": "drawing",
+    "width": "72",
+    "height": "72",
+    "viewBox": "0 0 72 72",
+    "raw_file": "svg_497_72x72_.svg"
+  },
+  {
+    "id": 498,
+    "filename": "drawing_drawing_498_72x72.svg",
+    "category": "drawing",
+    "width": "72",
+    "height": "72",
+    "viewBox": "0 0 72 72",
+    "raw_file": "svg_498_72x72_.svg"
+  },
+  {
+    "id": 499,
+    "filename": "general_icon_499_72x72.svg",
+    "category": "general",
+    "width": "72",
+    "height": "72",
+    "viewBox": "0 0 72 72",
+    "raw_file": "svg_499_72x72_.svg"
+  },
+  {
+    "id": 500,
+    "filename": "general_icon_500_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_500_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 501,
+    "filename": "general_icon_501_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_501_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 502,
+    "filename": "general_icon_502_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_502_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 503,
+    "filename": "general_icon_503_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_503_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 504,
+    "filename": "general_icon_504_20x10.svg",
+    "category": "general",
+    "width": "20",
+    "height": "10",
+    "viewBox": "0 0 20 10",
+    "raw_file": "svg_504_20x10_0_0_20_10.svg"
+  },
+  {
+    "id": 505,
+    "filename": "general_icon_505_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_505_28x28_.svg"
+  },
+  {
+    "id": 506,
+    "filename": "general_icon_506_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_506_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 507,
+    "filename": "general_icon_507_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_507_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 508,
+    "filename": "general_icon_508_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_508_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 509,
+    "filename": "general_icon_509_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_509_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 510,
+    "filename": "general_icon_510_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_510_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 511,
+    "filename": "general_icon_511_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_511_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 512,
+    "filename": "general_icon_512_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_512_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 513,
+    "filename": "general_icon_513_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_513_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 514,
+    "filename": "general_icon_514_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_514_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 515,
+    "filename": "general_icon_515_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_515_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 516,
+    "filename": "general_icon_516_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_516_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 517,
+    "filename": "general_icon_517_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_517_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 518,
+    "filename": "general_icon_518_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_518_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 519,
+    "filename": "general_icon_519_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_519_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 520,
+    "filename": "brand_tradingview_logo_88x28.svg",
+    "category": "brand",
+    "width": "88",
+    "height": "28",
+    "viewBox": "0 0 88 28",
+    "raw_file": "svg_520_88x28_0_0_88_28.svg"
+  },
+  {
+    "id": 521,
+    "filename": "brand_tradingview_logo_122x28.svg",
+    "category": "brand",
+    "width": "122",
+    "height": "28",
+    "viewBox": "0 0 122 28",
+    "raw_file": "svg_521_122x28_0_0_122_28.svg"
+  },
+  {
+    "id": 522,
+    "filename": "brand_tradingview_logo_101x28.svg",
+    "category": "brand",
+    "width": "101",
+    "height": "28",
+    "viewBox": "0 0 101 28",
+    "raw_file": "svg_522_101x28_.svg"
+  },
+  {
+    "id": 523,
+    "filename": "brand_tradingview_logo_122x28.svg",
+    "category": "brand",
+    "width": "122",
+    "height": "28",
+    "viewBox": "0 0 122 28",
+    "raw_file": "svg_523_122x28_0_0_122_28.svg"
+  },
+  {
+    "id": 524,
+    "filename": "brand_tradingview_logo_122x28.svg",
+    "category": "brand",
+    "width": "122",
+    "height": "28",
+    "viewBox": "0 0 122 28",
+    "raw_file": "svg_524_122x28_0_0_122_28.svg"
+  },
+  {
+    "id": 525,
+    "filename": "brand_tradingview_logo_158x28.svg",
+    "category": "brand",
+    "width": "158",
+    "height": "28",
+    "viewBox": "0 0 158 28",
+    "raw_file": "svg_525_158x28_0_0_158_28.svg"
+  },
+  {
+    "id": 526,
+    "filename": "brand_tradingview_logo_122x28.svg",
+    "category": "brand",
+    "width": "122",
+    "height": "28",
+    "viewBox": "0 0 122 28",
+    "raw_file": "svg_526_122x28_.svg"
+  },
+  {
+    "id": 527,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_527_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 528,
+    "filename": "general_icon_528_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_528_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 529,
+    "filename": "general_icon_529_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_529_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 530,
+    "filename": "general_icon_530_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 72 72",
+    "raw_file": "svg_530_28x28_0_0_72_72.svg"
+  },
+  {
+    "id": 531,
+    "filename": "general_icon_531_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_531_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 532,
+    "filename": "general_icon_532_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_532_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 533,
+    "filename": "general_icon_533_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_533_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 534,
+    "filename": "general_icon_534_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_534_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 535,
+    "filename": "general_icon_535_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_535_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 536,
+    "filename": "general_icon_536_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_536_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 537,
+    "filename": "general_icon_537_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_537_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 538,
+    "filename": "general_icon_538_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_538_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 539,
+    "filename": "general_icon_539_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_539_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 540,
+    "filename": "general_icon_540_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_540_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 541,
+    "filename": "general_icon_541_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_541_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 542,
+    "filename": "general_icon_542_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_542_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 543,
+    "filename": "general_icon_543_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_543_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 544,
+    "filename": "general_icon_544_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_544_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 545,
+    "filename": "general_icon_545_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_545_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 546,
+    "filename": "brand_nifty_logo_44x44.svg",
+    "category": "brand",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_546_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 547,
+    "filename": "drawing_drawing_547_45x45.svg",
+    "category": "drawing",
+    "width": "45",
+    "height": "45",
+    "viewBox": "0 0 45 45",
+    "raw_file": "svg_547_45x45_.svg"
+  },
+  {
+    "id": 548,
+    "filename": "general_icon_548_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_548_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 549,
+    "filename": "general_icon_549_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_549_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 550,
+    "filename": "general_icon_550_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_550_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 551,
+    "filename": "general_icon_551_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_551_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 552,
+    "filename": "general_icon_552_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_552_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 553,
+    "filename": "general_icon_553_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_553_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 554,
+    "filename": "general_icon_554_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_554_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 555,
+    "filename": "general_icon_555_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_555_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 556,
+    "filename": "brand_nifty_logo_44x44.svg",
+    "category": "brand",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_556_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 557,
+    "filename": "general_icon_557_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_557_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 558,
+    "filename": "general_icon_558_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_558_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 559,
+    "filename": "general_icon_559_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_559_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 560,
+    "filename": "general_icon_560_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_560_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 561,
+    "filename": "general_icon_561_44x44.svg",
+    "category": "general",
+    "width": "44",
+    "height": "44",
+    "viewBox": "0 0 44 44",
+    "raw_file": "svg_561_44x44_0_0_44_44.svg"
+  },
+  {
+    "id": 562,
+    "filename": "general_icon_562_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_562_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 563,
+    "filename": "general_icon_563_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_563_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 564,
+    "filename": "general_icon_564_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_564_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 565,
+    "filename": "general_icon_565_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_565_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 566,
+    "filename": "general_icon_566_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_566_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 567,
+    "filename": "general_icon_567_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_567_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 568,
+    "filename": "general_icon_568_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_568_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 569,
+    "filename": "general_icon_569_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_569_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 570,
+    "filename": "general_icon_570_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_570_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 571,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_571_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 572,
+    "filename": "general_icon_572_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_572_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 573,
+    "filename": "general_icon_573_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_573_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 574,
+    "filename": "general_icon_574_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_574_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 575,
+    "filename": "brand_nifty_logo_24x24.svg",
+    "category": "brand",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_575_24x24_.svg"
+  },
+  {
+    "id": 576,
+    "filename": "general_icon_576_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_576_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 577,
+    "filename": "general_icon_577_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_577_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 578,
+    "filename": "general_icon_578_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_578_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 579,
+    "filename": "general_icon_579_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_579_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 580,
+    "filename": "general_icon_580_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_580_28x28_.svg"
+  },
+  {
+    "id": 581,
+    "filename": "general_icon_581_19x12.svg",
+    "category": "general",
+    "width": "19",
+    "height": "12",
+    "viewBox": "0 0 19 12",
+    "raw_file": "svg_581_19x12_.svg"
+  },
+  {
+    "id": 582,
+    "filename": "drawing_drawing_582_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_582_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 583,
+    "filename": "drawing_drawing_583_28x28.svg",
+    "category": "drawing",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_583_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 584,
+    "filename": "general_icon_584_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_584_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 585,
+    "filename": "general_icon_585_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_585_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 586,
+    "filename": "general_icon_586_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_586_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 587,
+    "filename": "drawing_drawing_587_13x13.svg",
+    "category": "drawing",
+    "width": "13",
+    "height": "13",
+    "viewBox": "0 0 13 13",
+    "raw_file": "svg_587_13x13_0_0_13_13.svg"
+  },
+  {
+    "id": 588,
+    "filename": "drawing_drawing_588_13x13.svg",
+    "category": "drawing",
+    "width": "13",
+    "height": "13",
+    "viewBox": "0 0 13 13",
+    "raw_file": "svg_588_13x13_0_0_13_13.svg"
+  },
+  {
+    "id": 589,
+    "filename": "drawing_drawing_589_13x13.svg",
+    "category": "drawing",
+    "width": "13",
+    "height": "13",
+    "viewBox": "0 0 13 13",
+    "raw_file": "svg_589_13x13_0_0_13_13.svg"
+  },
+  {
+    "id": 590,
+    "filename": "drawing_drawing_590_13x13.svg",
+    "category": "drawing",
+    "width": "13",
+    "height": "13",
+    "viewBox": "0 0 13 13",
+    "raw_file": "svg_590_13x13_0_0_13_13.svg"
+  },
+  {
+    "id": 591,
+    "filename": "drawing_drawing_591_13x13.svg",
+    "category": "drawing",
+    "width": "13",
+    "height": "13",
+    "viewBox": "0 0 13 13",
+    "raw_file": "svg_591_13x13_0_0_13_13.svg"
+  },
+  {
+    "id": 592,
+    "filename": "drawing_drawing_592_13x13.svg",
+    "category": "drawing",
+    "width": "13",
+    "height": "13",
+    "viewBox": "0 0 13 13",
+    "raw_file": "svg_592_13x13_0_0_13_13.svg"
+  },
+  {
+    "id": 593,
+    "filename": "general_icon_593_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_593_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 594,
+    "filename": "general_icon_594_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_594_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 595,
+    "filename": "general_icon_595_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_595_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 596,
+    "filename": "brand_nifty_logo_120x120.svg",
+    "category": "brand",
+    "width": "120",
+    "height": "120",
+    "viewBox": "0 0 120 120",
+    "raw_file": "svg_596_120x120_0_0_120_120.svg"
+  },
+  {
+    "id": 597,
+    "filename": "brand_nifty_logo_120x120.svg",
+    "category": "brand",
+    "width": "120",
+    "height": "120",
+    "viewBox": "0 0 120 120",
+    "raw_file": "svg_597_120x120_0_0_120_120.svg"
+  },
+  {
+    "id": 598,
+    "filename": "general_icon_598_120x120.svg",
+    "category": "general",
+    "width": "120",
+    "height": "120",
+    "viewBox": "0 0 120 120",
+    "raw_file": "svg_598_120x120_0_0_120_120.svg"
+  },
+  {
+    "id": 599,
+    "filename": "general_icon_599_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_599_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 600,
+    "filename": "general_icon_600_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_600_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 601,
+    "filename": "general_icon_601_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_601_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 602,
+    "filename": "general_icon_602_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_602_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 603,
+    "filename": "general_icon_603_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_603_x_0_0_18_18.svg"
+  },
+  {
+    "id": 604,
+    "filename": "general_icon_604_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 24 24",
+    "raw_file": "svg_604_24x24_0_0_24_24.svg"
+  },
+  {
+    "id": 605,
+    "filename": "general_icon_605_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_605_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 606,
+    "filename": "general_icon_606_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_606_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 607,
+    "filename": "general_icon_607_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_607_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 608,
+    "filename": "general_icon_608_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_608_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 609,
+    "filename": "brand_nifty_logo_18x18.svg",
+    "category": "brand",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_609_18x18_.svg"
+  },
+  {
+    "id": 610,
+    "filename": "general_icon_610_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_610_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 611,
+    "filename": "general_icon_611_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_611_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 612,
+    "filename": "general_icon_612_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_612_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 613,
+    "filename": "general_icon_613_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_613_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 614,
+    "filename": "general_icon_614_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_614_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 615,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_615_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 616,
+    "filename": "general_icon_616_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_616_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 617,
+    "filename": "general_icon_617_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_617_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 618,
+    "filename": "general_icon_618_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_618_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 619,
+    "filename": "general_icon_619_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_619_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 620,
+    "filename": "general_icon_620_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_620_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 621,
+    "filename": "general_icon_621_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_621_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 622,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_622_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 623,
+    "filename": "general_icon_623_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_623_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 624,
+    "filename": "general_icon_624_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_624_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 625,
+    "filename": "general_icon_625_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_625_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 626,
+    "filename": "general_icon_626_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_626_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 627,
+    "filename": "general_icon_627_9x7.svg",
+    "category": "general",
+    "width": "9",
+    "height": "7",
+    "viewBox": "0 0 9 7",
+    "raw_file": "svg_627_9x7_0_0_9_7.svg"
+  },
+  {
+    "id": 628,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_628_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 629,
+    "filename": "general_icon_629_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_629_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 630,
+    "filename": "general_icon_630_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_630_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 631,
+    "filename": "general_icon_631_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_631_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 632,
+    "filename": "general_icon_632_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_632_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 633,
+    "filename": "general_icon_633_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_633_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 634,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_634_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 635,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_635_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 636,
+    "filename": "general_icon_636_7x7.svg",
+    "category": "general",
+    "width": "7",
+    "height": "7",
+    "viewBox": "0 0 7 7",
+    "raw_file": "svg_636_7x7_0_0_7_7.svg"
+  },
+  {
+    "id": 637,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_637_28x28_.svg"
+  },
+  {
+    "id": 638,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_638_28x28_.svg"
+  },
+  {
+    "id": 639,
+    "filename": "general_icon_639_17x17.svg",
+    "category": "general",
+    "width": "17",
+    "height": "17",
+    "viewBox": "0 0 17 17",
+    "raw_file": "svg_639_17x17_0_0_17_17.svg"
+  },
+  {
+    "id": 640,
+    "filename": "general_icon_640_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_640_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 641,
+    "filename": "general_icon_641_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_641_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 642,
+    "filename": "general_icon_642_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_642_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 643,
+    "filename": "general_icon_643_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_643_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 644,
+    "filename": "general_icon_644_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_644_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 645,
+    "filename": "brand_nifty_logo_28x28.svg",
+    "category": "brand",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_645_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 646,
+    "filename": "general_icon_646_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_646_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 647,
+    "filename": "general_icon_647_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_647_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 648,
+    "filename": "general_icon_648_8x8.svg",
+    "category": "general",
+    "width": "8",
+    "height": "8",
+    "viewBox": "0 0 8 8",
+    "raw_file": "svg_648_8x8_0_0_8_8.svg"
+  },
+  {
+    "id": 649,
+    "filename": "general_icon_649_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_649_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 650,
+    "filename": "general_icon_650_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_650_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 651,
+    "filename": "general_icon_651_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_651_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 652,
+    "filename": "general_icon_652_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_652_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 653,
+    "filename": "brand_nifty_logo_18x18.svg",
+    "category": "brand",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_653_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 654,
+    "filename": "general_icon_654_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_654_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 655,
+    "filename": "brand_nifty_logo_18x18.svg",
+    "category": "brand",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_655_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 656,
+    "filename": "brand_nifty_logo_18x18.svg",
+    "category": "brand",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_656_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 657,
+    "filename": "brand_nifty_logo_18x18.svg",
+    "category": "brand",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_657_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 658,
+    "filename": "brand_nifty_logo_18x18.svg",
+    "category": "brand",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_658_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 659,
+    "filename": "brand_nifty_logo_18x18.svg",
+    "category": "brand",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_659_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 660,
+    "filename": "brand_nifty_logo_18x18.svg",
+    "category": "brand",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_660_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 661,
+    "filename": "general_icon_661_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_661_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 662,
+    "filename": "drawing_drawing_662_18x18.svg",
+    "category": "drawing",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_662_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 663,
+    "filename": "general_icon_663_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_663_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 664,
+    "filename": "general_icon_664_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_664_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 665,
+    "filename": "general_icon_665_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_665_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 666,
+    "filename": "general_icon_666_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_666_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 667,
+    "filename": "general_icon_667_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_667_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 668,
+    "filename": "general_icon_668_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_668_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 669,
+    "filename": "general_icon_669_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_669_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 670,
+    "filename": "general_icon_670_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_670_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 671,
+    "filename": "general_icon_671_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_671_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 672,
+    "filename": "general_icon_672_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_672_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 673,
+    "filename": "general_icon_673_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_673_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 674,
+    "filename": "general_icon_674_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_674_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 675,
+    "filename": "general_icon_675_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_675_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 676,
+    "filename": "general_icon_676_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_676_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 677,
+    "filename": "general_icon_677_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_677_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 678,
+    "filename": "general_icon_678_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_678_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 679,
+    "filename": "general_icon_679_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_679_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 680,
+    "filename": "general_icon_680_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_680_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 681,
+    "filename": "general_icon_681_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_681_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 682,
+    "filename": "general_icon_682_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_682_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 683,
+    "filename": "general_icon_683_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_683_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 684,
+    "filename": "general_icon_684_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_684_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 685,
+    "filename": "general_icon_685_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_685_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 686,
+    "filename": "general_icon_686_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_686_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 687,
+    "filename": "brand_nifty_logo_18x18.svg",
+    "category": "brand",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_687_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 688,
+    "filename": "general_icon_688_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_688_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 689,
+    "filename": "drawing_drawing_689_18x18.svg",
+    "category": "drawing",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_689_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 690,
+    "filename": "general_icon_690_18x18.svg",
+    "category": "general",
+    "width": "18",
+    "height": "18",
+    "viewBox": "0 0 18 18",
+    "raw_file": "svg_690_18x18_0_0_18_18.svg"
+  },
+  {
+    "id": 691,
+    "filename": "general_icon_691_28x28.svg",
+    "category": "general",
+    "width": "28",
+    "height": "28",
+    "viewBox": "0 0 28 28",
+    "raw_file": "svg_691_28x28_0_0_28_28.svg"
+  },
+  {
+    "id": 692,
+    "filename": "brand_nifty_logo_3x24.svg",
+    "category": "brand",
+    "width": "3",
+    "height": "24",
+    "viewBox": "50 50 100 100",
+    "raw_file": "svg_692_x_50_50_100_100.svg"
+  },
+  {
+    "id": 693,
+    "filename": "general_icon_693_15x15.svg",
+    "category": "general",
+    "width": "15",
+    "height": "15",
+    "viewBox": "0 0 15 15",
+    "raw_file": "svg_693_15x15_0_0_15_15.svg"
+  },
+  {
+    "id": 694,
+    "filename": "general_icon_694_24x24.svg",
+    "category": "general",
+    "width": "24",
+    "height": "24",
+    "viewBox": "0 0 15 15",
+    "raw_file": "svg_694_x_0_0_15_15.svg"
+  }
+]

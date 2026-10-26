@@ -1,0 +1,1 @@
+(self.webpackChunktradingview=self.webpackChunktradingview||[]).push([[5228,27820],{127820(e){e.exports=["Close"]},864869(e){e.exports=["Make copy"]},24097(e){e.exports=["Make copy of watchlist"]},107935(e){e.exports=["Hide Tab"]},512249(e){e.exports=["Open Tab"]},59276(e){e.exports=["Widget"]},614450(e){e.exports=["Today"]},965573(e){e.exports=["Yesterday"]}}]);

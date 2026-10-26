@@ -27,3 +27,9 @@ data/
 
 # Local hosted-project selection
 .copilotkit/
+models/
+
+# Scratch & dump files
+tradingview_*_dump_*.json
+check_toolbar.py
+scratch_tv.js

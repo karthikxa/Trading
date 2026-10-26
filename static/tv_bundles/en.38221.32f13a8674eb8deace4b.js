@@ -1,0 +1,1 @@
+(self.webpackChunktradingview=self.webpackChunktradingview||[]).push([[38221,94702],{9291(e){e.exports=["Avg"]},565321(e){e.exports=["Vol"]},829273(e){e.exports=["Intraday spread data is not available"]},299153(e){e.exports=["No data"]},285893(e){e.exports=["No data for this resolution"]},87238(e){e.exports=["Error"]},146807(e){e.exports=["No data here yet"]}}]);

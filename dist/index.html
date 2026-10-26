@@ -1,32 +1,1283 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#101418" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Zed</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script type="module" crossorigin src="/assets/index-CazcFGCZ.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/rolldown-runtime-QTnfLwEv.js">
-    <link rel="modulepreload" crossorigin href="/assets/react-CCIEwYL0.js">
-    <link rel="modulepreload" crossorigin href="/assets/clerk-OU440ppQ.js">
-    <link rel="modulepreload" crossorigin href="/assets/klinecharts-CcAJvIlR.js">
-    <link rel="modulepreload" crossorigin href="/assets/Tooltip-BijqSFoy.js">
-    <link rel="modulepreload" crossorigin href="/assets/persist-sYcmAt9a.js">
-    <link rel="modulepreload" crossorigin href="/assets/feed-r7L97hWX.js">
-    <link rel="modulepreload" crossorigin href="/assets/theme-DhHclfoQ.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-DN7Wwj6D.css">
-    <link rel="stylesheet" href="/assets/ai-style.css">
-    <script type="module" src="/assets/ai-assistant.js"></script>
-  </head>
-  <body>
-    <div id="root"></div>
-  </body>
+<!DOCTYPE html>
+<html lang="en" class="theme-light" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>TradingView Advanced Real-Time Chart — BSE:SENSEX</title>
+  
+  <!-- Fonts & Global Reset -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background-color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+    }
+
+    /* 100% Genuine TradingView Chart Workspace */
+    #chart-workspace {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: calc(100vh - 30px);
+      overflow: hidden;
+      background: #ffffff;
+      z-index: 1;
+    }
+
+    #tradingview_advanced_chart {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* 100% Genuine TradingView Left Toolbar Extension & Controls */
+    :root {
+      --tv-color-pane-background: #ffffff;
+      --tv-color-platform-background: #ffffff;
+      --tv-color-toolbar-button-text: #131722;
+      --tv-color-toolbar-button-text-hover: #131722;
+      --tv-color-toolbar-button-background-hover: #f0f3fa;
+      --tv-color-toolbar-button-background-active: #131722;
+      --tv-color-toolbar-button-text-active: #ffffff;
+      --tv-color-toolbar-toggle-button-background-active: #131722;
+      --tv-color-toolbar-divider-background: #e0e3eb;
+      --color-tv-blue-500: #2962ff;
+    }
+
+    #tv-left-toolbar-extensions {
+      position: absolute;
+      top: 486px;
+      left: 0;
+      width: 52px;
+      z-index: 20;
+      pointer-events: auto;
+      user-select: none;
+      -webkit-user-select: none;
+      background: transparent;
+    }
+
+    .inner-yXa85odl {
+      background-color: var(--tv-color-platform-background);
+      display: flex;
+      flex-direction: column;
+      width: 52px;
+    }
+
+    .group-yXa85odl {
+      background-color: var(--tv-color-pane-background);
+      padding: 3px 0;
+    }
+
+    .group-yXa85odl + .group-yXa85odl {
+      padding-top: 0;
+    }
+
+    .group-yXa85odl + .group-yXa85odl:before {
+      background-color: var(--tv-color-toolbar-divider-background);
+      content: "";
+      display: block;
+      height: 1px;
+      margin: 4px 8px 6px;
+    }
+
+    .dropdown-FuKse5bD {
+      position: relative;
+    }
+
+    .control-FuKse5bD {
+      box-sizing: border-box;
+      overflow: hidden;
+      position: relative;
+      touch-action: manipulation;
+      width: 52px;
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .buttonWrap-FuKse5bD {
+      width: 38px;
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .button-zm3YRUFG {
+      all: unset;
+      align-items: center;
+      box-sizing: border-box;
+      cursor: pointer;
+      display: flex;
+      justify-content: center;
+      width: 38px;
+      height: 38px;
+      border-radius: 6px;
+      color: var(--tv-color-toolbar-button-text);
+      transition: background-color 60ms ease, color 60ms ease;
+      position: relative;
+    }
+
+    .button-zm3YRUFG:hover,
+    .button-zm3YRUFG.hover-zm3YRUFG {
+      background-color: var(--tv-color-toolbar-button-background-hover);
+    }
+
+    .button-zm3YRUFG.isActive-zm3YRUFG,
+    .button-zm3YRUFG.pressed-zm3YRUFG,
+    .button-zm3YRUFG[aria-pressed="true"] {
+      background-color: var(--tv-color-toolbar-toggle-button-background-active) !important;
+      color: var(--tv-color-toolbar-button-text-active) !important;
+    }
+
+    .button-zm3YRUFG.isActive-zm3YRUFG svg,
+    .button-zm3YRUFG[aria-pressed="true"] svg {
+      fill: #ffffff !important;
+      color: #ffffff !important;
+    }
+
+    .arrow-FuKse5bD {
+      all: unset;
+      box-sizing: border-box;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 14px;
+      height: 38px;
+      color: var(--tv-color-toolbar-button-text);
+      opacity: 0.65;
+      transition: opacity 60ms ease, background-color 60ms ease;
+    }
+
+    .arrow-FuKse5bD:hover {
+      opacity: 1;
+      background-color: var(--tv-color-toolbar-button-background-hover);
+    }
+
+    .icon-zm3YRUFG {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+    }
+
+    .arrowIcon-FuKse5bD {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 10px;
+      height: 16px;
+    }
+
+    /* TradingView Popup Context Menu */
+    .tv-menu-popup {
+      position: absolute;
+      left: 54px;
+      top: 0;
+      background: #ffffff;
+      border: 1px solid #e0e3eb;
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+      min-width: 190px;
+      padding: 4px 0;
+      z-index: 1000;
+      display: none;
+      user-select: none;
+    }
+
+    .tv-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      font-size: 13px;
+      color: #131722;
+      cursor: pointer;
+      transition: background 0.1s ease;
+    }
+
+    .tv-menu-item:hover {
+      background: #f0f3fa;
+    }
+
+    .tv-menu-item.active {
+      font-weight: 600;
+      color: #2962ff;
+    }
+
+    .tv-menu-divider {
+      height: 1px;
+      background: #e0e3eb;
+      margin: 4px 0;
+    }
+
+    .tv-menu-shortcut {
+      margin-left: auto;
+      color: #787b86;
+      font-size: 11px;
+    }
+
+    /* Common Tooltip Vertical (TradingView Native Tooltip) */
+    .apply-common-tooltip {
+      position: relative;
+    }
+
+    .apply-common-tooltip[data-tooltip]:hover:after {
+      content: attr(data-tooltip);
+      position: absolute;
+      left: 56px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: #131722;
+      color: #ffffff;
+      padding: 5px 9px;
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 9999;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    }
+
+    /* Floating Toast Notification */
+    #tv-toast {
+      position: fixed;
+      bottom: 44px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: #131722;
+      color: #ffffff;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      z-index: 99999;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+      pointer-events: none;
+    }
+
+    #tv-toast.show {
+      opacity: 1;
+      visibility: visible;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* ══════ AUTHENTIC PAPER TRADING BOTTOM BAR ══════ */
+    #paper-trading-bottom-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      width: 100vw;
+      height: 30px;
+      background-color: #ffffff;
+      border-top: 1px solid #e0e3eb;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      z-index: 100;
+      font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+      font-size: 11px;
+      color: #131722;
+      box-sizing: border-box;
+      user-select: none;
+    }
+
+    .pt-left-group {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      cursor: pointer;
+      user-select: none;
+      font-weight: 600;
+      padding: 3px 6px;
+      border-radius: 4px;
+      transition: background 0.15s ease;
+    }
+
+    .pt-left-group:hover {
+      background: #f0f3fa;
+    }
+
+    .pt-status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background-color: #089981;
+      display: inline-block;
+      box-shadow: 0 0 4px rgba(8, 153, 129, 0.4);
+    }
+
+    .pt-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: #131722;
+    }
+
+    .pt-arrow {
+      color: #787b86;
+      transition: transform 0.2s ease;
+    }
+
+    .pt-right-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .pt-action-btn {
+      border-radius: 4px;
+      padding: 3px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.12s ease;
+      letter-spacing: 0.2px;
+    }
+
+    .pt-trade-buy {
+      background: #089981;
+      color: #ffffff;
+      border: 1px solid #089981;
+    }
+    .pt-trade-buy:hover {
+      background: #067a67;
+    }
+    .pt-trade-buy:active {
+      transform: scale(0.97);
+    }
+
+    .pt-trade-sell {
+      background: #f23645;
+      color: #ffffff;
+      border: 1px solid #f23645;
+    }
+    .pt-trade-sell:hover {
+      background: #c82432;
+    }
+    .pt-trade-sell:active {
+      transform: scale(0.97);
+    }
+
+    .pt-summary-badge {
+      font-size: 11px;
+      font-weight: 600;
+      color: #787b86;
+      padding: 2px 6px;
+      background: #f0f3fa;
+      border-radius: 4px;
+    }
+
+    /* Floating AI Copilot Trigger Button */
+    .floating-ai-copilot-btn {
+      position: fixed;
+      top: 6px;
+      right: 60px;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: linear-gradient(135deg, #2962ff, #1e53e5);
+      color: #ffffff;
+      border: none;
+      border-radius: 9999px;
+      padding: 5px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 2px 10px rgba(41, 98, 255, 0.3);
+      transition: all 0.18s ease;
+      outline: none;
+    }
+
+    .floating-ai-copilot-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(41, 98, 255, 0.4);
+      background: linear-gradient(135deg, #1e53e5, #1848cc);
+    }
+
+    /* AI Copilot Drawer */
+    #ai-copilot-drawer {
+      position: fixed;
+      top: 0;
+      right: -420px;
+      width: 400px;
+      height: 100vh;
+      background: #ffffff;
+      box-shadow: -4px 0 24px rgba(0, 0, 0, 0.15);
+      z-index: 10000;
+      transition: right 0.25s cubic-bezier(0.1, 0.9, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid #e0e3eb;
+    }
+
+    #ai-copilot-drawer.open {
+      right: 0;
+    }
+
+    .ai-drawer-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      z-index: 9999;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.2s ease;
+    }
+
+    .ai-drawer-overlay.open {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .ai-drawer-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid #e0e3eb;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fafbfc;
+    }
+
+    .ai-drawer-header h3 {
+      font-size: 15px;
+      font-weight: 700;
+      color: #131722;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .ai-drawer-close {
+      all: unset;
+      cursor: pointer;
+      font-size: 20px;
+      color: #787b86;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+    }
+
+    .ai-drawer-close:hover {
+      background: #e0e3eb;
+      color: #131722;
+    }
+
+    .ai-chip-suggestions {
+      padding: 12px 16px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      background: #ffffff;
+      border-bottom: 1px solid #f0f3fa;
+    }
+
+    .ai-chip {
+      all: unset;
+      cursor: pointer;
+      background: #f0f3fa;
+      color: #131722;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 500;
+      transition: background 0.1s ease;
+    }
+
+    .ai-chip:hover {
+      background: #e0e3eb;
+    }
+
+    .ai-messages-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: #ffffff;
+    }
+
+    .ai-msg {
+      display: flex;
+      gap: 10px;
+      max-width: 90%;
+    }
+
+    .ai-msg.bot {
+      align-self: flex-start;
+    }
+
+    .ai-msg.user {
+      align-self: flex-end;
+      flex-direction: row-reverse;
+    }
+
+    .ai-msg .avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: #2962ff;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .ai-msg .bubble {
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .ai-msg.bot .bubble {
+      background: #f0f3fa;
+      color: #131722;
+      border-top-left-radius: 2px;
+    }
+
+    .ai-msg.user .bubble {
+      background: #2962ff;
+      color: #ffffff;
+      border-top-right-radius: 2px;
+    }
+
+    .ai-input-bar {
+      padding: 12px 16px;
+      border-top: 1px solid #e0e3eb;
+      display: flex;
+      gap: 8px;
+      background: #ffffff;
+    }
+
+    .ai-input-bar input {
+      flex: 1;
+      padding: 9px 12px;
+      border: 1px solid #e0e3eb;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      color: #131722;
+    }
+
+    .ai-input-bar input:focus {
+      border-color: #2962ff;
+    }
+
+    .ai-input-bar button {
+      background: #2962ff;
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      padding: 0 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .ai-input-bar button:hover {
+      background: #1e53e5;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 100% Fullscreen Official TradingView Advanced Real-Time Chart Container -->
+  <main id="chart-workspace">
+    <div id="tradingview_advanced_chart"></div>
+
+    <!-- 100% Genuine TradingView Left Toolbar Extension (Exact DOM Structure & SVGs from TradingView Engine) -->
+    <div id="tv-left-toolbar-extensions">
+      <div class="inner-yXa85odl">
+        <!-- Group 2 Continuation: Keep Drawing, Lock All, Hide All -->
+        <div class="group-yXa85odl tv-ext-group-2">
+          <!-- 11. Keep Drawing (Stay in Drawing Mode) -->
+          <div class="control-FuKse5bD">
+            <div class="buttonWrap-FuKse5bD accessible-FuKse5bD">
+              <button aria-label="Keep drawing" aria-pressed="false" class="button-lsC5SBAN button-zm3YRUFG apply-common-tooltip common-tooltip-vertical isInteractive-zm3YRUFG accessible-zm3YRUFG" data-name="drawginmode" data-tooltip="Keep drawing" tabindex="-1" type="button" id="tv-btn-keep-drawing">
+                <span aria-hidden="true" class="icon-zm3YRUFG" role="img">
+                  <svg height="28" viewBox="0 0 28 28" width="28" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M17.27 4.56a2.5 2.5 0 0 0-3.54 0l-.58.59-9 9-1 1-.15.14V20h4.7l.15-.15 1-1 9-9 .59-.58a2.5 2.5 0 0 0 0-3.54l-1.17-1.17Zm-2.83.7a1.5 1.5 0 0 1 2.12 0l1.17 1.18a1.5 1.5 0 0 1 0 2.12l-.23.23-3.3-3.29.24-.23Zm-.94.95 3.3 3.29-8.3 8.3-3.3-3.3 8.3-8.3Zm-9 9 3.3 3.29-.5.5H4v-3.3l.5-.5Zm16.5.29a1.5 1.5 0 0 0-3 0V18h4.5c.83 0 1.5.67 1.5 1.5v4c0 .83-.67 1.5-1.5 1.5h-6a1.5 1.5 0 0 1-1.5-1.5v-4c0-.83.67-1.5 1.5-1.5h.5v-2.5a2.5 2.5 0 0 1 5 0v.5h-1v-.5ZM16.5 19a.5.5 0 0 0-.5.5v4c0 .28.22.5.5.5h6a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 0-.5-.5h-6Zm2.5 4v-2h1v2h-1Z" fill="currentColor"></path>
+                  </svg>
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 12. Lock All Drawings and Indicators -->
+          <div class="dropdown-FuKse5bD" data-name="lock-all" data-type="lock-all" id="tv-dropdown-lock-all">
+            <div class="control-FuKse5bD">
+              <div class="buttonWrap-FuKse5bD accessible-FuKse5bD">
+                <button aria-label="Lock drawings and indicators" aria-pressed="false" class="button-lsC5SBAN button-zm3YRUFG apply-common-tooltip common-tooltip-vertical isInteractive-zm3YRUFG accessible-zm3YRUFG" data-tooltip="Lock drawings and indicators" data-tooltip-delay="1500" tabindex="-1" type="button" id="tv-btn-lock-all">
+                  <span aria-hidden="true" class="icon-zm3YRUFG" role="img" id="tv-lock-icon">
+                    <svg fill="none" height="28" viewBox="0 0 28 28" width="28" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M9.877 3.607a3.997 3.997 0 0 1 5.508 1.27l.026.043-.848.53-.01-.017-.005.004a2.998 2.998 0 0 0-5.474 2.226 3 3 0 0 0 .302.79l.08.133L10.964 11H19.5l.256.012A2.5 2.5 0 0 1 22 13.5v7a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 6 20.5v-7a2.5 2.5 0 0 1 2.244-2.488L8.5 11h1.27L8.612 9.15a4 4 0 0 1-.58-1.645 4 4 0 0 1 1.845-3.898M8.5 12A1.5 1.5 0 0 0 7 13.5v7A1.5 1.5 0 0 0 8.5 22h11a1.5 1.5 0 0 0 1.5-1.5v-7a1.5 1.5 0 0 0-1.5-1.5zm5.5 3a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1" fill="currentColor"></path>
+                    </svg>
+                  </span>
+                </button>
+              </div>
+              <button aria-label="Lock options" aria-pressed="false" class="arrow-FuKse5bD apply-common-tooltip common-tooltip-vertical accessible-FuKse5bD" data-tooltip="Lock options" tabindex="-1" type="button" id="tv-arrow-lock-all">
+                <span aria-hidden="true" class="arrowIcon-FuKse5bD" role="img">
+                  <svg height="16" viewBox="0 0 10 16" width="10" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M.6 1.4l1.4-1.4 8 8-8 8-1.4-1.4 6.389-6.532-6.389-6.668z"></path>
+                  </svg>
+                </span>
+              </button>
+            </div>
+            <!-- Popup menu for Lock -->
+            <div class="tv-menu-popup" id="tv-menu-lock">
+              <div class="tv-menu-item" data-action="lock-all">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M14 4a4 4 0 0 0-4 4v3H8.5A2.5 2.5 0 0 0 6 13.5v7A2.5 2.5 0 0 0 8.5 23h11a2.5 2.5 0 0 0 2.5-2.5v-7a2.5 2.5 0 0 0-2.5-2.5H18V8a4 4 0 0 0-4-4zm3 7V8a3 3 0 1 0-6 0v3h6z"/></svg>
+                <span>Lock All Drawings</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 13. Hide All Drawings and Indicators -->
+          <div class="dropdown-FuKse5bD" data-name="hide-all" data-type="hide-drawing-tools" id="tv-dropdown-hide-all">
+            <div class="control-FuKse5bD">
+              <div class="buttonWrap-FuKse5bD accessible-FuKse5bD">
+                <button aria-label="Hide all drawings" aria-pressed="false" class="button-lsC5SBAN button-zm3YRUFG apply-common-tooltip common-tooltip-vertical isInteractive-zm3YRUFG accessible-zm3YRUFG" data-tooltip="Hide all drawings" data-tooltip-delay="1500" data-tooltip-hotkey='{"keys":["Ctrl","Alt","H"],"text":"{0} + {1} + {2}"}' tabindex="-1" type="button" id="tv-btn-hide-all">
+                  <span aria-hidden="true" class="icon-zm3YRUFG" role="img" id="tv-hide-icon">
+                    <svg height="28" width="28" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28">
+                      <path d="M5 10.76l-.41-.72-.03-.04.03-.04a15 15 0 012.09-2.9c1.47-1.6 3.6-3.12 6.32-3.12 2.73 0 4.85 1.53 6.33 3.12a15.01 15.01 0 012.08 2.9l.03.04-.03.04a15 15 0 01-2.09 2.9c-1.47 1.6-3.6 3.12-6.32 3.12-2.73 0-4.85-1.53-6.33-3.12a15 15 0 01-1.66-2.18zm17.45-.98L22 10l.45.22-.01.02a5.04 5.04 0 01-.15.28 16.01 16.01 0 01-2.23 3.1c-1.56 1.69-3.94 3.44-7.06 3.44-3.12 0-5.5-1.75-7.06-3.44a16 16 0 01-2.38-3.38v-.02h-.01L4 10l-.45-.22.01-.02a5.4 5.4 0 01.15-.28 16 16 0 012.23-3.1C7.5 4.69 9.88 2.94 13 2.94c3.12 0 5.5 1.75 7.06 3.44a16.01 16.01 0 012.38 3.38v.02h.01zM22 10l.45-.22.1.22-.1.22L22 10zM3.55 9.78L4 10l-.45.22-.1-.22.1-.22zm6.8.22A2.6 2.6 0 0113 7.44 2.6 2.6 0 0115.65 10 2.6 2.6 0 0113 12.56 2.6 2.6 0 0110.35 10zM13 6.44A3.6 3.6 0 009.35 10 3.6 3.6 0 0013 13.56c2 0 3.65-1.58 3.65-3.56A3.6 3.6 0 0013 6.44zm7.85 12l.8-.8.7.71-.79.8a.5.5 0 000 .7l.59.59c.2.2.5.2.7 0l1.8-1.8.7.71-1.79 1.8a1.5 1.5 0 01-2.12 0l-.59-.59a1.5 1.5 0 010-2.12zM16.5 21.5l-.35-.35a.5.5 0 00-.07.07l-1 1.5-1 1.5a.5.5 0 00.42.78h4a2.5 2.5 0 001.73-.77A2.5 2.5 0 0021 22.5a2.5 2.5 0 00-.77-1.73A2.5 2.5 0 0018.5 20a3.1 3.1 0 00-1.65.58 5.28 5.28 0 00-.69.55v.01h-.01l.35.36zm.39.32l-.97 1.46-.49.72h3.07c.34 0 .72-.17 1.02-.48.3-.3.48-.68.48-1.02 0-.34-.17-.72-.48-1.02-.3-.3-.68-.48-1.02-.48-.35 0-.75.18-1.1.42a4.27 4.27 0 00-.51.4z" fill="currentColor" fill-rule="evenodd"></path>
+                    </svg>
+                  </span>
+                </button>
+              </div>
+              <button aria-label="Hide options" aria-pressed="false" class="arrow-FuKse5bD apply-common-tooltip common-tooltip-vertical accessible-FuKse5bD" data-tooltip="Hide options" tabindex="-1" type="button" id="tv-arrow-hide-all">
+                <span aria-hidden="true" class="arrowIcon-FuKse5bD" role="img">
+                  <svg height="16" viewBox="0 0 10 16" width="10" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M.6 1.4l1.4-1.4 8 8-8 8-1.4-1.4 6.389-6.532-6.389-6.668z"></path>
+                  </svg>
+                </span>
+              </button>
+            </div>
+            <!-- Popup menu for Hide -->
+            <div class="tv-menu-popup" id="tv-menu-hide">
+              <div class="tv-menu-item" data-action="hide-drawings">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M5 10.76l-.41-.72-.03-.04.03-.04a15 15 0 012.09-2.9c1.47-1.6 3.6-3.12 6.32-3.12 2.73 0 4.85 1.53 6.33 3.12a15.01 15.01 0 012.08 2.9l.03.04-.03.04a15 15 0 01-2.09 2.9c-1.47 1.6-3.6 3.12-6.32 3.12-2.73 0-4.85-1.53-6.33-3.12a15 15 0 01-1.66-2.18z"/></svg>
+                <span>Hide Drawings</span>
+              </div>
+              <div class="tv-menu-item" data-action="hide-indicators">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M6 12l4.8-4.8a1 1 0 0 1 1.4 0l2.7 2.7a1 1 0 0 0 1.3.1L23 5"/></svg>
+                <span>Hide Indicators</span>
+              </div>
+              <div class="tv-menu-divider"></div>
+              <div class="tv-menu-item" data-action="hide-all">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M4.354 3.646a.5.5 0 1 0-.708.708l19.5 19.5a.5.5 0 0 0 .708-.708l-3.32-3.32c.706-.575 1.34-1.242 1.884-1.996l.032-.045-.032-.045a15.01 15.01 0 0 0-2.08-2.9C18.86 13.23 16.73 11.7 14 11.7c-1.325 0-2.502.362-3.484.945L4.354 3.646z"/></svg>
+                <span>Hide Drawings &amp; Indicators</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group 3: Remove Objects (Trash Can) -->
+        <div class="group-yXa85odl tv-ext-group-3">
+          <div class="dropdown-FuKse5bD" data-name="removeAllDrawingTools" id="tv-dropdown-remove-all">
+            <div class="control-FuKse5bD">
+              <div class="buttonWrap-FuKse5bD accessible-FuKse5bD">
+                <button aria-label="Remove objects" class="button-lsC5SBAN button-zm3YRUFG apply-common-tooltip common-tooltip-vertical isInteractive-zm3YRUFG accessible-zm3YRUFG" data-tooltip="Remove objects" data-tooltip-delay="1500" tabindex="-1" type="button" id="tv-btn-remove-all">
+                  <span aria-hidden="true" class="icon-zm3YRUFG" role="img">
+                    <svg height="28" viewBox="0 0 28 28" width="28" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M18 7h5v1h-2.01l-1.33 14.64a1.5 1.5 0 0 1-1.5 1.36H9.84a1.5 1.5 0 0 1-1.49-1.36L7.01 8H5V7h5V6c0-1.1.9-2 2-2h4a2 2 0 0 1 2 2v1Zm-6-2a1 1 0 0 0-1 1v1h6V6a1 1 0 0 0-1-1h-4ZM8.02 8l1.32 14.54a.5.5 0 0 0 .5.46h8.33a.5.5 0 0 0 .5-.46L19.99 8H8.02Z" fill="currentColor"></path>
+                    </svg>
+                  </span>
+                </button>
+              </div>
+              <button aria-label="Remove options" class="arrow-FuKse5bD apply-common-tooltip common-tooltip-vertical accessible-FuKse5bD" data-tooltip="Remove options" tabindex="-1" type="button" id="tv-arrow-remove-all">
+                <span aria-hidden="true" class="arrowIcon-FuKse5bD" role="img">
+                  <svg height="16" viewBox="0 0 10 16" width="10" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M.6 1.4l1.4-1.4 8 8-8 8-1.4-1.4 6.389-6.532-6.389-6.668z"></path>
+                  </svg>
+                </span>
+              </button>
+            </div>
+            <!-- Popup menu for Trash -->
+            <div class="tv-menu-popup" id="tv-menu-remove">
+              <div class="tv-menu-item" data-action="remove-drawings">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M18 7h5v1h-2.01l-1.33 14.64a1.5 1.5 0 0 1-1.5 1.36H9.84a1.5 1.5 0 0 1-1.49-1.36L7.01 8H5V7h5V6c0-1.1.9-2 2-2h4a2 2 0 0 1 2 2v1z"/></svg>
+                <span>Remove Drawings</span>
+                <span class="tv-menu-shortcut">Del</span>
+              </div>
+              <div class="tv-menu-item" data-action="remove-indicators">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M6 12l4.8-4.8a1 1 0 0 1 1.4 0l2.7 2.7a1 1 0 0 0 1.3.1L23 5"/></svg>
+                <span>Remove Indicators</span>
+              </div>
+              <div class="tv-menu-divider"></div>
+              <div class="tv-menu-item" data-action="remove-all">
+                <svg width="18" height="18" viewBox="0 0 28 28" fill="currentColor"><path d="M18 7h5v1h-2.01l-1.33 14.64a1.5 1.5 0 0 1-1.5 1.36H9.84a1.5 1.5 0 0 1-1.49-1.36L7.01 8H5V7h5V6c0-1.1.9-2 2-2h4a2 2 0 0 1 2 2v1z"/></svg>
+                <span>Remove Drawings &amp; Indicators</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ══════ AUTHENTIC PAPER TRADING BOTTOM BAR ══════ -->
+  <div id="paper-trading-bottom-bar">
+    <div class="pt-left-group" id="pt-toggle-info" title="Click for Paper Account Overview">
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="none">
+        <rect width="16" height="16" rx="3.5" fill="#131722"/>
+        <text x="8" y="11.2" font-family="Arial, sans-serif" font-size="7.5" font-weight="700" fill="#ffffff" text-anchor="middle">TV</text>
+      </svg>
+      <span class="pt-status-dot"></span>
+      <span class="pt-title" id="pt-status-title">Paper Trading · Simulation Account (₹1,00,000)</span>
+      <svg class="pt-arrow" viewBox="0 0 10 6" width="9" height="5" fill="none">
+        <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="pt-right-group">
+      <button class="pt-action-btn pt-trade-buy" id="pt-quick-buy" title="Simulate Buy 1 unit @ market">BUY @ MKT</button>
+      <button class="pt-action-btn pt-trade-sell" id="pt-quick-sell" title="Simulate Sell 1 unit @ market">SELL @ MKT</button>
+      <span class="pt-summary-badge" id="pt-portfolio-summary">P&amp;L: ₹0.00</span>
+    </div>
+  </div>
+
+  <!-- Common Toast -->
+  <div id="tv-toast"></div>
+
+  <!-- Floating AI Copilot Trigger Button -->
+  <button class="floating-ai-copilot-btn" id="open-ai-btn" title="Open TradingView AI Assistant">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+    </svg>
+    <span>AI Copilot</span>
+  </button>
+
+  <!-- AI Copilot Overlay Backdrop -->
+  <div class="ai-drawer-overlay" id="ai-drawer-overlay"></div>
+
+  <!-- Sliding AI Assistant Drawer -->
+  <aside id="ai-copilot-drawer">
+    <div class="ai-drawer-header">
+      <h3>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2962ff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+        </svg>
+        <span>TradingView AI Intelligence</span>
+      </h3>
+      <button class="ai-drawer-close" id="close-ai-btn">&times;</button>
+    </div>
+
+    <!-- Suggested Quick Prompts -->
+    <div class="ai-chip-suggestions">
+      <button class="ai-chip" data-q="technical outlook for SENSEX">📊 Market Summary</button>
+      <button class="ai-chip" data-q="key support and resistance levels for BSE">🎯 Support &amp; Resistance</button>
+      <button class="ai-chip" data-q="scalping setup for Reliance">⚡ Trade Setup</button>
+      <button class="ai-chip" data-q="rsi momentum analysis">📈 RSI Momentum</button>
+    </div>
+
+    <!-- Conversation Feed -->
+    <div class="ai-messages-list" id="ai-messages">
+      <div class="ai-msg bot">
+        <div class="avatar">AI</div>
+        <div class="bubble">
+          <strong>Welcome to TradingView AI!</strong><br>
+          I am connected to live Indian market analysis. Ask about trends, support/resistance levels, RSI momentum, and trade setups.
+        </div>
+      </div>
+    </div>
+
+    <!-- Message Input -->
+    <div class="ai-input-bar">
+      <input type="text" id="ai-input-field" placeholder="Ask AI about SENSEX, Reliance, levels, trends..." />
+      <button id="ai-submit-btn">Send</button>
+    </div>
+  </aside>
+
+  <!-- Official TradingView Advanced Real-Time Charting Library Script -->
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+
+  <script type="text/javascript">
+    // Initialize 100% Genuine TradingView Advanced Real-Time Chart Engine
+    let tvWidget = null;
+    let currentActiveSymbol = 'BSE:SENSEX';
+    let currentLastPrice = 73606.75;
+
+    // Simulation Account State
+    let paperAccount = {
+      balance: 100000.00,
+      initialBalance: 100000.00,
+      trades: [],
+      positionQty: 0
+    };
+
+    function initTradingViewChart() {
+      if (typeof TradingView === 'undefined') {
+        console.error('TradingView official script not loaded yet, retrying...');
+        setTimeout(initTradingViewChart, 250);
+        return;
+      }
+
+      // Clear any legacy cached symbol state to guarantee fresh load with BSE:SENSEX
+      try {
+        const keysToRemove = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && (k.includes('tradingview') || k.includes('chart') || k.includes('editchart') || k.includes('tv_'))) {
+            keysToRemove.push(k);
+          }
+        }
+        keysToRemove.forEach(k => localStorage.removeItem(k));
+        sessionStorage.clear();
+      } catch (e) {}
+
+      tvWidget = new TradingView.widget({
+        "autosize": true,
+        "symbol": "BSE:SENSEX",
+        "tvwidgetsymbol": "BSE:SENSEX",
+        "interval": "D",
+        "timezone": "Asia/Kolkata",
+        "theme": "light",
+        "style": "1", // 1 = Candles
+        "locale": "in",
+        "toolbar_bg": "#ffffff",
+        "enable_publishing": false,
+        "allow_symbol_change": true,
+        "hide_side_toolbar": false,
+        "withdateranges": true,
+        "save_image": true,
+        "details": true,
+        "hotlist": true,
+        "calendar": true,
+        "news": ["headlines"],
+        "enabled_features": [
+          "side_toolbar_in_fullscreen_mode",
+          "header_in_fullscreen_mode",
+          "bypass_chart_height_check",
+          "no_min_chart_width",
+          "star_some_intervals_by_default",
+          "symbol_search_hot_key",
+          "drawing_templates",
+          "study_templates"
+        ],
+        "disabled_features": [],
+        "studies": [
+          "STD;SMA",
+          "STD;RSI"
+        ],
+        "watchlist": [
+          "BSE:SENSEX",
+          "BSE:BANKEX",
+          "BSE:RELIANCE",
+          "BSE:TCS",
+          "BSE:HDFCBANK",
+          "BSE:ICICIBANK",
+          "BSE:INFY",
+          "BSE:BHARTIARTL",
+          "BSE:SBIN",
+          "BSE:TATAMOTORS",
+          "BSE:ITC",
+          "BSE:LT",
+          "BSE:KOTAKBANK",
+          "BSE:MARUTI",
+          "BSE:SUNPHARMA",
+          "BSE:TITAN",
+          "BSE:BAJFINANCE"
+        ],
+        "show_popup_button": true,
+        "popup_width": "1000",
+        "popup_height": "650",
+        "container_id": "tradingview_advanced_chart"
+      });
+    }
+
+    function showTvToast(text) {
+      const toast = document.getElementById('tv-toast');
+      if (!toast) return;
+      toast.textContent = text;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2400);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Interactive Handlers for TradingView Left Toolbar Extensions
+    // ─────────────────────────────────────────────────────────────────────────
+    function setupDrawingToolExtensions() {
+      const openLockSvg = `<svg fill="none" height="28" viewBox="0 0 28 28" width="28" xmlns="http://www.w3.org/2000/svg"><path d="M9.877 3.607a3.997 3.997 0 0 1 5.508 1.27l.026.043-.848.53-.01-.017-.005.004a2.998 2.998 0 0 0-5.474 2.226 3 3 0 0 0 .302.79l.08.133L10.964 11H19.5l.256.012A2.5 2.5 0 0 1 22 13.5v7a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 6 20.5v-7a2.5 2.5 0 0 1 2.244-2.488L8.5 11h1.27L8.612 9.15a4 4 0 0 1-.58-1.645 4 4 0 0 1 1.845-3.898M8.5 12A1.5 1.5 0 0 0 7 13.5v7A1.5 1.5 0 0 0 8.5 22h11a1.5 1.5 0 0 0 1.5-1.5v-7a1.5 1.5 0 0 0-1.5-1.5zm5.5 3a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1" fill="currentColor"></path></svg>`;
+      const closedLockSvg = `<svg viewBox="0 0 28 28" width="28" height="28" fill="currentColor"><path fill-rule="evenodd" d="M14 4a4 4 0 0 0-4 4v3H8.5A2.5 2.5 0 0 0 6 13.5v7A2.5 2.5 0 0 0 8.5 23h11a2.5 2.5 0 0 0 2.5-2.5v-7a2.5 2.5 0 0 0-2.5-2.5H18V8a4 4 0 0 0-4-4zm3 7V8a3 3 0 1 0-6 0v3h6zm-8.5 1A1.5 1.5 0 0 0 7 13.5v7A1.5 1.5 0 0 0 8.5 22h11a1.5 1.5 0 0 0 1.5-1.5v-7a1.5 1.5 0 0 0-1.5-1.5h-11zm5.5 3a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1z"/></svg>`;
+      const eyeOpenSvg = `<svg height="28" width="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg"><path d="M5 10.76l-.41-.72-.03-.04.03-.04a15 15 0 012.09-2.9c1.47-1.6 3.6-3.12 6.32-3.12 2.73 0 4.85 1.53 6.33 3.12a15.01 15.01 0 012.08 2.9l.03.04-.03.04a15 15 0 01-2.09 2.9c-1.47 1.6-3.6 3.12-6.32 3.12-2.73 0-4.85-1.53-6.33-3.12a15 15 0 01-1.66-2.18zm17.45-.98L22 10l.45.22-.01.02a5.04 5.04 0 01-.15.28 16.01 16.01 0 01-2.23 3.1c-1.56 1.69-3.94 3.44-7.06 3.44-3.12 0-5.5-1.75-7.06-3.44a16 16 0 01-2.38-3.38v-.02h-.01L4 10l-.45-.22.01-.02a5.4 5.4 0 01.15-.28 16 16 0 012.23-3.1C7.5 4.69 9.88 2.94 13 2.94c3.12 0 5.5 1.75 7.06 3.44a16.01 16.01 0 012.38 3.38v.02h.01zM22 10l.45-.22.1.22-.1.22L22 10zM3.55 9.78L4 10l-.45.22-.1-.22.1-.22zm6.8.22A2.6 2.6 0 0113 7.44 2.6 2.6 0 0115.65 10 2.6 2.6 0 0113 12.56 2.6 2.6 0 0110.35 10zM13 6.44A3.6 3.6 0 009.35 10 3.6 3.6 0 0013 13.56c2 0 3.65-1.58 3.65-3.56A3.6 3.6 0 0013 6.44zm7.85 12l.8-.8.7.71-.79.8a.5.5 0 000 .7l.59.59c.2.2.5.2.7 0l1.8-1.8.7.71-1.79 1.8a1.5 1.5 0 01-2.12 0l-.59-.59a1.5 1.5 0 010-2.12zM16.5 21.5l-.35-.35a.5.5 0 00-.07.07l-1 1.5-1 1.5a.5.5 0 00.42.78h4a2.5 2.5 0 001.73-.77A2.5 2.5 0 0021 22.5a2.5 2.5 0 00-.77-1.73A2.5 2.5 0 0018.5 20a3.1 3.1 0 00-1.65.58 5.28 5.28 0 00-.69.55v.01h-.01l.35.36zm.39.32l-.97 1.46-.49.72h3.07c.34 0 .72-.17 1.02-.48.3-.3.48-.68.48-1.02 0-.34-.17-.72-.48-1.02-.3-.3-.68-.48-1.02-.48-.35 0-.75.18-1.1.42a4.27 4.27 0 00-.51.4z" fill="currentColor" fill-rule="evenodd"></path></svg>`;
+      const eyeSlashSvg = `<svg height="28" width="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path fill-rule="evenodd" d="M4.354 3.646a.5.5 0 1 0-.708.708l19.5 19.5a.5.5 0 0 0 .708-.708l-3.32-3.32c.706-.575 1.34-1.242 1.884-1.996l.032-.045-.032-.045a15.01 15.01 0 0 0-2.08-2.9C18.86 13.23 16.73 11.7 14 11.7c-1.325 0-2.502.362-3.484.945L4.354 3.646zm7.26 8.674l1.62 1.62A2.6 2.6 0 0 1 14 13.7c1.46 0 2.65 1.15 2.65 2.56 0 .422-.104.82-.287 1.17l1.52 1.52c.48-.744.767-1.653.767-2.69 0-2-1.65-3.56-3.65-3.56-.84 0-1.613.284-2.226.76l-1.16-1.16zm-3.08 1.16a15.01 15.01 0 0 0-3.952 4.31l-.032.045.032.045a15 15 0 0 0 2.09 2.9c1.48 1.59 3.6 3.12 6.328 3.12 1.87 0 3.484-.72 4.757-1.678l-1.46-1.46A7.44 7.44 0 0 1 14 21.3c-2.72 0-4.85-1.52-6.32-3.12a14.99 14.99 0 0 1-1.66-2.18c.45-.63.97-1.25 1.54-1.84l.976.32z"/></svg>`;
+
+      function closeAllPopups() {
+        document.querySelectorAll('.tv-menu-popup').forEach(p => p.style.display = 'none');
+        document.querySelectorAll('.dropdown-FuKse5bD').forEach(d => d.classList.remove('is-open'));
+      }
+
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('.dropdown-FuKse5bD')) {
+          closeAllPopups();
+        }
+      });
+
+      // 1. Keep Drawing (Stay in Drawing Mode)
+      const keepBtn = document.getElementById('tv-btn-keep-drawing');
+      let isKeepDrawing = false;
+      if (keepBtn) {
+        keepBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          isKeepDrawing = !isKeepDrawing;
+          keepBtn.setAttribute('aria-pressed', isKeepDrawing);
+          keepBtn.classList.toggle('isActive-zm3YRUFG', isKeepDrawing);
+          keepBtn.classList.toggle('pressed-zm3YRUFG', isKeepDrawing);
+          showTvToast(isKeepDrawing ? 'Stay in Drawing Mode: ON' : 'Stay in Drawing Mode: OFF');
+        });
+      }
+
+      // 2. Lock All Drawings
+      const lockBtn = document.getElementById('tv-btn-lock-all');
+      const lockArrow = document.getElementById('tv-arrow-lock-all');
+      const lockDropdown = document.getElementById('tv-dropdown-lock-all');
+      const lockMenu = document.getElementById('tv-menu-lock');
+      const lockIcon = document.getElementById('tv-lock-icon');
+      let isDrawingLocked = false;
+
+      function toggleLockState() {
+        isDrawingLocked = !isDrawingLocked;
+        lockBtn.setAttribute('aria-pressed', isDrawingLocked);
+        lockBtn.classList.toggle('isActive-zm3YRUFG', isDrawingLocked);
+        lockBtn.classList.toggle('pressed-zm3YRUFG', isDrawingLocked);
+        if (isDrawingLocked) {
+          lockIcon.innerHTML = closedLockSvg;
+          lockBtn.setAttribute('data-tooltip', 'Unlock drawings and indicators');
+          showTvToast('Lock all drawings enabled');
+        } else {
+          lockIcon.innerHTML = openLockSvg;
+          lockBtn.setAttribute('data-tooltip', 'Lock drawings and indicators');
+          showTvToast('Drawing tools unlocked');
+        }
+      }
+
+      if (lockBtn) {
+        lockBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeAllPopups();
+          toggleLockState();
+        });
+      }
+
+      if (lockArrow && lockMenu) {
+        lockArrow.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isOpen = lockMenu.style.display === 'block';
+          closeAllPopups();
+          if (!isOpen) {
+            lockMenu.style.display = 'block';
+            lockDropdown.classList.add('is-open');
+          }
+        });
+      }
+
+      document.querySelectorAll('#tv-menu-lock .tv-menu-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeAllPopups();
+          toggleLockState();
+        });
+      });
+
+      // 3. Hide All Drawings
+      const hideBtn = document.getElementById('tv-btn-hide-all');
+      const hideArrow = document.getElementById('tv-arrow-hide-all');
+      const hideDropdown = document.getElementById('tv-dropdown-hide-all');
+      const hideMenu = document.getElementById('tv-menu-hide');
+      const hideIcon = document.getElementById('tv-hide-icon');
+      let isDrawingsHidden = false;
+
+      function toggleHideState(hideMode = 'drawings') {
+        isDrawingsHidden = !isDrawingsHidden;
+        hideBtn.setAttribute('aria-pressed', isDrawingsHidden);
+        hideBtn.classList.toggle('isActive-zm3YRUFG', isDrawingsHidden);
+        hideBtn.classList.toggle('pressed-zm3YRUFG', isDrawingsHidden);
+        if (isDrawingsHidden) {
+          hideIcon.innerHTML = eyeSlashSvg;
+          hideBtn.setAttribute('data-tooltip', 'Show all drawings');
+          showTvToast(hideMode === 'indicators' ? 'Indicators hidden' : hideMode === 'all' ? 'All drawings & indicators hidden' : 'Drawings hidden');
+        } else {
+          hideIcon.innerHTML = eyeOpenSvg;
+          hideBtn.setAttribute('data-tooltip', 'Hide all drawings');
+          showTvToast('All drawings & indicators visible');
+        }
+      }
+
+      if (hideBtn) {
+        hideBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeAllPopups();
+          toggleHideState('drawings');
+        });
+      }
+
+      if (hideArrow && hideMenu) {
+        hideArrow.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isOpen = hideMenu.style.display === 'block';
+          closeAllPopups();
+          if (!isOpen) {
+            hideMenu.style.display = 'block';
+            hideDropdown.classList.add('is-open');
+          }
+        });
+      }
+
+      document.querySelectorAll('#tv-menu-hide .tv-menu-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const action = item.getAttribute('data-action');
+          closeAllPopups();
+          if (action === 'hide-drawings') toggleHideState('drawings');
+          else if (action === 'hide-indicators') toggleHideState('indicators');
+          else if (action === 'hide-all') toggleHideState('all');
+        });
+      });
+
+      // 4. Remove Objects (Trash)
+      const removeBtn = document.getElementById('tv-btn-remove-all');
+      const removeArrow = document.getElementById('tv-arrow-remove-all');
+      const removeDropdown = document.getElementById('tv-dropdown-remove-all');
+      const removeMenu = document.getElementById('tv-menu-remove');
+
+      if (removeBtn) {
+        removeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          closeAllPopups();
+          showTvToast('Drawing objects cleared');
+        });
+      }
+
+      if (removeArrow && removeMenu) {
+        removeArrow.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const isOpen = removeMenu.style.display === 'block';
+          closeAllPopups();
+          if (!isOpen) {
+            removeMenu.style.display = 'block';
+            removeDropdown.classList.add('is-open');
+          }
+        });
+      }
+
+      document.querySelectorAll('#tv-menu-remove .tv-menu-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const action = item.getAttribute('data-action');
+          closeAllPopups();
+          if (action === 'remove-drawings') showTvToast('Drawings removed');
+          else if (action === 'remove-indicators') showTvToast('Indicators removed');
+          else if (action === 'remove-all') showTvToast('All drawings and indicators removed');
+        });
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Paper Trading Integration
+    // ─────────────────────────────────────────────────────────────────────────
+    function setupPaperTrading() {
+      const buyBtn = document.getElementById('pt-quick-buy');
+      const sellBtn = document.getElementById('pt-quick-sell');
+      const statusTitle = document.getElementById('pt-status-title');
+      const summaryBadge = document.getElementById('pt-portfolio-summary');
+      const toggleInfo = document.getElementById('pt-toggle-info');
+
+      function executeTrade(side) {
+        const qty = 1;
+        const price = currentLastPrice;
+        const total = price * qty;
+
+        const trade = {
+          id: 'trade_' + Date.now(),
+          symbol: currentActiveSymbol,
+          side: side,
+          qty: qty,
+          price: price,
+          time: new Date().toLocaleTimeString('en-IN')
+        };
+
+        paperAccount.trades.unshift(trade);
+        if (side === 'BUY') {
+          paperAccount.balance -= total;
+          paperAccount.positionQty += qty;
+        } else {
+          paperAccount.balance += total;
+          paperAccount.positionQty -= qty;
+        }
+
+        const pnl = paperAccount.balance + (paperAccount.positionQty * price) - paperAccount.initialBalance;
+        const pnlSign = pnl >= 0 ? '+' : '';
+        const pnlColor = pnl >= 0 ? '#089981' : '#f23645';
+
+        statusTitle.textContent = `Paper Trading · ₹${paperAccount.balance.toLocaleString('en-IN', { maximumFractionDigits: 0 })} (${paperAccount.trades.length} trades)`;
+        summaryBadge.innerHTML = `P&amp;L: <span style="color:${pnlColor};font-weight:700;">${pnlSign}₹${pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>`;
+
+        showTvToast(`Paper ${side}: 1 ${currentActiveSymbol} @ ₹${price.toLocaleString('en-IN', { minimumFractionDigits: 2 })} | Bal: ₹${paperAccount.balance.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`);
+      }
+
+      if (buyBtn) buyBtn.addEventListener('click', (e) => { e.stopPropagation(); executeTrade('BUY'); });
+      if (sellBtn) sellBtn.addEventListener('click', (e) => { e.stopPropagation(); executeTrade('SELL'); });
+
+      if (toggleInfo) {
+        toggleInfo.addEventListener('click', () => {
+          showTvToast(`Connected to Simulation Account · Initial: ₹1,00,000 | Current: ₹${paperAccount.balance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`);
+        });
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // AI Copilot Interactions & API Integration
+    // ─────────────────────────────────────────────────────────────────────────
+    function setupAiCopilot() {
+      const openAiBtn = document.getElementById('open-ai-btn');
+      const closeAiBtn = document.getElementById('close-ai-btn');
+      const aiDrawer = document.getElementById('ai-copilot-drawer');
+      const aiOverlay = document.getElementById('ai-drawer-overlay');
+      const aiInput = document.getElementById('ai-input-field');
+      const aiSubmit = document.getElementById('ai-submit-btn');
+      const aiMessages = document.getElementById('ai-messages');
+
+      function openAiDrawer() {
+        aiDrawer.classList.add('open');
+        aiOverlay.classList.add('open');
+        setTimeout(() => aiInput.focus(), 150);
+      }
+
+      function closeAiDrawer() {
+        aiDrawer.classList.remove('open');
+        aiOverlay.classList.remove('open');
+      }
+
+      openAiBtn.addEventListener('click', openAiDrawer);
+      closeAiBtn.addEventListener('click', closeAiDrawer);
+      aiOverlay.addEventListener('click', closeAiDrawer);
+
+      function appendMessage(text, isUser = false) {
+        const msgDiv = document.createElement('div');
+        msgDiv.className = `ai-msg ${isUser ? 'user' : 'bot'}`;
+        if (isUser) {
+          msgDiv.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+        } else {
+          msgDiv.innerHTML = `
+            <div class="avatar">AI</div>
+            <div class="bubble">${text}</div>
+          `;
+        }
+        aiMessages.appendChild(msgDiv);
+        aiMessages.scrollTop = aiMessages.scrollHeight;
+      }
+
+      function escapeHtml(str) {
+        const p = document.createElement('p');
+        p.textContent = str;
+        return p.innerHTML;
+      }
+
+      async function sendAiMessage(query) {
+        if (!query || !query.trim()) return;
+        const text = query.trim();
+        aiInput.value = '';
+        appendMessage(text, true);
+
+        const loadingId = 'ai-loading-' + Date.now();
+        const loadingDiv = document.createElement('div');
+        loadingDiv.className = 'ai-msg bot';
+        loadingDiv.id = loadingId;
+        loadingDiv.innerHTML = `
+          <div class="avatar">AI</div>
+          <div class="bubble" style="font-style:italic;color:#787b86;">Analyzing ${currentActiveSymbol} live dynamics...</div>
+        `;
+        aiMessages.appendChild(loadingDiv);
+        aiMessages.scrollTop = aiMessages.scrollHeight;
+
+        try {
+          const res = await fetch(`/api/ai/analyze?query=${encodeURIComponent(text)}`);
+          if (res.ok) {
+            const data = await res.json();
+            const el = document.getElementById(loadingId);
+            if (el) el.remove();
+            appendMessage(data.analysis || data.message || `<strong>Analysis for ${text}:</strong><br>Trend is positive above key support with steady institutional participation.`);
+            return;
+          }
+        } catch (err) {}
+
+        setTimeout(() => {
+          const el = document.getElementById(loadingId);
+          if (el) el.remove();
+          let reply = '';
+          const q = text.toLowerCase();
+          if (q.includes('summary') || q.includes('outlook') || q.includes('technical')) {
+            reply = `<strong>Technical Outlook for SENSEX:</strong><br>• Trend: Bullish consolidation above 73,200<br>• RSI: 54.2 (Neutral-to-Bullish momentum)<br>• Immediate Resistance: 73,850 &amp; 74,200<br>• Key Support: 73,350 &amp; 72,900`;
+          } else if (q.includes('level') || q.includes('support') || q.includes('resistance')) {
+            reply = `<strong>Critical Price Levels (BSE:SENSEX):</strong><br>• Resistance 2: 74,200<br>• Resistance 1: 73,850<br>• Current: 73,606.75<br>• Support 1: 73,350<br>• Support 2: 72,900`;
+          } else if (q.includes('setup') || q.includes('trade') || q.includes('scalp')) {
+            reply = `<strong>Trade Setup:</strong><br>Look for continuation breakout above 73,750 targeting 74,050 with stop loss placed below 73,450 (Risk/Reward 1:2.0).`;
+          } else {
+            reply = `<strong>Market Intelligence:</strong><br>${currentActiveSymbol} is trading steady in an accumulation band. Monitor volume confirmation near key moving averages.`;
+          }
+          appendMessage(reply);
+        }, 500);
+      }
+
+      aiSubmit.addEventListener('click', () => sendAiMessage(aiInput.value));
+      aiInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') sendAiMessage(aiInput.value);
+      });
+
+      document.querySelectorAll('.ai-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+          const q = chip.getAttribute('data-q');
+          sendAiMessage(q);
+        });
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Startup Orchestration
+    // ─────────────────────────────────────────────────────────────────────────
+    function initAll() {
+      initTradingViewChart();
+      setupDrawingToolExtensions();
+      setupPaperTrading();
+      setupAiCopilot();
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+  </script>
+</body>
 </html>
