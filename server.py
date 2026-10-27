@@ -31,9 +31,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Zed Trading Terminal (Kronos & Laya Engine)", lifespan=lifespan)
 
+_allowed_origins = [o.strip() for o in os.environ.get(
+    "ZED_ALLOWED_ORIGINS",
+    "http://127.0.0.1:8000,http://localhost:8000"
+).split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,  # A7: no wildcard with credentials
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1262,6 +1267,8 @@ async def post_backtest(request: Request):
     return {
         "epic": epic,
         "resolution": resolution,
+        "demo": True,
+        "demo_note": "Simulated placeholder (fabricated stats, fixed 68% win-rate seed) - replaced by Nautilus engine in P2",
         "candles": candles_in,
         "markers": markers,
         "trades": trades,
@@ -1453,35 +1460,8 @@ async def get_manifest():
         return FileResponse(mf)
     return Response(status_code=404)
 
-@app.get("/widgetembed/")
-@app.get("/widgetembed")
-async def serve_widgetembed():
-    widget_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "widgetembed.html")
-    if os.path.exists(widget_file):
-        with open(widget_file, "r", encoding="utf-8") as f:
-            html = f.read()
-        return HTMLResponse(content=html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
-    return HTTPException(status_code=404, detail="widgetembed.html not found")
-
-@app.get("/tv_bundles/{bundle_name:path}")
-async def serve_tv_bundle(bundle_name: str):
-    local_path = os.path.join(static_dir, "tv_bundles", bundle_name)
-    if os.path.isfile(local_path):
-        return FileResponse(local_path, media_type="application/javascript")
-
-    # Proxy and cache from TradingView widget CDN
-    remote_url = f"https://www.tradingview-widget.com/static/bundles/embed/{bundle_name}"
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(remote_url, headers={"User-Agent": "Mozilla/5.0"})
-            if resp.status_code == 200:
-                os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                with open(local_path, "wb") as f:
-                    f.write(resp.content)
-                return Response(content=resp.content, media_type="application/javascript")
-            return Response(status_code=resp.status_code)
-    except Exception as e:
-        return HTTPException(status_code=500, detail=str(e))
+# A2 (P0.6): legacy TradingView widget-shell chain removed
+# (/widgetembed + /tv_bundles write-proxy that cached remote JS into the repo).
 
 @app.get("/")
 async def root():
@@ -1494,20 +1474,29 @@ async def root():
         return FileResponse(fallback, headers=no_cache_headers)
     return {"message": "Trading Terminal Backend is running."}
 
+STATIC_SERVE_DIRS = {"js", "css", "img", "data", "pages", "tv_svg_extract", "fonts", "icons", "assets"}
+
 @app.get("/{full_path:path}")
 async def catch_all(full_path: str):
     no_cache_headers = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
-    # If file exists in static or dist, serve it
-    sp = os.path.join(static_dir, full_path)
+    # A7: explicit allowlist + traversal guard (no secrets written under static/dist,
+    # but the allowlist keeps it that way once the vault/DB exist).
+    norm = os.path.normpath(full_path)
+    if norm in ("", ".") or norm.startswith(".."):
+        raise HTTPException(status_code=404, detail="Not Found")
+    top = norm.split(os.sep)[0].split("/")[0]
+    sp = os.path.join(static_dir, norm)
+    if top not in STATIC_SERVE_DIRS and os.path.isfile(sp):
+        raise HTTPException(status_code=404, detail="Not Found")
     if os.path.isfile(sp):
         return FileResponse(sp)
-    file_path = os.path.join(dist_dir, full_path)
+    file_path = os.path.join(dist_dir, norm)
     if os.path.isfile(file_path):
         return FileResponse(file_path)
     index_file = os.path.join(static_dir, "index.html")
     if os.path.exists(index_file):
         return FileResponse(index_file, headers=no_cache_headers)
-    return HTTPException(status_code=404, detail="Not Found")
+    raise HTTPException(status_code=404, detail="Not Found")
 
 if __name__ == "__main__":
     import uvicorn
