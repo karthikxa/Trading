@@ -1,1 +1,0 @@
-(self.webpackChunktradingview=self.webpackChunktradingview||[]).push([[44497],{672710(e){e.exports=["Ask"]},429508(e){e.exports=["Bid"]}}]);
