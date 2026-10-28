@@ -92,6 +92,86 @@
       letter-spacing: 0.3px;
     }
 
+    /* ── Symbol Overview launcher + panel ── */
+    .tv-overview-fab {
+      width: 28px;
+      height: 28px;
+      border: 1px solid #e0e3eb;
+      border-radius: 4px;
+      background: transparent;
+      color: #131722;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      transition: background 0.12s ease;
+    }
+    .tv-overview-fab:hover { background: #f0f3fa; }
+    .tv-overview-fab svg { width: 20px; height: 20px; display: block; }
+
+    .tv-overview-panel {
+      position: fixed;
+      right: 8px;
+      bottom: 8px;
+      width: 500px;
+      max-width: calc(100vw - 16px);
+      background: #0F0F0F;
+      border: 1px solid #2a2e39;
+      border-radius: 8px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      z-index: 55;
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+    }
+    .tv-overview-panel.open { display: flex; }
+    .tv-overview-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      color: #d1d4dc;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .tv-overview-head svg { width: 18px; height: 18px; color: #d1d4dc; flex: none; }
+    .tv-overview-head span { flex: 1; }
+    .tv-overview-close {
+      border: 0;
+      background: transparent;
+      color: #787b86;
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .tv-overview-close:hover { background: rgba(255,255,255,0.08); color: #d1d4dc; }
+    .tv-overview-body { position: relative; flex: 1; min-height: 0; }
+    .tv-overview-body .tradingview-widget-container,
+    .tv-overview-body .tradingview-widget-container__widget { width: 100%; height: 100%; }
+    .tv-overview-copyright {
+      padding: 4px 12px 8px;
+      font-size: 10px;
+      color: #787b86;
+      background: #0F0F0F;
+    }
+    .tv-overview-copyright a { color: #2962ff; text-decoration: none; }
+    .tv-overview-fallback {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #787b86;
+      font-size: 12px;
+      padding: 0 24px;
+      text-align: center;
+      pointer-events: none;
+    }
+
     /* Account status pill removed on user request (2026-10-28). */
 
     .tv-toast {
@@ -121,6 +201,9 @@
   <tv-advanced-chart allow-symbol-change symbol="BSE:SENSEX" interval="D" theme="light" locale="en" autosize></tv-advanced-chart>
 
   <div class="tv-instant-trading-bar">
+    <button class="tv-overview-fab" id="tv-overview-fab" type="button" title="Symbol Overview" aria-label="Symbol Overview">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" fill="currentColor" aria-hidden="true"><path d="M22.2 5.01A2 2 0 0 1 24 7v14a2 2 0 0 1-1.8 1.99L22 23h-9V10H6v4H5V7c0-1.1.9-2 2-2h15zM11 21h-1v-3.3L5.7 22l-.7-.73L9.3 17H6v-1h5zm3 1h4v-6h-4zm5 0h3a1 1 0 0 0 1-1v-5h-4zm-5-7h4v-5h-4zm5 0h4v-5h-4zM7 6a1 1 0 0 0-1 1v2h7V6zm7 3h9V7a1 1 0 0 0-1-1h-8z"/></svg>
+    </button>
     <div class="tv-trade-button tv-trade-sell" id="tv-instant-sell" title="Instant Sell at Bid (Alt+S)">
       <div class="tv-trade-price" id="tv-instant-sell-price">—</div>
       <div class="tv-trade-label">SELL</div>
@@ -129,6 +212,20 @@
       <div class="tv-trade-price" id="tv-instant-buy-price">—</div>
       <div class="tv-trade-label">BUY</div>
     </div>
+  </div>
+
+  <div class="tv-overview-panel" id="tv-overview-panel" role="dialog" aria-label="Symbol Overview">
+    <div class="tv-overview-head">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" fill="currentColor" aria-hidden="true"><path d="M22.2 5.01A2 2 0 0 1 24 7v14a2 2 0 0 1-1.8 1.99L22 23h-9V10H6v4H5V7c0-1.1.9-2 2-2h15zM11 21h-1v-3.3L5.7 22l-.7-.73L9.3 17H6v-1h5zm3 1h4v-6h-4zm5 0h3a1 1 0 0 0 1-1v-5h-4zm-5-7h4v-5h-4zm5 0h4v-5h-4zM7 6a1 1 0 0 0-1 1v2h7V6zm7 3h9V7a1 1 0 0 0-1-1h-8z"/></svg>
+      <span>Symbol Overview</span>
+      <button class="tv-overview-close" id="tv-overview-close" title="Close (Esc)">&times;</button>
+    </div>
+    <div class="tv-overview-body" id="tv-overview-body">
+      <div class="tradingview-widget-container">
+        <div class="tradingview-widget-container__widget"></div>
+      </div>
+    </div>
+    <div class="tv-overview-copyright" id="tv-overview-copyright"></div>
   </div>
 
   <div class="tv-toast" id="tv-toast"></div>
@@ -209,6 +306,120 @@
 
     document.getElementById('tv-instant-sell').addEventListener('click', () => executeTrade('SELL'));
     document.getElementById('tv-instant-buy').addEventListener('click', () => executeTrade('BUY'));
+
+    /* ── Symbol Overview (embed-widget-symbol-overview) behind a TV glyph ──
+       Opened on click; mounts lazily once. Config is user-supplied verbatim,
+       with the current chart symbol prepended to the symbols list. */
+    const S3_EMBED = 'https://s3.tradingview.com/external-embedding/embed-widget-';
+    let overviewMounted = false;
+
+    function currentChartSymbol() {
+      const wc = document.querySelector('#tradingview_advanced_chart > tv-advanced-chart');
+      return wc ? (wc.getAttribute('symbol') || DEFAULT_SYMBOL) : DEFAULT_SYMBOL;
+    }
+
+    function chartIntervalToken() {
+      const wc = document.querySelector('#tradingview_advanced_chart > tv-advanced-chart');
+      const iv = wc ? (wc.getAttribute('interval') || 'D') : 'D';
+      // tv-advanced-chart stores "1D"-style tokens; the overview widget wants D/W/M
+      return /^[0-9]+$/.test(iv) ? iv : iv.replace(/^1(?=[DWM]$)/, '');
+    }
+
+    function mountSymbolOverview() {
+      if (overviewMounted) return;
+      overviewMounted = true;
+
+      const sym = currentChartSymbol().replace('|', ':') || DEFAULT_SYMBOL;
+      const iv = chartIntervalToken();
+      const shortName = sym.indexOf(':') > -1 ? sym.split(':').slice(1).join(':') : sym;
+      const symbols = [
+        [shortName, sym + '|' + iv],
+        ['Apple', 'NASDAQ:AAPL|1D'],
+        ['Google', 'NASDAQ:GOOGL|1D'],
+        ['Microsoft', 'NASDAQ:MSFT|1D']
+      ];
+
+      var cfg = {
+        lineWidth: 2,
+        lineType: 0,
+        chartType: 'area',
+        fontColor: 'rgb(106, 109, 120)',
+        gridLineColor: 'rgba(242, 242, 242, 0.06)',
+        volumeUpColor: 'rgba(34, 171, 148, 0.5)',
+        volumeDownColor: 'rgba(247, 82, 95, 0.5)',
+        backgroundColor: '#0F0F0F',
+        widgetFontColor: '#DBDBDB',
+        upColor: '#22ab94',
+        downColor: '#f7525f',
+        borderUpColor: '#22ab94',
+        borderDownColor: '#f7525f',
+        wickUpColor: '#22ab94',
+        wickDownColor: '#f7525f',
+        colorTheme: 'dark',
+        isTransparent: false,
+        locale: 'en',
+        chartOnly: false,
+        scalePosition: 'right',
+        scaleMode: 'Normal',
+        fontFamily: '-apple-system, BlinkMacSystemFont, Trebuchet MS, Roboto, Ubuntu, sans-serif',
+        valuesTracking: '1',
+        changeMode: 'price-and-percent',
+        symbols: symbols,
+        dateRanges: ['1d|1', '1m|30', '3m|60', '12m|1D', '60m|1W', 'all|1M'],
+        fontSize: '10',
+        headerFontSize: 'medium',
+        autosize: true,
+        width: '100%',
+        height: '100%',
+        noTimeScale: false,
+        hideDateRanges: false,
+        hideMarketStatus: false,
+        hideSymbolLogo: false
+      };
+
+      const cont = document.querySelector('#tv-overview-body .tradingview-widget-container');
+      const s = document.createElement('script');
+      s.src = S3_EMBED + 'symbol-overview.js';
+      s.type = 'text/javascript';
+      s.async = true;
+      s.innerHTML = JSON.stringify(cfg);
+      cont.appendChild(s);
+
+      /* Courtesy attribution (TV embed guidelines) + offline fallback */
+      document.getElementById('tv-overview-copyright').innerHTML =
+        `<a href="https://www.tradingview.com/" rel="noopener nofollow" target="_blank">Charts by TradingView</a>`;
+      const fb = document.createElement('div');
+      fb.className = 'tv-overview-fallback';
+      fb.textContent = 'Loading Symbol Overview… (unavailable while offline — reopen the panel once connected)';
+      cont.appendChild(fb);
+      var tries = 0;
+      const t = setInterval(() => {
+        const iframe = cont.querySelector('iframe');
+        const ok = iframe && iframe.src && iframe.src.indexOf('tradingview') > -1 && iframe.getBoundingClientRect().height > 8;
+        if (ok) {
+          clearInterval(t);
+          if (fb.parentNode) fb.parentNode.removeChild(fb);
+          return;
+        }
+        if (++tries === 30 && fb.parentNode) fb.textContent = 'TradingView embed unavailable right now — check connectivity, then close and reopen this panel.';
+        if (tries > 300) clearInterval(t);
+      }, 500);
+    }
+
+    const overviewPanel = document.getElementById('tv-overview-panel');
+    const overviewFab = document.getElementById('tv-overview-fab');
+
+    function setOverviewOpen(v) {
+      overviewPanel.classList.toggle('open', v);
+      overviewFab.setAttribute('aria-expanded', v ? 'true' : 'false');
+      if (v) mountSymbolOverview();
+    }
+
+    overviewFab.addEventListener('click', () => setOverviewOpen(!overviewPanel.classList.contains('open')));
+    document.getElementById('tv-overview-close').addEventListener('click', () => setOverviewOpen(false));
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && overviewPanel.classList.contains('open')) setOverviewOpen(false);
+    });
 
     /* Keyboard: Alt+B buy, Alt+S sell (matches button tooltips) */
     document.addEventListener('keydown', (e) => {
