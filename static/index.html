@@ -48,10 +48,12 @@
     }
 
     /* ── Instant BUY / SELL bar (TV-parity styling kept verbatim) ── */
+    /* Left side, below the top toolbar's indicator legends and clear of the
+       drawings toolbar column (x>58px) and the bottom time axis (y<~40px). */
     .tv-instant-trading-bar {
       position: fixed;
-      top: 10px;
-      right: 10px;
+      left: 62px;
+      bottom: 46px;
       display: inline-flex;
       align-items: center;
       gap: 6px;
@@ -96,17 +98,13 @@
     }
 
     .tv-acct-status {
-      position: fixed;
-      top: 44px;
-      right: 10px;
-      z-index: 25;
       font-size: 11px;
       color: #787b86;
       font-weight: 600;
-      background: rgba(255,255,255,0.92);
+      background: #ffffff;
       border: 1px solid #e0e3eb;
       border-radius: 4px;
-      padding: 2px 8px;
+      padding: 4px 8px;
       font-variant-numeric: tabular-nums;
     }
 
@@ -146,9 +144,8 @@
       <div class="tv-trade-price" id="tv-instant-buy-price">—</div>
       <div class="tv-trade-label">BUY</div>
     </div>
+    <div class="tv-acct-status" id="tv-acct-status">Paper · ₹1,000,000.00 · 0 qty</div>
   </div>
-
-  <div class="tv-acct-status" id="tv-acct-status">Paper · ₹1,000,000.00 · 0 qty</div>
 
   <div class="tv-toast" id="tv-toast"></div>
 
