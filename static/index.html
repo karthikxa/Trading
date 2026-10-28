@@ -48,12 +48,12 @@
     }
 
     /* ── Instant BUY / SELL bar (TV-parity styling kept verbatim) ── */
-    /* Left side, below the top toolbar's indicator legends and clear of the
-       drawings toolbar column (x>58px) and the bottom time axis (y<~40px). */
+    /* Top-left corner of the chart pane: below TV's top toolbar, siting on the
+       free strip under the symbol-info/indicator legends. Transparent pills. */
     .tv-instant-trading-bar {
       position: fixed;
-      left: 62px;
-      bottom: 46px;
+      left: 10px;
+      top: 88px;
       display: inline-flex;
       align-items: center;
       gap: 6px;
@@ -62,14 +62,14 @@
     }
 
     .tv-trade-button {
-      background: #ffffff;
+      background: transparent;
       border-radius: 4px;
       padding: 3px 12px;
       min-width: 68px;
       text-align: center;
       cursor: pointer;
       transition: all 0.12s ease;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      box-shadow: none;
     }
     .tv-trade-sell { border: 1px solid #f23645; color: #f23645; }
     .tv-trade-sell:hover { background: rgba(242, 54, 69, 0.08); }
@@ -101,10 +101,9 @@
       font-size: 11px;
       color: #787b86;
       font-weight: 600;
-      background: #ffffff;
-      border: 1px solid #e0e3eb;
-      border-radius: 4px;
-      padding: 4px 8px;
+      background: transparent;
+      border: 0;
+      padding: 4px 2px;
       font-variant-numeric: tabular-nums;
     }
 
