@@ -48,12 +48,13 @@
     }
 
     /* ── Instant BUY / SELL pair (TV-parity, transparent) ── */
-    /* Bottom-left: right of the TV companion mark, above the time axis.
-       Keeps clear of the top-left legend stack (symbol info, Vol, studies). */
+    /* Top strip, aside of the indicator legends: the legend stack anchors
+       top-left (symbol info, Vol, studies) — the pair sits below TV's toolbar
+       on the right, clear of legends and of the right price scale strip. */
     .tv-instant-trading-bar {
       position: fixed;
-      left: 62px;
-      bottom: 46px;
+      top: 48px;
+      right: 84px;
       display: inline-flex;
       align-items: center;
       gap: 6px;
