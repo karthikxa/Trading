@@ -47,13 +47,13 @@
       height: 100%;
     }
 
-    /* ── Instant BUY / SELL bar (TV-parity styling kept verbatim) ── */
-    /* Top-left corner of the chart pane: below TV's top toolbar, siting on the
-       free strip under the symbol-info/indicator legends. Transparent pills. */
+    /* ── Instant BUY / SELL pair (TV-parity, transparent) ── */
+    /* Bottom-left: right of the TV companion mark, above the time axis.
+       Keeps clear of the top-left legend stack (symbol info, Vol, studies). */
     .tv-instant-trading-bar {
       position: fixed;
-      left: 10px;
-      top: 88px;
+      left: 62px;
+      bottom: 46px;
       display: inline-flex;
       align-items: center;
       gap: 6px;
@@ -90,22 +90,8 @@
       font-weight: 700;
       letter-spacing: 0.3px;
     }
-    .tv-trade-spread {
-      font-size: 11px;
-      color: #787b86;
-      font-weight: 600;
-      padding: 0 1px;
-    }
 
-    .tv-acct-status {
-      font-size: 11px;
-      color: #787b86;
-      font-weight: 600;
-      background: transparent;
-      border: 0;
-      padding: 4px 2px;
-      font-variant-numeric: tabular-nums;
-    }
+    /* Account status pill removed on user request (2026-10-28). */
 
     .tv-toast {
       position: fixed;
@@ -138,12 +124,10 @@
       <div class="tv-trade-price" id="tv-instant-sell-price">—</div>
       <div class="tv-trade-label">SELL</div>
     </div>
-    <div class="tv-trade-spread" id="tv-instant-spread">0.00</div>
     <div class="tv-trade-button tv-trade-buy" id="tv-instant-buy" title="Instant Buy at Ask (Alt+B)">
       <div class="tv-trade-price" id="tv-instant-buy-price">—</div>
       <div class="tv-trade-label">BUY</div>
     </div>
-    <div class="tv-acct-status" id="tv-acct-status">Paper · ₹1,000,000.00 · 0 qty</div>
   </div>
 
   <div class="tv-toast" id="tv-toast"></div>
@@ -180,12 +164,8 @@
       try { localStorage.setItem(LS_ACCOUNT, JSON.stringify({ ...acct, symbol: activeSymbol })); } catch (e) {}
     }
 
-    function fmtV(v, d) {
-      return v.toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
-    }
-
     function fmtPrice(v) {
-      return v >= 10000 ? fmtV(v, 2) : fmtV(v, 2);
+      return v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
     let toastTimer = null;
@@ -198,25 +178,21 @@
       toastTimer = setTimeout(() => toast.classList.remove('show'), 2400);
     }
 
-    /* Bid/Ask = last ± half spread */
+    /* Internal quotes: bid/ask around last price. No DOM for spread/status —
+       the bar renders only the SELL/BUY pair. */
     function refreshQuotes() {
       const last = DEFAULT_PRICES[activeSymbol] || 73606.75;
-      const spread = Math.max(0.05, +(last * 0.00001).toFixed(2));
-      const bid = last - spread / 2;
-      const ask = last + spread / 2;
+      const half = Math.max(0.025, +(last * 0.000005).toFixed(2));
+      const bid = last - half;
+      const ask = last + half;
       document.getElementById('tv-instant-sell-price').textContent = fmtPrice(bid);
       document.getElementById('tv-instant-buy-price').textContent = fmtPrice(ask);
-      document.getElementById('tv-instant-spread').textContent = spread.toFixed(2);
-      const status = document.getElementById('tv-acct-status');
-      status.textContent = `Paper · ₹${fmtV(acct.balance, 2)} · ${acct.qty} qty · ${activeSymbol}`;
       return { last, bid, ask };
     }
 
     function executeTrade(side) {
-      const { last } = refreshQuotes();
-      const price = side === 'BUY'
-        ? +(last + Math.max(0.025, +(last * 0.000005).toFixed(2))).toFixed(2)
-        : +(last - Math.max(0.025, +(last * 0.000005).toFixed(2))).toFixed(2);
+      const { last, bid, ask } = refreshQuotes();
+      const price = side === 'BUY' ? ask : bid;
       const qty = 1;
 
       acct.qty += side === 'BUY' ? qty : -qty;
@@ -227,7 +203,7 @@
 
       const pnl = acct.balance + (acct.qty * last) - acct.initialBalance;
       const pnlSign = pnl >= 0 ? '+' : '';
-      showTvToast(`Paper ${side}: ${qty} ${activeSymbol} @ ₹${fmtV(price, 2)} | P&L: ${pnlSign}₹${fmtV(pnl, 2)}`);
+      showTvToast(`Paper ${side}: ${qty} ${activeSymbol} @ ₹${fmtPrice(price)} | P&L: ${pnlSign}₹${fmtPrice(pnl)}`);
     }
 
     document.getElementById('tv-instant-sell').addEventListener('click', () => executeTrade('SELL'));
