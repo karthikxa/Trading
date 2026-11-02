@@ -1,0 +1,162 @@
+import { availableParallelism } from "node:os";
+import type { RegisteredFlow } from "./flow";
+import type { Capability } from "./types";
+
+export const EXTERNAL_CAPABILITIES = new Set<Capability>([
+  "sandbox",
+  "managedGit",
+  "managedGitPush",
+  "stripe",
+  "funded",
+  "projectSnapshots",
+]);
+export const LOCAL_FLOW_INTERNAL_SERVICE_KEY = "local-flow-runner-internal-service-key";
+/** The local stack's synthetic API_KEY_SECRET: the key every stored envelope uses there. */
+export const LOCAL_FLOW_API_KEY_SECRET = "local-flow-runner-api-key-secret";
+
+export interface LocalWorktreeConfig {
+  ports: {
+    web: number;
+    api: number;
+    gateway: number;
+  };
+}
+
+export interface LocalSupabaseEnvironment {
+  API_URL?: string;
+  DB_URL?: string;
+  MAILPIT_URL?: string;
+  ANON_KEY?: string;
+  SERVICE_ROLE_KEY?: string;
+  JWT_SECRET?: string;
+  /** Supabase Storage's S3 protocol pair — the API's object store signs config
+   *  archive requests with it (apps/api/src/object-store/s3.ts). */
+  S3_PROTOCOL_ACCESS_KEY_ID?: string;
+  S3_PROTOCOL_ACCESS_KEY_SECRET?: string;
+}
+
+export interface LocalProfileInput {
+  worktree?: LocalWorktreeConfig | null;
+  supabase: LocalSupabaseEnvironment;
+}
+
+export interface LocalFlowExclusion {
+  id: string;
+  reason: string;
+}
+
+export function localWebUrl(port: number): string {
+  return `http://localhost:${port}`;
+}
+
+export function localEnvironmentOverrides(input: LocalProfileInput): Record<string, string> {
+  const { worktree, supabase } = input;
+  const apiPort = worktree?.ports.api ?? 8008;
+  const webPort = worktree?.ports.web ?? 3000;
+  const gatewayPort = worktree?.ports.gateway ?? 8090;
+
+  if (!supabase.API_URL || !supabase.DB_URL || !supabase.ANON_KEY || !supabase.SERVICE_ROLE_KEY) {
+    throw new Error("local Supabase is unavailable or incomplete; start the local stack and retry");
+  }
+
+  return {
+    KE2E_TARGET: "local",
+    KE2E_API_URL: `http://127.0.0.1:${apiPort}/v1`,
+    KE2E_BASE_URL: localWebUrl(webPort),
+    KE2E_GATEWAY_URL: `http://127.0.0.1:${gatewayPort}`,
+    KE2E_SUPABASE_URL: supabase.API_URL,
+    KE2E_DATABASE_URL: supabase.DB_URL,
+    KE2E_SUPABASE_ANON_KEY: supabase.ANON_KEY,
+    KE2E_SUPABASE_SERVICE_ROLE_KEY: supabase.SERVICE_ROLE_KEY,
+    KE2E_INTERNAL_SERVICE_KEY: LOCAL_FLOW_INTERNAL_SERVICE_KEY,
+    // The local API verifies Stripe webhooks with this same literal
+    // (local-stack.ts), so a flow can deliver a validly signed event.
+    KE2E_STRIPE_WEBHOOK_SECRET: LOCAL_STRIPE_WEBHOOK_SECRET,
+    // The local API boots with this address on its operator allowlist (local-stack.ts).
+    KE2E_PLATFORM_ADMIN_EMAIL: LOCAL_PLATFORM_ADMIN_EMAIL,
+    KE2E_LIVE_CONFIRM: "local",
+    KE2E_LOCAL_BILLING_ENABLED: "1",
+    KE2E_CAP_SANDBOX: "0",
+    KE2E_CAP_MANAGED_GIT: "0",
+    KE2E_CAP_MANAGED_GIT_PUSH: "0",
+    KE2E_CAP_FUNDED: "0",
+    KE2E_CAP_PROJECT_SNAPSHOTS: "0",
+    KE2E_DEFAULT_FLOW_ATTEMPTS: "1",
+    KE2E_API_WORKERS: String(localWorkerCount()),
+    KE2E_SANDBOX_WORKERS: "1",
+    KE2E_TEARDOWN_WORKERS: String(Math.min(8, localWorkerCount())),
+    // The local API sends email to this Mailpit (core/local-stack.ts EMAIL_URL).
+    ...(supabase.MAILPIT_URL ? { KE2E_MAILPIT_URL: supabase.MAILPIT_URL } : {}),
+  };
+}
+
+export function planLocalFlows(flows: RegisteredFlow[]): {
+  runnable: RegisteredFlow[];
+  excluded: LocalFlowExclusion[];
+} {
+  const runnable: RegisteredFlow[] = [];
+  const excluded: LocalFlowExclusion[] = [];
+
+  for (const candidate of flows) {
+    const external = (candidate.meta.requires ?? []).filter((capability) => EXTERNAL_CAPABILITIES.has(capability));
+    if (external.length) {
+      excluded.push({
+        id: candidate.id,
+        reason: `external capabilities: ${external.join(", ")}`,
+      });
+      continue;
+    }
+    if (candidate.meta.todo) {
+      excluded.push({
+        id: candidate.id,
+        reason: `todo: ${candidate.meta.todo}`,
+      });
+      continue;
+    }
+    runnable.push(candidate);
+  }
+
+  return { runnable, excluded };
+}
+
+export function localRunExitCode(summary: { failed: number; skipped: number; todo: number }): 0 | 1 {
+  return summary.failed === 0 && summary.skipped === 0 && summary.todo === 0 ? 0 : 1;
+}
+
+export function localWorkerCount(cpuCount = availableParallelism()): number {
+  return Math.max(4, Math.min(16, Math.trunc(cpuCount)));
+}
+
+/**
+ * Signing secret for the Supabase send-email hook in the local profile. Fixed
+ * (not random) so a flow can sign a request the running API will accept, in the
+ * `v1,whsec_<base64>` form Supabase itself writes.
+ */
+export const LOCAL_AUTH_EMAIL_HOOK_SECRET =
+  'v1,whsec_bG9jYWwtZmxvdy1ydW5uZXItYXV0aC1lbWFpbC1ob29rLXNlY3JldA==';
+
+/**
+ * Stripe webhook signing secret for the local profile. Fixed (not random) so a
+ * flow can sign a Stripe event the running local API accepts. The local
+ * profile has no Stripe account, so this secret authorizes nothing outside the
+ * local stack.
+ */
+export const LOCAL_STRIPE_WEBHOOK_SECRET = 'whsec_local_flow_runner_disabled';
+
+/**
+ * Gateway-to-API internal token for the local profile. Fixed (not random) so
+ * `ensureLocalStack` can respawn one half while the other survives from a
+ * previous run: a surviving process keeps the token it started with, so both
+ * spawn sites must agree on one value. The profile is loopback-only
+ * (`assertLoopbackHttpUrl`), so a source-visible constant authorizes nothing
+ * beyond this machine.
+ */
+export const LOCAL_GATEWAY_INTERNAL_TOKEN = 'local-flow-runner-gateway-internal-token';
+
+/**
+ * The one address the local API's self-host operator allowlist
+ * (`KORTIX_PLATFORM_ADMIN_EMAILS`) names. No principal gets it: only `ADM-25`
+ * creates an identity with it, to prove the allowlist matches a password
+ * identity and never an SSO one (KRTX-1715).
+ */
+export const LOCAL_PLATFORM_ADMIN_EMAIL = 'allowlisted-operator@ke2e.kortix.test';

@@ -1,0 +1,805 @@
+'use client';
+
+import { localizedCopy } from './localized-copy';
+
+import { useLocale, useTranslations } from '@/i18n/use-translations';
+import { listSignedInDevices, signOutDevice } from '@kortix/sdk';
+import {
+  DesktopIcon as Desktop,
+  KeyIcon as KeyRound,
+  PlusIcon as Plus,
+  ShieldWarningIcon as ShieldWarning,
+  DeviceMobileIcon as Smartphone,
+  TrashIcon as Trash2,
+  WarningIcon as Warning,
+} from '@phosphor-icons/react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo } from 'react';
+
+import { CopyButton } from '@kortix/ui/markdown';
+
+import { Badge } from '@kortix/ui/badge';
+import { Button } from '@kortix/ui/button';
+import { ConfirmDialog } from '@kortix/ui/confirm-dialog';
+import { SessionDotMatrix } from '@kortix/ui/dot-matrix/session-dot-matrix';
+import Hint from '@kortix/ui/hint';
+import { InfoBanner } from '@kortix/ui/info-banner';
+import { inputSurfaceClasses, inputTransitionClasses } from '@kortix/ui/input';
+import Loading from '@kortix/ui/loading';
+import { Modal, ModalContent, ModalDescription, ModalTitle } from '@kortix/ui/modal';
+import { SettingsRow, SettingsRowGroup } from '@kortix/ui/settings-row';
+import { SettingsSubsectionHeader } from '@kortix/ui/settings-subsection-header';
+import { Skeleton } from '@kortix/ui/skeleton';
+import { errorToast, successToast } from '@kortix/ui/toast';
+import { requestMfaStepUp } from '@/features/auth/mfa-step-up';
+import { Bun } from '@/features/icon/icons/bun';
+import { Chrome } from '@/features/icon/icons/chrome';
+import { Edge } from '@kortix/ui/internal/icons/edge';
+import { Firefox } from '@/features/icon/icons/firefox';
+import { Linux } from '@/features/icon/icons/linux';
+import { Safari } from '@/features/icon/icons/safari';
+import { EmptyState } from '@kortix/ui/empty-state';
+import { ErrorState } from '@kortix/ui/error-state';
+import { type EnrollingFactor, useMfa } from '@/hooks/account/use-mfa';
+import { useCopy } from '@kortix/ui/internal/hooks/use-copy';
+import { createClient } from '@/lib/supabase/client';
+import type { FactorInfo } from '@/lib/supabase/mfa';
+import { cn } from '@kortix/ui';
+import { SettingsTabHeader } from '@kortix/ui/customize/settings/settings-tab-header';
+import { type DeviceBrand, describeUserAgent } from './device-label';
+
+const BRAND_MARK: Record<DeviceBrand, (props: { className?: string }) => React.JSX.Element> = {
+  chrome: Chrome,
+  safari: Safari,
+  firefox: Firefox,
+  edge: Edge,
+  linux: Linux,
+  bun: Bun,
+};
+
+/** Supabase hands the TOTP QR back as an SVG data URL (or raw SVG in older
+ *  versions) — normalize both into something an <img> can render. */
+export function totpQrSrc(qr: string): string {
+  if (qr.startsWith('data:')) return qr;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(qr)}`;
+}
+
+/** One enrolled factor row — pure view, exported for render tests.
+ *  Border-less: it is stacked inside a `SettingsRowGroup` with the
+ *  two-factor row, and the group draws the border and the hairlines. */
+export function FactorRow({
+  factor,
+  onRemove,
+  copy = DEFAULT_SECURITY_TAB_COPY,
+}: {
+  factor: { id: string; friendly_name?: string; factor_type?: string; status?: string };
+  onRemove: (id: string) => void;
+  copy?: SecurityTabCopy;
+}) {
+  const Icon = factor.factor_type === 'phone' ? Smartphone : KeyRound;
+  return (
+    <div className="flex items-center justify-between gap-3 px-4 py-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="bg-muted flex size-8 shrink-0 items-center justify-center rounded-sm">
+          <Icon className="text-muted-foreground size-4" />
+        </span>
+        <div className="min-w-0">
+          <div className="text-foreground truncate text-sm">
+            {factor.friendly_name ||
+              (factor.factor_type === 'phone' ? copy.phone : copy.authenticatorApp)}
+          </div>
+          <div className="text-muted-foreground text-xs">
+            {factor.factor_type === 'phone' ? copy.sms : copy.authenticatorTotp}
+          </div>
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        {/* A verified factor is the normal case and needs no label; only an
+            unfinished one is called out. */}
+        {factor.status === 'verified' ? null : (
+          <Badge variant="outline" size="xs">
+            {factor.status === 'unverified' ? copy.unverified : factor.status}
+          </Badge>
+        )}
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={copy.removeFactor}
+          onClick={() => onRemove(factor.id)}
+        >
+          <Trash2 className="size-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+const CODE_LENGTH = 6;
+
+/** Groups a TOTP secret in fours, the way authenticator apps print it,
+ *  four groups to a line so a 32-character key splits into two even rows. */
+export function formatSecret(secret: string): string {
+  return secret.replace(/(.{4})(?=.)/g, '$1 ').replace(/((?:\S{4} ){3}\S{4}) /g, '$1\n');
+}
+
+/** The enrollment dialog: scan on the left, type the code on the right.
+ *  One real input sits over six drawn cells, so paste, autofill
+ *  (`one-time-code`) and screen readers all see a single field. The
+ *  container verifies as soon as the sixth digit lands. */
+export function EnrollDialog({
+  enrolling,
+  code,
+  onCodeChange,
+  onVerify,
+  isVerifying,
+  onCancel,
+  copy,
+}: {
+  enrolling: EnrollingFactor | null;
+  code: string;
+  onCodeChange: (value: string) => void;
+  onVerify: () => void;
+  isVerifying: boolean;
+  onCancel: () => void;
+  copy: SecurityTabCopy;
+}) {
+  return (
+    <Modal open={enrolling !== null} onOpenChange={(open) => !open && onCancel()}>
+      <ModalContent
+        // modal.tsx centres only from `lg`. From `sm` (640px, every tablet in
+        // portrait) this is the same centred two-column window as desktop;
+        // phones keep the bottom sheet.
+        className="overflow-hidden border-0 sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:h-auto sm:w-[calc(100%-3rem)] sm:max-w-[46rem] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl lg:h-auto lg:max-w-[46rem]"
+        modalClassName="space-y-0"
+      >
+        {enrolling ? (
+          <div className="flex flex-col sm:flex-row">
+            {/* `dark` scopes the dark tokens to this panel in both themes. */}
+            <div className="dark bg-background text-foreground border-border flex shrink-0 flex-col gap-5 border-b p-6 sm:w-[44%] sm:gap-6 sm:border-e sm:border-b-0 md:w-[21rem]">
+              <div className="space-y-1 pe-8 sm:pe-0">
+                <h3 className="text-lg font-semibold tracking-tight">{copy.scanTitle}</h3>
+                <p className="text-muted-foreground text-sm text-pretty">{copy.scanDescription}</p>
+              </div>
+              {/* biome-ignore lint/performance/noImgElement: QR is an inline SVG data URL, next/image adds nothing */}
+              <img
+                src={totpQrSrc(enrolling.qr)}
+                alt={copy.qrAlt}
+                className="aspect-square w-full max-w-64 self-center rounded-lg bg-white p-3 sm:max-w-none"
+              />
+            </div>
+
+            <div className="flex min-w-0 flex-1 flex-col gap-6 p-6">
+              <div className="space-y-1 pe-8">
+                <ModalTitle className="text-lg leading-7 tracking-tight">
+                  {copy.codeTitle}
+                </ModalTitle>
+                <ModalDescription className="text-pretty">{copy.codeDescription}</ModalDescription>
+              </div>
+
+              <label className="group relative flex items-center justify-between gap-2 sm:gap-0">
+                <span className="sr-only">{copy.codeTitle}</span>
+                {Array.from({ length: CODE_LENGTH }, (_, i) => (
+                  <span
+                    key={i}
+                    aria-hidden
+                    className={cn(
+                      inputSurfaceClasses,
+                      inputTransitionClasses,
+                      'text-foreground flex h-14 w-[15%] items-center justify-center font-mono text-2xl font-medium tracking-tight',
+                      // The real input is invisible; the cell it is typing into
+                      // wears the Input focus treatment while the field has focus.
+                      i === Math.min(code.length, CODE_LENGTH - 1) &&
+                        'group-focus-within:border-ring group-focus-within:ring-ring/15 group-focus-within:ring-3',
+                    )}
+                  >
+                    {code[i] ?? ''}
+                  </span>
+                ))}
+                <input
+                  value={code}
+                  onChange={(e) =>
+                    onCodeChange(e.target.value.replace(/\D/g, '').slice(0, CODE_LENGTH))
+                  }
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={CODE_LENGTH}
+                  disabled={isVerifying}
+                  autoFocus
+                  className="absolute inset-0 cursor-text opacity-0"
+                />
+              </label>
+
+              {enrolling.secret ? (
+                <div className="border-border flex-1 space-y-2 border-t pt-5">
+                  <div className="text-muted-foreground text-xs font-medium">
+                    {copy.manualSecret}
+                  </div>
+                  <div className="border-border bg-muted/40 flex min-h-10 items-center justify-between gap-2 rounded-md border py-1.5 ps-3 pe-1">
+                    <code className="min-w-0 font-mono text-xs leading-5 font-medium tracking-tight whitespace-pre-line">
+                      {formatSecret(enrolling.secret)}
+                    </code>
+                    <CopyButton code={enrolling.secret} className="shrink-0" />
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" onClick={onCancel}>
+                  {copy.cancel}
+                </Button>
+                <Button
+                  onClick={onVerify}
+                  disabled={code.length !== CODE_LENGTH || isVerifying}
+                  className="gap-1.5"
+                >
+                  {isVerifying ? <SessionDotMatrix size={14} className="shrink-0" /> : null}
+                  {copy.verifyAndEnable}
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </ModalContent>
+    </Modal>
+  );
+}
+
+export interface SecurityTabViewProps {
+  // Two-factor authentication
+  factors?: FactorInfo[];
+  factorsLoading?: boolean;
+  factorsError?: boolean;
+  onRetryFactors?: () => void;
+  removeFactorTarget?: string | null;
+  onRequestRemoveFactor?: (id: string) => void;
+  onCancelRemoveFactor?: () => void;
+  onConfirmRemoveFactor?: () => void;
+  isRemovingFactor?: boolean;
+  enrolling?: EnrollingFactor | null;
+  enrollCode?: string;
+  onEnrollCodeChange?: (value: string) => void;
+  onStartEnroll?: () => void;
+  isStartingEnroll?: boolean;
+  onVerifyEnroll?: () => void;
+  isVerifyingEnroll?: boolean;
+  onCancelEnroll?: () => void;
+
+  // Devices
+  devices?: DeviceRow[];
+  devicesLoading?: boolean;
+  devicesError?: boolean;
+  onRetryDevices?: () => void;
+
+  onSignOutDevice?: (id: string) => void;
+  /** Copies a device's IP address; the container owns the clipboard and the toast. */
+  onCopyIp?: (ip: string) => void;
+  /** The device whose sign-out is in flight. */
+  signingOutDeviceId?: string | null;
+
+  // Other devices
+  onSignOutOtherDevices?: () => void;
+  isSigningOutOtherDevices?: boolean;
+  copy?: Partial<SecurityTabCopy>;
+}
+
+/** One row in the Devices section. `label` and `detail` arrive as finished,
+ *  translated strings — the container composes them, so the pure view holds
+ *  no date formatting and no locale hook. */
+export interface DeviceRow {
+  /** The auth session id; the sign-out target. */
+  id: string;
+  label: string;
+  detail?: string;
+  /** Shown after `detail`; a click copies it. */
+  ip?: string | null;
+  mobile?: boolean;
+  /** The corner logo; none when the user agent names no known browser or system. */
+  brand?: DeviceBrand | null;
+  /** The browser this page runs in: badged, never signed out from its row. */
+  current?: boolean;
+}
+
+export interface SecurityTabCopy {
+  twoFactorTitle: string;
+  twoFactorDescription: string;
+  authenticatorApp: string;
+  authenticatorDescription: string;
+  statusOn: string;
+  addAuthenticatorApp: string;
+  factorsLoadFailed: string;
+  retry: string;
+  factorsUnchanged: string;
+  noFactorEnrolled: string;
+  noFactorDescription: string;
+  scanTitle: string;
+  scanDescription: string;
+  qrAlt: string;
+  manualSecret: string;
+  codeTitle: string;
+  codeDescription: string;
+  verifyAndEnable: string;
+  cancel: string;
+  removeFactorTitle: string;
+  removeFactorDescription: string;
+  removeFactor: string;
+  devices: string;
+  currentDevice: string;
+  signOutDevice: string;
+  copyIp: string;
+  noDevices: string;
+  noDevicesDescription: string;
+  devicesLoadFailed: string;
+  signOutOtherDevices: string;
+  signOutOtherDevicesDescription: string;
+  phone: string;
+  sms: string;
+  authenticatorTotp: string;
+  unverified: string;
+}
+
+export const DEFAULT_SECURITY_TAB_COPY: SecurityTabCopy = {
+  twoFactorTitle: 'Two-factor authentication',
+  twoFactorDescription:
+    'A second factor keeps your account safe even if your sign-in is compromised.',
+  authenticatorApp: 'Authenticator app',
+  authenticatorDescription: 'Add an authenticator app (TOTP) as a second factor.',
+  statusOn: 'On · Asked at sign-in and before sensitive changes',
+  addAuthenticatorApp: 'Add authenticator app',
+  factorsLoadFailed: 'Couldn’t load your authenticator apps',
+  retry: 'Retry',
+  factorsUnchanged:
+    'Your two-factor settings are unchanged — this is only the list failing to load.',
+  noFactorEnrolled: 'No second factor enrolled',
+  noFactorDescription:
+    'If your organization requires MFA, you’ll be blocked from gated actions until you enroll an authenticator here.',
+  scanTitle: 'Scan with your phone',
+  scanDescription: 'Open any authenticator app and scan this code.',
+  qrAlt: 'TOTP enrollment QR code',
+  manualSecret: 'Can’t scan? Enter this key',
+  codeTitle: 'Enter the code',
+  codeDescription: 'Type the 6 digits your app shows. It verifies on its own.',
+  verifyAndEnable: 'Verify',
+  cancel: 'Cancel',
+  removeFactorTitle: 'Remove this factor?',
+  removeFactorDescription:
+    'If your organization requires MFA and this is your only verified factor, you will be locked out of gated actions until you enroll again.',
+  removeFactor: 'Remove factor',
+  devices: 'Devices',
+  currentDevice: 'This browser',
+  signOutDevice: 'Sign out',
+  copyIp: 'Copy IP address',
+  noDevices: 'No signed-in devices',
+  noDevicesDescription: 'You are not signed in on any device right now.',
+  devicesLoadFailed: 'Couldn’t load your signed-in devices',
+  signOutOtherDevices: 'Sign out other devices',
+  signOutOtherDevicesDescription:
+    'Ends every other session signed in as you. This browser stays signed in.',
+  phone: 'Phone',
+  sms: 'SMS',
+  authenticatorTotp: 'Authenticator app (TOTP)',
+  unverified: 'unverified',
+};
+
+/** Presentational only — no hooks, no data fetching. Every prop is optional
+ *  with a safe default so the bare `<SecurityTabView />` the test file
+ *  renders shows every section fully formed. */
+export function SecurityTabView({
+  factors = [],
+  factorsLoading = false,
+  factorsError = false,
+  onRetryFactors = () => {},
+  removeFactorTarget = null,
+  onRequestRemoveFactor = () => {},
+  onCancelRemoveFactor = () => {},
+  onConfirmRemoveFactor = () => {},
+  isRemovingFactor = false,
+  enrolling = null,
+  enrollCode = '',
+  onEnrollCodeChange = () => {},
+  onStartEnroll = () => {},
+  isStartingEnroll = false,
+  onVerifyEnroll = () => {},
+  isVerifyingEnroll = false,
+  onCancelEnroll = () => {},
+  devices = [],
+  devicesLoading = false,
+  devicesError = false,
+  onRetryDevices = () => {},
+  onSignOutDevice = () => {},
+  onCopyIp = () => {},
+  signingOutDeviceId = null,
+  onSignOutOtherDevices = () => {},
+  isSigningOutOtherDevices = false,
+  copy: copyOverrides = {},
+}: SecurityTabViewProps) {
+  const copy = { ...DEFAULT_SECURITY_TAB_COPY, ...copyOverrides };
+  const verified = factors.filter((f) => f.status === 'verified');
+
+  return (
+    <div className="mx-auto w-full max-w-2xl space-y-8">
+      <SettingsTabHeader tab="security" />
+
+      {/* Two-factor authentication */}
+      <section className="space-y-3">
+        <SettingsSubsectionHeader
+          title={copy.twoFactorTitle}
+          description={copy.twoFactorDescription}
+        />
+
+        <SettingsRowGroup>
+          <SettingsRow
+            label={copy.authenticatorApp}
+            description={
+              verified.length > 0 ? (
+                <span className="flex items-center gap-1.5">
+                  <span className="bg-kortix-green size-1.5 shrink-0 rounded-full" />
+                  {copy.statusOn}
+                </span>
+              ) : (
+                copy.authenticatorDescription
+              )
+            }
+          >
+            {enrolling ? null : (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={onStartEnroll}
+                disabled={isStartingEnroll}
+              >
+                {isStartingEnroll ? <Loading className="size-3.5" /> : <Plus className="size-4" />}
+                {copy.addAuthenticatorApp}
+              </Button>
+            )}
+          </SettingsRow>
+          {/* Enrolled factors stack under the row they belong to, inside the
+              same border — `divide-y` draws the hairline between them. While
+              the list is in flight, one shape-matched skeleton stands in for a
+              factor row, so the group does not jump when the answer lands. */}
+          {factorsLoading ? (
+            <div className="px-4 py-3">
+              <Skeleton className="h-8 w-full rounded-sm" />
+            </div>
+          ) : factorsError ? null : (
+            factors.map((f) => (
+              <FactorRow key={f.id} factor={f} onRemove={onRequestRemoveFactor} copy={copy} />
+            ))
+          )}
+        </SettingsRowGroup>
+
+        {/* The three answers the factor list can give, below the group so no
+            banner nests a second border inside it:
+            - it failed  → say so, in red, with a Retry. Never the empty-state
+              copy: "No second factor enrolled" is a claim about the account,
+              and a fetch that failed knows nothing about the account.
+            - it is empty → the enrollment nudge, in orange ("needs attention").
+            - it has factors → nothing here; the rows above ARE the answer.
+            Loading outranks both: an in-flight list has no answer yet. */}
+        {!factorsLoading && factorsError ? (
+          <InfoBanner
+            tone="destructive"
+            icon={Warning}
+            title={copy.factorsLoadFailed}
+            action={
+              <Button variant="outline" size="sm" onClick={onRetryFactors}>
+                {copy.retry}
+              </Button>
+            }
+          >
+            {copy.factorsUnchanged}
+          </InfoBanner>
+        ) : !factorsLoading && factors.length === 0 && !enrolling ? (
+          <InfoBanner tone="warning" icon={ShieldWarning} title={copy.noFactorEnrolled}>
+            {copy.noFactorDescription}
+          </InfoBanner>
+        ) : null}
+
+        <EnrollDialog
+          enrolling={enrolling}
+          code={enrollCode}
+          onCodeChange={onEnrollCodeChange}
+          onVerify={onVerifyEnroll}
+          isVerifying={isVerifyingEnroll}
+          onCancel={onCancelEnroll}
+          copy={copy}
+        />
+
+        <ConfirmDialog
+          open={removeFactorTarget !== null}
+          onOpenChange={(open) => !open && onCancelRemoveFactor()}
+          title={copy.removeFactorTitle}
+          description={copy.removeFactorDescription}
+          confirmLabel={copy.removeFactor}
+          confirmVariant="destructive"
+          onConfirm={onConfirmRemoveFactor}
+          isPending={isRemovingFactor}
+        />
+      </section>
+
+      <DevicesSection
+        devices={devices}
+        devicesLoading={devicesLoading}
+        devicesError={devicesError}
+        onRetryDevices={onRetryDevices}
+        onSignOutDevice={onSignOutDevice}
+        onCopyIp={onCopyIp}
+        signingOutDeviceId={signingOutDeviceId}
+        onSignOutOtherDevices={onSignOutOtherDevices}
+        isSigningOutOtherDevices={isSigningOutOtherDevices}
+        copy={copy}
+      />
+    </div>
+  );
+}
+
+export type DevicesSectionProps = Pick<
+  SecurityTabViewProps,
+  | 'devices'
+  | 'devicesLoading'
+  | 'devicesError'
+  | 'onRetryDevices'
+  | 'onSignOutDevice'
+  | 'onCopyIp'
+  | 'signingOutDeviceId'
+  | 'onSignOutOtherDevices'
+  | 'isSigningOutOtherDevices'
+> & { copy: SecurityTabCopy };
+
+/** The Devices section on its own — `SecurityTabView` renders it, and
+ *  `/debug/devices` renders it once per state. */
+export function DevicesSection({
+  devices = [],
+  devicesLoading = false,
+  devicesError = false,
+  onRetryDevices = () => {},
+  onSignOutDevice = () => {},
+  onCopyIp = () => {},
+  signingOutDeviceId = null,
+  onSignOutOtherDevices = () => {},
+  isSigningOutOtherDevices = false,
+  copy,
+}: DevicesSectionProps) {
+  return (
+    <section className="space-y-3">
+      <SettingsSubsectionHeader title={copy.devices} />
+      <SettingsRowGroup>
+        {/* While the list is in flight, one shape-matched skeleton stands in
+            for a device row, so the group does not jump when the answer
+            lands — same answer as the factor list above. */}
+        {devicesLoading ? (
+          <div className="px-4 py-3">
+            <Skeleton className="h-8 w-full rounded-sm" />
+          </div>
+        ) : (
+          devices.map((device) => {
+            const DeviceIcon = device.mobile ? Smartphone : Desktop;
+            const BrandMark = device.brand ? BRAND_MARK[device.brand] : null;
+            return (
+              <div key={device.id} className="flex items-center justify-between gap-3 px-4 py-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  {/* The device kind, with the browser's logo pinned bottom-right — the
+                      marketplace avatar's corner badge. Its ring takes the group's
+                      fill, so it reads as a cut-out, not an outline. */}
+                  <span className="relative inline-flex shrink-0">
+                    <span className="bg-muted flex size-8 items-center justify-center rounded-sm">
+                      <DeviceIcon className="text-muted-foreground size-4" />
+                    </span>
+                    {BrandMark ? (
+                      <Hint
+                        label={device.label}
+                        side="bottom"
+                        sideOffset={6}
+                        alignOffset={0}
+                        align="start"
+                      >
+                        <span
+                          data-device-brand={device.brand}
+                          className="ring-popover absolute -right-1.5 -bottom-1.5 inline-flex rounded ring-1"
+                        >
+                          {/* size-5 around a size-3.5 mark: clear on every side, so a
+                              round logo never meets the border. */}
+                          <span className="border-border bg-background flex size-5 items-center justify-center rounded border">
+                            <BrandMark className="size-3.5 shrink-0" />
+                          </span>
+                        </span>
+                      </Hint>
+                    ) : null}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-foreground truncate text-sm">{device.label}</div>
+                    {device.detail || device.ip ? (
+                      <div className="text-muted-foreground truncate text-xs">
+                        {device.detail}
+                        {device.detail && device.ip ? ' · ' : null}
+                        {device.ip ? (
+                          <button
+                            type="button"
+                            aria-label={`${copy.copyIp}: ${device.ip}`}
+                            onClick={() => onCopyIp(device.ip!)}
+                            className="hover:text-foreground focus-visible:ring-ring rounded-xs tabular-nums transition-colors duration-(--duration-fast) focus-visible:ring-2 focus-visible:outline-none"
+                          >
+                            {device.ip}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                {device.current ? (
+                  <Badge variant="success" size="xs">
+                    {copy.currentDevice}
+                  </Badge>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => onSignOutDevice(device.id)}
+                    disabled={signingOutDeviceId !== null}
+                  >
+                    {signingOutDeviceId === device.id ? (
+                      <Loading variant="spokes" className="size-3.5 shrink-0" />
+                    ) : null}
+                    {copy.signOutDevice}
+                  </Button>
+                )}
+              </div>
+            );
+          })
+        )}
+        <SettingsRow
+          label={copy.signOutOtherDevices}
+          description={copy.signOutOtherDevicesDescription}
+        >
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={onSignOutOtherDevices}
+            disabled={isSigningOutOtherDevices}
+          >
+            {isSigningOutOtherDevices ? (
+              <Loading variant="spokes" className="size-3.5 shrink-0" />
+            ) : null}
+            {copy.signOutOtherDevices}
+          </Button>
+        </SettingsRow>
+      </SettingsRowGroup>
+
+      {/* The three answers the device list can give, below the group so no
+          state nests a second border inside it — the same split the factor
+          list makes. A failed fetch is an error with a Retry, never the
+          empty-state copy; an empty list is said out loud. Loading outranks
+          both. */}
+      {devicesLoading ? null : devicesError ? (
+        <ErrorState
+          size="sm"
+          title={copy.devicesLoadFailed}
+          action={
+            <Button variant="outline" size="sm" onClick={onRetryDevices}>
+              {copy.retry}
+            </Button>
+          }
+        />
+      ) : devices.length === 0 ? (
+        <EmptyState size="sm" title={copy.noDevices} description={copy.noDevicesDescription} />
+      ) : null}
+    </section>
+  );
+}
+
+/** Container: owns every hook and renders `SecurityTabView` with real data
+ *  and handlers. Only ever mounted while this tab is active. */
+export function SecurityTab() {
+  const t = useTranslations('settings.security');
+  const locale = useLocale();
+  const copy = localizedCopy(DEFAULT_SECURITY_TAB_COPY, t);
+  const supabase = createClient();
+  const mfa = useMfa();
+
+  const queryClient = useQueryClient();
+  const { copy: copyText } = useCopy({ successMessage: t('ipCopied') });
+
+  // Every device signed in as you: the account's live auth sessions, read by
+  // the API from `auth.sessions` (`GET /accounts/me/devices`) — GoTrue gives a
+  // browser no way to list sessions other than its own.
+  const deviceQuery = useQuery({
+    queryKey: ['auth-signed-in-devices'],
+    queryFn: listSignedInDevices,
+    staleTime: 10_000,
+  });
+
+  const dateFormat = useMemo(() => new Intl.DateTimeFormat(locale, { dateStyle: 'long' }), [locale]);
+  const dateTimeFormat = useMemo(
+    () => new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }),
+    [locale],
+  );
+  const devices: DeviceRow[] = (deviceQuery.data ?? []).map((device) => {
+    const { browser, os, mobile, brand } = describeUserAgent(device.user_agent);
+    const label =
+      browser && os ? t('deviceName', { browser, os }) : (browser ?? os ?? t('unknownDevice'));
+    const when = device.current
+      ? t('deviceSignedInAt', { date: dateFormat.format(new Date(device.signed_in_at)) })
+      : t('deviceLastActive', { date: dateTimeFormat.format(new Date(device.last_active_at)) });
+    return {
+      id: device.session_id,
+      label,
+      detail: when,
+      ip: device.ip,
+      mobile,
+      brand,
+      current: device.current,
+    };
+  });
+  const refreshDevices = () =>
+    queryClient.invalidateQueries({ queryKey: ['auth-signed-in-devices'] });
+
+  const signOutOne = useMutation({
+    mutationFn: (id: string) => signOutDevice(id),
+    onSuccess: () => {
+      successToast(t('signedOutDevice'));
+      void refreshDevices();
+    },
+    onError: (error: Error) => errorToast(error.message || t('signOutDeviceFailed')),
+  });
+
+  // `scope: 'others'` revokes every refresh token but this browser's, so the
+  // person stays signed in where they pressed the button.
+  const signOutOthers = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.auth.signOut({ scope: 'others' });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      successToast(t('signedOutOtherDevices'));
+      void refreshDevices();
+    },
+    onError: (error: Error) => errorToast(error.message || t('signOutOtherDevicesFailed')),
+  });
+
+  // Remove factor and both device sign-outs end a factor or sessions, so an
+  // aal1 session with a verified TOTP factor asks for the code first
+  // (KRTX-1386): requestMfaStepUp opens the global challenge dialog and runs
+  // the action once the code verifies. A verified session runs the action
+  // directly.
+  const runWithStepUp = (action: () => void) => requestMfaStepUp(mfa.challengeRequired, action);
+
+  // The sixth digit submits the code; no button press needed.
+  const { enrollCode, isVerifyingEnroll, verifyEnroll } = mfa;
+  useEffect(() => {
+    if (enrollCode.length === 6 && !isVerifyingEnroll) verifyEnroll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per completed code
+  }, [enrollCode]);
+
+  return (
+    <SecurityTabView
+      factors={mfa.factors}
+      factorsLoading={mfa.factorsLoading}
+      factorsError={mfa.factorsError}
+      onRetryFactors={mfa.onRetryFactors}
+      removeFactorTarget={mfa.removeFactorTarget}
+      onRequestRemoveFactor={mfa.setRemoveFactorTarget}
+      onCancelRemoveFactor={() => mfa.setRemoveFactorTarget(null)}
+      onConfirmRemoveFactor={() => {
+        if (mfa.removeFactorTarget) runWithStepUp(mfa.confirmRemoveFactor);
+      }}
+      isRemovingFactor={mfa.isRemovingFactor}
+      enrolling={mfa.enrolling}
+      enrollCode={mfa.enrollCode}
+      onEnrollCodeChange={mfa.setEnrollCode}
+      onStartEnroll={mfa.startEnroll}
+      isStartingEnroll={mfa.isStartingEnroll}
+      onVerifyEnroll={mfa.verifyEnroll}
+      isVerifyingEnroll={mfa.isVerifyingEnroll}
+      onCancelEnroll={mfa.cancelEnroll}
+      devices={devices}
+      devicesLoading={deviceQuery.isLoading}
+      devicesError={deviceQuery.isError}
+      onRetryDevices={() => deviceQuery.refetch()}
+      onSignOutDevice={(id) => runWithStepUp(() => signOutOne.mutate(id))}
+      onCopyIp={(ip) => void copyText(ip)}
+      signingOutDeviceId={signOutOne.isPending ? (signOutOne.variables ?? null) : null}
+      onSignOutOtherDevices={() => runWithStepUp(() => signOutOthers.mutate())}
+      isSigningOutOtherDevices={signOutOthers.isPending}
+      copy={copy}
+    />
+  );
+}

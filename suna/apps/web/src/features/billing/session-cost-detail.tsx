@@ -1,0 +1,287 @@
+'use client';
+
+import type { SessionCostDetail, SessionCostLedgerEntry } from '@kortix/sdk';
+import {
+  ArrowSquareOutIcon as ExternalLink,
+  ReceiptIcon as ReceiptText,
+} from '@phosphor-icons/react';
+import { useLocale, useTranslations } from '@/i18n/use-translations';
+import Link from 'next/link';
+
+import { Badge } from '@kortix/ui/badge';
+import { Button } from '@kortix/ui/button';
+import { InfoBanner } from '@kortix/ui/info-banner';
+import { Skeleton } from '@kortix/ui/skeleton';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@kortix/ui/table';
+import { EmptyState } from '@kortix/ui/empty-state';
+
+import {
+  formatSessionCostCredits,
+  formatSessionCostDuration,
+  formatSessionCostExactCredits,
+} from '@kortix/ui/internal/billing/session-cost-format';
+
+interface SessionCostDetailContentProps {
+  detail: SessionCostDetail | undefined;
+  isLoading: boolean;
+  error: Error | null;
+}
+
+const timestampFormat = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
+function formatTimestamp(value: string): string {
+  return timestampFormat.format(new Date(value));
+}
+
+function ledgerTimestamp(entry: SessionCostLedgerEntry): string {
+  return entry.kind === 'llm' ? entry.occurred_at : entry.billed_through_at;
+}
+
+function LedgerEntryDescription({ entry }: { entry: SessionCostLedgerEntry }) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  if (entry.kind === 'llm') {
+    return (
+      <div className="min-w-0">
+        <p className="truncate text-sm">
+          {entry.provider} / {entry.model}
+        </p>
+        <p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">
+          {entry.request_id}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-w-0">
+      <p className="truncate text-sm">
+        {entry.provider} · {entry.state}
+      </p>
+      <p className="text-muted-foreground mt-0.5 text-xs">
+        {entry.cpu_cores} {tI18nComplete.raw('textd14431af93cf')} {entry.memory_gb}{' '}
+        {tI18nComplete.raw('text2cff97d794a4')} {entry.disk_gb}{' '}
+        {tI18nComplete.raw('text719c3c6a2b2f')}
+      </p>
+    </div>
+  );
+}
+
+export function SessionCostDetailContent({
+  detail,
+  isLoading,
+  error,
+}: SessionCostDetailContentProps) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const locale = useLocale();
+  const tCredits = useTranslations('settings.credits');
+  if (error) {
+    return (
+      <div className="space-y-4">
+        <h2 className="text-lg font-medium">{tI18nComplete.raw('texte3a7167b0134')}</h2>
+        <InfoBanner tone="destructive" title={tI18nComplete.raw('text79910479b58e')}>
+          {error.message}
+        </InfoBanner>
+      </div>
+    );
+  }
+
+  if (isLoading || !detail) {
+    return (
+      <div className="space-y-4" aria-label={tI18nComplete.raw('text40d9b64dde44')}>
+        <h2 className="text-lg font-medium">{tI18nComplete.raw('texte3a7167b0134')}</h2>
+        <Skeleton className="h-20 w-full rounded-md" />
+        <Skeleton className="h-40 w-full rounded-md" />
+      </div>
+    );
+  }
+
+  const tokenTotal = detail.input_tokens + detail.output_tokens;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2 className="text-lg font-medium">{tI18nComplete.raw('texte3a7167b0134')}</h2>
+          <p className="text-muted-foreground mt-1 truncate font-mono text-xs">
+            {detail.session_id}
+          </p>
+          <p className="text-muted-foreground mt-1 text-sm">
+            {detail.project_name}
+            {detail.owner_name || detail.owner_email
+              ? ` · ${detail.owner_name ?? detail.owner_email}`
+              : ''}
+          </p>
+        </div>
+        <Button variant="outline" size="sm" asChild>
+          <Link href={`/projects/${detail.project_id}/sessions/${detail.session_id}`}>
+            {tI18nComplete.raw('textb205bb47f81a')}
+            <ExternalLink className="size-3.5" />
+          </Link>
+        </Button>
+      </div>
+
+      {/* Hairlines are the grid GAP over a `bg-border` surface, not
+          `divide-x divide-y`. Tailwind's divide utilities compile to
+          `> * + *` — DOM order, with no knowledge of rows or columns — so at
+          `sm:grid-cols-3` tiles 2 and 3 drew a stray horizontal rule inside
+          row 1 and tile 4 drew a dangling left border at the start of row 2.
+          A 1px gap follows the real grid geometry, so no edge dangles at
+          either column count. Same treatment as `CostSummaryTiles`; see its
+          `GRID_CLASS` comment for the constraint this introduces.
+
+          Six tiles is the one count that fills its rows at BOTH 2 and 3
+          columns (6 % 2 === 0, 6 % 3 === 0), so no empty track can show the
+          container's border colour and this grid needs no filler cells. The
+          array below is a fixed literal — do not add or remove a tile without
+          re-checking that against both column counts. */}
+      <div className="border-border bg-border grid grid-cols-2 gap-px overflow-hidden rounded-md border sm:grid-cols-3">
+        {[
+          ['Total', formatSessionCostCredits(detail.total_cost, locale), tCredits('unit', { count: detail.total_cost * 100 })],
+          ['LLM', formatSessionCostCredits(detail.llm_cost, locale), tCredits('unit', { count: detail.llm_cost * 100 })],
+          ['Compute', formatSessionCostCredits(detail.compute_cost, locale), tCredits('unit', { count: detail.compute_cost * 100 })],
+          ['Requests', detail.request_count.toLocaleString('en-US')],
+          ['Tokens', tokenTotal.toLocaleString('en-US')],
+          [
+            tI18nComplete.raw('texte4fa25e6edd6'),
+            formatSessionCostDuration(detail.compute_seconds),
+          ],
+        ].map(([label, value, unit]) => (
+          <div key={label} className="bg-popover px-3 py-2.5">
+            <p className="text-muted-foreground text-xs">{label}</p>
+            <p className="mt-0.5 text-sm font-medium tabular-nums">
+              {value}
+              {unit ? (
+                <span className="text-muted-foreground ml-1 text-xs font-normal">{unit}</span>
+              ) : null}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      <section className="space-y-2">
+        <div>
+          <h3 className="text-sm font-medium">{tI18nComplete.raw('text3025ab46e129')}</h3>
+          <p className="text-muted-foreground text-xs">{tI18nComplete.raw('textf06214d4673d')}</p>
+        </div>
+        {detail.model_usage.length === 0 ? (
+          <p className="text-muted-foreground py-4 text-sm">
+            {tI18nComplete.raw('texteb87e1709b57')}
+          </p>
+        ) : (
+          <div className="overflow-hidden rounded-md">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{tI18nComplete.raw('text5e2c614c23f0')}</TableHead>
+                  <TableHead className="text-right">
+                    {tI18nComplete.raw('textada27592c957')}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {tI18nComplete.raw('texta039dfb9628b')}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {tI18nComplete.raw('text0f046f7588f9')}
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {detail.model_usage.map((usage) => (
+                  <TableRow key={`${usage.provider}/${usage.model}`}>
+                    <TableCell>
+                      <p className="text-sm">{usage.model}</p>
+                      <p className="text-muted-foreground text-xs">{usage.provider}</p>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs tabular-nums">
+                      {usage.request_count.toLocaleString('en-US')}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs tabular-nums">
+                      {(usage.input_tokens + usage.output_tokens).toLocaleString('en-US')}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs tabular-nums">
+                      {formatSessionCostCredits(usage.cost, locale)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-2">
+        <div>
+          <h3 className="text-sm font-medium">{tI18nComplete.raw('text9db6713e88de')}</h3>
+          <p className="text-muted-foreground text-xs">{tI18nComplete.raw('text67f10b9f6d71')}</p>
+        </div>
+        {detail.ledger_entries.length === 0 ? (
+          <EmptyState
+            size="sm"
+            icon={ReceiptText}
+            title={tI18nComplete.raw('textd03996038975')}
+            description={tI18nComplete.raw('texte769a2bfbd35')}
+          />
+        ) : (
+          <div className="overflow-hidden rounded-md">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[110px]">
+                    {tI18nComplete.raw('textbaaddf70fb5d')}
+                  </TableHead>
+                  <TableHead>{tI18nComplete.raw('text2649e082d9a2')}</TableHead>
+                  <TableHead className="text-right">
+                    {tI18nComplete.raw('text8d59829c1e15')}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {tI18nComplete.raw('text0f046f7588f9')}
+                  </TableHead>
+                  <TableHead className="w-[170px]">
+                    {tI18nComplete.raw('textc04730f12fa8')}
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {detail.ledger_entries.map((entry) => (
+                  <TableRow key={`${entry.kind}:${entry.id}`}>
+                    <TableCell>
+                      <Badge variant="outline" size="sm">
+                        {entry.kind === 'llm' ? 'LLM' : 'Compute'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="max-w-[240px]">
+                      <LedgerEntryDescription entry={entry} />
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs tabular-nums">
+                      {entry.kind === 'llm'
+                        ? `${(entry.input_tokens + entry.output_tokens).toLocaleString('en-US')} tokens`
+                        : formatSessionCostDuration(entry.compute_seconds)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs tabular-nums">
+                      {formatSessionCostExactCredits(entry.cost, locale)}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {formatTimestamp(ledgerTimestamp(entry))}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}

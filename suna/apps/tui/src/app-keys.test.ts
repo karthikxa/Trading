@@ -1,0 +1,260 @@
+import { describe, expect, test } from 'bun:test';
+
+import type { KeyEvent } from '@opentui/core';
+
+import { type AppKeyState, type Focus, globalKeyAction, globalKeyBlocked } from './app-keys.ts';
+
+/** A KeyEvent as OpenTUI's KeyHandler delivers it. */
+function key(name: string, modifiers: Partial<KeyEvent> = {}): KeyEvent {
+  return {
+    name,
+    ctrl: false,
+    meta: false,
+    shift: false,
+    option: false,
+    sequence: name,
+    number: false,
+    raw: name,
+    eventType: 'press',
+    source: 'raw',
+    ...modifiers,
+  } as KeyEvent;
+}
+
+function state(overrides: Partial<AppKeyState> = {}): AppKeyState {
+  return {
+    focus: 'sidebar',
+    route: 'session',
+    overlay: null,
+    quitArmed: false,
+    ...overrides,
+  };
+}
+
+describe('globalKeyBlocked', () => {
+  test('text input and the shell keep their own keys', () => {
+    expect(globalKeyBlocked('composer')).toBe(true);
+    expect(globalKeyBlocked('terminal')).toBe(true);
+  });
+
+  test('a list region does not', () => {
+    for (const focus of ['sidebar', 'transcript', 'screen'] as Focus[]) {
+      expect(globalKeyBlocked(focus)).toBe(false);
+    }
+  });
+});
+
+describe('help is global only when nothing is typing', () => {
+  test('`?` opens help from the sidebar and the transcript', () => {
+    expect(globalKeyAction(key('?'), state({ focus: 'sidebar' }))).toEqual({
+      kind: 'overlay',
+      overlay: 'help',
+    });
+    expect(globalKeyAction(key('?'), state({ focus: 'transcript' }))).toEqual({
+      kind: 'overlay',
+      overlay: 'help',
+    });
+  });
+
+  test('`?` while the composer is focused does NOT open help', () => {
+    expect(globalKeyAction(key('?'), state({ focus: 'composer' }))).toBeNull();
+  });
+
+  test('`?` while the terminal is focused does NOT open help', () => {
+    expect(globalKeyAction(key('?'), state({ focus: 'terminal' }))).toBeNull();
+  });
+
+  test('`?` while an overlay is open does nothing — the overlay owns the keys', () => {
+    expect(globalKeyAction(key('?'), state({ overlay: 'help' }))).toBeNull();
+    expect(globalKeyAction(key('?'), state({ overlay: 'ports' }))).toBeNull();
+  });
+
+  test('quit still works through an open overlay — `?` is not a trap', () => {
+    for (const overlay of ['help', 'ports'] as const) {
+      expect(globalKeyAction(key('c', { ctrl: true }), state({ overlay }))).toEqual({
+        kind: 'arm-quit',
+      });
+      expect(
+        globalKeyAction(key('c', { ctrl: true }), state({ overlay, quitArmed: true })),
+      ).toEqual({ kind: 'quit' });
+      expect(globalKeyAction(key('q', { ctrl: true }), state({ overlay }))).toEqual({
+        kind: 'quit',
+      });
+    }
+  });
+});
+
+describe('quitting', () => {
+  test('Ctrl+C arms, the second press leaves', () => {
+    expect(globalKeyAction(key('c', { ctrl: true }), state())).toEqual({ kind: 'arm-quit' });
+    expect(globalKeyAction(key('c', { ctrl: true }), state({ quitArmed: true }))).toEqual({
+      kind: 'quit',
+    });
+  });
+
+  test('Ctrl+Q leaves on the first press', () => {
+    expect(globalKeyAction(key('q', { ctrl: true }), state())).toEqual({ kind: 'quit' });
+  });
+
+  test('Ctrl+C while the terminal is focused does NOT arm quit — it is the shell’s', () => {
+    expect(globalKeyAction(key('c', { ctrl: true }), state({ focus: 'terminal' }))).toBeNull();
+    expect(
+      globalKeyAction(key('c', { ctrl: true }), state({ focus: 'terminal', quitArmed: true })),
+    ).toBeNull();
+  });
+
+  test('Ctrl+Q still leaves from the terminal — it is reserved', () => {
+    expect(globalKeyAction(key('q', { ctrl: true }), state({ focus: 'terminal' }))).toEqual({
+      kind: 'quit',
+    });
+  });
+});
+
+describe('the terminal keeps every key that is not reserved', () => {
+  const focus: Focus = 'terminal';
+
+  test('reserved chords stay with the app', () => {
+    expect(globalKeyAction(key('tab'), state({ focus }))).toEqual({ kind: 'focus', step: 1 });
+    expect(globalKeyAction(key('tab', { shift: true }), state({ focus }))).toEqual({
+      kind: 'focus',
+      step: -1,
+    });
+    expect(globalKeyAction(key('t', { meta: true }), state({ focus }))).toEqual({
+      kind: 'toggle-terminal',
+    });
+  });
+
+  test('everything else falls through to the shell', () => {
+    for (const event of [
+      key('j'),
+      key('escape'),
+      key('p', { ctrl: true }),
+      key('n', { ctrl: true }),
+      key('f', { meta: true }),
+      key('o', { meta: true }),
+    ]) {
+      expect(globalKeyAction(event, state({ focus }))).toBeNull();
+    }
+  });
+});
+
+describe('routes and navigation', () => {
+  test('Alt chords open their screens under either terminal convention', () => {
+    expect(globalKeyAction(key('f', { meta: true }), state())).toEqual({
+      kind: 'route',
+      route: 'files',
+    });
+    expect(globalKeyAction(key('r', { option: true }), state())).toEqual({
+      kind: 'route',
+      route: 'review',
+    });
+    expect(globalKeyAction(key('a', { meta: true }), state())).toEqual({
+      kind: 'route',
+      route: 'apps',
+    });
+    expect(globalKeyAction(key('c', { meta: true }), state())).toEqual({
+      kind: 'route',
+      route: 'customize',
+    });
+    expect(globalKeyAction(key('u', { meta: true }), state())).toEqual({
+      kind: 'route',
+      route: 'account',
+    });
+  });
+
+  test('Ctrl+P, Ctrl+N and Ctrl+H are global', () => {
+    expect(globalKeyAction(key('p', { ctrl: true }), state())).toEqual({ kind: 'sessions' });
+    expect(globalKeyAction(key('n', { ctrl: true }), state())).toEqual({ kind: 'new-session' });
+    expect(globalKeyAction(key('h', { ctrl: true }), state())).toEqual({ kind: 'switch-host' });
+  });
+
+  test('while the slash menu is open, Tab, Ctrl+P and Ctrl+N belong to the menu', () => {
+    const open = state({ focus: 'composer', menuOpen: true });
+    expect(globalKeyAction(key('tab'), open)).toBeNull();
+    expect(globalKeyAction(key('p', { ctrl: true }), open)).toBeNull();
+    expect(globalKeyAction(key('n', { ctrl: true }), open)).toBeNull();
+    // Quit is never taken away.
+    expect(globalKeyAction(key('q', { ctrl: true }), open)).toEqual({ kind: 'quit' });
+  });
+
+  test('Ctrl+N still works while the composer is focused: it is not a bare key', () => {
+    expect(globalKeyAction(key('n', { ctrl: true }), state({ focus: 'composer' }))).toEqual({
+      kind: 'new-session',
+    });
+  });
+});
+
+describe('Esc', () => {
+  test('leaves a screen for the session', () => {
+    expect(globalKeyAction(key('escape'), state({ route: 'files', focus: 'screen' }))).toEqual({
+      kind: 'back',
+    });
+  });
+
+  test('in the transcript it moves focus to the composer', () => {
+    expect(globalKeyAction(key('escape'), state({ focus: 'transcript' }))).toEqual({
+      kind: 'focus-composer',
+    });
+  });
+
+  test('in the composer it is the composer’s: clear the draft, then stop', () => {
+    expect(globalKeyAction(key('escape'), state({ focus: 'composer' }))).toBeNull();
+  });
+
+  test('in the sidebar it is the sidebar’s: cancel the filter or the confirm', () => {
+    expect(globalKeyAction(key('escape'), state({ focus: 'sidebar' }))).toBeNull();
+  });
+});
+
+describe('sidebar toggle and the Links panel', () => {
+  test('Alt+B toggles the sidebar from a list region and from the composer', () => {
+    for (const focus of ['sidebar', 'transcript', 'composer', 'screen'] as Focus[]) {
+      expect(globalKeyAction(key('b', { meta: true }), state({ focus }))).toEqual({
+        kind: 'toggle-sidebar',
+      });
+    }
+  });
+
+  test('Alt+B inside the terminal is readline backward-word, not ours', () => {
+    expect(globalKeyAction(key('b', { meta: true }), state({ focus: 'terminal' }))).toBeNull();
+  });
+
+  test('Alt+L opens the Links panel everywhere, the terminal included', () => {
+    for (const focus of ['sidebar', 'composer', 'terminal', 'screen'] as Focus[]) {
+      expect(globalKeyAction(key('l', { meta: true }), state({ focus }))).toEqual({
+        kind: 'overlay',
+        overlay: 'links',
+      });
+    }
+  });
+
+  test('an open overlay keeps both keys', () => {
+    expect(globalKeyAction(key('b', { meta: true }), state({ overlay: 'links' }))).toBeNull();
+    expect(globalKeyAction(key('l', { meta: true }), state({ overlay: 'help' }))).toBeNull();
+  });
+});
+
+describe('macOS Option keys (no "Option as Meta" setting)', () => {
+  test('Option+B, Option+T, Option+P, Option+[ and Option+] reach their Alt bindings', () => {
+    const base = state({ focus: 'composer' });
+    expect(globalKeyAction(key('∫'), base)).toEqual({ kind: 'toggle-sidebar' });
+    expect(globalKeyAction(key('†'), base)).toEqual({ kind: 'toggle-terminal' });
+    expect(globalKeyAction(key('π'), base)).toEqual({ kind: 'overlay', overlay: 'ports' });
+    expect(globalKeyAction(key('“'), base)).toEqual({ kind: 'tab', step: -1 });
+    expect(globalKeyAction(key('‘'), base)).toEqual({ kind: 'tab', step: 1 });
+  });
+
+  test('a plain letter is still a letter', () => {
+    expect(globalKeyAction(key('b'), state({ focus: 'composer' }))).toBeNull();
+  });
+
+  test('Ctrl alternates: Ctrl+T for the terminal, Ctrl+PageUp/PageDown for tabs', () => {
+    const base = state({ focus: 'composer' });
+    expect(globalKeyAction(key('t', { ctrl: true }), base)).toEqual({ kind: 'toggle-terminal' });
+    expect(globalKeyAction(key('pageup', { ctrl: true }), base)).toEqual({ kind: 'tab', step: -1 });
+    expect(globalKeyAction(key('pagedown', { ctrl: true }), base)).toEqual({
+      kind: 'tab',
+      step: 1,
+    });
+  });
+});

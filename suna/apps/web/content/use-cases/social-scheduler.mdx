@@ -1,0 +1,234 @@
+---
+title: "How we draft social posts from our content calendar"
+description: The social-scheduler agent we run on Kortix — a daily agent that reads our Notion content calendar, drafts platform-appropriate posts for upcoming content, launches, and announcements, and holds them in Slack with the scheduled date for a human to approve and publish.
+date: "2026-04-25"
+author: team
+tags:
+  - Marketing
+  - Case Study
+  - Enterprise
+template: social-scheduler
+---
+
+Our content calendar lives in Notion: what's shipping, what's launching, what
+we're announcing, and when. Turning each of those rows into an actual
+LinkedIn post, a tweet, and an Instagram caption is a separate manual step
+that happens later, usually the day of, sometimes not at all. The calendar
+says what should go out; nobody had turned it into copy yet.
+
+We run a social-scheduler agent on Kortix that closes that gap every day. It
+reads the content calendar in Notion, drafts platform-appropriate posts for
+anything launching or publishing soon, and holds every draft in our marketing
+Slack channel with its scheduled date. It never posts anywhere itself — a
+person reviews, edits, and publishes.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Daily cron</Fact>
+  <Fact label="Connected systems">Notion · Slack</Fact>
+  <Fact label="Mode">Fresh session · draft-only, human publishes</Fact>
+</KeyFacts>
+
+## The problem
+
+A content calendar tells you *what* and *when*, not the actual words that go
+on each platform. Writing the LinkedIn version, the X version, and the
+Instagram caption for every launch and announcement is a distinct task that
+someone has to remember to do, usually under time pressure right before the
+scheduled date.
+
+The common fixes don't hold up. A scheduling tool queues posts, but someone
+still has to write them first. A shared doc of "posts to write" depends on
+someone checking it daily and drafting ahead of the date, not the day of. And
+because drafting keeps sliding to "later," launches and announcements
+regularly go out with no social post at all, or one written in five minutes
+right before it's needed.
+
+## What we built
+
+On Kortix, a daily cron triggers an agent. It spawns a fresh session that
+reads our Notion content calendar for anything launching, publishing, or
+being announced in the days just ahead, drafts a platform-appropriate post
+for each one — LinkedIn, X, and Instagram get different lengths, tone, and
+structure — and posts the batch to our marketing Slack channel, each draft
+labeled with its scheduled date. Nothing is scheduled or published
+automatically; the drafts sit in Slack until someone approves them.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the drafting skill and the daily trigger, and opens a change request for you to review. Prefer
+clicks? Choose **Use this template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a daily social post drafting agent in this project.
+
+1. Create the agent agents/social-scheduler.md. Its job is to draft social posts from our Notion content calendar. It may use the Notion connector and post to Slack. It has no connector to any social account.
+
+2. Create the skill skills/social-post-drafting/SKILL.md with these rules:
+   - Read the Content Calendar database in Notion for entries scheduled in the next 7 days. Skip any entry where Kortix Drafted is already checked.
+   - Draft one post per entry for each of LinkedIn, X and Instagram.
+   - LinkedIn gets 3 to 6 short paragraphs that explain the why. X gets one tight post under 280 characters, or a short thread for a real launch. Instagram gets 2 to 4 sentences and 3 to 5 hashtags.
+   - Use only what the entry's brief says. If the brief is too thin, skip the entry and say why.
+   - Post the batch to #marketing, each draft labeled with its entry, scheduled date and platform.
+   - After the post, check Kortix Drafted on each drafted entry. Never edit any other field.
+
+3. Add a cron trigger daily-social-draft to kortix.yaml. It runs the social-scheduler agent every day at 07:00 with the prompt "Load the social-post-drafting skill and draft posts for every Content Calendar entry in the next 7 days."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your content calendar and Slack.
+Do not connect any social account: the agent drafts, and a person publishes.
+Credentials are brokered server-side and never enter the agent's machine.
+
+<ToolList>
+  <ToolNeed name="Notion" domain="notion.so" tag="Required" alternatives={[['Airtable', 'airtable.com'], ['Google Sheets', 'docs.google.com']]}>
+    Reads upcoming content calendar entries and their briefs.
+  </ToolNeed>
+  <ToolNeed name="Google Docs" domain="docs.google.com" tag="Optional" alternatives={[['Figma', 'figma.com']]}>
+    Supplies linked briefs and assets for richer drafts.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com']]}>
+    Holds each batch of drafts in the approval channel.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **social-scheduler**
+agent and send this prompt. Read the drafts against your own voice before you
+let the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one draft pass on the Content Calendar database in Notion.
+
+1. Find entries scheduled in the next 7 days where Kortix Drafted is not checked.
+2. For each entry, draft a LinkedIn post, an X post and an Instagram caption from its brief only.
+3. Skip any entry with no brief and tell me why.
+4. Post all drafts to #marketing, grouped by entry, with the scheduled date and platform on each.
+5. Check Kortix Drafted on each entry you drafted. Do not change anything else in Notion.`}
+/>
+
+</Step>
+<Step title="Let the daily schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every day at 07:00, each run in a new session on its own cloud computer.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: daily-social-draft
+    name: Daily social post drafting
+    on:
+      cron: "0 0 7 * * *"
+    run:
+      agent: social-scheduler
+      prompt: Load the social-post-drafting skill and draft posts for every Content Calendar entry in the next 7 days.`}
+/>
+
+</Step>
+<Step title="Publish every post yourself">
+
+The agent has no connector to LinkedIn, X, Instagram or any other social
+account, so it cannot publish. Its only write to Notion is the Kortix Drafted
+checkbox. A person reviews each draft in Slack, edits it and publishes it with
+the tool the team already uses.
+
+</Step>
+<Step title="Read the daily drafts">
+
+Each run ends with one message in #marketing. This is what a run looks like
+in the session:
+
+<ExampleRun
+  title="Daily social post drafting · 07:00"
+  message="Load the social-post-drafting skill and draft posts for every Content Calendar entry in the next 7 days."
+  worked="Worked for 2m 17s"
+  tools={[
+    'notion · query database',
+    'notion · read page × 4',
+    'slack · post message → #marketing',
+    'notion · update page × 3',
+  ]}
+  note="Illustrative example. Your counts depend on your calendar."
+>
+  Found **4** entries in the next 7 days and drafted **9** posts for **3** of
+  them. Skipped **1** entry with no brief. The drafts are in #marketing with
+  their scheduled dates.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A daily **cron** spawns a fresh session that reads the **Notion** content
+  calendar through a scoped connector, drafts platform-specific copy using a
+  **skill**, and posts the batch to **Slack** for approval. No connector to
+  any social account exists, so nothing can go out without a human.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Add a newsletter blurb"
+  code="For each entry, also draft a two-sentence blurb for our weekly newsletter, in the same batch."
+/>
+
+<CopyBlock
+  title="Match our voice"
+  code="Read the published posts I paste here and update the skill's tone rules so new drafts match them."
+/>
+
+<CopyBlock
+  title="Flag an empty week"
+  code="If no entry is scheduled in the next 7 days, post a short note to #marketing instead of staying silent."
+/>
+
+## Guardrails
+
+The agent drafts copy that will eventually represent the company publicly, so
+what it can do on its own is narrow:
+
+- **No social connectors, period.** The agent has no credential and no
+  connector to LinkedIn, X, Instagram, or any other platform. Publishing
+  isn't blocked by a rule — the capability doesn't exist in this agent's
+  scope.
+- **Draft only.** The only output that is written back out is a Slack message
+  containing drafts. Nothing is scheduled, queued, or posted anywhere.
+- **Isolation.** Every run happens in its own isolated sandbox, torn down when
+  the run ends.
+- **Scoped secrets.** The Notion connector is brokered server-side; no raw
+  token enters the sandbox at all.
+- **Everything is code.** The platform playbook, the lookahead window, and
+  the agent's permissions are files in the repo, changed through a reviewed
+  **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every day" label="Upcoming calendar items turned into drafted copy ahead of time" />
+  <Stat value="0 posts" label="Published automatically — every draft waits for a human" />
+  <Stat value="3 platforms" label="LinkedIn, X, and Instagram drafted in one pass" />
+</StatGrid>
+
+Launches and announcements that used to get a rushed post the day of, or none
+at all, now show up in Slack days ahead with a draft ready for each platform.
+The agent turns the calendar into copy; the team still decides what actually
+goes out.

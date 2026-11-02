@@ -1,0 +1,137 @@
+import { describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
+
+import { GET as getAgentSkillIndex } from '@/app/(public)/.well-known/agent-skills/index.json/route';
+import { GET as getAgentSkill } from '@/app/(public)/.well-known/agent-skills/kortix-public-content/SKILL.md/route';
+import { GET as getApiCatalog } from '@/app/(public)/.well-known/api-catalog/route';
+import { GET as getMcpCard } from '@/app/(public)/.well-known/mcp/server-card.json/route';
+import { GET as getOauthServer } from '@/app/(public)/.well-known/oauth-authorization-server/route';
+import { GET as getProtectedResource } from '@/app/(public)/.well-known/oauth-protected-resource/route';
+import { GET as getAuthMd } from '@/app/(public)/auth.md/route';
+import { GET as getNegotiatedMarkdown } from '@/app/(public)/markdown-negotiation/route';
+import { GET as getAiCatalog } from '@/app/(public)/.well-known/ai-catalog.json/route';
+import { GET as getMcpServerCard } from '@/app/(public)/mcp/server-card/route';
+import { renderRobotsTxt } from '@/lib/seo/robots';
+import { middleware } from '@/middleware';
+import { NextRequest } from 'next/server';
+
+describe('agent discovery documents', () => {
+  test('publishes an RFC 9727 linkset with working Kortix relations', async () => {
+    const response = getApiCatalog();
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toContain('application/linkset+json');
+    expect(response.headers.get('Content-Type')).toContain('rfc9727');
+    const body = (await response.json()) as any;
+    expect(body.linkset).toHaveLength(1);
+    expect(body.linkset[0].anchor).toBe('https://api.kortix.com/v1');
+    expect(body.linkset[0]['service-desc'][0].href).toBe('https://api.kortix.com/v1/openapi.json');
+    expect(body.linkset[0]['service-doc'][0].href).toBe('https://kortix.com/docs');
+    expect(body.linkset[0].status[0].href).toBe('https://api.kortix.com/v1/health');
+  });
+
+  test('publishes truthful OAuth discovery and protected resource metadata', async () => {
+    const oauth = (await getOauthServer().json()) as any;
+    expect(oauth.issuer).toBe('https://jbriwassebxdwoieikga.supabase.co/auth/v1');
+    expect(oauth.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
+    expect(oauth.code_challenge_methods_supported).toEqual(['S256']);
+    expect(oauth.agent_auth.identity_types_supported).toEqual(['user_authorization']);
+    expect(oauth.agent_auth.user_authorization.credential_types_supported).toEqual([
+      'kortix_personal_access_token',
+    ]);
+
+    const resource = (await getProtectedResource(
+      new Request('https://kortix.com/.well-known/oauth-protected-resource'),
+    ).json()) as any;
+    expect(resource.resource).toBe('https://kortix.com');
+    expect(resource.authorization_servers).toEqual([oauth.issuer]);
+    expect(resource.bearer_methods_supported).toContain('header');
+
+    const authMd = await getAuthMd().text();
+    expect(authMd).toStartWith('# Kortix auth.md');
+    expect(authMd).toContain(
+      'Register an OAuth client yourself at Account → Tokens → OAuth apps, or `POST /v1/accounts/{accountId}/iam/oauth-clients` (needs `token.create`).',
+    );
+    expect(authMd).toContain(
+      'Authorization-server metadata for the Kortix-native provider: https://api.kortix.com/.well-known/oauth-authorization-server.',
+    );
+    expect(authMd).not.toContain('dynamic OAuth client registration');
+    expect(authMd).toContain('Registration URI: /cli/authorize');
+    expect(authMd).toContain('POST https://api.kortix.com/v1/accounts/tokens');
+    expect(authMd).toContain('DELETE https://api.kortix.com/v1/accounts/tokens/{token_id}');
+    expect(authMd).toContain('Authorization: Bearer <token>');
+  });
+
+  test('publishes a digest that matches the exact skill response bytes', async () => {
+    const skillResponse = getAgentSkill();
+    expect(skillResponse.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
+    const skill = await skillResponse.text();
+    const index = (await getAgentSkillIndex().json()) as any;
+    expect(index.$schema).toBe('https://schemas.agentskills.io/discovery/0.2.0/schema.json');
+    expect(index.skills).toHaveLength(1);
+    expect(index.skills[0].digest).toBe(
+      `sha256:${createHash('sha256').update(skill).digest('hex')}`,
+    );
+  });
+
+  test('every MCP discovery document names the one Kortix MCP server: the API', async () => {
+    const card = (await getMcpCard().json()) as any;
+    expect(card.serverInfo.name).toBe('kortix');
+    expect(card.transport).toEqual({
+      type: 'streamable-http',
+      endpoint: 'https://api.kortix.com/v1/mcp',
+    });
+    expect(card.endpoint).toBe('https://api.kortix.com/v1/mcp');
+
+    const serverCard = (await getMcpServerCard().json()) as any;
+    expect(serverCard.remotes).toEqual([
+      {
+        type: 'streamable-http',
+        url: 'https://api.kortix.com/v1/mcp',
+        supportedProtocolVersions: ['2025-11-25', '2025-06-18', '2025-03-26'],
+      },
+    ]);
+
+    const catalog = (await getAiCatalog().json()) as any;
+    expect(catalog.entries.map((entry: any) => entry.url)).toEqual(['https://kortix.com/mcp/server-card']);
+    const skill = await getAgentSkill().text();
+    expect(skill).toContain('https://api.kortix.com/v1/mcp');
+    expect(skill).not.toContain('https://kortix.com/mcp ');
+  });
+
+  test('negotiates the homepage to a Markdown route before auth middleware', async () => {
+    const request = new NextRequest('https://kortix.com/', {
+      headers: { Accept: 'text/markdown' },
+    });
+    const rewritten = await middleware(request);
+    expect(rewritten.headers.get('x-middleware-rewrite')).toBe(
+      'https://kortix.com/markdown-negotiation?path=%2F',
+    );
+
+    const response = getNegotiatedMarkdown(
+      new Request('https://kortix.com/markdown-negotiation?path=%2F'),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
+    expect(response.headers.get('Vary')).toBe('Accept');
+    expect(await response.text()).toContain('# Kortix');
+  });
+
+  test('adds agent discovery links to the homepage middleware response', async () => {
+    const response = await middleware(new NextRequest('https://kortix.com/'));
+    const link = response.headers.get('Link');
+
+    expect(link).toContain('</.well-known/api-catalog>; rel="api-catalog"');
+    expect(link).toContain('rel="service-desc"');
+    expect(link).toContain('</docs>; rel="service-doc"');
+    expect(link).toContain('</llms.txt>; rel="describedby"');
+  });
+
+  test('declares content signals and agent discovery routes in robots.txt', () => {
+    const robots = renderRobotsTxt('kortix.com');
+    // ai-train=yes: models learn what Kortix is from its own pages, not only from third parties.
+    expect(robots).toContain('Content-Signal: ai-train=yes, search=yes, ai-input=yes');
+    expect(robots).toContain('Allow: /.well-known/');
+    expect(robots).toContain('Allow: /auth.md');
+    expect(robots).toContain('Allow: /mcp');
+  });
+});

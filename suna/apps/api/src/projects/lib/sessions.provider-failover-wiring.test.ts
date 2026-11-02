@@ -1,0 +1,65 @@
+import { describe, expect, test } from 'bun:test';
+
+// Source tripwire for the 2026-08-26 Platinum incident.
+//
+// `platform_settings.provider_fallback` was ON in production, yet 654 sessions
+// died against a provider at capacity and `session_sandboxes` recorded ZERO
+// handoffs. The unit rules were all correct in isolation — the WIRING was the
+// defect: createProjectSession resolved the weighted balancer's pick and handed
+// it to provisionSessionSandbox as `provider`, which read any provider as
+// "explicitly selected". That made the failover branch unreachable for every
+// project session, and no unit test could see it.
+//
+// These assertions fail the moment the two ends stop agreeing.
+
+const read = (rel: string): Promise<string> =>
+  Bun.file(new URL(rel, import.meta.url)).text();
+
+describe('provider failover wiring', () => {
+  test('createProjectSession marks a balancer pick as UNLOCKED and forwards it', async () => {
+    const source = await read('./session-create.ts');
+    const locked = source.indexOf('const providerLocked = sessionProviderIsLocked(picked)');
+    const provision = source.indexOf('provisionSessionSandbox({', locked);
+    expect(locked).toBeGreaterThan(-1);
+    expect(provision).toBeGreaterThan(locked);
+    // The flag must actually reach the provisioner, not just be computed.
+    expect(source.slice(provision)).toContain('providerLocked,');
+  });
+
+  test('the provisioner honors providerLocked instead of "any provider is explicit"', async () => {
+    const source = await read('../../platform/services/session-sandbox.ts');
+    expect(source).toContain(
+      'const providerWasExplicitlySelected = opts.providerLocked ?? opts.provider !== undefined;',
+    );
+    // The old form is exactly what made failover dead code. Never reintroduce it.
+    expect(source).not.toContain(
+      'const providerWasExplicitlySelected = opts.provider !== undefined;',
+    );
+  });
+
+  test('the failover branch resolves its target through the pure, tested rule', async () => {
+    const source = await read('../../platform/services/session-sandbox.ts');
+    const helper = source.indexOf('nextFailoverProvider({');
+    const failover = source.indexOf('failoverAttempted', helper);
+    expect(helper).toBeGreaterThan(-1);
+    const options = source.slice(helper, source.indexOf('})', helper));
+    expect(options).toMatch(/providerLocked:\s*providerWasExplicitlySelected\s*\|\|/);
+    expect(options).toContain('(drivesRequirePlatinum && !drivesSyncAllowed)');
+    expect(options).toContain('!!state.workspaceVolume');
+    expect(options).toContain('state.residentialProxyRequested');
+    expect(options).toContain('fallbackEnabled: providerFallbackSetting().enabled');
+    expect(failover).toBe(-1); // guard against a stray rename leaving two paths
+  });
+
+  test('failover writes the row\'s new provider first, and fails over only when that write lands', async () => {
+    const source = await read('../../platform/services/session-sandbox.ts');
+    const switchWrite = source.indexOf("switched = await transitionSandbox('reprovision'");
+    const reassign = source.indexOf('providerName = next;');
+    expect(switchWrite).toBeGreaterThan(-1);
+    // A box created on `next` under a row naming the old provider is stopped
+    // by the orphan sweep, so the switch must precede the reassignment.
+    expect(reassign).toBeGreaterThan(switchWrite);
+    expect(source).toContain('if (next && switched) {');
+    expect(source).not.toMatch(/transitionSandbox\('reprovision'[^;]*\.catch\(\(\) => \{\}\)/);
+  });
+});

@@ -1,0 +1,200 @@
+import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+export interface LocalGitRepository {
+  repoUrl: string;
+  root: string;
+  dispose(): Promise<void>;
+}
+
+export async function createLocalGitRepository(
+  name: string,
+  opts?: { allowAllSecrets?: boolean; allowAllConnectors?: boolean },
+): Promise<LocalGitRepository> {
+  const root = await mkdtemp(join(tmpdir(), "ke2e-git-"));
+  const repoUrl = join(root, "remote.git");
+  const work = join(root, "work");
+  try {
+    await git(["init", "--bare", "--initial-branch=main", repoUrl]);
+    await git(["init", "--initial-branch=main", work]);
+    await git(["-C", work, "config", "user.name", "Kortix Local E2E"]);
+    await git(["-C", work, "config", "user.email", "local-e2e@kortix.test"]);
+    await writeFile(join(work, "README.md"), `# ${name}\n`);
+    await writeFile(
+      join(work, "kortix.yaml"),
+      // Sessions of `worker` get the project checkout (a session branch), as every agent did before the one format.
+      `project:\n  name: ${name}\ndefault_agent: worker\nagents:\n  worker:\n    tools: all\n    workspace:\n      project_repository: true${
+        opts?.allowAllSecrets ? '\n    secrets: all' : ''
+      }${opts?.allowAllConnectors ? '\n    connectors: all' : ''}\n`,
+    );
+    await git(["-C", work, "add", "README.md", "kortix.yaml"]);
+    await git(["-C", work, "commit", "-m", "seed local e2e repository"]);
+    await git(["-C", work, "remote", "add", "origin", repoUrl]);
+    await git(["-C", work, "push", "-u", "origin", "main"]);
+    return {
+      repoUrl,
+      root,
+      dispose: () => rm(root, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function git(args: string[]): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const processResult = spawn("git", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    processResult.stdout.setEncoding("utf8");
+    processResult.stderr.setEncoding("utf8");
+    processResult.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    processResult.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    processResult.once("error", reject);
+    processResult.once("exit", (exitCode) => {
+      if (exitCode === 0) resolve();
+      else {
+        reject(new Error(`git ${args.join(" ")} failed (${exitCode}): ${(stderr || stdout).trim()}`));
+      }
+    });
+  });
+}
+
+/**
+ * Serve a local fixture project's bare repository over HTTP through Git's CGI
+ * backend, and point the project at it. The API proxy speaks HTTP; a filesystem
+ * `repo_url` is not an HTTP origin. Returns null on a deployed target, whose
+ * managed repository is already an HTTP origin.
+ */
+/**
+ * The `git http-backend` answer closure: spawn git for one request, forward the
+ * body by hand, and answer only after BOTH the request body has ended and git
+ * has exited. The socket semantics are load-bearing:
+ *
+ * - `git receive-pack` can exit before the proxy's chunked body is fully
+ *   read (the terminator arrives late under load). Answering then lets the
+ *   API's fetch reuse this keep-alive socket while the server is still
+ *   parsing the old body: the next request fails parsing with a bare 400
+ *   before this handler ever runs (GH-17 / AGP-10 flakes, 2026-09-23).
+ * - Forward the body by hand rather than `req.pipe(child.stdin)`: once git
+ *   exits early, pipe() detaches, and Bun's node:http then never emits
+ *   'end' for the rest of the body. An explicit 'data' listener keeps the
+ *   request flowing and discards what git no longer reads.
+ * - git http-backend explains every refusal on STDERR. Discarding it is
+ *   why three CI failures of this flow (2026-09-21 run 35625012282,
+ *   2026-09-22 run 35701044493, and one re-run in between) produced a
+ *   bare `400` and no cause: the proxy forwards the upstream status, so
+ *   the failing request reads as "the API returned 400" when the API is
+ *   only relaying what this server said. Keep it, and print it with the
+ *   request that earned it.
+ */
+function answerGitHttpBackend(
+  repo: string,
+  label: string,
+): import('node:http').RequestListener {
+  return (req, res) => {
+    const url = new URL(req.url!, 'http://localhost');
+    const child = spawn('git', ['http-backend'], { env: { ...process.env,
+      GIT_PROJECT_ROOT: repo, GIT_HTTP_EXPORT_ALL: '1',
+      PATH_INFO: url.pathname, QUERY_STRING: url.search.slice(1),
+      REQUEST_METHOD: req.method!, CONTENT_TYPE: req.headers['content-type'] ?? '',
+      REMOTE_USER: 'ke2e', REMOTE_ADDR: '127.0.0.1' } });
+    const chunks: Buffer[] = [];
+    let requestEnded = false;
+    let childClosed = false;
+    let answered = false;
+    let answer: () => void = () => {};
+    const answerWhenDone = () => {
+      if (answered || !requestEnded || !childClosed) return;
+      answered = true;
+      answer();
+    };
+    let stdinOpen = true;
+    child.stdin.on('error', () => {});
+    child.stdin.on('close', () => {
+      stdinOpen = false;
+      req.resume();
+    });
+    req.on('data', (chunk: Buffer) => {
+      if (!stdinOpen) return;
+      if (!child.stdin.write(chunk)) {
+        req.pause();
+        child.stdin.once('drain', () => req.resume());
+      }
+    });
+    req.on('end', () => {
+      requestEnded = true;
+      if (stdinOpen) child.stdin.end();
+      answerWhenDone();
+    });
+    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', () => {
+      if (answered) return;
+      answered = true;
+      res.writeHead(502);
+      res.end();
+    });
+    child.on('close', () => {
+      childClosed = true;
+      answerWhenDone();
+    });
+    answer = () => {
+      const body = Buffer.concat(chunks);
+      const split = body.indexOf('\r\n\r\n');
+      if (split < 0) {
+        console.error(`[${label}] http-backend produced no headers for ${req.method} ${req.url}${stderr ? ` — stderr: ${stderr.trim()}` : ''}`);
+        res.writeHead(502);
+        res.end();
+        return;
+      }
+      for (const line of body.subarray(0, split).toString().split('\r\n')) {
+        const colon = line.indexOf(':');
+        if (colon < 0) continue;
+        const name = line.slice(0, colon); const value = line.slice(colon + 1).trim();
+        if (name.toLowerCase() === 'status') res.statusCode = Number(value.split(' ')[0]);
+        else res.setHeader(name, value);
+      }
+      if (res.statusCode >= 400) {
+        console.error(`[${label}] http-backend answered ${res.statusCode} for ${req.method} ${req.url}${stderr ? ` — stderr: ${stderr.trim()}` : ''}`);
+      }
+      res.end(body.subarray(split + 4));
+    };
+  };
+}
+
+/**
+ * Serve a local fixture project's bare repository over HTTP through Git's CGI
+ * backend, and point the project at it. The API proxy speaks HTTP; a filesystem
+ * `repo_url` is not an HTTP origin. Returns null on a deployed target, whose
+ * managed repository is already an HTTP origin.
+ */
+export async function serveFixtureRepoLocally(
+  ctx: { env: { target: string } },
+  db: { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> },
+  projectId: string,
+  label: string,
+): Promise<import('node:http').Server | null> {
+  if (ctx.env.target !== 'local') return null;
+  const { createServer } = await import('node:http');
+  const { rows } = await db.query('SELECT repo_url FROM kortix.projects WHERE project_id = $1', [projectId]);
+  const repo = rows[0].repo_url as string;
+  const localGitServer = createServer(answerGitHttpBackend(repo, label));
+  await new Promise<void>((resolve) => localGitServer.listen(0, '127.0.0.1', resolve));
+  const port = (localGitServer.address() as import('node:net').AddressInfo).port;
+  await db.query('UPDATE kortix.projects SET repo_url = $1 WHERE project_id = $2',
+    [`http://127.0.0.1:${port}`, projectId]);
+  return localGitServer;
+}

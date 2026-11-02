@@ -1,0 +1,99 @@
+import { describe, expect, test } from 'bun:test';
+
+import {
+  projectImageAllowedForSession,
+  resolveSessionSandboxSlug,
+  sandboxSlugFromSessionMetadata,
+  repositoryAccessFromSessionMetadata,
+} from './session-sandbox-metadata';
+import {
+  isRepositoryProjectAction,
+  workspaceMetadataAllowsRepositoryAccess,
+} from './session-workspace-access';
+import { PROJECT_ACTIONS } from '../../iam/actions';
+
+describe('sandboxSlugFromSessionMetadata', () => {
+  test('returns a persisted template slug', () => {
+    expect(sandboxSlugFromSessionMetadata({ sandbox_slug: 'ml' })).toBe('ml');
+    expect(sandboxSlugFromSessionMetadata({ sandbox_slug: 'default' })).toBe('default');
+  });
+
+  test('rejects missing and invalid metadata values', () => {
+    expect(sandboxSlugFromSessionMetadata(null)).toBeUndefined();
+    expect(sandboxSlugFromSessionMetadata({})).toBeUndefined();
+    expect(sandboxSlugFromSessionMetadata({ sandbox_slug: '../escape' })).toBeUndefined();
+  });
+});
+
+describe('repositoryAccessFromSessionMetadata', () => {
+  test('returns a persisted workspace mode', () => {
+    expect(repositoryAccessFromSessionMetadata({ workspace_mode: 'runtime' })).toBe(false);
+    expect(repositoryAccessFromSessionMetadata({ workspace_mode: 'read' })).toBe(false);
+    expect(repositoryAccessFromSessionMetadata({ workspace_mode: 'branch' })).toBe(true);
+  });
+
+  test('keeps missing metadata legacy-compatible and maps invalid stored modes to runtime', () => {
+    expect(repositoryAccessFromSessionMetadata(null)).toBe(true);
+    expect(repositoryAccessFromSessionMetadata({})).toBe(true);
+    expect(repositoryAccessFromSessionMetadata({ workspace_mode: 'all' })).toBe(false);
+    expect(repositoryAccessFromSessionMetadata({ workspace_mode: null })).toBe(false);
+  });
+});
+
+describe('restricted workspace repository boundary', () => {
+  test('restricted metadata denies repository access while branch and legacy metadata allow it', () => {
+    expect(workspaceMetadataAllowsRepositoryAccess({ workspace_mode: 'runtime' })).toBe(false);
+    expect(workspaceMetadataAllowsRepositoryAccess({ workspace_mode: 'read' })).toBe(false);
+    expect(workspaceMetadataAllowsRepositoryAccess({ workspace_mode: 'all' })).toBe(false);
+    expect(workspaceMetadataAllowsRepositoryAccess({ workspace_mode: 'branch' })).toBe(true);
+    expect(workspaceMetadataAllowsRepositoryAccess({})).toBe(true);
+  });
+
+  test('project images require a full-repository non-meta session', () => {
+    expect(projectImageAllowedForSession('default', true)).toBe(true);
+    expect(projectImageAllowedForSession('default', undefined)).toBe(true);
+    expect(projectImageAllowedForSession('default', false)).toBe(false);
+    expect(projectImageAllowedForSession('default', false)).toBe(false);
+    expect(projectImageAllowedForSession('meta', true)).toBe(false);
+  });
+
+  test('classifies every repository-backed project capability', () => {
+    expect(isRepositoryProjectAction(PROJECT_ACTIONS.PROJECT_FILE_READ)).toBe(true);
+    expect(isRepositoryProjectAction(PROJECT_ACTIONS.PROJECT_FILE_WRITE)).toBe(true);
+    expect(isRepositoryProjectAction(PROJECT_ACTIONS.PROJECT_GITOPS_READ)).toBe(true);
+    expect(isRepositoryProjectAction(PROJECT_ACTIONS.PROJECT_GITOPS_PUSH)).toBe(true);
+    expect(isRepositoryProjectAction(PROJECT_ACTIONS.PROJECT_GITOPS_MERGE)).toBe(true);
+    expect(isRepositoryProjectAction(PROJECT_ACTIONS.PROJECT_SECRET_READ)).toBe(false);
+    expect(isRepositoryProjectAction(PROJECT_ACTIONS.PROJECT_CONNECTOR_READ)).toBe(false);
+  });
+});
+
+describe('resolveSessionSandboxSlug', () => {
+  test('uses explicit, agent, project, then platform precedence', () => {
+    expect(
+      resolveSessionSandboxSlug({
+        explicit: 'override',
+        agent: 'ml',
+        project: 'node',
+      }),
+    ).toBe('override');
+    expect(resolveSessionSandboxSlug({ agent: 'ml', project: 'node' })).toBe('ml');
+    expect(resolveSessionSandboxSlug({ project: 'node' })).toBe('node');
+    expect(resolveSessionSandboxSlug({})).toBe('default');
+  });
+});
+
+
+describe('repository_access session metadata', () => {
+  test('honors the canonical restriction without legacy metadata', () => {
+    expect(workspaceMetadataAllowsRepositoryAccess({ repository_access: false })).toBe(false);
+    expect(workspaceMetadataAllowsRepositoryAccess({ repository_access: true })).toBe(true);
+  });
+  test('invalid canonical values and conflicting restrictions fail closed', () => {
+    for (const value of [null, 'true', 1, {}]) {
+      expect(workspaceMetadataAllowsRepositoryAccess({ repository_access: value })).toBe(false);
+    }
+    expect(workspaceMetadataAllowsRepositoryAccess({ repository_access: true, workspace_mode: 'runtime' })).toBe(false);
+    expect(workspaceMetadataAllowsRepositoryAccess({ repository_access: false, workspace_mode: 'branch' })).toBe(false);
+  });
+});

@@ -1,0 +1,187 @@
+import { describe, expect, test } from 'bun:test';
+
+import { resolveConfigAgents } from '../projects/git/config';
+import type { LoadedAgents } from '../projects/agents';
+
+const nativeAgents = [
+  {
+    name: 'kortix',
+    path: 'agents/kortix.md',
+    description: 'Default Kortix agent',
+    mode: 'primary',
+  },
+  {
+    name: 'release-bot',
+    path: 'agents/release-bot.md',
+    description: 'Ships releases',
+    mode: 'subagent',
+  },
+];
+
+describe('project config agent discovery', () => {
+  test('no agents: keeps legacy OpenCode discovery', () => {
+    const result = resolveConfigAgents(nativeAgents, { specs: [], errors: [] });
+
+    expect(result.agent_discovery).toBe('opencode');
+    expect(result.agents).toEqual([
+      { ...nativeAgents[0], source: 'opencode', enabled: true },
+      { ...nativeAgents[1], source: 'opencode', enabled: true },
+    ]);
+  });
+
+  test('agents: lists every registered agent, a disabled one with enabled: false', () => {
+    const loaded: LoadedAgents = {
+      errors: [],
+      specs: [
+        {
+          name: 'kortix',
+          path: 'kortix.yaml#agents.kortix',
+          enabled: true,
+          connectors: 'all',
+          permissions: 'all',
+          env: 'all',
+          model: null,
+        },
+        {
+          name: 'triage',
+          path: 'kortix.yaml#agents.triage',
+          enabled: true,
+          connectors: [],
+          permissions: [],
+          env: 'all',
+          model: null,
+        },
+        {
+          name: 'disabled',
+          path: 'kortix.yaml#agents.disabled',
+          enabled: false,
+          connectors: [],
+          permissions: [],
+          env: 'all',
+          model: null,
+        },
+      ],
+    };
+
+    // `triage`'s prompt file is the `release-bot` native summary's path.
+    const result = resolveConfigAgents(nativeAgents, loaded, (spec) =>
+      spec.name === 'triage' ? 'agents/release-bot.md' : undefined,
+    );
+
+    expect(result.agent_discovery).toBe('declarative');
+    expect(result.agents).toEqual([
+      {
+        name: 'kortix',
+        path: 'agents/kortix.md',
+        description: 'Default Kortix agent',
+        mode: 'primary',
+        // The roster carries the agent's model since #7083 — `null` here
+        // because neither the spec nor the native summary names one, and the
+        // resolver reads `native?.model ?? null`.
+        model: null,
+        space: null,
+        source: 'kortix.yaml',
+        enabled: true,
+        sandbox: null,
+        scope: { env: 'all', connectors: 'all', kortix_permissions: 'all', kortix_cli: 'all', apps: [] },
+      },
+      {
+        name: 'triage',
+        path: 'agents/release-bot.md',
+        description: 'Ships releases',
+        mode: 'subagent',
+        model: null,
+        space: null,
+        source: 'kortix.yaml',
+        enabled: true,
+        sandbox: null,
+        scope: { env: 'all', connectors: [], kortix_permissions: [], kortix_cli: [], apps: [] },
+      },
+      {
+        name: 'disabled',
+        path: 'kortix.yaml#agents.disabled',
+        description: null,
+        mode: null,
+        model: null,
+        space: null,
+        source: 'kortix.yaml',
+        enabled: false,
+        sandbox: null,
+        scope: { env: 'all', connectors: [], kortix_permissions: [], kortix_cli: [], apps: [] },
+      },
+    ]);
+  });
+
+  test('per-agent env/connectors/CLI allowlists surface as read-only scope', () => {
+    const loaded: LoadedAgents = {
+      errors: [],
+      specs: [
+        {
+          name: 'support_bot',
+          path: 'kortix.yaml#agents.support_bot',
+          enabled: true,
+          connectors: ['stripe'],
+          permissions: ['project.read'],
+          env: ['GITHUB_TOKEN', 'OPENAI_API_KEY'],
+          model: null,
+        },
+      ],
+    };
+
+    const [agent] = resolveConfigAgents(nativeAgents, loaded).agents;
+    // The UI reads exactly this to render the per-agent scope panel — note the
+    // wire key is `kortix_permissions` (snake_case), mapped from the spec's
+    // `permissions`; `kortix_cli` is the deprecated wire alias, same value.
+    expect(agent?.scope).toEqual({
+      env: ['GITHUB_TOKEN', 'OPENAI_API_KEY'],
+      connectors: ['stripe'],
+      kortix_permissions: ['project.read'],
+      kortix_cli: ['project.read'],
+      apps: [],
+    });
+  });
+
+  test('OpenCode-discovered agents carry no agents: scope', () => {
+    const result = resolveConfigAgents(nativeAgents, { specs: [], errors: [] });
+    expect(result.agents.every((a) => a.scope === undefined)).toBe(true);
+  });
+
+  test('a declared agent resolves to its prompt file, wherever it is', () => {
+    const rootAgents = [
+      { name: 'kortix', path: 'agents/kortix.md', description: 'Root agent', mode: 'primary' },
+      { name: 'support', path: 'team/support.md', description: 'Explicit file', mode: 'subagent' },
+    ];
+    const spec = (name: string) => ({
+      name,
+      path: `kortix.yaml#agents.${name}`,
+      enabled: true,
+      connectors: [] as string[],
+      permissions: [] as string[],
+      env: 'all' as const,
+      model: null,
+    });
+    const result = resolveConfigAgents(
+      rootAgents,
+      { errors: [], specs: [spec('kortix'), spec('support')] },
+      (s) => (s.name === 'kortix' ? 'agents/kortix.md' : 'team/support.md'),
+    );
+    expect(result.agents.map((a) => [a.name, a.path, a.description])).toEqual([
+      ['kortix', 'agents/kortix.md', 'Root agent'],
+      ['support', 'team/support.md', 'Explicit file'],
+    ]);
+  });
+
+  test('invalid agents: adoption disables legacy discovery instead of silently exposing all agents', () => {
+    const result = resolveConfigAgents(nativeAgents, {
+      specs: [],
+      errors: [{
+        name: '(top-level)',
+        path: 'kortix.yaml',
+        error: '`agents` must be a map of agent name → agent block',
+      }],
+    });
+
+    expect(result.agent_discovery).toBe('declarative');
+    expect(result.agents).toEqual([]);
+  });
+});

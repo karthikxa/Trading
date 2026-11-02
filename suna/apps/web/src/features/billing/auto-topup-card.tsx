@@ -1,0 +1,411 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+
+import { Button } from '@kortix/ui/button';
+import { InfoBanner } from '@kortix/ui/info-banner';
+import Loading from '@kortix/ui/loading';
+import { Switch } from '@kortix/ui/switch';
+import { errorToast, successToast } from '@kortix/ui/toast';
+import { spring, cn } from '@kortix/ui';
+import { useBillingAccountId } from '@kortix/ui/internal/stores/billing-account-context';
+import {
+  configureAutoTopup,
+  getAutoTopupSettings,
+  getAutoTopupSetupStatus,
+  type AutoTopupSettings as AutoTopupConfig,
+} from '@kortix/sdk';
+import {
+  AUTO_TOPUP_DEFAULT_AMOUNT,
+  AUTO_TOPUP_DEFAULT_THRESHOLD,
+  AUTO_TOPUP_MIN_AMOUNT,
+  AUTO_TOPUP_MIN_BUFFER,
+  AUTO_TOPUP_MIN_THRESHOLD,
+  creditsToDollars,
+  dollarsToCredits,
+  formatCredits,
+} from '@kortix/shared';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { AnimatePresence, m } from 'motion/react';
+import { useLocale, useTranslations } from '@/i18n/use-translations';
+import { formatWholeUsd, monthlyCreditsForUsd, TOP_UP_BONUS_STEPS, topUpBonusCredits } from '@kortix/ui/internal/billing/compute-pricing';
+import { autoTopupFailureNotice } from './auto-topup-failure-notice';
+
+/**
+ * Parse + clamp the raw string field values to the USD numbers the server
+ * receives. The threshold field holds CREDITS (it is an amount the account
+ * holds, 1 credit = $0.01); the amount field holds dollars (it is a purchase).
+ * Shared by the configRef/onChange effects, `handleSave`, and the inline
+ * buffer-validation check below, so all four always agree on what "the
+ * current amount/threshold" is.
+ */
+export function clampAutoTopupValues(thresholdCreditsInput: string, amountInput: string) {
+  const threshold = Math.max(
+    AUTO_TOPUP_MIN_THRESHOLD,
+    creditsToDollars(parseInt(thresholdCreditsInput, 10) || dollarsToCredits(AUTO_TOPUP_DEFAULT_THRESHOLD)),
+  );
+  const amount = Math.max(
+    AUTO_TOPUP_MIN_AMOUNT,
+    parseInt(amountInput, 10) || AUTO_TOPUP_DEFAULT_AMOUNT,
+  );
+  return { threshold, amount };
+}
+
+/** The smallest whole-dollar top-up that clears the threshold by the buffer. */
+export function minimumAutoTopupAmount(thresholdUsd: number): number {
+  return Math.ceil(thresholdUsd + AUTO_TOPUP_MIN_BUFFER);
+}
+
+/**
+ * Auto top-up: recharge the wallet automatically before it hits zero.
+ *
+ * **Restyle (2026-08-13).** The card used to stack a toggle row, a warning
+ * banner, an inline rule row, an explanation paragraph, a *second*
+ * explanation paragraph for the off state, a save-result banner that repeated
+ * whatever the toast had just said, and a full-width Save button — up to seven
+ * blocks for one switch and two numbers, under a host heading that repeated
+ * the toggle's own label.
+ *
+ * Now: one row (label + switch), and — only when it is on — one rule line
+ * (`Add $X when the balance drops below $Y`) with Save appearing beside it the
+ * moment something is dirty. The save-result banner is gone; the toast already
+ * reports the outcome and two reports of one event is noise. The state
+ * explanation moved into the row's own description, which changes with the
+ * switch instead of adding a line under it.
+ *
+ * Renders no chrome of its own (no border, no padding): the host owns the
+ * panel. Three hosts rely on that — the Billing tab, the out-of-credits modal,
+ * and `/accounts/[id]`.
+ */
+
+export interface AutoTopupCardProps {
+  /** If true, fetches current settings from API on mount (for settings modal) */
+  fetchSettings?: boolean;
+  /** Default values when not fetching (for onboarding) */
+  defaultEnabled?: boolean;
+  defaultThreshold?: number;
+  defaultAmount?: number;
+  /** Show a save button inside the card (for settings modal). If false, use `ref` to save externally. */
+  showSaveButton?: boolean;
+  /** Called when values change — parent can use this to save on their own terms */
+  onChange?: (config: AutoTopupConfig) => void;
+  /** Ref to get the current config for external save */
+  configRef?: React.MutableRefObject<AutoTopupConfig | null>;
+}
+
+export function AutoTopupCard({
+  fetchSettings = false,
+  defaultEnabled = true,
+  defaultThreshold = AUTO_TOPUP_DEFAULT_THRESHOLD,
+  defaultAmount = AUTO_TOPUP_DEFAULT_AMOUNT,
+  showSaveButton = false,
+  onChange,
+  configRef,
+}: AutoTopupCardProps) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const t = useTranslations('billing.autoTopup');
+  const tCredits = useTranslations('settings.credits');
+  const locale = useLocale();
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  // Fail fast: these endpoints can stall on Stripe round-trips; we'd rather
+  // render with defaults than spin forever.
+  const accountId = useBillingAccountId();
+
+  const {
+    data: fetchedConfig,
+    isLoading,
+    isError: settingsError,
+    refetch: refetchSettings,
+  } = useQuery({
+    queryKey: ['auto-topup-settings', { accountId: accountId ?? null }],
+    queryFn: () => getAutoTopupSettings(accountId),
+    retry: 0,
+    enabled: fetchSettings,
+  });
+
+  const { data: setupStatus } = useQuery({
+    queryKey: ['auto-topup-setup-status', { accountId: accountId ?? null }],
+    queryFn: () => getAutoTopupSetupStatus(accountId),
+    retry: 0,
+    enabled: fetchSettings,
+  });
+
+  const [enabled, setEnabled] = useState(defaultEnabled);
+  // In credits: the field the person types into. Converted to USD on save.
+  const [threshold, setThreshold] = useState(String(dollarsToCredits(defaultThreshold)));
+  const [amount, setAmount] = useState(String(defaultAmount));
+
+  // Sync from fetched settings
+  useEffect(() => {
+    if (!fetchedConfig) return;
+    setEnabled(fetchedConfig.enabled);
+    setThreshold(String(dollarsToCredits(fetchedConfig.threshold)));
+    setAmount(String(fetchedConfig.amount));
+    setDirty(false);
+  }, [fetchedConfig]);
+
+  // Expose current config via ref
+  useEffect(() => {
+    if (configRef) {
+      configRef.current = { enabled, ...clampAutoTopupValues(threshold, amount) };
+    }
+  }, [enabled, threshold, amount, configRef]);
+
+  // Notify parent on change
+  useEffect(() => {
+    onChange?.({ enabled, ...clampAutoTopupValues(threshold, amount) });
+  }, [enabled, threshold, amount, onChange]);
+
+  // Same rule the server enforces in `validateAutoTopupConfig`
+  // (apps/api/src/billing/services/auto-topup.ts) — kept in lockstep via the
+  // shared `AUTO_TOPUP_MIN_BUFFER` constant so client and server never
+  // disagree. Checked live (not just on Save) so the field can warn before a
+  // round trip to the server, instead of only after one fails.
+  const { threshold: thresholdNum, amount: amountNum } = clampAutoTopupValues(threshold, amount);
+  const bufferError =
+    enabled && amountNum < thresholdNum + AUTO_TOPUP_MIN_BUFFER
+      ? t('bufferError', {
+          buffer: formatCredits(dollarsToCredits(AUTO_TOPUP_MIN_BUFFER), { locale }),
+          minimum: formatWholeUsd(minimumAutoTopupAmount(thresholdNum), locale),
+        })
+      : null;
+
+  const handleSave = useCallback(async () => {
+    if (bufferError) return;
+    const { threshold: thresholdNum, amount: amountNum } = clampAutoTopupValues(threshold, amount);
+    // Gate on "is there a chargeable method", NOT on "is one marked default".
+    // A Stripe Link (or SEPA) checkout attaches the method to the SUBSCRIPTION
+    // and leaves the customer-level invoice default null, so gating on the
+    // default told customers with a working, already-charged payment method
+    // that they had none — and auto top-up then never fired for them.
+    if (enabled && setupStatus && !setupStatus.has_payment_method) {
+      errorToast(t('addPaymentFirst'));
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await configureAutoTopup({
+        accountId,
+        enabled,
+        threshold: thresholdNum,
+        amount: amountNum,
+      });
+      queryClient.invalidateQueries({ queryKey: ['auto-topup-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['accountState'] });
+      queryClient.invalidateQueries({ queryKey: ['auto-topup-setup-status'] });
+      setDirty(false);
+      successToast(tI18nComplete('textd81c55f49c5b'));
+    } catch (err: unknown) {
+      const error = err as { message?: string; error?: string };
+      errorToast(error?.message || error?.error || t('updateFailed'));
+    } finally {
+      setSaving(false);
+    }
+  }, [
+    bufferError,
+    threshold,
+    amount,
+    enabled,
+    setupStatus,
+    t,
+    tI18nComplete,
+    accountId,
+    queryClient,
+  ]);
+
+  const showMissingCardWarning = enabled && setupStatus && !setupStatus.has_payment_method;
+  // KRTX-1718: why the last charge failed, and whether that turned auto top-up off.
+  const failureNotice = autoTopupFailureNotice(fetchedConfig, locale);
+
+  if (fetchSettings && isLoading) {
+    return (
+      <div className="flex items-center justify-center py-4">
+        <Loading className="text-muted-foreground size-4 shrink-0" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {settingsError && (
+        <InfoBanner
+          tone="warning"
+          action={
+            <Button size="sm" variant="outline" onClick={() => refetchSettings()}>
+              {t('retry')}
+            </Button>
+          }
+        >
+          {t('settingsLoadFailed')}
+        </InfoBanner>
+      )}
+
+      {failureNotice && (
+        <InfoBanner tone="warning">{t(failureNotice.key, failureNotice.values)}</InfoBanner>
+      )}
+
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-foreground text-sm font-medium">{t('title')}</p>
+          <p className="text-muted-foreground text-xs">
+            {enabled ? t('enabledDescription') : t('disabledDescription')}
+          </p>
+        </div>
+        <Switch
+          checked={enabled}
+          aria-label={t('title')}
+          onCheckedChange={(value) => {
+            setEnabled(value);
+            setDirty(true);
+          }}
+        />
+      </div>
+
+      <AnimatePresence initial={false}>
+        {enabled && (
+          <m.div
+            key="rule"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={spring.moderate}
+            className="overflow-hidden"
+          >
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-2 pt-1 text-xs">
+              <span className="text-muted-foreground">{t('add')}</span>
+              <AmountInput
+                prefix="$"
+                value={amount}
+                min={AUTO_TOPUP_MIN_AMOUNT}
+                label={t('amountLabel')}
+                onChange={(next) => {
+                  setAmount(next);
+                  setDirty(true);
+                }}
+              />
+              <span className="text-muted-foreground">{t('whenBelow')}</span>
+              <AmountInput
+                value={threshold}
+                min={dollarsToCredits(AUTO_TOPUP_MIN_THRESHOLD)}
+                label={t('thresholdLabel')}
+                onChange={(next) => {
+                  setThreshold(next);
+                  setDirty(true);
+                }}
+              />
+              <span className="text-muted-foreground">
+                {tCredits('unit', { count: dollarsToCredits(thresholdNum) })}
+              </span>
+
+              <AnimatePresence initial={false}>
+                {showSaveButton && dirty && (
+                  <m.div
+                    initial={{ opacity: 0, scale: 0.96 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.96 }}
+                    transition={spring.moderate}
+                    className="ml-auto"
+                  >
+                    <Button
+                      size="sm"
+                      disabled={saving || !!bufferError}
+                      onClick={handleSave}
+                      className="gap-1.5 transition-transform active:scale-[0.96]"
+                    >
+                      {saving ? <Loading className="size-3.5 shrink-0" /> : null}
+                      {t('save')}
+                    </Button>
+                  </m.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {bufferError && <p className="text-destructive mt-2.5 text-xs">{bufferError}</p>}
+
+            {!bufferError && showMissingCardWarning && (
+              <p className="text-kortix-orange mt-2.5 text-xs">{t('paymentNeeded')}</p>
+            )}
+
+            {!bufferError && !showMissingCardWarning && (
+              <p className="text-muted-foreground mt-2.5 text-xs tabular-nums">
+                {topUpBonusCredits(amountNum) > 0
+                  ? t('bonusHint', {
+                      credits: formatCredits(monthlyCreditsForUsd(amountNum), { locale }),
+                      bonus: formatCredits(topUpBonusCredits(amountNum), { locale }),
+                    })
+                  : t('bonusFrom', {
+                      min: formatWholeUsd(TOP_UP_BONUS_STEPS[TOP_UP_BONUS_STEPS.length - 1].minUsd, locale),
+                    })}
+              </p>
+            )}
+          </m.div>
+        )}
+      </AnimatePresence>
+
+      {/* Turning auto top-up OFF is also a change worth saving, and the rule
+          row that normally hosts Save is hidden in that state. */}
+      {showSaveButton && !enabled && dirty && (
+        <Button
+          size="sm"
+          disabled={saving}
+          onClick={handleSave}
+          className="gap-1.5 transition-transform active:scale-[0.96]"
+        >
+          {saving ? <Loading className="size-3.5 shrink-0" /> : null}
+          {t('save')}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+
+/** A number field sized to its content — these sit inside a sentence, so a
+ *  full-width `Input` would break the line it belongs to. `prefix` is the
+ *  currency mark on a purchase amount; a credits amount has none and names
+ *  its unit after the field instead. */
+function AmountInput({
+  value,
+  min,
+  label,
+  prefix,
+  onChange,
+}: {
+  value: string;
+  min: number;
+  label: string;
+  prefix?: string;
+  onChange: (next: string) => void;
+}) {
+  return (
+    <span
+      className={cn(
+        'bg-popover focus-within:ring-kortix-base relative inline-flex h-7 items-center rounded-md border',
+        'focus-within:ring-[0.6px]',
+      )}
+    >
+      {prefix ? (
+        <span className="text-muted-foreground pointer-events-none absolute left-2 text-xs">
+          {prefix}
+        </span>
+      ) : null}
+      <input
+        type="number"
+        min={min}
+        step={1}
+        inputMode="numeric"
+        aria-label={label}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(
+          'text-foreground h-full [appearance:textfield] bg-transparent pr-2 text-xs font-medium tabular-nums outline-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none',
+          prefix ? 'w-[3.75rem] pl-5' : 'w-[4.5rem] pl-2',
+        )}
+      />
+    </span>
+  );
+}

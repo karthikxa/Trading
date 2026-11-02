@@ -8,6 +8,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
+      '@': path.resolve(__dirname, './src'),
       'agent-ui-bridge/react': path.resolve(__dirname, './agent-ui-bridge/src/react/AgentConfirmHost.tsx'),
       'agent-ui-bridge/tab-bridge': path.resolve(__dirname, './agent-ui-bridge/src/tabBridge.ts'),
       'agent-ui-bridge': path.resolve(__dirname, './agent-ui-bridge/src/index.ts'),

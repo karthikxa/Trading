@@ -1,0 +1,133 @@
+import { canonicalManagedModelId } from '../models/managed-models';
+import { isClaudeAgentModelRef } from './claude-agent';
+
+// One definition of how a default model/agent is chosen across scopes. Keeping
+// the precedence here means Slack, the web picker, and the gateway agree.
+
+/** Where an effective model came from — drives honest UI copy ("· project default"). */
+export type ModelSource = 'explicit' | 'agent' | 'project' | 'account' | 'platform';
+/** Where an effective agent came from. */
+export type AgentSource = 'explicit' | 'project' | 'fallback';
+
+const KORTIX_PREFIX = 'kortix/';
+
+/**
+ * The GATEWAY WIRE form of a model ref: a managed model is stored/served bare
+ * (`glm-5.3-flash`), so strip the opencode-only `kortix/` namespace before it reaches
+ * the gateway (route resolution and managed-model lookup both expect the
+ * bare id). BYOK (`provider/model`) and codex (`codex/<id>`) refs pass through.
+ * This is what `account_model_preferences` stores and what servability checks.
+ */
+export function toWireModel(ref: string): string {
+  const bare = ref.startsWith(KORTIX_PREFIX) ? ref.slice(KORTIX_PREFIX.length) : ref;
+  return canonicalManagedModelId(bare);
+}
+
+/**
+ * The OPENCODE ref form: every gateway model is registered under OpenCode's
+ * `kortix` provider. The remaining path is the gateway wire model, including
+ * nested provider paths such as `codex/gpt-5.6-sol`.
+ *
+ * Every other stored model is the wire id (`toWireModel`): channel bindings,
+ * triggers, account and agent defaults. Only a session's
+ * `metadata.opencode_model` keeps this form, because released clients (the
+ * CLI, `@kortix/sdk` `send()`) split it on the first `/` into the prompt's
+ * `{providerID, modelID}`; a bare wire id there would send no model, and a
+ * BYOK id the wrong provider. It goes when those clients read the model from
+ * the API instead of parsing the pin.
+ */
+export function toOpencodeModelRef(model: string): string {
+  // A Claude subscription model is not a gateway model: the box reads its
+  // provider from the ref itself (`claude-agent/<id>`).
+  if (isClaudeAgentModelRef(model)) return model.trim();
+  return `${KORTIX_PREFIX}${toWireModel(model)}`;
+}
+
+/** A bare wire id is a Kortix managed model: BYOK and codex refs always carry a `provider/`. */
+function isManagedRef(ref: string): boolean {
+  return !toWireModel(ref).includes('/');
+}
+
+/**
+ * Pure precedence for the DEFAULT model chain (no explicit/request override —
+ * that's handled by the async resolver, which must validate servability):
+ *   per-agent default → project default → account default → platform default.
+ *
+ * The MOST-SPECIFIC present layer wins; the free-tier managed-drop then applies
+ * to that single chosen candidate (dropping to no model rather than silently
+ * downgrading to a less-specific layer — see choose-default-model.test).
+ */
+export function chooseEffectiveModel(params: {
+  agentDefault?: string | null;
+  projectDefault?: string | null;
+  accountDefault?: string | null;
+  freeModelsOnly?: boolean;
+}): { model: string | null; source: ModelSource } {
+  let candidate: string | null = null;
+  let source: ModelSource = 'platform';
+  if (params.agentDefault) {
+    candidate = params.agentDefault;
+    source = 'agent';
+  } else if (params.projectDefault) {
+    candidate = params.projectDefault;
+    source = 'project';
+  } else if (params.accountDefault) {
+    candidate = params.accountDefault;
+    source = 'account';
+  }
+  if (!candidate) return { model: null, source: 'platform' };
+  // An account without the managed-models entitlement never gets a managed
+  // model. The chosen candidate is dropped rather than falling through to a
+  // broader layer (see choose-default-model.test).
+  if (params.freeModelsOnly && isManagedRef(candidate)) return { model: null, source: 'platform' };
+  return { model: candidate, source };
+}
+
+/**
+ * Guard a resolved DEFAULT-chain model against staleness before it's handed to
+ * the gateway or UI. A stored default can silently go unservable after
+ * the fact — overwhelmingly a BYOK model (`provider/model`) whose provider key was
+ * later disconnected, or that was auto-seeded on connect and never had a key in
+ * THIS environment (the `seedProjectDefaultModelOnConnect` path).
+ *
+ * Managed/platform defaults are servable whenever the tier allows (already enforced
+ * upstream by `chooseEffectiveModel`'s free-tier drop), so they are trusted without
+ * a per-request probe — only BYOK/codex defaults are probed. An unservable one
+ * degrades to the platform default (`null`), never a dead turn. The `probe` is
+ * injected so the decision stays pure and unit-testable without a DB.
+ *
+ * `fallback` is a second, optional degrade step tried ONLY when the configured
+ * default itself turns out unservable (probe() is false) — e.g. a BYOK model
+ * whose provider key was disconnected/rotated away. Rather than silently
+ * dropping straight to the (possibly ALSO unservable, e.g. an unconnected
+ * platform default like Codex) platform default, a caller can supply a
+ * best-effort "something this project can actually run right now" lookup
+ * (see default-model.ts's connectedByokFallback). Returning null from
+ * `fallback` (or omitting it) preserves the original platform-default
+ * behavior exactly.
+ */
+export async function degradeUnservableDefault(
+  model: string | null | undefined,
+  ctx: { hasProject: boolean },
+  probe: () => Promise<boolean>,
+  fallback?: () => Promise<string | null>,
+): Promise<string | null> {
+  if (!model) return null;
+  if (isManagedRef(model)) return model;
+  if (!ctx.hasProject) return null; // BYOK resolves its key from a project secret
+  if (await probe()) return model;
+  return fallback ? await fallback() : null;
+}
+
+/**
+ * Pure precedence for the effective AGENT:
+ *   explicit (channel/session) → project default → 'default'.
+ */
+export function chooseEffectiveAgent(params: {
+  explicit?: string | null;
+  projectDefault?: string | null;
+}): { agent: string; source: AgentSource } {
+  if (params.explicit) return { agent: params.explicit, source: 'explicit' };
+  if (params.projectDefault) return { agent: params.projectDefault, source: 'project' };
+  return { agent: 'default', source: 'fallback' };
+}

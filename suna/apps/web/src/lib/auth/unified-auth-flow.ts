@@ -1,0 +1,175 @@
+import type { UiTranslator } from '@/i18n/translator';
+/**
+ * Pure logic for the unified email-first auth flow ("one system"): the visitor
+ * types an email, Continue resolves whether that address already has an
+ * account, and the credentials step renders in the mode the flow already
+ * knows — sign-in for existing accounts, registration for new ones. Nobody is
+ * ever told "Invalid login credentials" for an account that doesn't exist.
+ *
+ * Everything here is deliberately side-effect free so the mode resolution and
+ * error-copy mapping are unit-testable without Supabase or the API.
+ */
+
+export type AuthMethod = 'magic' | 'password';
+
+/** What the credentials (password) step knows about the address. */
+export type CredentialsMode = 'signin' | 'signup' | 'unknown';
+
+/**
+ * `CredentialsMode` plus the terminal outcomes: 'closed' (signups off, address
+ * not allowlisted) and 'sso' (the domain's org enforces SSO-only sign-in — the
+ * password/email-code paths must refuse and route to the IdP).
+ */
+export type EmailFlowMode = CredentialsMode | 'closed' | 'sso';
+
+export const SIGNUPS_CLOSED_MESSAGE =
+  'Signups are currently closed. Contact your administrator or request access.';
+
+export const SSO_REQUIRED_MESSAGE =
+  'Your organization requires single sign-on. Continue with SSO instead.';
+
+const WRONG_PASSWORD_MESSAGE =
+  'Incorrect password. Try again, or reset it via “Forgot your password?”.';
+
+/** Parse `KORTIX_PUBLIC_AUTH_METHODS` ("magic,password") with a safe default. */
+export function parseAuthMethods(raw: string | null | undefined): AuthMethod[] {
+  const parsed = (raw || 'magic,password')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter((s): s is AuthMethod => s === 'magic' || s === 'password');
+  return parsed.length ? parsed : ['magic', 'password'];
+}
+
+/**
+ * Map a `POST /access/check-email` response body onto a flow mode. Tolerates
+ * the legacy `{ allowed }`-only shape (API older than the web) and any failure
+ * shape by degrading to 'unknown' — the credentials step then submits through
+ * the adaptive signup action, which signs in existing users and registers new
+ * ones, so a degraded check never strands anyone.
+ */
+export function resolveEmailFlowMode(check: unknown): EmailFlowMode {
+  if (!check || typeof check !== 'object') return 'unknown';
+  const { mode, allowed } = check as { mode?: unknown; allowed?: unknown };
+  if (mode === 'signin' || mode === 'signup' || mode === 'closed' || mode === 'sso') return mode;
+  if (allowed === false) return 'closed';
+  return 'unknown';
+}
+
+/**
+ * Human copy for a rate-limited auth request. GoTrue surfaces its own error
+ * strings ("Email rate limit exceeded") and the auth screen used to show one
+ * raw as the toast heading; this maps the rate-limit codes to guidance
+ * instead. Null when the error is not a rate limit — the caller keeps its
+ * existing handling for everything else.
+ *
+ * ponytail: the wait copy assumes GoTrue's default hourly email-send quota;
+ * reword if a deployment tunes RATE_LIMIT_EMAIL_SENT.
+ */
+export function authRateLimitCopy(
+  error: { code?: string | null; message?: string | null } | null | undefined,
+  tI18nComplete: UiTranslator,
+): string | null {
+  if (!error) return null;
+  const code = (error.code || '').toLowerCase();
+  const message = (error.message || '').toLowerCase();
+  if (code === 'over_email_send_rate_limit' || message.includes('email rate limit')) {
+    return tI18nComplete.raw('authEmailRateLimit');
+  }
+  if (
+    code === 'over_request_rate_limit' ||
+    code === 'over_sms_send_rate_limit' ||
+    message.includes('rate limit')
+  ) {
+    return tI18nComplete.raw('authRequestRateLimit');
+  }
+  return null;
+}
+
+export interface CredentialsCopy {
+  title: string;
+  description: string | null;
+  passwordPlaceholder: string;
+  passwordAutoComplete: 'current-password' | 'new-password';
+  showForgotPassword: boolean;
+  /**
+   * Which server action the submit uses. 'unknown' submits as signup because
+   * that action is adaptive: it registers new emails and signs in existing
+   * ones when the password matches.
+   */
+  submitsAs: 'signin' | 'signup';
+}
+
+export function credentialsCopy(
+  mode: CredentialsMode,
+  tI18nComplete: UiTranslator,
+): CredentialsCopy {
+  if (mode === 'signin') {
+    return {
+      title: tI18nComplete.raw('text6621249514b7'),
+      description: tI18nComplete.raw('text5c0cb6434704'),
+      passwordPlaceholder: 'Your password',
+      passwordAutoComplete: 'current-password',
+      showForgotPassword: true,
+      submitsAs: 'signin',
+    };
+  }
+  if (mode === 'signup') {
+    return {
+      title: tI18nComplete.raw('text9e709348f582'),
+      description: tI18nComplete.raw('text04ff975e82db'),
+      passwordPlaceholder: 'Create a password',
+      passwordAutoComplete: 'new-password',
+      showForgotPassword: false,
+      submitsAs: 'signup',
+    };
+  }
+  return {
+    title: tI18nComplete.raw('textc06bf9670174'),
+    description: null,
+    passwordPlaceholder: 'Your password',
+    passwordAutoComplete: 'current-password',
+    showForgotPassword: true,
+    submitsAs: 'signup',
+  };
+}
+
+export interface PasswordFailure {
+  message: string;
+  /** The attempt proved the account exists — relabel the step as sign-in. */
+  switchToSignin?: boolean;
+}
+
+/**
+ * Turn a structured password-action failure into user copy. Because the flow
+ * resolved existence before the password step, 'invalid_credentials' on a
+ * known account means exactly "wrong password" — say so instead of the
+ * ambiguous GoTrue message. An 'existing_account_wrong_password' from the
+ * adaptive signup path likewise proves existence, so the step flips to
+ * sign-in and the copy explains what happened.
+ */
+export function passwordFailureCopy(
+  {
+    mode,
+    code,
+    fallback,
+  }: {
+    mode: CredentialsMode;
+    code?: string | null;
+    fallback?: string | null;
+  },
+  tI18nComplete: UiTranslator,
+): PasswordFailure {
+  if (code === 'invalid_credentials' && mode === 'signin') {
+    return { message: WRONG_PASSWORD_MESSAGE };
+  }
+  if (code === 'existing_account_wrong_password') {
+    if (mode === 'signup') {
+      return {
+        message: tI18nComplete.raw('textfdb7b2463da5'),
+        switchToSignin: true,
+      };
+    }
+    return { message: WRONG_PASSWORD_MESSAGE, switchToSignin: true };
+  }
+  return { message: fallback || 'An unexpected error occurred' };
+}

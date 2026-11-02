@@ -1,0 +1,179 @@
+// Git history — branches (Versions), commits (Checkpoints), diffs.
+
+import { backendApi } from '../../http/api-client';
+import { unwrap } from './shared';
+
+// ---------------------------------------------------------------------------
+// Git history — branches (Versions), commits (Checkpoints), diffs
+// ---------------------------------------------------------------------------
+
+/** Which session a session branch belongs to. A session branch is named by its session id. */
+export interface ProjectBranchSession {
+  /** The session's title. Null when it has none yet, or when the caller may not open the session. */
+  title: string | null;
+  agent_name: string | null;
+  /** The caller archived the session. */
+  archived: boolean;
+  /** The session is in Recently deleted. Its branch is kept until its restore window ends. */
+  deleted: boolean;
+}
+
+export interface ProjectBranch {
+  name: string;
+  is_default: boolean;
+  tip: string;
+  tip_short: string;
+  subject: string;
+  committer_name: string;
+  committer_email: string;
+  committed_at: string;
+  ahead: number | null;
+  behind: number | null;
+  /** Present on a session branch. Absent on the default branch, a named branch, and older servers. */
+  session?: ProjectBranchSession;
+}
+
+export interface ProjectBranchesResponse {
+  default_branch: string;
+  branches: ProjectBranch[];
+}
+
+export interface ProjectCommit {
+  hash: string;
+  short_hash: string;
+  parents: string[];
+  author_name: string;
+  author_email: string;
+  authored_at: string;
+  committer_name: string;
+  committer_email: string;
+  committed_at: string;
+  subject: string;
+  body: string;
+}
+
+export interface ProjectCommitsResponse {
+  ref: string;
+  path: string | null;
+  commits: ProjectCommit[];
+  hasMore: boolean;
+}
+
+export interface ProjectCommitFile {
+  path: string;
+  old_path: string | null;
+  status:
+    | 'added'
+    | 'modified'
+    | 'deleted'
+    | 'renamed'
+    | 'copied'
+    | 'typechange';
+  additions: number;
+  deletions: number;
+}
+
+export interface ProjectCommitDetail extends ProjectCommit {
+  files: ProjectCommitFile[];
+}
+
+export interface ProjectCommitDiffResponse {
+  hash: string;
+  parent: string | null;
+  path: string | null;
+  patch: string;
+}
+
+export interface ProjectFileHistoryResponse {
+  path: string;
+  ref: string;
+  commits: ProjectCommit[];
+  hasMore: boolean;
+}
+
+export interface ListProjectBranchesOptions {
+  /** Case-insensitive substring match on branch name. */
+  q?: string;
+  /** Server default 500, hard cap 2000. */
+  limit?: number;
+  /**
+   * Auto-created session branches (named by the session's UUID) are listed
+   * unless this is `false`. A default-branch picker passes `false`; the
+   * Files version selector and the change-request head picker leave it unset.
+   */
+  includeSessionBranches?: boolean;
+}
+
+export async function listProjectBranches(
+  projectId: string,
+  options?: ListProjectBranchesOptions,
+) {
+  const params = new URLSearchParams();
+  if (options?.q) params.set('q', options.q);
+  if (options?.limit != null) params.set('limit', String(options.limit));
+  if (options?.includeSessionBranches !== undefined) {
+    params.set('include_session_branches', String(options.includeSessionBranches));
+  }
+  const query = params.toString() ? `?${params.toString()}` : '';
+  return unwrap(
+    await backendApi.get<ProjectBranchesResponse>(
+      `/projects/${projectId}/branches${query}`,
+    ),
+  );
+}
+
+export async function listProjectCommits(
+  projectId: string,
+  options?: { ref?: string; path?: string; limit?: number; skip?: number },
+) {
+  const params = new URLSearchParams();
+  if (options?.ref) params.set('ref', options.ref);
+  if (options?.path) params.set('path', options.path);
+  if (options?.limit != null) params.set('limit', String(options.limit));
+  if (options?.skip != null) params.set('skip', String(options.skip));
+  const query = params.toString() ? `?${params.toString()}` : '';
+  return unwrap(
+    await backendApi.get<ProjectCommitsResponse>(
+      `/projects/${projectId}/commits${query}`,
+    ),
+  );
+}
+
+export async function getProjectCommit(projectId: string, sha: string) {
+  return unwrap(
+    await backendApi.get<ProjectCommitDetail>(
+      `/projects/${projectId}/commits/${encodeURIComponent(sha)}`,
+    ),
+  );
+}
+
+export async function getProjectCommitDiff(
+  projectId: string,
+  sha: string,
+  options?: { path?: string },
+) {
+  const params = new URLSearchParams();
+  if (options?.path) params.set('path', options.path);
+  const query = params.toString() ? `?${params.toString()}` : '';
+  return unwrap(
+    await backendApi.get<ProjectCommitDiffResponse>(
+      `/projects/${projectId}/commits/${encodeURIComponent(sha)}/diff${query}`,
+    ),
+  );
+}
+
+export async function getProjectFileHistory(
+  projectId: string,
+  path: string,
+  options?: { ref?: string; limit?: number; skip?: number },
+) {
+  const params = new URLSearchParams({ path });
+  if (options?.ref) params.set('ref', options.ref);
+  if (options?.limit != null) params.set('limit', String(options.limit));
+  if (options?.skip != null) params.set('skip', String(options.skip));
+  return unwrap(
+    await backendApi.get<ProjectFileHistoryResponse>(
+      `/projects/${projectId}/files/history?${params.toString()}`,
+    ),
+  );
+}

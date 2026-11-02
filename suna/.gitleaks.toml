@@ -1,0 +1,110 @@
+# gitleaks config — consumed by .github/workflows/secret-scan.yml (gitleaks 8.x
+# auto-detects .gitleaks.toml at the repo root).
+#
+# We keep ALL the default gitleaks rules (the array of provider patterns), and
+# only add narrow allowlists so the dotenvx-ENCRYPTED profiles do not trip the
+# generic high-entropy rule. Their values are AES ciphertext (`encrypted:…`) and
+# a public key — neither is a usable secret.
+#
+# EVERY allowlist that names `paths` must ALSO carry `condition = "AND"` and a
+# non-empty `regexes`. A path-only allowlist exempts the whole file, including a
+# plaintext secret — and so does `condition = "AND"` with no `regexes`, because
+# the AND then intersects nothing.
+#
+# Note also that this scan runs on the PULL REQUEST, i.e. AFTER the commit is
+# pushed. The guard that runs BEFORE the commit is `.githooks/pre-commit`,
+# activated by the root package.json `prepare` script, and re-checked in CI by
+# secrets-guard.yml.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "dotenvx-ENCRYPTED apps/{api,web} profiles. condition=AND + regexTarget=line means a line is exempt ONLY if it is a dotenvx artifact: an `encrypted:` AES value or the non-secret DOTENV_PUBLIC_KEY. A PLAINTEXT value committed to these same files still fails the scan. (Before 2026-08-29 this allowlist was path-only, so any secret in these six files was exempt unconditionally.)"
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''apps/api/\.env$''',
+  '''apps/api/\.env\.dev$''',
+  '''apps/api/\.env\.staging$''',
+  '''apps/api/\.env\.prod$''',
+  '''apps/web/\.env$''',
+  '''apps/web/\.env\.dev$''',
+  '''apps/web/\.env\.staging$''',
+  '''apps/web/\.env\.prod$''',
+]
+regexes = [
+  '''encrypted:''',
+  '''DOTENV_PUBLIC_KEY''',
+]
+
+[[allowlists]]
+description = "False-positive i18n content keys in the marketing security accordion (apps/web/src/features/marketing/security/content.ts). The generic-api-key rule matched on field names ending in 'Key' (titleKey/teaserKey/bodyKey/badgeKey) whose VALUES are i18n message keys like 'enterpriseAccordionSoc2Teaser' — not secrets. The fields were later renamed (teaser/body/badge), but the PR scan walks commit history so the original commit still trips."
+# condition=AND => a finding is exempt only if it is BOTH in this file AND the
+# matched value looks like an enterprise* i18n key. A real random-entropy secret
+# committed to this same file would still fail the scan.
+condition = "AND"
+paths = [
+  '''apps/web/src/features/marketing/security/content\.ts$''',
+]
+regexes = [
+  '''enterprise[A-Za-z0-9]+''',
+]
+
+[[allowlists]]
+description = "False-positive UUID defaults in the local Slack auth fixture seeder. These are deterministic local fixture IDs, not credentials. Keep the exception scoped to the script and the two literal UUIDs so any real secret still fails."
+condition = "AND"
+paths = [
+  '''apps/api/scripts/slack-auth-fixtures\.ts$''',
+]
+regexes = [
+  '''95788432-f5df-4ffe-af9e-0ed4e03cf96e''',
+  '''b4a01f33-d46c-4a96-8a1d-0a265e48978f''',
+]
+
+[[allowlists]]
+description = "Historical false-positive: an earlier commit in this branch used a fake ghp_-shaped sentinel in the warm-repo credential-removal test (since replaced with a non-secret marker). gitleaks scans PR history, so this scoped allowlist keeps that one old commit from tripping the scan. Not a real token."
+condition = "AND"
+paths = [
+  '''apps/api/src/snapshots/warm-repo-credential\.test\.ts$''',
+]
+regexes = [
+  '''ghp_PHASE1CredentialSentinel0+''',
+]
+
+[[allowlists]]
+description = "False-positive LinkedIn labels in generated i18n source maps. The linkedin-client-secret rule matches the product name followed by a generated message identifier. This exception requires both an exact generated map path and a line containing the literal product name."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''apps/web/src/i18n/company-os-sections-translation-keys\.generated\.ts$''',
+  '''apps/web/src/i18n/footer-translation-keys\.generated\.ts$''',
+  '''apps/web/src/i18n/marketing-secondary-translation-keys\.generated\.ts$''',
+  '''apps/web/src/i18n/site-config-translation-keys\.generated\.ts$''',
+  '''apps/web/src/i18n/remaining-ui-translation-keys\.generated\.ts$''',
+  '''packages/ui/src/i18n/ui-catalog/remaining-ui-translation-keys\.generated\.ts$''',
+]
+regexes = [
+  '''(?i)linkedin''',
+]
+
+[[allowlists]]
+description = "Placeholder tokens in public docs examples (`Bearer kortix_pat_...`, `kortix_gw_...`). The curl-auth-header rule matches any Authorization value. This exception requires a docs .mdx path AND a line whose token is the literal prefix followed by `...`, so a real token pasted into the docs still fails."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''apps/web/content/docs/.*\.mdx$''',
+]
+regexes = [
+  '''kortix_[a-z]+_\.\.\.''',
+]
+
+[[allowlists]]
+description = "The synthetic Kortix Capture fixture bucket. device.json holds `machine_key_sha256`, the SHA-256 of a made-up key: a hash, not a secret. This exception requires the fixture path AND that field name on the line."
+condition = "AND"
+regexTarget = "line"
+paths = [
+  '''apps/capture/fixtures/capture-format-v2/.*/device\.json$''',
+]
+regexes = [
+  '''"machine_key_sha256"''',
+]

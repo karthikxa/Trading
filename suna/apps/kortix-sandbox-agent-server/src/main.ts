@@ -1,0 +1,110 @@
+import { dispatchCli, isManagementSubcommand } from '@/app/cli'
+import { runGitCredentialHelper } from '@/lib/git/git'
+import { harnessProtectedPathSegments, loadConfig, resolveHarness, warmPiSystemPackages, type HarnessBootContext } from '@/harness/harness'
+import { kortixEventBus } from '@/services/event-bus/kortix-event-bus'
+import { enableDaemonLogFile, logger } from '@/lib/log/logger'
+import { startStaticWebServer } from '@/services/static-web/static-web'
+import { startProxy } from '@/app/server'
+import { installShutdownHandlers } from '@/app/shutdown'
+import { bakeRuntimeAssetsState, registerHarnessAssets } from '@/services/runtime-assets/runtime-assets'
+
+async function main() {
+  const bootTime = Date.now()
+  registerHarnessAssets((cfg) => resolveHarness(cfg).assets)
+  const cfg = loadConfig()
+  const selected = resolveHarness(cfg)
+  const bootState = selected.createBootState()
+  // Publish boot phases through the same sequenced stream as runtime frames.
+  const bootMark = (label: string) => {
+    const atMs = Date.now() - bootTime
+    bootState.timeline.push({ label, atMs })
+    kortixEventBus().publishDaemon('kortix.boot', { label, at_ms: atMs })
+  }
+  const daemonLog = enableDaemonLogFile()
+  logger.info('[boot] kortix-sandbox-agent-server starting', {
+    servicePort: cfg.servicePort,
+    ...selected.bootDetails(cfg),
+    staticPort: cfg.staticPort,
+    autoClone: cfg.autoClone,
+    pid: process.pid,
+    bun: typeof Bun !== 'undefined' ? Bun.version : null,
+    daemonLogFile: daemonLog.path,
+  })
+
+  // Static previews stay available while the repository and runtime boot.
+  const staticWeb = startStaticWebServer(harnessProtectedPathSegments(), cfg.staticPort)
+  bootMark('static-web')
+  const serve: HarnessBootContext['serve'] = (harness, projectEnv) => {
+    const server = startProxy(cfg, harness, bootTime, bootState, projectEnv, staticWeb.port)
+    return { server, shutdown: installShutdownHandlers(harness.lifecycle, server, staticWeb) }
+  }
+  const context: HarnessBootContext = { cfg, bootTime, bootState, bootMark, serve }
+
+  await selected.run(context)
+}
+
+// Subcommand dispatch. The compiled binary is reused as a git credential
+// helper (`kortix-agent git-credential get`) — git execs it when it needs a
+// push/clone credential for the managed remote. Detect that mode before the
+// daemon boot path so we don't start a runtime/proxy just to print a token.
+const subcommand = process.argv[2]
+if (import.meta.main) {
+  if (subcommand === 'git-credential') {
+    runGitCredentialHelper(loadConfig(), process.argv[3])
+      .then((code) => process.exit(code))
+      .catch(() => process.exit(0))
+  } else if (subcommand === 'warm-pi-packages') {
+    // Image build only: load the pi system packages once so their jiti cache
+    // ships in the image. A package that fails to install or load fails the build.
+    warmPiSystemPackages(process.env.KORTIX_PI_AGENT_DIR)
+      .then((status) => {
+        process.stdout.write(`${JSON.stringify(status)}\n`)
+        process.exit(status.failed.length > 0 ? 1 : 0)
+      })
+      .catch((error) => {
+        process.stderr.write(`[warm-pi-packages] ${error instanceof Error ? error.message : String(error)}\n`)
+        process.exit(1)
+      })
+  } else if (subcommand === 'bake-runtime-assets-state') {
+    // Image build only: record which CLI, daemon, skill overlay and harness
+    // this image carries, so a box booted from it states that on its FIRST
+    // health read instead of after its first reconcile. A missing artifact
+    // fails the build rather than shipping a box that reports a lie. Every
+    // box runs pi, so pi reports its release.
+    registerHarnessAssets(() => resolveHarness(undefined, 'pi').assets)
+    bakeRuntimeAssetsState()
+      .then((state) => {
+        process.stdout.write(`${JSON.stringify(state)}\n`)
+        process.exit(0)
+      })
+      .catch((error) => {
+        process.stderr.write(
+          `[bake-runtime-assets-state] ${error instanceof Error ? error.message : String(error)}\n`,
+        )
+        process.exit(1)
+      })
+  } else if (isManagementSubcommand(subcommand)) {
+    // kortixd management CLI: version / install / update / rollback /
+    // --health-check / --help. `serve` and any unrecognized verb fall through
+    // to the daemon below. See src/app/cli.ts.
+    dispatchCli(process.argv.slice(2))
+      .then((outcome) => {
+        if (outcome.action === 'exit') process.exit(outcome.code)
+        // action === 'serve' cannot happen here (management verbs never serve),
+        // but boot the daemon defensively rather than exit silently.
+        main().catch((err) => {
+          logger.error('[boot] fatal', err)
+          process.exit(1)
+        })
+      })
+      .catch((err) => {
+        process.stderr.write(`[kortixd] ${err instanceof Error ? err.message : String(err)}\n`)
+        process.exit(1)
+      })
+  } else {
+    main().catch((err) => {
+      logger.error('[boot] fatal', err)
+      process.exit(1)
+    })
+  }
+}

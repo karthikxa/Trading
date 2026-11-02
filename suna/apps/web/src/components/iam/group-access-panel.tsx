@@ -1,0 +1,1043 @@
+'use client';
+
+import { useTranslations } from '@/i18n/use-translations';
+/**
+ * `GroupAccessPanel` — one group's detail surface, rendered INSIDE the account
+ * hub pane (`/accounts/{id}?tab=groups&group=<id>`), exactly like
+ * `ProjectAccessPanel` renders inside `?tab=access-projects&project=<id>`.
+ *
+ * It used to be a standalone route (`accounts/[id]/groups/[groupId]/page.tsx`)
+ * with its own three tabs — Members / Access / Settings. Opening a group left
+ * the hub: the left rail disappeared, the breadcrumb pointed at the account
+ * name instead of the list you came from, and "Settings" was a third tab
+ * holding one rename form. Next to the project panel it read as a different
+ * product. This is the same shell, the same breadcrumb pattern, the same
+ * stacked `AccessList` sections:
+ *
+ *   - back "All groups" → the groups list (drops the `group` query param)
+ *   - header: `EntityAvatar Users` · name · "Synced from IdP" badge ·
+ *     description · a kebab holding **Rename group** and **Delete group**
+ *   - body: **Members** then **Access**, both `AccessList`/`AccessRow`
+ *
+ * The Settings tab is gone. Renaming a group is a two-field edit, so it is a
+ * `Modal` off the header kebab; deleting is a destructive `ConfirmDialog` that
+ * returns to the list. No tabs.
+ *
+ * Every guardrail from the old page is preserved, not re-derived:
+ * IdP-managed (`source === 'scim'`) groups hide their membership affordances
+ * and lock their name, the account owner/admin override banner still counts
+ * overriding members, every mutating control gates on the same IAM probe, the
+ * same query keys are invalidated, and the Edit-access dialog is still seeded
+ * from a completed `listProjectResourceGrants` fetch so an agent subset can
+ * never be silently widened by a blind Save.
+ *
+ * `selectedGroupId` / `onSelectGroup` live on `GroupsTab`; the account page
+ * owns the `?group=` param.
+ */
+
+import {
+  FolderOpenIcon,
+  KeyIcon,
+  DotsThreeIcon as MoreHorizontal,
+  PencilSimpleIcon,
+  PlusIcon,
+  TrashIcon,
+  UsersIcon,
+} from '@phosphor-icons/react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemo, useState } from 'react';
+
+import {
+  countOverridingMembers,
+  isOverridingAccountRole,
+  sortGroupMembersByOverride,
+  type AccountMeta,
+} from '@/components/iam/iam-display-helpers';
+import { Badge } from '@kortix/ui/badge';
+import { Button } from '@kortix/ui/button';
+import { ConfirmDialog } from '@kortix/ui/confirm-dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@kortix/ui/dropdown-menu';
+import { EntityAvatar } from '@kortix/ui/entity-avatar';
+import { InfoBanner } from '@kortix/ui/info-banner';
+import { Input } from '@kortix/ui/input';
+import { Label } from '@kortix/ui/label';
+import Loading from '@kortix/ui/loading';
+import {
+  Modal,
+  ModalBody,
+  ModalContent,
+  ModalDescription,
+  ModalFooter,
+  ModalHeader,
+  ModalTitle,
+} from '@kortix/ui/modal';
+import { Skeleton } from '@kortix/ui/skeleton';
+import { errorToast, successToast } from '@kortix/ui/toast';
+import { UserAvatar } from '@kortix/ui/user-avatar';
+import { EmptyState } from '@kortix/ui/empty-state';
+import { ErrorState } from '@kortix/ui/error-state';
+import {
+  AccessDetailShell,
+  AccessList,
+  builtinRole,
+  customRole,
+  formatDate,
+  formatExpiry,
+  removeAccessCopy,
+  roleValueLabel,
+  useAccountRoleEditor,
+  useAccountRoles,
+  type KebabItem,
+  type RoleValue,
+} from '@kortix/ui/access/access/index';
+import {
+  AccessDialog,
+  AccessRow,
+} from '@kortix/ui/access';
+import {
+  deleteGroup,
+  getGroup,
+  listGroupMembers,
+  listGroupProjectGrants,
+  listPolicies,
+  removeGroupMember,
+  updateGroup,
+  type GroupProjectGrant,
+} from '@/lib/iam-client';
+import { usePermission } from '@kortix/ui/workspace';
+import {
+  detachGroupFromProject,
+  listAccountMembers,
+  listProjectResourceGrants,
+  type AccountRole,
+} from '@kortix/sdk';
+import { contract, invalidatePermissionProbes, qk } from '@kortix/sdk/react';
+
+const IDP_BADGE_TITLE =
+  'This group is pushed by your identity provider via Directory Sync — its name and membership are managed there.';
+
+export interface GroupAccessPanelProps {
+  accountId: string;
+  groupId: string;
+  /** Hides the custom-role group inside `RoleSelect` when the tier lacks the
+   *  `rbac` entitlement. Defaults to true so an unresolved tier is never
+   *  silently downgraded. */
+  rbacEnabled?: boolean;
+  /** `role.read` — the leaf `GET .../iam/roles` asserts. PERMISSION, a
+   *  different axis from the `rbacEnabled` ENTITLEMENT above. Required, not
+   *  optional-with-a-default: a default of `true` reinstates the background
+   *  403 for every caller that forgets it. The hub already holds this verdict
+   *  in its batched probe — pass it down, do not re-probe. */
+  canReadRoles: boolean;
+  /** `policy.read` — the leaf `GET .../iam/policies` asserts. Same rules. */
+  canReadPolicies: boolean;
+  /** Used in the account-role dialog copy. */
+  accountName?: string;
+  /** The caller. A member row never offers "Edit access" on it — same rule as
+   *  the account Members list. */
+  currentUserId: string;
+  /** `member.update` — the leaf `PATCH .../members/:userId` asserts. The hub
+   *  holds it in its batched probe; pass it down, do not re-probe. */
+  canUpdateRole: boolean;
+  /** `member.read` — "View access" on another member's row. */
+  canReadMembers: boolean;
+  /** "View access" on a member row — the hub opens `?tab=members&member=`. */
+  onSelectMember: (userId: string) => void;
+  /** Back to the groups list — the hub drops the `?group=` param. */
+  onBack: () => void;
+}
+
+export function GroupAccessPanel({
+  accountId,
+  groupId,
+  rbacEnabled = true,
+  canReadRoles,
+  canReadPolicies,
+  accountName,
+  currentUserId,
+  canUpdateRole,
+  canReadMembers,
+  onSelectMember,
+  onBack,
+}: GroupAccessPanelProps) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const queryClient = useQueryClient();
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const groupQuery = useQuery({
+    queryKey: ['group', accountId, groupId],
+    queryFn: () => getGroup(accountId, groupId),
+    ...contract('directory'),
+  });
+
+  // Granular permissions from the IAM engine. Each control gates on the action
+  // it actually performs — no single "admin or not" flag.
+  const canManageMembers = usePermission(accountId, 'group.members.manage', {
+    resourceType: 'group',
+    resourceId: groupId,
+  }).allowed;
+  const canEditGroup = usePermission(accountId, 'group.update', {
+    resourceType: 'group',
+    resourceId: groupId,
+  }).allowed;
+  const canDeleteGroup = usePermission(accountId, 'group.delete', {
+    resourceType: 'group',
+    resourceId: groupId,
+  }).allowed;
+  // Same gate the account Roles tab uses — drives the "Create a custom role →"
+  // shortcut inside the shared `RoleSelect`.
+  const canManageRoles = usePermission(accountId, 'role.create').allowed;
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteGroup(accountId, groupId),
+    onSuccess: () => {
+      successToast(tI18nComplete.raw('text416f3a19f614'));
+      // Deleting a group revokes every assignment it carried, for every member
+      // of it — principals this screen cannot enumerate, so bust the account.
+      void invalidatePermissionProbes(queryClient, { accountId });
+      queryClient.invalidateQueries({ queryKey: ['account-groups', accountId] });
+      setDeleteOpen(false);
+      onBack();
+    },
+    onError: (err: Error) => errorToast(err.message || tI18nComplete.raw('text7924ed958d5b')),
+  });
+
+  const group = groupQuery.data;
+  const idpManaged = group?.source === 'scim';
+  const hasHeaderActions = !!group && (canEditGroup || canDeleteGroup);
+
+  return (
+    <AccessDetailShell
+      back={{ label: tI18nComplete.raw('text1b492be77224'), onClick: onBack }}
+      avatar={<EntityAvatar icon={UsersIcon} size="lg" />}
+      title={group?.name ?? '…'}
+      badges={
+        idpManaged ? (
+          <Badge variant="outline" size="sm" className="shrink-0" title={IDP_BADGE_TITLE}>
+            {tI18nComplete.raw('text2d83971aa73e')}
+          </Badge>
+        ) : null
+      }
+      meta={group?.description || undefined}
+      loading={groupQuery.isLoading}
+      actions={
+        hasHeaderActions ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="text-muted-foreground hover:text-foreground size-7 shrink-0"
+                aria-label={tI18nComplete('text33da220b1a34', { value0: group.name })}
+              >
+                <MoreHorizontal className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {canEditGroup ? (
+                <DropdownMenuItem onSelect={() => setRenameOpen(true)} className="gap-2">
+                  <PencilSimpleIcon className="size-3.5" />
+                  {tI18nComplete.raw('text98d254a311d0')}
+                </DropdownMenuItem>
+              ) : null}
+              {canDeleteGroup ? (
+                <>
+                  {canEditGroup ? <DropdownMenuSeparator /> : null}
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onSelect={() => setDeleteOpen(true)}
+                    className="gap-2"
+                  >
+                    <TrashIcon className="size-3.5" />
+                    {tI18nComplete.raw('text3f7374ac08ea')}
+                  </DropdownMenuItem>
+                </>
+              ) : null}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null
+      }
+    >
+      {groupQuery.isError ? (
+        <ErrorState
+          size="sm"
+          title={tI18nComplete.raw('textba81a9896972')}
+          description={(groupQuery.error as Error).message}
+          action={
+            <Button variant="outline" size="sm" onClick={() => groupQuery.refetch()}>
+              {tI18nComplete.raw('text942087cc2d41')}
+            </Button>
+          }
+        />
+      ) : null}
+
+      {group ? (
+        <>
+          <GroupMembersCard
+            accountId={accountId}
+            groupId={group.group_id}
+            groupName={group.name}
+            canManage={canManageMembers}
+            idpManaged={group.source === 'scim'}
+            accountName={accountName}
+            currentUserId={currentUserId}
+            canUpdateRole={canUpdateRole}
+            rbacEnabled={rbacEnabled}
+            canReadPolicies={canReadPolicies}
+            canManageRoles={canManageRoles}
+            canReadMembers={canReadMembers}
+            onSelectMember={onSelectMember}
+          />
+
+          <GroupProjectAccessCard
+            accountId={accountId}
+            groupId={group.group_id}
+            groupName={group.name}
+            canManage={canManageMembers}
+            rbacEnabled={rbacEnabled}
+            canManageRoles={canManageRoles}
+            canReadRoles={canReadRoles}
+            canReadPolicies={canReadPolicies}
+          />
+        </>
+      ) : null}
+
+      {group ? (
+        <RenameGroupModal
+          key={`${group.group_id}:${group.name}`}
+          open={renameOpen}
+          onOpenChange={setRenameOpen}
+          accountId={accountId}
+          groupId={group.group_id}
+          initialName={group.name}
+          initialDescription={group.description ?? ''}
+          canEdit={canEditGroup}
+          idpManaged={group.source === 'scim'}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={tI18nComplete.raw('text3f7374ac08ea')}
+        description={
+          idpManaged
+            ? tI18nComplete('text956146906c59', {
+                value0: group?.name ?? tI18nComplete.raw('text358f5017dff5'),
+              })
+            : tI18nComplete('textb169cfa6f00f', {
+                value0: group?.name ?? tI18nComplete.raw('text358f5017dff5'),
+              })
+        }
+        confirmLabel={tI18nComplete.raw('text3f7374ac08ea')}
+        confirmVariant="destructive"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+      />
+    </AccessDetailShell>
+  );
+}
+
+// ─── Rename — the old Settings tab, as one modal ──────────────────────────
+
+function RenameGroupModal({
+  open,
+  onOpenChange,
+  accountId,
+  groupId,
+  initialName,
+  initialDescription,
+  canEdit,
+  idpManaged,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  accountId: string;
+  groupId: string;
+  initialName: string;
+  initialDescription: string;
+  canEdit: boolean;
+  /** SCIM-sourced group: the NAME is owned by the IdP (sign-in claims match by
+   *  name; the API 409s a local rename). Description stays locally editable. */
+  idpManaged: boolean;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const queryClient = useQueryClient();
+  const [name, setName] = useState(initialName);
+  const [description, setDescription] = useState(initialDescription);
+
+  const updateMutation = useMutation({
+    mutationFn: () =>
+      updateGroup(accountId, groupId, {
+        name: name.trim(),
+        description: description.trim() || null,
+      }),
+    onSuccess: () => {
+      successToast(tI18nComplete.raw('textf890a1792336'));
+      queryClient.invalidateQueries({ queryKey: ['group', accountId, groupId] });
+      queryClient.invalidateQueries({ queryKey: ['account-groups', accountId] });
+      onOpenChange(false);
+    },
+    onError: (err: Error) => errorToast(err.message || tI18nComplete.raw('textaf15a4d02eb0')),
+  });
+
+  const dirty = name.trim() !== initialName || description.trim() !== (initialDescription ?? '');
+
+  return (
+    <Modal
+      open={open}
+      onOpenChange={(next) => {
+        if (updateMutation.isPending) return;
+        if (!next) {
+          setName(initialName);
+          setDescription(initialDescription);
+        }
+        onOpenChange(next);
+      }}
+    >
+      <ModalContent className="sm:max-w-md">
+        <ModalHeader>
+          <ModalTitle>{tI18nComplete.raw('text98d254a311d0')}</ModalTitle>
+          <ModalDescription>{tI18nComplete.raw('text68d369fd24f2')}</ModalDescription>
+        </ModalHeader>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!canEdit || !dirty || !name.trim() || updateMutation.isPending) return;
+            updateMutation.mutate();
+          }}
+        >
+          <ModalBody className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="group-name">{tI18nComplete.raw('textdcd1d5223f73')}</Label>
+              <Input
+                id="group-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={128}
+                autoFocus
+                disabled={!canEdit || updateMutation.isPending || idpManaged}
+              />
+              {idpManaged ? (
+                <p className="text-muted-foreground text-xs">
+                  {tI18nComplete.raw('text51621a0469f5')}
+                </p>
+              ) : null}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="group-description">
+                {tI18nComplete.raw('text526e0087cc3f')}{' '}
+                <span className="text-muted-foreground text-xs font-normal">
+                  {tI18nComplete.raw('text0059798b7f70')}
+                </span>
+              </Label>
+              <Input
+                id="group-description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                maxLength={256}
+                disabled={!canEdit || updateMutation.isPending}
+              />
+            </div>
+          </ModalBody>
+          <ModalFooter className="sm:justify-between">
+            <Button
+              type="button"
+              variant="outline-ghost"
+              size="sm"
+              onClick={() => onOpenChange(false)}
+              disabled={updateMutation.isPending}
+            >
+              {tI18nComplete.raw('text19766ed6ccb2')}
+            </Button>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={!canEdit || !dirty || !name.trim() || updateMutation.isPending}
+              className="gap-1.5"
+            >
+              {updateMutation.isPending ? <Loading className="size-4 shrink-0" /> : null}
+              {tI18nComplete.raw('text1509f561f241')}
+            </Button>
+          </ModalFooter>
+        </form>
+      </ModalContent>
+    </Modal>
+  );
+}
+
+// ─── Members section ──────────────────────────────────────────────────────
+
+function GroupMembersCard({
+  accountId,
+  groupId,
+  groupName,
+  canManage,
+  idpManaged,
+  accountName,
+  currentUserId,
+  canUpdateRole,
+  rbacEnabled,
+  canReadPolicies,
+  canManageRoles,
+  canReadMembers,
+  onSelectMember,
+}: {
+  accountId: string;
+  groupId: string;
+  groupName: string;
+  canManage: boolean;
+  /** SCIM-sourced group: membership is owned by the IdP — the API 409s local
+   *  edits (they'd be clobbered by the next push), so hide the affordances.
+   *  The ACCOUNT role is not IdP-owned, so "Edit access" stays. */
+  idpManaged: boolean;
+  accountName?: string;
+  currentUserId: string;
+  canUpdateRole: boolean;
+  rbacEnabled: boolean;
+  canReadPolicies: boolean;
+  canManageRoles: boolean;
+  canReadMembers: boolean;
+  onSelectMember: (userId: string) => void;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  // Local membership edits only make sense for locally-owned groups.
+  const canMutate = canManage && !idpManaged;
+  const queryClient = useQueryClient();
+  const [addOpen, setAddOpen] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<string | null>(null);
+  // The same "Edit access" the account Members list offers: one dialog, one
+  // role resolution, one cached policies read (`useAccountRoleEditor`).
+  const roleEditor = useAccountRoleEditor({
+    accountId,
+    accountName,
+    rbacEnabled,
+    canReadPolicies,
+    canManageRoles,
+  });
+
+  const membersQuery = useQuery({
+    queryKey: ['group-members', accountId, groupId],
+    queryFn: () => listGroupMembers(accountId, groupId),
+    ...contract('directory'),
+  });
+
+  const accountMembersQuery = useQuery({
+    queryKey: ['account-members', accountId],
+    queryFn: () => listAccountMembers(accountId),
+    ...contract('directory'),
+  });
+
+  // Combined index of account-level info per user_id. Lets the group
+  // members list show emails AND surface the account role badge — owners
+  // and admins implicitly have Manager on every project, which overrides
+  // any group-level role on that project. Worth flagging here so an
+  // admin who adds another admin to a "Viewer" group understands the
+  // grant is mostly cosmetic for that user.
+  const accountMetaByUserId = useMemo(() => {
+    const map = new Map<string, AccountMeta>();
+    for (const m of accountMembersQuery.data ?? []) {
+      map.set(m.user_id, {
+        email: m.email,
+        accountRole: m.account_role,
+        isSuperAdmin: !!m.is_super_admin,
+      });
+    }
+    return map;
+  }, [accountMembersQuery.data]);
+  const emailByUserId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [id, meta] of accountMetaByUserId) {
+      if (meta.email) map.set(id, meta.email);
+    }
+    return map;
+  }, [accountMetaByUserId]);
+
+  // Pure helpers in iam-display-helpers (unit-tested).
+  const overrideCount = useMemo(
+    () => countOverridingMembers(membersQuery.data ?? [], accountMetaByUserId),
+    [membersQuery.data, accountMetaByUserId],
+  );
+
+  const removeMutation = useMutation({
+    mutationFn: (userId: string) => removeGroupMember(accountId, groupId, userId),
+    onSuccess: () => {
+      successToast(tI18nComplete.raw('textd787477fa89b'));
+      // Group membership IS how the assignment reaches this person.
+      void invalidatePermissionProbes(queryClient, { accountId });
+      queryClient.invalidateQueries({ queryKey: ['group-members', accountId, groupId] });
+      queryClient.invalidateQueries({ queryKey: ['account-groups', accountId] });
+      setRemoveTarget(null);
+    },
+    onError: (err: Error) => errorToast(err.message || tI18nComplete.raw('text1cff79b7eb0b')),
+  });
+
+  const members = membersQuery.data ?? [];
+
+  // Same items, order and gates as the account Members list row, plus the
+  // group's own "Remove from group".
+  function memberKebab(
+    userId: string,
+    label: string,
+    accountRole: AccountRole | undefined,
+  ): KebabItem[] {
+    const items: KebabItem[] = [];
+    if (canUpdateRole && accountRole && userId !== currentUserId) {
+      items.push({
+        label: tI18nComplete.raw('texta514a684676a'),
+        icon: <PencilSimpleIcon className="size-3.5" />,
+        onSelect: () => roleEditor.openEdit({ userId, label, accountRole }),
+      });
+    }
+    // Only a person on the account roster has a member panel to open, and
+    // another member's panel needs `member.read`.
+    if (accountRole && (canReadMembers || userId === currentUserId)) {
+      items.push({
+        label: tI18nComplete.raw('textf5462009cf42'),
+        icon: <KeyIcon className="size-3.5" />,
+        onSelect: () => onSelectMember(userId),
+      });
+    }
+    if (canMutate) {
+      items.push({
+        label: tI18nComplete.raw('text035edd9bd720'),
+        icon: <TrashIcon className="size-3.5" />,
+        variant: 'destructive',
+        separated: items.length > 0,
+        onSelect: () => setRemoveTarget(userId),
+      });
+    }
+    return items;
+  }
+
+  const removeLabel = removeTarget ? (emailByUserId.get(removeTarget) ?? removeTarget) : '';
+  const settled = !membersQuery.isLoading;
+
+  const addMembersButton = canMutate ? (
+    <Button type="button" size="sm" className="gap-1.5" onClick={() => setAddOpen(true)}>
+      <PlusIcon className="size-3.5" />
+      {tI18nComplete.raw('textd600b9239ea2')}
+    </Button>
+  ) : undefined;
+
+  return (
+    <>
+      {/* The IdP owns this membership — say so, and say where to change it. */}
+      {idpManaged ? (
+        <InfoBanner tone="info">{tI18nComplete.raw('text58dc708c6651')}</InfoBanner>
+      ) : null}
+
+      {settled && members.length > 0 && overrideCount > 0 ? (
+        <InfoBanner tone="warning">
+          {overrideCount}{' '}
+          {overrideCount === 1
+            ? tI18nComplete.raw('textbff3c2a3f88a')
+            : tI18nComplete.raw('text68817a89d628')}{' '}
+          {tI18nComplete.raw('text954f5f9042e8')}
+        </InfoBanner>
+      ) : null}
+
+      {membersQuery.isLoading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-[58px] w-full rounded-md" />
+          ))}
+        </div>
+      ) : members.length === 0 ? (
+        <EmptyState
+          icon={UsersIcon}
+          size="sm"
+          title={tI18nComplete.raw('text63f14c6ce846')}
+          description={
+            idpManaged
+              ? tI18nComplete.raw('textcca3635a7d2f')
+              : canMutate
+                ? tI18nComplete.raw('text0079b9035c1e')
+                : undefined
+          }
+          action={addMembersButton}
+        />
+      ) : (
+        <AccessList
+          header={{
+            title: tI18nComplete.raw('text1044a4c056d0'),
+            count: members.length,
+            actions: addMembersButton,
+          }}
+        >
+          {sortGroupMembersByOverride(members, accountMetaByUserId).map((m) => {
+            const label = emailByUserId.get(m.user_id) ?? m.user_id;
+            const meta = accountMetaByUserId.get(m.user_id);
+            const overrides = !!meta && isOverridingAccountRole(meta);
+            const badgeLabel = meta?.isSuperAdmin
+              ? tI18nComplete.raw('textade19f5315c3')
+              : meta?.accountRole;
+            return (
+              <AccessRow
+                key={m.user_id}
+                leading={<UserAvatar email={label} size="md" />}
+                title={label}
+                badges={
+                  overrides && badgeLabel ? (
+                    <Badge
+                      size="sm"
+                      className="bg-kortix-orange/15 text-kortix-orange border-transparent capitalize"
+                      title={tI18nComplete.raw('texte7b5b15c4227')}
+                    >
+                      {badgeLabel}
+                    </Badge>
+                  ) : meta?.accountRole === 'member' ? (
+                    <Badge variant="outline" size="sm" className="capitalize">
+                      {tI18nComplete.raw('text7c968fb71f50')}
+                    </Badge>
+                  ) : null
+                }
+                metaParts={[`Added ${formatDate(m.added_at)}`]}
+                kebabLabel={tI18nComplete('text33da220b1a34', { value0: label })}
+                kebab={memberKebab(m.user_id, label, meta?.accountRole)}
+              />
+            );
+          })}
+        </AccessList>
+      )}
+
+      <AccessDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        accountId={accountId}
+        scope={{ kind: 'group', groupId, groupName }}
+        mode={{ kind: 'grant' }}
+        excludeUserIds={members.map((m) => m.user_id)}
+      />
+
+      {roleEditor.dialog}
+
+      <ConfirmDialog
+        open={!!removeTarget}
+        onOpenChange={(open) => {
+          if (!open) setRemoveTarget(null);
+        }}
+        confirmLabel={tI18nComplete.raw('text035edd9bd720')}
+        confirmVariant="destructive"
+        isPending={removeMutation.isPending}
+        onConfirm={() => {
+          if (removeTarget) removeMutation.mutate(removeTarget);
+        }}
+        {...removeAccessCopy({ principal: removeLabel, scopeName: groupName }, tI18nComplete)}
+      />
+    </>
+  );
+}
+
+// ─── Access section — the projects this group is attached to ──────────────
+
+function GroupProjectAccessCard({
+  accountId,
+  groupId,
+  groupName,
+  canManage,
+  rbacEnabled,
+  canManageRoles,
+  canReadRoles,
+  canReadPolicies,
+}: {
+  accountId: string;
+  groupId: string;
+  groupName: string;
+  /** Gates every mutating affordance in this section (attach / edit / detach).
+   *  The server also gates the writes on the TARGET project's
+   *  project.members.manage, and `AccessDialog`'s project picker only lists
+   *  projects the caller manages — this is the client-side hide/disable half. */
+  canManage: boolean;
+  rbacEnabled: boolean;
+  canManageRoles: boolean;
+  /** `role.read` / `policy.read`. This card, not its parent, owns the two IAM
+   *  reads — so the verdicts have to reach it. Required, not
+   *  optional-with-a-default, for the reason stated on `GroupAccessPanelProps`. */
+  canReadRoles: boolean;
+  canReadPolicies: boolean;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const queryClient = useQueryClient();
+  const grantsKey = ['group-project-grants', accountId, groupId];
+  const [attachOpen, setAttachOpen] = useState(false);
+  // The target OUTLIVES `editOpen` on purpose: clearing it on close would
+  // unmount the modal mid-exit-animation.
+  const [editTarget, setEditTarget] = useState<GroupProjectGrant | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [detachTarget, setDetachTarget] = useState<GroupProjectGrant | null>(null);
+
+  const grantsQuery = useQuery({
+    queryKey: grantsKey,
+    queryFn: () => listGroupProjectGrants(accountId, groupId),
+    staleTime: 30_000,
+  });
+  // Defensive client-side sort. The API also sets ORDER BY (see twin
+  // query in apps/api/src/accounts/iam.ts), but a stable order here
+  // means a role change can't ever visibly reshuffle rows even if a
+  // future API refactor drops the ORDER BY.
+  const grants = useMemo(() => {
+    const raw = grantsQuery.data ?? [];
+    return [...raw].sort((a, b) => {
+      const t = a.created_at.localeCompare(b.created_at);
+      return t !== 0 ? t : a.project_id.localeCompare(b.project_id);
+    });
+  }, [grantsQuery.data]);
+  const attachedProjectIds = useMemo(() => grants.map((g) => g.project_id), [grants]);
+
+  // A custom role for this group at a project scope is ONE `iam_policies`
+  // row layered on the built-in grant above. The row shows the custom
+  // role's name instead of the built-in one, and `AccessDialog` needs the
+  // policy id to switch away from it.
+  //
+  // Two axes, both required. ENTITLEMENT (`rbacEnabled`): without `rbac` there
+  // are no custom roles and no policies to resolve. PERMISSION
+  // (`canReadRoles` / `canReadPolicies`): `GET .../iam/roles` asserts
+  // `role.read` and `GET .../iam/policies` asserts `policy.read`, and both
+  // leaves sit in ADMIN_EXTRAS, never in the member baseline
+  // (`apps/api/src/iam/role-perms.ts`). The roles read had NO gate at all and
+  // the policies read had none either, so a plain member — who holds
+  // `group.read` and can therefore open this panel from `?tab=groups&group=<id>`
+  // — took two background 403s on every drill-down. `=== true`, not
+  // `!== false`: `CanResult.allowed` reads `false` while the probe is in
+  // flight, so an optimistic gate fires the very request it exists to suppress.
+  const rolesQuery = useAccountRoles(accountId, rbacEnabled && canReadRoles === true);
+  const policiesQuery = useQuery({
+    // Prefixed by ['iam-policies', accountId] so AccessDialog's invalidation
+    // reaches this query too.
+    queryKey: ['iam-policies', accountId, 'group', groupId],
+    queryFn: () => listPolicies(accountId, { principalType: 'group', principalId: groupId }),
+    enabled: rbacEnabled && canReadPolicies === true,
+    staleTime: 30_000,
+  });
+  const policyByProjectId = useMemo(() => {
+    const map = new Map<string, { policy_id: string; role_id: string }>();
+    for (const p of policiesQuery.data ?? []) {
+      if (p.scope_type === 'project' && p.scope_id) {
+        map.set(p.scope_id, { policy_id: p.policy_id, role_id: p.role_id });
+      }
+    }
+    return map;
+  }, [policiesQuery.data]);
+
+  function roleValueFor(grant: GroupProjectGrant): RoleValue {
+    const policy = policyByProjectId.get(grant.project_id);
+    return policy ? customRole(policy.role_id) : builtinRole(grant.role);
+  }
+
+  // Agent subsets live in the project's resource grants. Only the project
+  // being edited is fetched, and under the SAME query key `AccessDialog`
+  // reads — opening the dialog costs no second request.
+  const editResourceGrants = useQuery({
+    queryKey: qk.project.resourceGrants(editTarget?.project_id ?? ''),
+    queryFn: () => listProjectResourceGrants(editTarget!.project_id),
+    enabled: !!editTarget,
+    ...contract('inventory'),
+  });
+  const editAgentIds = useMemo<string[] | 'all'>(() => {
+    const ids = (editResourceGrants.data?.grants ?? [])
+      .filter(
+        (g) =>
+          g.resource_type === 'agent' && g.principal_type === 'group' && g.principal_id === groupId,
+      )
+      .map((g) => g.resource_id);
+    return ids.length > 0 ? ids : 'all';
+  }, [editResourceGrants.data, groupId]);
+  // Seed the dialog only once the grants are known — the draft is captured on
+  // the closed → open transition, so opening early would seed "All agents"
+  // over a real subset and silently drop it on save.
+  const editReady =
+    editOpen && !!editTarget && (editResourceGrants.isSuccess || editResourceGrants.isError);
+
+  function invalidateGrants(projectId: string) {
+    queryClient.invalidateQueries({ queryKey: grantsKey });
+    queryClient.invalidateQueries({ queryKey: ['account-groups', accountId] });
+    // The target project's access list (in another tab) shows group-derived
+    // access for every member — without these it stays stale until the next
+    // focus + staleTime.
+    queryClient.invalidateQueries({ queryKey: qk.project.scope(projectId) });
+  }
+
+  const detachMutation = useMutation({
+    // Detach via the per-project route — that's the one gated by
+    // project.members.manage and the canonical write surface.
+    mutationFn: (projectId: string) => detachGroupFromProject(projectId, groupId),
+    onSuccess: (_data, projectId) => {
+      successToast(tI18nComplete.raw('text5fceeb638441'));
+      void invalidatePermissionProbes(queryClient, { accountId });
+      invalidateGrants(projectId);
+    },
+    onError: (err: Error) => errorToast(err.message || tI18nComplete.raw('text63c451b14398')),
+  });
+
+  const attachButton = canManage ? (
+    <Button type="button" size="sm" className="gap-1.5" onClick={() => setAttachOpen(true)}>
+      <PlusIcon className="size-3.5" />
+      {tI18nComplete.raw('textc3f348ffaf7a')}
+    </Button>
+  ) : undefined;
+
+  return (
+    <>
+      {grantsQuery.isLoading ? (
+        <Skeleton className="h-[58px] w-full rounded-md" />
+      ) : grantsQuery.isError ? (
+        <ErrorState
+          size="sm"
+          title={tI18nComplete.raw('text99528001baf3')}
+          description={(grantsQuery.error as Error)?.message}
+          action={
+            <Button variant="outline" size="sm" onClick={() => grantsQuery.refetch()}>
+              {tI18nComplete.raw('text942087cc2d41')}
+            </Button>
+          }
+        />
+      ) : grants.length === 0 ? (
+        <EmptyState
+          icon={FolderOpenIcon}
+          size="sm"
+          title={tI18nComplete.raw('textd9cf36890c05')}
+          description={tI18nComplete('text0a68b98b5a7d', { value0: groupName })}
+          action={attachButton}
+        />
+      ) : (
+        <AccessList
+          header={{
+            title: tI18nComplete.raw('textec5ba0abb717'),
+            count: grants.length,
+            actions: attachButton,
+          }}
+        >
+          {grants.map((g) => {
+            const expiry = formatExpiry(g.expires_at, tI18nComplete);
+            return (
+              <AccessRow
+                key={g.project_id}
+                leading={<EntityAvatar icon={FolderOpenIcon} size="md" />}
+                title={g.project_name}
+                trailing={roleValueLabel(
+                  'project',
+                  roleValueFor(g),
+                  rolesQuery.data,
+                  tI18nComplete,
+                )}
+                metaParts={[
+                  `Attached ${formatDate(g.created_at)}`,
+                  expiry.bounded ? (
+                    <span
+                      key="expiry"
+                      className={expiry.expired ? 'text-kortix-red' : 'text-kortix-yellow'}
+                    >
+                      {expiry.expired ? 'Expired' : `Expires ${expiry.label}`}
+                    </span>
+                  ) : null,
+                ].filter(Boolean)}
+                pending={detachMutation.isPending && detachMutation.variables === g.project_id}
+                kebabLabel={tI18nComplete('text33da220b1a34', { value0: g.project_name })}
+                kebab={
+                  canManage
+                    ? [
+                        {
+                          label: tI18nComplete.raw('texta514a684676a'),
+                          icon: <PencilSimpleIcon className="size-3.5" />,
+                          onSelect: () => {
+                            setEditTarget(g);
+                            setEditOpen(true);
+                          },
+                        },
+                        {
+                          label: tI18nComplete.raw('text74bc11743543'),
+                          icon: <TrashIcon className="size-3.5" />,
+                          variant: 'destructive' as const,
+                          separated: true,
+                          onSelect: () => setDetachTarget(g),
+                        },
+                      ]
+                    : undefined
+                }
+              />
+            );
+          })}
+        </AccessList>
+      )}
+
+      {/* Attach: the project is picked INSIDE the dialog, so the scope names
+          no project — it only tells the dialog to run its project-scoped role
+          select and expiry field. Attach copy reads off the principal, never
+          off `projectName`. */}
+      <AccessDialog
+        open={attachOpen}
+        onOpenChange={setAttachOpen}
+        accountId={accountId}
+        scope={{ kind: 'project', projectId: '', projectName: '' }}
+        mode={{ kind: 'attach', principal: { type: 'group', id: groupId, label: groupName } }}
+        excludeProjectIds={attachedProjectIds}
+        rbacEnabled={rbacEnabled}
+        canManageRoles={canManageRoles}
+        onDone={() => queryClient.invalidateQueries({ queryKey: grantsKey })}
+      />
+
+      {editTarget ? (
+        <AccessDialog
+          open={editReady}
+          onOpenChange={setEditOpen}
+          accountId={accountId}
+          scope={{
+            kind: 'project',
+            projectId: editTarget.project_id,
+            projectName: editTarget.project_name,
+          }}
+          mode={{
+            kind: 'edit',
+            principal: { type: 'group', id: groupId, label: groupName },
+            current: {
+              role: roleValueFor(editTarget),
+              agentIds: editAgentIds,
+              expiresAt: editTarget.expires_at ?? null,
+            },
+          }}
+          rbacEnabled={rbacEnabled}
+          canManageRoles={canManageRoles}
+          onDone={() => {
+            queryClient.invalidateQueries({ queryKey: grantsKey });
+          }}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={detachTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDetachTarget(null);
+        }}
+        title={tI18nComplete.raw('texte111b0049f57')}
+        description={
+          detachTarget ? (
+            <span>
+              <strong>{groupName}</strong> {tI18nComplete.raw('texta86f1fe9444b')}{' '}
+              <strong>{detachTarget.project_name}</strong>
+              {tI18nComplete.raw('text944d0d9280a1')}
+              <strong className="capitalize">{detachTarget.role}</strong>{' '}
+              {tI18nComplete.raw('text0cc7557652be')}
+            </span>
+          ) : null
+        }
+        confirmLabel={tI18nComplete.raw('text74bc11743543')}
+        confirmVariant="destructive"
+        isPending={detachMutation.isPending}
+        onConfirm={() => {
+          if (!detachTarget) return;
+          const target = detachTarget;
+          setDetachTarget(null);
+          detachMutation.mutate(target.project_id);
+        }}
+      />
+    </>
+  );
+}

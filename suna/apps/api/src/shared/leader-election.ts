@@ -1,0 +1,385 @@
+/**
+ * Background-worker leader election (lease-table based).
+ *
+ * The API runs as N replicas on ECS Fargate (prod: min 2, up to 10). Request-
+ * path code is stateless and safe on every replica, but the SINGLETON background
+ * loops (cron trigger scheduler, project maintenance, legacy-migration worker,
+ * snapshot pre-build, grant-expiry sweep) must run on
+ * exactly ONE replica — otherwise every cron trigger fires N times (N duplicate
+ * paid agent sessions + duplicate external side effects), etc.
+ *
+ * We elect a single leader with a TTL lease row in `kortix.worker_leader_lease`.
+ * One atomic UPSERT both acquires (when the row is absent or its lease expired)
+ * and renews (when we already own it); a non-owning live lease yields no row, so
+ * the caller knows it lost. The leader renews well within the TTL; if it dies or
+ * partitions, the lease expires and another replica takes over within ~TTL.
+ *
+ * Why a lease table and NOT pg_advisory_lock: prod connects through the Supabase
+ * pooler (`prepare: false`), which in transaction mode does not pin a backend
+ * across statements — so SESSION-level advisory locks are unreliable there. A
+ * lease row is just a normal upsert and works identically through any pooler,
+ * with 1 replica or many. With no DATABASE_URL (self-host single node) we skip
+ * coordination entirely and run as the sole leader.
+ */
+
+import os from 'node:os';
+import { requiresTls } from '@kortix/db';
+import postgres from 'postgres';
+import { config } from '../config';
+import { logger } from '../lib/logger';
+import { LEADER_ELECTION_POOL_MAX } from './database-capacity';
+
+const LOCK_KEY = 'background-workers';
+
+// TTL must comfortably exceed RENEW_INTERVAL so a single slow/missed renew never
+// drops leadership. Takeover by another replica happens ~TTL after the leader
+// stops renewing (death/partition/deploy without graceful release).
+const TTL_MS = 60_000;
+const RENEW_INTERVAL_MS = 20_000;
+const ACQUIRE_RETRY_MS = 15_000;
+// One lease query may take this long. postgres.js has no per-query timeout, and
+// a half-open socket to the pooler leaves the promise pending forever.
+const QUERY_TIMEOUT_MS = 10_000;
+// The leader steps down this long BEFORE its lease can expire, measured from the
+// moment the last winning renew was SENT (the DB clock started then, not when the
+// reply arrived). The margin covers clock drift and `onRelease` latency.
+const DEMOTE_AFTER_MS = TTL_MS - 10_000;
+// Independent of the tick chain: a hung tick must not be able to hide an expired lease.
+const WATCHDOG_MS = 5_000;
+// An onAcquire that waited this long for an onRelease drain logs a warning.
+const ACQUIRE_WAIT_WARN_MS = 30_000;
+
+export interface LeaderElectionHandlers {
+  /** Called once when this node becomes leader (start singleton workers). */
+  onAcquire: () => void | Promise<void>;
+  /** Called when this node loses leadership (stop singleton workers). */
+  onRelease: () => void | Promise<void>;
+}
+
+// ─── Pure helpers (unit-tested without a DB) ─────────────────────────────────
+
+/**
+ * Did our acquire/renew UPSERT win? The statement RETURNs a row only when it
+ * inserted or updated — i.e. we now hold the lease. A non-owning live lease
+ * matches neither ON CONFLICT predicate, so no row comes back.
+ */
+export function interpretAcquireResult(
+  rows: ReadonlyArray<{ owner_id: string }>,
+  ownerId: string,
+): boolean {
+  return rows.length > 0 && rows[0]!.owner_id === ownerId;
+}
+
+/**
+ * A current leader that can't confirm a renew (DB unreachable) must step down
+ * before its lease expires, so a peer can safely take over without two leaders
+ * overlapping. Demote once the lease we last secured has lapsed.
+ */
+export function shouldDemote(
+  lastRenewSuccessMs: number,
+  nowMs: number,
+  ttlMs: number = TTL_MS,
+): boolean {
+  return nowMs - lastRenewSuccessMs >= ttlMs;
+}
+
+/**
+ * Does this pod actually OWN singleton work, i.e. should it join the election?
+ *
+ * The helm "API-only" profile (workers.enabled=false) sets every KORTIX_*_ENABLED
+ * worker flag to "false" so the pod serves requests but runs no background loops.
+ * Such a pod MUST NOT join the election: election is independent of those flags,
+ * so a workers-disabled pod can win the shared lease and sit on it as a
+ * DEAD-WEIGHT leader — holding it, renewing it, running nothing — silently
+ * starving the cron scheduler fleet-wide with no error and no churn. That is what
+ * left an EKS API-only pod able to freeze every cron in the 2026-06-21 outage. A
+ * pod is an owner unless ALL four worker flags are explicitly "false"; default
+ * (unset) = owner, so single-node / self-host is unaffected.
+ */
+export function runsSingletonWorkers(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.KORTIX_WORKERS_ENABLED === 'false') return false;
+  const on = (v: string | undefined) => v !== 'false';
+  return (
+    on(env.KORTIX_TRIGGER_SCHEDULER_ENABLED) ||
+    on(env.KORTIX_PROJECT_MAINTENANCE_ENABLED) ||
+    on(env.KORTIX_ACTIVE_TURN_RENEWAL_ENABLED) ||
+    on(env.KORTIX_LEGACY_MIGRATION_WORKER_ENABLED)
+  );
+}
+
+/** Reject if `work` does not settle within `ms`; `onTimeout` runs once on expiry (cancel the query). */
+export async function withTimeout<T>(work: PromiseLike<T>, ms: number, onTimeout?: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          try {
+            onTimeout?.();
+          } catch {
+            // best-effort cancel
+          }
+          reject(new Error(`leader lease query timed out after ${ms}ms`));
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// ─── Runtime state ───────────────────────────────────────────────────────────
+
+const ownerId = `${os.hostname()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+
+let sql: ReturnType<typeof postgres> | null = null;
+let timer: ReturnType<typeof setTimeout> | null = null;
+let running = false;
+let leader = false;
+// performance.now() taken BEFORE the last winning acquire/renew was sent.
+let lastRenewStartedMono = 0;
+let watchdog: ReturnType<typeof setTimeout> | null = null;
+let handlers: LeaderElectionHandlers | null = null;
+let tableReady = false;
+// The last onAcquire/onRelease call. The watchdog demotes beside the lease tick, so a re-acquire
+// can come while onRelease still awaits. An onAcquire that ran then found the workers' guards
+// still up and started nothing, and the rest of onRelease then stopped them for the whole term
+// (2026-10-16 prod: the backfill worker stopped after a lease flap, cron kept running).
+let handlerChain: Promise<void> = Promise.resolve();
+let handlersPending = 0;
+// Moves on every promote and demote: a failed onAcquire steps down only if no newer change came.
+let term = 0;
+// `bun --hot` re-evaluates this module but keeps globalThis. The last evaluation's
+// stop lives there, so a re-evaluated start first stops that election (its renew
+// loop, watchdog and lease client) and releases its lease, instead of running beside it.
+const hot = globalThis as typeof globalThis & { __kortixLeaderElectionStop?: () => Promise<void> };
+
+/** Run `fn` after every earlier handler call settled, in call order. */
+function serially(fn: () => Promise<void>): Promise<void> {
+  handlersPending += 1;
+  const next = handlerChain.then(fn).finally(() => {
+    handlersPending -= 1;
+  });
+  handlerChain = next.catch(() => undefined);
+  return next;
+}
+
+/**
+ * True while this node holds a lease it can still trust. A singleton writer
+ * calls this before a side effect: a leader whose renew deadline passed is
+ * already a former leader, even if `demote` has not finished yet (fencing).
+ */
+export function isLeader(): boolean {
+  if (!leader) return false;
+  if (!sql) return true; // single node, no lease to lose
+  return !shouldDemote(lastRenewStartedMono, performance.now(), DEMOTE_AFTER_MS);
+}
+
+async function ensureLeaseTable(): Promise<void> {
+  if (tableReady || !sql) return;
+  // Idempotent + self-contained so coordination works even where the schema is
+  // managed externally (prod ensureSchema is a no-op). Migration
+  // 00000000000110_worker_leader_lease.sql also records it for the formal
+  // pipeline; if this role lacks CREATE (table already provided by the
+  // migration) we swallow the error and let the upsert be the real gate.
+  try {
+    await sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS kortix.worker_leader_lease (
+        lock_key   text PRIMARY KEY,
+        owner_id   text        NOT NULL,
+        expires_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+  } catch (err) {
+    logger.warn('[leader] lease-table ensure skipped (assuming migration provides it)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  tableReady = true;
+}
+
+async function acquireOrRenew(): Promise<boolean> {
+  if (!sql) return false;
+  await ensureLeaseTable();
+  const ttlSec = Math.ceil(TTL_MS / 1000);
+  const query = sql<{ owner_id: string }[]>`
+    INSERT INTO kortix.worker_leader_lease AS l (lock_key, owner_id, expires_at, updated_at)
+    VALUES (${LOCK_KEY}, ${ownerId}, now() + make_interval(secs => ${ttlSec}), now())
+    ON CONFLICT (lock_key) DO UPDATE
+      SET owner_id   = EXCLUDED.owner_id,
+          expires_at = EXCLUDED.expires_at,
+          updated_at = now()
+      WHERE l.owner_id = EXCLUDED.owner_id OR l.expires_at < now()
+    RETURNING owner_id
+  `;
+  const rows = await withTimeout(query, QUERY_TIMEOUT_MS, () => query.cancel());
+  return interpretAcquireResult(rows, ownerId);
+}
+
+async function promote(): Promise<void> {
+  if (leader) return;
+  leader = true;
+  const myTerm = ++term;
+  logger.info('[leader] acquired background-worker leadership', { ownerId });
+  const queuedAt = performance.now();
+  const behindRelease = handlersPending > 0;
+  // Not awaited: the lease tick must not wait for an onRelease still in flight before it renews.
+  void serially(async () => {
+    if (behindRelease) {
+      const ms = Math.round(performance.now() - queuedAt);
+      if (ms > ACQUIRE_WAIT_WARN_MS) logger.warn('[leader] onAcquire waited for onRelease', { ms });
+      else logger.info('[leader] onAcquire waited for onRelease', { ms });
+    }
+    await acquireHandlers(myTerm);
+  });
+}
+
+async function acquireHandlers(myTerm: number): Promise<void> {
+  try {
+    await handlers?.onAcquire();
+  } catch (err) {
+    // If startup of the singleton workers throws, do NOT stay leader=true with
+    // nothing running — that silently halts every cron trigger fleet-wide and
+    // no peer takes over (we'd hold the lease forever). Step down + clean up;
+    // the next tick re-acquires the (still-held) lease and retries onAcquire,
+    // so a transient failure self-heals instead of becoming a permanent stall.
+    logger.error('[leader] onAcquire failed — stepping down to retry next tick', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    if (term === myTerm) leader = false;
+    try {
+      await handlers?.onRelease();
+    } catch (releaseErr) {
+      logger.error('[leader] onRelease during onAcquire recovery failed', {
+        error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
+      });
+    }
+  }
+}
+
+async function demote(reason: string): Promise<void> {
+  if (!leader) return;
+  leader = false;
+  term += 1;
+  logger.warn('[leader] released background-worker leadership', { ownerId, reason });
+  await serially(async () => {
+    try {
+      await handlers?.onRelease();
+    } catch (err) {
+      logger.error('[leader] onRelease failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+}
+
+async function tick(): Promise<void> {
+  if (!running) return;
+  let nextDelay = leader ? RENEW_INTERVAL_MS : ACQUIRE_RETRY_MS;
+  try {
+    const sentAtMono = performance.now();
+    const won = await acquireOrRenew();
+    if (won) {
+      lastRenewStartedMono = sentAtMono;
+      await promote();
+    } else if (leader) {
+      // Someone else holds a live lease — step down immediately.
+      await demote('lease taken by another replica');
+    }
+  } catch (err) {
+    logger.error('[leader] lease tick failed', { error: err instanceof Error ? err.message : String(err) });
+    // Can't confirm leadership; the watchdog steps down at the renew deadline so a
+    // healthy peer can take over without overlap. Retry sooner meanwhile.
+    nextDelay = Math.min(nextDelay, ACQUIRE_RETRY_MS);
+  } finally {
+    if (running) timer = setTimeout(() => void tick(), nextDelay);
+  }
+}
+
+/**
+ * Begin leader election. Calls handlers.onAcquire on the elected leader and
+ * handlers.onRelease if it later loses leadership. Idempotent.
+ *
+ * With no DATABASE_URL (self-host single node) there's nothing to coordinate, so
+ * this node is the sole leader immediately.
+ */
+export function startLeaderElection(
+  h: LeaderElectionHandlers,
+  opts: { eligible?: boolean } = {},
+): void {
+  const previous = hot.__kortixLeaderElectionStop;
+  hot.__kortixLeaderElectionStop = stopLeaderElection;
+  if (previous && previous !== stopLeaderElection) {
+    void previous().catch(() => {}).then(() => startLeaderElection(h, opts));
+    return;
+  }
+  if (running) return;
+  // A pod that runs no singleton workers must never hold the lease (see
+  // runsSingletonWorkers): joining the election would let it become a
+  // dead-weight leader and starve the scheduler. Skip election entirely —
+  // isLeader() stays false and onAcquire is never called.
+  if (opts.eligible === false) {
+    logger.info('[leader] API-only pod (singleton workers disabled) — not joining election', { ownerId });
+    return;
+  }
+  running = true;
+  handlers = h;
+
+  if (!config.DATABASE_URL) {
+    logger.info('[leader] no DATABASE_URL — running as sole leader (single node)');
+    void promote();
+    return;
+  }
+
+  // Dedicated 1-connection client so lease traffic never contends with the app
+  // pool. prepare:false matches the Supabase-pooler app client.
+  sql = postgres(config.DATABASE_URL, {
+    ...(requiresTls(config.DATABASE_URL) ? { ssl: 'require' as const } : {}),
+    prepare: false,
+    max: LEADER_ELECTION_POOL_MAX,
+    idle_timeout: 30,
+    connect_timeout: 10,
+    onnotice: () => {},
+  });
+
+  logger.info('[leader] starting election', { ownerId, ttlMs: TTL_MS, renewMs: RENEW_INTERVAL_MS });
+  const watch = () => {
+    if (leader && shouldDemote(lastRenewStartedMono, performance.now(), DEMOTE_AFTER_MS)) {
+      void demote('renew deadline passed');
+    }
+    watchdog = setTimeout(watch, WATCHDOG_MS);
+    watchdog.unref?.();
+  };
+  watch();
+  void tick();
+}
+
+/**
+ * Stop election. Releases the lease (best-effort) so a peer takes over at once
+ * instead of waiting out the TTL, and stops singleton workers if we were leader.
+ */
+export async function stopLeaderElection(): Promise<void> {
+  if (!running) return;
+  running = false;
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  if (watchdog) {
+    clearTimeout(watchdog);
+    watchdog = null;
+  }
+  const wasLeader = leader;
+  await demote('shutdown');
+  try {
+    if (sql && wasLeader) {
+      await sql`DELETE FROM kortix.worker_leader_lease WHERE lock_key = ${LOCK_KEY} AND owner_id = ${ownerId}`;
+    }
+  } catch (err) {
+    logger.warn('[leader] lease release on shutdown failed', { error: err instanceof Error ? err.message : String(err) });
+  } finally {
+    try { await sql?.end({ timeout: 5 }); } catch { /* ignore */ }
+    sql = null;
+    tableReady = false;
+  }
+}

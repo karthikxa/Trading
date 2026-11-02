@@ -1,0 +1,902 @@
+import { test, expect, beforeEach, mock } from 'bun:test';
+import { configureKortix } from '../http/config';
+import { setCurrentRuntime } from '../session/current-runtime';
+import * as F from './client';
+import { ApiError } from '../http/api/errors';
+import { RuntimeNotReadyError } from '../runtime/client';
+
+// Capture daemon requests by overriding ONLY the bottom-most seam
+// (`globalThis.fetch`) instead of `mock.module('../http/auth', ...)` — the
+// active-sandbox base URL ('http://sbx.test') is driven through the REAL
+// `session/current-runtime` seam (`setCurrentRuntime`, in `beforeEach` below),
+// and the token through the REAL `configureKortix` seam, so the REAL
+// `authenticatedFetch` (auth header injection, timeout, retry) runs end to
+// end. `mock.module('../http/auth', ...)` is process-wide and PERMANENT for
+// the whole `bun test` sweep (see `server-store/active.test.ts`'s and
+// `runtime/client.test.ts`'s own comments on this) — worse, `../http/auth` is
+// a singleton module reached from many entry points (`runtime/client.ts`,
+// hence `kortix.ts`), so whichever file's mock happens to be resident the
+// FIRST time `runtime/client.ts` evaluates wins for every OTHER file that
+// later shares that cached module instance too, including ones (like
+// `kortix.test.ts`) that never opted into any mock at all. Driving
+// `globalThis.fetch` avoids the collision entirely: it's reset in every
+// test's own `beforeEach` (this file's and every other's), so there is
+// nothing shared to collide with.
+let calls: { url: string; method: string; body?: string; raw?: unknown }[] = [];
+// When set, the mocked fetch responds with THIS status instead of a 200 —
+// lets individual tests exercise the daemon-failure path.
+let mockFailStatus: number | null = null;
+
+const last = () => calls[calls.length - 1];
+beforeEach(() => {
+  calls = [];
+  mockFailStatus = null;
+  setCurrentRuntime('http://sbx.test', 'sbx-test');
+  configureKortix({ backendUrl: 'http://sbx.test', getToken: async () => 'tok' });
+  globalThis.fetch = mock(async (input: unknown, init: RequestInit = {}) => {
+    calls.push({
+      url: String(input),
+      method: init.method ?? 'GET',
+      body: typeof init.body === 'string' ? init.body : undefined,
+      // Multipart bodies (FormData) are objects, not strings — keep the raw
+      // value so the upload tests can assert the fields that were sent.
+      raw: init.body,
+    });
+    if (mockFailStatus !== null) {
+      return new Response(JSON.stringify({ error: 'daemon unavailable' }), {
+        status: mockFailStatus,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+});
+
+test('list hits GET /file with worktree-relative path', async () => {
+  await F.listFiles('/workspace/src');
+  expect(last().url).toBe('http://sbx.test/file?path=src');
+  expect(last().method).toBe('GET');
+});
+
+test('read hits GET /file/content', async () => {
+  await F.readFile('/workspace/a.txt').catch(() => {});
+  expect(last().url).toBe('http://sbx.test/file/content?path=a.txt');
+});
+
+test('list of a non-workspace sandbox root keeps the absolute path', async () => {
+  await F.listFiles('/tmp');
+  expect(last().url).toBe(`http://sbx.test/file?path=${encodeURIComponent('/tmp')}`);
+});
+
+test('read of a /tmp file passes the absolute path through to the daemon', async () => {
+  await F.readFile('/tmp/gmail_invite_list.png').catch(() => {});
+  expect(last().url).toBe(
+    `http://sbx.test/file/content?path=${encodeURIComponent('/tmp/gmail_invite_list.png')}`,
+  );
+});
+
+test('readBlob of a /home file hits /file/raw with the absolute path', async () => {
+  await F.readBlob('/home/user/report.pdf').catch(() => {});
+  expect(calls[0].url).toBe(
+    `http://sbx.test/file/raw?path=${encodeURIComponent('/home/user/report.pdf')}`,
+  );
+});
+
+test('toDaemonPath maps workspace to relative and other sandbox roots to absolute', () => {
+  expect(F.toDaemonPath('/workspace')).toBe('');
+  expect(F.toDaemonPath('/workspace/')).toBe('');
+  expect(F.toDaemonPath('/workspace/a.txt')).toBe('a.txt');
+  expect(F.toDaemonPath('/tmp/shot.png')).toBe('/tmp/shot.png');
+  expect(F.toDaemonPath('/tmp')).toBe('/tmp');
+  expect(F.toDaemonPath('/home/user/x')).toBe('/home/user/x');
+  expect(F.toDaemonPath('/opt/tool/bin')).toBe('/opt/tool/bin');
+  expect(F.toDaemonPath('/tmpfile.txt')).toBe('tmpfile.txt');
+  expect(F.toDaemonPath('/etc/passwd')).toBe('etc/passwd');
+  expect(F.toDaemonPath('/README.md')).toBe('README.md');
+  expect(F.toDaemonPath('src/a.ts')).toBe('src/a.ts');
+  expect(F.toDaemonPath('')).toBe('');
+});
+
+test('toSandboxAbsolutePath keeps allowed roots and anchors the rest under /workspace', () => {
+  expect(F.toSandboxAbsolutePath('/tmp/a.png')).toBe('/tmp/a.png');
+  expect(F.toSandboxAbsolutePath('/home/u/a.png')).toBe('/home/u/a.png');
+  expect(F.toSandboxAbsolutePath('/opt/a.png')).toBe('/opt/a.png');
+  expect(F.toSandboxAbsolutePath('/workspace/a.png')).toBe('/workspace/a.png');
+  expect(F.toSandboxAbsolutePath('a/b.png')).toBe('/workspace/a/b.png');
+  expect(F.toSandboxAbsolutePath('/foo/b.png')).toBe('/workspace/foo/b.png');
+  expect(F.toSandboxAbsolutePath('/tmpfoo/b.png')).toBe('/workspace/tmpfoo/b.png');
+});
+
+test('status hits GET /file/status', async () => {
+  await F.getFileStatus();
+  expect(last().url).toBe('http://sbx.test/file/status');
+});
+
+test('findFiles hits GET /find/file', async () => {
+  await F.findFiles('foo');
+  expect(last().url).toContain('/find/file?query=foo');
+});
+
+test('mkdir POSTs to /file/mkdir with path body', async () => {
+  await F.mkdir('/workspace/newdir');
+  expect(last().url).toBe('http://sbx.test/file/mkdir');
+  expect(last().method).toBe('POST');
+  expect(JSON.parse(last().body!)).toEqual({ path: '/workspace/newdir' });
+});
+
+test('delete DELETEs /file with path body', async () => {
+  await F.deleteFile('/workspace/x');
+  expect(last().url).toBe('http://sbx.test/file');
+  expect(last().method).toBe('DELETE');
+  expect(JSON.parse(last().body!)).toEqual({ path: '/workspace/x' });
+});
+
+test('rename POSTs to /file/rename with from/to', async () => {
+  await F.renameFile('/workspace/a', '/workspace/b');
+  expect(last().url).toBe('http://sbx.test/file/rename');
+  expect(JSON.parse(last().body!)).toEqual({ from: '/workspace/a', to: '/workspace/b' });
+});
+
+test('files namespace exposes the full surface', () => {
+  for (const k of ['list','read','readBlob','status','findFiles','findText','upload','create','copy','remove','mkdir','rename','currentProject','health','isReachable']) {
+    expect(typeof (F.files as Record<string, unknown>)[k]).toBe('function');
+  }
+});
+
+// ── typed errors (P0 fix: every op used to throw a bare `Error`; now every
+// HTTP failure throws `ApiError` with status/response attached) ─────────────
+
+test('findFiles throws ApiError on a daemon failure — no longer swallows to []', async () => {
+  mockFailStatus = 500;
+  await expect(F.findFiles('foo')).rejects.toBeInstanceOf(ApiError);
+  await expect(F.findFiles('foo')).rejects.toMatchObject({ status: 500 });
+});
+
+test('listFiles throws ApiError (with status) on a daemon failure', async () => {
+  mockFailStatus = 503;
+  await expect(F.listFiles('/workspace')).rejects.toBeInstanceOf(ApiError);
+  await expect(F.listFiles('/workspace')).rejects.toMatchObject({ status: 503 });
+});
+
+test('deleteFile/mkdir/renameFile throw ApiError (with status) on a daemon failure', async () => {
+  mockFailStatus = 404;
+  await expect(F.deleteFile('/workspace/x')).rejects.toBeInstanceOf(ApiError);
+  await expect(F.mkdir('/workspace/y')).rejects.toBeInstanceOf(ApiError);
+  await expect(F.renameFile('/workspace/a', '/workspace/b')).rejects.toBeInstanceOf(ApiError);
+});
+
+// ── explicit baseUrl param (internal plumbing for `kortix.session(pid, sid).files`)
+
+test('every op accepts an explicit trailing baseUrl, overriding the module-global active sandbox', async () => {
+  mockFailStatus = null;
+  await F.listFiles('/workspace/src', 'http://other-sandbox.test');
+  expect(last().url).toBe('http://other-sandbox.test/file?path=src');
+
+  await F.getFileStatus('http://other-sandbox.test');
+  expect(last().url).toBe('http://other-sandbox.test/file/status');
+
+  await F.findFiles('foo', undefined, 'http://other-sandbox.test');
+  expect(last().url).toContain('http://other-sandbox.test/find/file?query=foo');
+});
+
+// ── upload: timeouts are not transient ──────────────────────────────────────
+//
+// `Upload failed: signal timed out` on a real attachment. The network-throw
+// path retried EVERYTHING, so a body large enough to blow the 30s deadline
+// blew it on all three attempts and the user waited ~3x the timeout to be told
+// it failed. A timeout is not transient the way a 503 is: re-sending the
+// identical body against the identical budget cannot succeed.
+
+/** What `AbortSignal.timeout()` throws — DOMException, name `TimeoutError`. */
+function timeoutError(): Error {
+  const err = new Error('signal timed out');
+  err.name = 'TimeoutError';
+  return err;
+}
+
+test('an upload that times out fails after ONE attempt, not three', async () => {
+  let attempts = 0;
+  globalThis.fetch = mock(async () => {
+    attempts += 1;
+    throw timeoutError();
+  }) as unknown as typeof fetch;
+
+  await expect(F.uploadFile(new Blob(['x']), '/workspace/uploads', 'a.zip')).rejects.toBeInstanceOf(
+    ApiError,
+  );
+  expect(attempts).toBe(1);
+});
+
+test('an aborted upload is not retried either', async () => {
+  let attempts = 0;
+  globalThis.fetch = mock(async () => {
+    attempts += 1;
+    const err = new Error('The operation was aborted.');
+    err.name = 'AbortError';
+    throw err;
+  }) as unknown as typeof fetch;
+
+  await expect(F.uploadFile(new Blob(['x']), '/workspace/uploads', 'a.zip')).rejects.toThrow();
+  expect(attempts).toBe(1);
+});
+
+test('a genuinely transient network throw is still retried', async () => {
+  let attempts = 0;
+  globalThis.fetch = mock(async () => {
+    attempts += 1;
+    if (attempts < 3) throw new TypeError('fetch failed');
+    return new Response(JSON.stringify([{ path: 'a.zip' }]), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as unknown as typeof fetch;
+
+  await F.uploadFile(new Blob(['x']), '/workspace/uploads', 'a.zip');
+  expect(attempts).toBe(3);
+});
+
+test('a transient STATUS is still retried — the status path was already correct', async () => {
+  let attempts = 0;
+  globalThis.fetch = mock(async () => {
+    attempts += 1;
+    if (attempts < 2) {
+      return new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify([{ path: 'a.zip' }]), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as unknown as typeof fetch;
+
+  await F.uploadFile(new Blob(['x']), '/workspace/uploads', 'a.zip');
+  expect(attempts).toBe(2);
+});
+
+// ── upload: the deadline scales with the body ───────────────────────────────
+
+test('the deadline helper gives a large body more time than the flat 30s default', () => {
+  expect(F.uploadTimeoutMsForBytes(30 * 1024 * 1024)).toBeGreaterThan(30_000);
+});
+
+test('the deadline is bounded at both ends', () => {
+  // A tiny file must not get a shorter budget than the platform default...
+  expect(F.uploadTimeoutMsForBytes(1)).toBeGreaterThanOrEqual(30_000);
+  // ...and an enormous one must not wedge a handler forever.
+  expect(F.uploadTimeoutMsForBytes(50 * 1024 * 1024 * 1024)).toBeLessThanOrEqual(15 * 60_000);
+  // Monotonic in between.
+  expect(F.uploadTimeoutMsForBytes(100 * 1024 * 1024)).toBeGreaterThan(
+    F.uploadTimeoutMsForBytes(1024 * 1024),
+  );
+});
+
+test('an unknown-size body still gets a usable deadline', () => {
+  expect(F.uploadTimeoutMsForBytes(undefined)).toBeGreaterThanOrEqual(30_000);
+});
+
+test('a ready-session upload crosses the sandbox edge in bounded chunks and reports progress', async () => {
+  const landedPath = '/workspace/uploads/report-2.pdf';
+  // Mirrors SANDBOX_UPLOAD_CHUNK_BYTES in client.ts (internal, not public API).
+  const chunk = 8 * 1024 * 1024;
+  const chunkSizes: number[] = [];
+  const offsets: number[] = [];
+  const progress: Array<{ loadedBytes: number; totalBytes: number }> = [];
+  let cumulative = 0;
+
+  routeDaemon((url, init) => {
+    if (url.endsWith('/file/upload')) {
+      const form = init.body as FormData;
+      const reserved = form.get('file') as File;
+      expect(reserved.size).toBe(0);
+      return jsonOk([{ path: landedPath, size: 0 }]);
+    }
+    if (url.endsWith('/file/append')) {
+      const form = init.body as FormData;
+      const part = form.get('file') as File;
+      chunkSizes.push(part.size);
+      offsets.push(Number(form.get('offset')));
+      cumulative += part.size;
+      return jsonOk({ path: landedPath, size: cumulative });
+    }
+    return undefined;
+  });
+
+  const bytes = 2 * chunk + 22 * 1024;
+  const result = await F.uploadFile(
+    new Blob([new Uint8Array(bytes)], { type: 'application/pdf' }),
+    '/workspace/uploads',
+    'report.pdf',
+    { onProgress: (event) => progress.push(event) },
+  );
+
+  expect(result).toEqual([{ path: landedPath, size: bytes }]);
+  expect(chunkSizes).toEqual([chunk, chunk, 22 * 1024]);
+  expect(offsets).toEqual([0, chunk, 2 * chunk]);
+  expect(progress).toEqual([
+    { loadedBytes: chunk, totalBytes: bytes },
+    { loadedBytes: 2 * chunk, totalBytes: bytes },
+    { loadedBytes: bytes, totalBytes: bytes },
+  ]);
+  expect(calls.filter((call) => call.url.endsWith('/file/upload'))).toHaveLength(1);
+  expect(calls.filter((call) => call.url.endsWith('/file/append'))).toHaveLength(3);
+});
+
+// 2026-10-02: 64 KiB chunks made a 1 MiB upload 17 sequential proxied requests
+// (17-19 s). The edge now carries 16 MiB bodies intact, so a 1 MiB file is ONE request.
+test('a 1 MiB upload is a single request, not a chunk train', async () => {
+  const landedPath = '/workspace/uploads/one.bin';
+  routeDaemon((url, init) => {
+    if (url.endsWith('/file/upload')) {
+      const file = (init.body as FormData).get('file') as File;
+      return jsonOk([{ path: landedPath, size: file.size }]);
+    }
+    return undefined;
+  });
+  const bytes = 1024 * 1024;
+  const result = await F.uploadFile(new Blob([new Uint8Array(bytes)]), '/workspace/uploads', 'one.bin');
+  expect(result).toEqual([{ path: landedPath, size: bytes }]);
+  expect(calls).toHaveLength(1);
+  expect(calls.filter((call) => call.url.endsWith('/file/append'))).toHaveLength(0);
+});
+
+test('an empty file uploads: 0 of 0 bytes is not a truncated body', async () => {
+  routeDaemon((url) => (url.endsWith('/file/upload') ? jsonOk([{ path: '/workspace/empty.txt', size: 0 }]) : undefined));
+  const result = await F.uploadFile(new Blob([]), '/workspace', 'empty.txt');
+  expect(result).toEqual([{ path: '/workspace/empty.txt', size: 0 }]);
+});
+
+// A host can hand over a Blob whose length it did not know up front (a pipe-backed
+// file reports 0). Landing MORE than the claimed size is not truncation.
+test('a body that lands more bytes than its claimed size is not refused', async () => {
+  routeDaemon((url) => (url.endsWith('/file/upload') ? jsonOk([{ path: '/workspace/piped.txt', size: 11 }]) : undefined));
+  const result = await F.uploadFile(new Blob([]), '/workspace', 'piped.txt');
+  expect(result).toEqual([{ path: '/workspace/piped.txt', size: 11 }]);
+});
+
+test('a single-request upload whose landed size disagrees fails instead of reporting success', async () => {
+  routeDaemon((url) => (url.endsWith('/file/upload') ? jsonOk([{ path: '/workspace/cut.bin', size: 1000 }]) : undefined));
+  const err = await F.uploadFile(new Blob([new Uint8Array(4096)]), '/workspace', 'cut.bin').catch((e) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect((err as ApiError).code).toBe('UPLOAD_SIZE_MISMATCH');
+});
+
+// ── the runtime must be resolved before any byte leaves the client ───────────
+//
+// `getActiveRuntimeUrl()` returns '' on a billing-enabled deployment until a
+// session runtime is bound (see `session/server-store/active.ts`). Every op in
+// this module used to interpolate that '' straight into `fetch()`, which makes
+// the URL RELATIVE: the browser then POSTed the user's file AND their bearer
+// token to the WEB origin (https://dev.kortix.com/file/upload), got the Next.js
+// 404 HTML shell back, and showed "Upload failed (404): Not Found".
+// The send path already refuses this (`runtime/client.ts` throws
+// `RuntimeNotReadyError`); the files transport now refuses it identically.
+
+/** Put the client in the exact state that produced '' — cloud deployment, no session bound. */
+function withUnresolvedRuntime(): void {
+  setCurrentRuntime(null);
+  configureKortix({
+    backendUrl: 'http://api.test',
+    getToken: async () => 'tok',
+    billingEnabled: true,
+  });
+}
+
+const OPS: Array<[string, () => Promise<unknown>]> = [
+  ['listFiles', () => F.listFiles('/workspace')],
+  ['readFile', () => F.readFile('/workspace/a.txt')],
+  ['readBlob', () => F.readBlob('/workspace/a.txt')],
+  ['getFileStatus', () => F.getFileStatus()],
+  ['findFiles', () => F.findFiles('a')],
+  ['findText', () => F.findText('a')],
+  ['uploadFile', () => F.uploadFile(new Blob(['x']), '/workspace', 'a.txt')],
+  ['createFile', () => F.createFile('/workspace/a.txt')],
+  ['copyFile', () => F.copyFile('/workspace/a.txt', '/workspace/b.txt')],
+  ['writeFile', () => F.writeFile('/workspace/a.txt', new Blob(['x']))],
+  ['deleteFile', () => F.deleteFile('/workspace/a.txt')],
+  ['mkdir', () => F.mkdir('/workspace/d')],
+  ['renameFile', () => F.renameFile('/workspace/a', '/workspace/b')],
+];
+
+test('every op refuses to run before the session runtime resolves — no relative-URL fetch', async () => {
+  withUnresolvedRuntime();
+  for (const [name, run] of OPS) {
+    const error = await run().then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect(`${name}: ${(error as Error)?.name}`).toBe(`${name}: RuntimeNotReadyError`);
+    expect(error).toBeInstanceOf(RuntimeNotReadyError);
+  }
+  // The decisive assertion: not one request went out on the wire.
+  expect(calls).toEqual([]);
+});
+
+test('an explicitly empty baseUrl is refused too — it never falls back to the active sandbox', async () => {
+  await expect(F.listFiles('/workspace', '')).rejects.toBeInstanceOf(RuntimeNotReadyError);
+  await expect(F.uploadFile(new Blob(['x']), '/workspace', 'a.txt', '')).rejects.toBeInstanceOf(
+    RuntimeNotReadyError,
+  );
+  await expect(F.writeFile('/workspace/a.txt', new Blob(['x']), '')).rejects.toBeInstanceOf(
+    RuntimeNotReadyError,
+  );
+  expect(calls).toEqual([]);
+});
+
+// ── writeFile: overwrite-in-place, the primitive the daemon does not have ────
+//
+// The daemon writes with `flag: 'wx'` and, on EEXIST, lands the bytes under a
+// SUFFIXED name (`notes-mdx8k2-3f9a1c04.md`). So "save this edited file" used to
+// write a DIFFERENT file while the viewer re-read the original path and showed
+// pre-edit bytes under a "File saved" toast. `writeFile` uploads to a temp name
+// and renames over the target (`fs.rename` overwrites a file atomically). The
+// target is never moved aside first: a failed rename leaves it untouched, and a
+// directory at the target makes the rename fail instead of being replaced.
+
+/** Route the daemon endpoints by URL + body, recording every call. */
+function routeDaemon(handler: (url: string, init: RequestInit) => Response | undefined): void {
+  globalThis.fetch = mock(async (input: unknown, init: RequestInit = {}) => {
+    const url = String(input);
+    calls.push({
+      url,
+      method: init.method ?? 'GET',
+      body: typeof init.body === 'string' ? init.body : undefined,
+      raw: init.body,
+    });
+    return (
+      handler(url, init) ??
+      new Response(JSON.stringify(true), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+  }) as unknown as typeof fetch;
+}
+
+const jsonOk = (value: unknown) =>
+  new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+
+/** `GET /file?path=…` — the directory listing `createFile` checks first. */
+const isListing = (url: string) => url.startsWith('http://sbx.test/file?path=');
+
+const renameBodies = () =>
+  calls
+    .filter((c) => c.url.endsWith('/file/rename'))
+    .map((c) => JSON.parse(c.body!) as { from: string; to: string; overwrite?: boolean });
+
+test('writeFile uploads to a temp name and renames it OVER the target path', async () => {
+  routeDaemon((url) => {
+    if (url.endsWith('/file/upload')) return jsonOk([{ path: '/workspace/.notes.md.tmp', size: 5 }]);
+    return undefined;
+  });
+
+  const result = await F.writeFile('/workspace/notes.md', new Blob(['fresh']));
+
+  expect(result).toEqual({ path: '/workspace/notes.md', bytes: 5 });
+  // Parent dir ensured, then the upload, then the swap.
+  expect(calls[0].url).toBe('http://sbx.test/file/mkdir');
+  expect(JSON.parse(calls[0].body!)).toEqual({ path: '/workspace' });
+  expect(calls[1].url).toBe('http://sbx.test/file/upload');
+
+  const uploadForm = calls[1].raw as FormData;
+  expect(uploadForm.get('path')).toBe('/workspace');
+  // The temp name must not be the target name — that is the whole point.
+  expect(String(uploadForm.get('filename'))).not.toBe('notes.md');
+  expect(String(uploadForm.get('filename'))).toMatch(/^\.notes\.md\./);
+
+  // One rename: the uploaded temp → the exact target path. The existing file
+  // is never moved aside, so nothing is deleted.
+  expect(renameBodies()).toEqual([{ from: '/workspace/.notes.md.tmp', to: '/workspace/notes.md' }]);
+  expect(calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+});
+
+test('writeFile renames the path the daemon ACTUALLY landed, not the one it asked for', async () => {
+  // The daemon uniquifies on collision, so the returned path is authoritative.
+  routeDaemon((url) => {
+    if (url.endsWith('/file/upload')) return jsonOk([{ path: '.notes.md.tmp-3f9a1c04', size: 2 }]);
+    return undefined;
+  });
+
+  await F.writeFile('/workspace/notes.md', new Blob(['hi']));
+
+  expect(renameBodies()).toEqual([
+    { from: '/workspace/.notes.md.tmp-3f9a1c04', to: '/workspace/notes.md' },
+  ]);
+});
+
+test('writeFile leaves the target untouched and removes the temp when the swap fails', async () => {
+  routeDaemon((url) => {
+    if (url.endsWith('/file/upload')) return jsonOk([{ path: '/workspace/.notes.md.tmp', size: 5 }]);
+    if (url.endsWith('/file/rename')) {
+      return new Response(JSON.stringify({ error: 'EPERM' }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return undefined;
+  });
+
+  await expect(F.writeFile('/workspace/notes.md', new Blob(['fresh']))).rejects.toBeInstanceOf(
+    ApiError,
+  );
+
+  // The only rename attempted is temp → target; the target was never moved.
+  expect(renameBodies()).toEqual([{ from: '/workspace/.notes.md.tmp', to: '/workspace/notes.md' }]);
+  // Only the orphaned temp upload is removed.
+  const deleted = calls.filter((c) => c.method === 'DELETE').map((c) => JSON.parse(c.body!).path);
+  expect(deleted).toEqual(['/workspace/.notes.md.tmp']);
+});
+
+test('writeFile onto an existing directory fails and never deletes the directory', async () => {
+  // The daemon refuses to replace a directory (409 EISDIR; an older daemon's
+  // bare fs.rename fails with EISDIR as a 500). Either way the write fails.
+  routeDaemon((url) => {
+    if (url.endsWith('/file/upload')) return jsonOk([{ path: '/workspace/.src.kortix-write', size: 1 }]);
+    if (url.endsWith('/file/rename')) {
+      return new Response(JSON.stringify({ error: 'Target is a directory', code: 'EISDIR' }), {
+        status: 409,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return undefined;
+  });
+
+  await expect(F.writeFile('/workspace/src', new Blob(['x']))).rejects.toBeInstanceOf(ApiError);
+
+  const deleted = calls.filter((c) => c.method === 'DELETE').map((c) => JSON.parse(c.body!).path);
+  expect(deleted).toEqual(['/workspace/.src.kortix-write']);
+  expect(renameBodies().every((r) => r.from !== '/workspace/src')).toBe(true);
+});
+
+test('writeFile creates a file that does not exist yet with one rename', async () => {
+  routeDaemon((url) => {
+    if (url.endsWith('/file/upload')) return jsonOk([{ path: '/workspace/.new.md.tmp', size: 1 }]);
+    return undefined;
+  });
+
+  const result = await F.writeFile('/workspace/new.md', new Blob(['x']));
+
+  expect(result.path).toBe('/workspace/new.md');
+  expect(renameBodies()).toEqual([{ from: '/workspace/.new.md.tmp', to: '/workspace/new.md' }]);
+  expect(calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+});
+
+test('files namespace exposes write alongside upload', () => {
+  expect(typeof F.files.write).toBe('function');
+  expect(F.files.write).toBe(F.writeFile);
+});
+
+// ── copy goes through the SDK's own auth seam ────────────────────────────────
+//
+// `copyFile`'s upload called bare `fetch()` with a hand-rolled Authorization
+// header, so it silently skipped `platformConfig().fetch` (mobile/whitelabel
+// inject one), the size-scaled deadline, the 401 refresh-and-retry.
+
+test('copy uploads through platformConfig().fetch, not a bare global fetch', async () => {
+  const seen: Array<{ url: string; clientHeader: string | null }> = [];
+  const injected = mock(async (input: unknown, init: RequestInit = {}) => {
+    const url = String(input);
+    seen.push({ url, clientHeader: new Headers(init.headers).get('X-Kortix-Client') });
+    if (url.includes('/file/raw')) {
+      return new Response('bytes', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+    return jsonOk([{ path: '/workspace/b.txt', size: 5 }]);
+  }) as unknown as typeof fetch;
+  configureKortix({
+    backendUrl: 'http://sbx.test',
+    getToken: async () => 'tok',
+    clientSource: 'web',
+    fetch: injected,
+  });
+
+  await F.copyFile('/workspace/a.txt', '/workspace/b.txt');
+
+  const upload = seen.find((s) => s.url.endsWith('/file/upload'));
+  expect(upload).toBeDefined();
+  expect(upload!.clientHeader).toBeNull();
+  // The bare-fetch path would have gone to the global mock instead.
+  expect(calls.filter((c) => c.url.endsWith('/file/upload'))).toEqual([]);
+});
+
+// ── the filename survives a zero-byte body ───────────────────────────────────
+//
+// Bun 1.3.14's multipart parser DROPS the `filename` of a zero-length part, so
+// a genuinely empty upload reached the daemon with `file.name === undefined`
+// and landed as a file literally named `undefined`. The workaround was to write
+// a single space into every "new empty file" — which made every empty .json
+// invalid and every new file 1 byte of 0x20. The name now travels as its own
+// form field, so the body can be empty.
+
+test('upload sends the filename as its own form field', async () => {
+  await F.uploadFile(new Blob(['x']), '/workspace/uploads', 'shot.png');
+  const form = last().raw as FormData;
+  expect(form.get('filename')).toBe('shot.png');
+  expect(form.get('path')).toBe('/workspace/uploads');
+});
+
+test('upload falls back to the File.name when no explicit filename is given', async () => {
+  await F.uploadFile(new File(['x'], 'report.pdf'), '/workspace');
+  expect((last().raw as FormData).get('filename')).toBe('report.pdf');
+});
+
+test('createFile writes a genuinely EMPTY file — no space byte', async () => {
+  // NOTE: this used to assert `last()` was the upload itself, i.e. it pinned
+  // the MECHANISM (one direct POST /file/upload). `createFile` now goes through
+  // `writeFile` so it works on an un-upgraded daemon too (see the
+  // mixed-version-fleet tests at the bottom of this file), so the mechanism is
+  // upload-then-rename. The BEHAVIOUR under test is unchanged and still
+  // asserted in full: 0 bytes, the name survives, the file lands at the
+  // requested path.
+  routeDaemon((url) => {
+    if (isListing(url)) return jsonOk([]);
+    if (url.endsWith('/file/upload')) {
+      return jsonOk([{ path: '/workspace/.data.json.tmp', size: 0 }]);
+    }
+    return undefined;
+  });
+
+  const results = await F.createFile('/workspace/data.json');
+
+  expect(results).toEqual([{ path: '/workspace/data.json', size: 0 }]);
+  const form = calls.find((c) => c.url.endsWith('/file/upload'))!.raw as FormData;
+  const part = form.get('file') as File;
+  expect(part.size).toBe(0);
+  expect(await part.text()).toBe('');
+  // The name must survive the zero-byte body — as its own form field.
+  expect(String(form.get('filename'))).toMatch(/^\.data\.json\./);
+  expect(form.get('path')).toBe('/workspace');
+});
+
+// ── createFile across a MIXED-VERSION sandbox fleet ──────────────────────────
+//
+// The `filename` form field above is read by the daemon — and the daemon is
+// BAKED INTO THE SANDBOX IMAGE (`/usr/local/bin/kortix-agent`,
+// `apps/sandbox/Dockerfile`). `/v1/runtime-assets` reconciles only the CLI
+// binary and the managed skills (`cli_sha256`, `managed_skills_hash`); it does
+// NOT ship the daemon. So every sandbox provisioned before the image rebuild
+// keeps its OLD daemon, while this SDK deploys with the web app immediately.
+//
+// On such a box a genuinely 0-byte part loses its filename in Bun's multipart
+// parser, the old daemon never looks at the `filename` field, and a direct
+// upload lands as a file literally named "undefined" — visibly, from the file
+// explorer's "New File" button.
+//
+// `createFile` therefore goes through `writeFile`, which renames the path the
+// daemon REPORTED onto the requested path. That makes it version-agnostic: on a
+// new daemon the temp name lands and is renamed; on an old one "undefined"
+// lands and is renamed. Either way the file ends up at the requested path with
+// 0 bytes. Do not "simplify" this back into a direct upload.
+
+test('createFile survives an OLD daemon that lands a zero-byte part as "undefined"', async () => {
+  routeDaemon((url) => {
+    if (isListing(url)) return jsonOk([]);
+    // Exactly what a pre-rebuild kortix-agent returns for an empty part.
+    if (url.endsWith('/file/upload')) return jsonOk([{ path: '/workspace/undefined', size: 0 }]);
+    return undefined;
+  });
+
+  const results = await F.createFile('/workspace/notes.md');
+
+  // The file exists at the path the user asked for, and it is genuinely empty.
+  expect(results).toEqual([{ path: '/workspace/notes.md', size: 0 }]);
+  const swap = renameBodies().at(-1);
+  expect(swap).toEqual({ from: '/workspace/undefined', to: '/workspace/notes.md', overwrite: false });
+  // And the bytes really were empty — no space hack anywhere on this path.
+  const uploadForm = calls.find((c) => c.url.endsWith('/file/upload'))!.raw as FormData;
+  expect((uploadForm.get('file') as File).size).toBe(0);
+});
+
+test('two concurrent createFile calls on an OLD daemon cannot cross', async () => {
+  let uploads = 0;
+  routeDaemon((url) => {
+    if (isListing(url)) return jsonOk([]);
+    if (url.endsWith('/file/upload')) {
+      uploads += 1;
+      // The daemon writes with O_EXCL and suffixes on EEXIST, so the second
+      // "undefined" cannot clobber the first — it gets its own name back.
+      return jsonOk([
+        { path: uploads === 1 ? '/workspace/undefined' : '/workspace/undefined-4f2a1c', size: 0 },
+      ]);
+    }
+    return undefined;
+  });
+
+  const [first, second] = await Promise.all([
+    F.createFile('/workspace/a.md'),
+    F.createFile('/workspace/b.md'),
+  ]);
+
+  expect(first).toEqual([{ path: '/workspace/a.md', size: 0 }]);
+  expect(second).toEqual([{ path: '/workspace/b.md', size: 0 }]);
+  // Each call renamed the path IT was told, so the two swaps are disjoint.
+  const swaps = renameBodies()
+    .filter((r) => r.from.startsWith('/workspace/undefined'))
+    .sort((a, b) => a.to.localeCompare(b.to));
+  expect(swaps).toHaveLength(2);
+  expect(swaps[0].to).toBe('/workspace/a.md');
+  expect(swaps[1].to).toBe('/workspace/b.md');
+  expect(swaps[0].from).not.toBe(swaps[1].from);
+  expect(new Set(swaps.map((s) => s.from))).toEqual(
+    new Set(['/workspace/undefined', '/workspace/undefined-4f2a1c']),
+  );
+});
+
+test('createFile keeps returning UploadResult[] — the published shape', async () => {
+  routeDaemon((url) => {
+    if (isListing(url)) return jsonOk([]);
+    if (url.endsWith('/file/upload')) return jsonOk([{ path: '/workspace/.x.md.tmp', size: 0 }]);
+    return undefined;
+  });
+  const results = await F.createFile('x.md');
+  expect(Array.isArray(results)).toBe(true);
+  expect(results[0]).toEqual({ path: '/workspace/x.md', size: 0 });
+});
+
+// REGRESSION (CodeQL js/polynomial-redos, HIGH). `writeFile` normalised its
+// argument with `replace(/\/+$/, '')`. That pattern is UNANCHORED, so on a long
+// run of slashes not at the end the engine retries it from every position —
+// O(n^2). `filePath` comes from host UI input, so it is uncontrolled: a pasted
+// path was enough to stall the tab. Replaced with an index walk.
+test('a trailing-slash path with a pathological slash run normalises in linear time', async () => {
+  routeDaemon((url) => {
+    if (url.endsWith('/file/upload')) return jsonOk([{ path: '/workspace/dir/.tmp', size: 1 }]);
+    return undefined;
+  });
+
+  // Behaviour first: trailing slashes are stripped, the rest is untouched.
+  await F.writeFile('/workspace/dir/notes.md///', new Blob(['x']));
+  const upload = calls.find((c) => c.url.includes('/file/upload'));
+  const form = upload?.raw as FormData;
+  expect(String(form.get('path'))).toBe('/workspace/dir');
+  expect(String(form.get('filename'))).toContain('notes.md');
+
+  // Then the property the regex broke. The pathological shape is a long run of
+  // '/' with a non-slash AFTER it, so the old pattern backtracked over the whole
+  // run at every offset. 200k chars finished in ~1s even then, so assert a bound
+  // tight enough that a quadratic implementation cannot pass.
+  const hostile = `/workspace/a${'/'.repeat(200_000)}b.txt`;
+  const started = performance.now();
+  await F.writeFile(hostile, new Blob(['x'])).catch(() => undefined);
+  expect(performance.now() - started).toBeLessThan(1_000);
+});
+
+// ── createFile is create-only ────────────────────────────────────────────────
+//
+// "New file" and `kortix sessions files touch` name a path the user expects to
+// be NEW. An existing file must keep its bytes and an existing directory must
+// keep its contents: `createFile` fails with `FileExistsError` instead.
+
+const listingWith = (entries: Array<{ name: string; type: 'file' | 'directory' }>) =>
+  jsonOk(entries.map((e) => ({ ...e, path: e.name, absolute: `/workspace/${e.name}`, ignored: false })));
+
+test('createFile refuses a path where a file already exists and writes nothing', async () => {
+  routeDaemon((url) => (isListing(url) ? listingWith([{ name: 'notes.md', type: 'file' }]) : undefined));
+
+  const error = await F.createFile('/workspace/notes.md').catch((e: unknown) => e);
+
+  expect(error).toBeInstanceOf(F.FileExistsError);
+  expect(error).toBeInstanceOf(ApiError);
+  expect((error as F.FileExistsError).status).toBe(409);
+  expect((error as F.FileExistsError).code).toBe('FILE_EXISTS');
+  expect((error as F.FileExistsError).path).toBe('/workspace/notes.md');
+  // No upload, no rename, no delete.
+  expect(calls.map((c) => c.method + ' ' + c.url)).toEqual([
+    'GET http://sbx.test/file?path=.',
+  ]);
+});
+
+test('createFile refuses a path where a directory already exists', async () => {
+  routeDaemon((url) => (isListing(url) ? listingWith([{ name: 'src', type: 'directory' }]) : undefined));
+
+  await expect(F.createFile('/workspace/src')).rejects.toBeInstanceOf(F.FileExistsError);
+  expect(calls.some((c) => c.method === 'DELETE' || c.url.endsWith('/file/rename'))).toBe(false);
+});
+
+test('createFile asks the daemon for a create-only rename and maps its refusal to FileExistsError', async () => {
+  // A file created between the listing and the rename: the daemon's
+  // create-only rename refuses, and the temp upload is cleaned up.
+  routeDaemon((url) => {
+    if (isListing(url)) return jsonOk([]);
+    if (url.endsWith('/file/upload')) return jsonOk([{ path: '/workspace/.race.md.tmp', size: 0 }]);
+    if (url.endsWith('/file/rename')) {
+      return new Response(JSON.stringify({ error: 'Target already exists', code: 'EEXIST' }), {
+        status: 409,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return undefined;
+  });
+
+  await expect(F.createFile('/workspace/race.md')).rejects.toBeInstanceOf(F.FileExistsError);
+  expect(renameBodies()).toEqual([
+    { from: '/workspace/.race.md.tmp', to: '/workspace/race.md', overwrite: false },
+  ]);
+  const deleted = calls.filter((c) => c.method === 'DELETE').map((c) => JSON.parse(c.body!).path);
+  expect(deleted).toEqual(['/workspace/.race.md.tmp']);
+});
+
+test('createFile in a folder that does not exist yet creates it', async () => {
+  routeDaemon((url) => {
+    if (isListing(url)) {
+      return new Response(JSON.stringify({ error: 'Directory not found' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/file/upload')) return jsonOk([{ path: '/workspace/new/.a.md.tmp', size: 0 }]);
+    return undefined;
+  });
+
+  expect(await F.createFile('/workspace/new/a.md')).toEqual([{ path: '/workspace/new/a.md', size: 0 }]);
+  expect(calls.some((c) => c.url === 'http://sbx.test/file/mkdir')).toBe(true);
+});
+
+test('concurrent readBlob calls keep the raw reads in flight bounded', async () => {
+  // One web transcript shows hundreds of binary file cards, and the turn-end /
+  // file.edited invalidation refetches every mounted card at once. Unbounded,
+  // that fan-out saturated one box's dial path (649 GETs in one minute, route
+  // p95 20 s) and drove reads into the proxy's 15 s connect-timeout cap. The
+  // SDK's read funnel must keep the concurrent reads bounded instead of firing
+  // all of them at the box simultaneously.
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let releaseAll: () => void = () => {};
+  const hold = new Promise<void>((release) => {
+    releaseAll = release;
+  });
+  globalThis.fetch = mock(async () => {
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await hold;
+    inFlight--;
+    return new Response(JSON.stringify({ bytes: 'raw' }), {
+      status: 200,
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+  }) as unknown as typeof fetch;
+
+  const reads = Array.from({ length: 30 }, (_, i) => F.readBlob(`/workspace/card-${i}.png`));
+  // Let every read reach the funnel: exactly the 8 slots fetch and hold; the
+  // rest wait in the queue (a broken limiter that never fetches cannot pass —
+  // maxInFlight would stay 0).
+  await Bun.sleep(20);
+  expect(maxInFlight).toBe(8);
+  releaseAll();
+  const blobs = await Promise.all(reads);
+  expect(blobs).toHaveLength(30);
+  expect(maxInFlight).toBe(8);
+  expect(inFlight).toBe(0);
+});
+
+// ── uploadNativeFile: a React Native `{ uri }` part, sent through the transport ──
+
+test('uploadNativeFile posts the target path and the file part to /file/upload with the bearer', async () => {
+  const results = await F.uploadNativeFile(
+    { uri: 'file:///cache/photo.png', name: 'photo.png', type: 'image/png' },
+    '/workspace/inbox',
+    'http://sbx.test',
+  );
+  expect(results).toEqual([]);
+  expect(last().url).toBe('http://sbx.test/file/upload');
+  expect(last().method).toBe('POST');
+  const form = last().raw as FormData;
+  expect(form.get('path')).toBe('/workspace/inbox');
+  expect(form.has('file')).toBe(true);
+});
+
+test('uploadNativeFile throws an ApiError carrying the status on a daemon failure', async () => {
+  mockFailStatus = 400;
+  const error = await F.uploadNativeFile({ uri: 'file:///x', name: 'x' }, '/workspace', 'http://sbx.test').catch(
+    (e: unknown) => e,
+  );
+  expect(error).toBeInstanceOf(ApiError);
+  expect((error as ApiError).status).toBe(400);
+});
+
+test('fileDownloadRequest names /file/raw for the daemon path with the bearer', async () => {
+  const request = await F.fileDownloadRequest('/workspace/docs/a b.pdf', 'http://sbx.test/p/ext-1/8000');
+  expect(request.url).toBe('http://sbx.test/p/ext-1/8000/file/raw?path=docs%2Fa%20b.pdf');
+  expect(request.headers.authorization).toBe('Bearer tok');
+  expect(calls).toHaveLength(0);
+});

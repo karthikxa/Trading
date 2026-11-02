@@ -1,0 +1,260 @@
+/**
+ * PushNotificationsBridge — the app-wide remote push glue, mounted once in
+ * app/_layout.tsx inside the auth and navigation providers. Renders nothing.
+ *
+ * - Creates the four Android channels (lib/notifications/push.ts).
+ * - Sets the foreground handler: no banner and no sound while the user views
+ *   that session (the live stream's in-app cue plays instead).
+ * - Registers the token on sign-in when OS permission is already granted.
+ *   It never asks: requestPushPermissionOnce() asks after the first send.
+ * - Removes the token row a failed sign-out left (flushPendingRelease), on
+ *   mount, on a sign-in change and on resume (KRTX-2242).
+ * - Re-posts this phone's Notifications switches 500 ms after a change, and
+ *   on resume when the last post failed.
+ * - Opens the tapped session, or its project for an automation alert, also
+ *   for the tap that cold-started the app. A tap while signed out is dropped. The tap marks its inbox row read
+ *   (KRTX-1742), fire and forget.
+ * - A push that arrives while the app is open refetches the inbox: the
+ *   drawer's count, and ProjectScreen reads the row of the session on screen.
+ */
+
+import { useEffect, useRef } from 'react';
+import { AppState, Platform } from 'react-native';
+import { useGlobalSearchParams, useNavigationContainerRef, useRouter, useSegments } from 'expo-router';
+import { StackActions } from 'expo-router/react-navigation';
+import type { NotificationResponse } from 'expo-notifications';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { markNotificationsRead } from '@kortix/sdk';
+import { qk } from '@kortix/sdk/react';
+import { API_URL } from '@/api/config';
+import { useAuthContext } from '@/contexts';
+import { log } from '@/lib/logger';
+import {
+  ANDROID_CHANNELS,
+  notificationOpenMove,
+  parsePushData,
+  PREFERENCE_SYNC_DEBOUNCE_MS,
+  pushFromOtherBackend,
+  shouldPresentInForeground,
+} from '@/lib/notifications/push';
+import {
+  beginPushSignIn,
+  flushPendingRelease,
+  getNotifications,
+  registeredForThisSignIn,
+  remotePushSupported,
+  syncPushPreferences,
+  syncPushRegistration,
+} from '@/lib/notifications/registration';
+import { projectHref } from '@/lib/projects/switcher';
+import { addResumeListener } from '@/lib/utils/app-resume';
+import { useNotificationStore } from '@/stores/notification-store';
+import { usePushStore } from '@/stores/push-store';
+import { KORTIX_WEB_URL } from '@/lib/kortix-web';
+import { openLink } from '@/lib/utils/open-link';
+
+/** After the stream and auth refresh, and after the warm session (400 ms). */
+const PUSH_RESUME_DELAY_MS = 600;
+
+/** Tapped notification ids already handled (the listener and the cold-start read can both see one). */
+const handledResponses = new Set<string>();
+
+/** Mark inbox rows read, then refetch the inbox. Fire and forget: a failure leaves the rows unread. */
+function markRead(ids: string[], queryClient: QueryClient) {
+  markNotificationsRead({ ids })
+    .then(() => queryClient.invalidateQueries({ queryKey: qk.notifications.scope() }))
+    .catch((error: unknown) => log.warn('[PUSH] Mark read failed:', error));
+}
+
+function handleResponse(
+  response: NotificationResponse | null,
+  queryClient: QueryClient,
+  signedOut: { current: boolean }
+) {
+  const Notifications = getNotifications();
+  if (!response || !Notifications) return;
+  // Signed out: the tap belongs to the previous user; never open it for the next one.
+  if (signedOut.current) return;
+  if (response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
+  const id = response.notification.request.identifier;
+  if (handledResponses.has(id)) return;
+  handledResponses.add(id);
+  const raw = response.notification.request.content.data;
+  // A release build ignores a push from another backend (KRTX-2938). A local
+  // build's API_URL is a LAN host, never the stack's public KORTIX_URL.
+  if (pushFromOtherBackend(raw, API_URL) && !__DEV__) return;
+  const data = parsePushData(raw);
+  if (!data) return;
+  if (data.notificationId) markRead([data.notificationId], queryClient);
+  if (data.artifactPath) {
+    void openLink(new URL(data.artifactPath, KORTIX_WEB_URL).toString()).catch((error) => log.warn('Unable to open Artifact notification', error));
+    return;
+  }
+  usePushStore.getState().requestOpen(data.projectId, data.sessionId);
+}
+
+
+let setupDone = false;
+
+/** Channels and the foreground handler. Once per process. */
+function setUpNotifications() {
+  if (setupDone) return;
+  setupDone = true;
+  const Notifications = getNotifications();
+  if (!Notifications) return;
+
+  try {
+    Notifications.setNotificationHandler({
+      handleNotification: async (notification) => {
+        const show = shouldPresentInForeground({
+          data: notification.request.content.data,
+          appActive: AppState.currentState === 'active',
+          viewingSessionId: usePushStore.getState().viewingSessionId,
+        });
+        return { shouldShowBanner: show, shouldShowList: show, shouldPlaySound: show, shouldSetBadge: false };
+      },
+    });
+  } catch (error) {
+    log.warn('[PUSH] Foreground handler not set:', error);
+  }
+
+  if (Platform.OS === 'android') {
+    for (const channel of ANDROID_CHANNELS) {
+      Notifications.setNotificationChannelAsync(channel.id, {
+        name: channel.name,
+        importance: Notifications.AndroidImportance.HIGH,
+        sound: channel.sound,
+        enableVibrate: channel.sound !== null,
+      }).catch((error: unknown) => log.warn('[PUSH] Channel not created:', channel.id, error));
+    }
+  }
+}
+
+export function PushNotificationsBridge() {
+  const { isAuthenticated, isLoading, mfaRequired } = useAuthContext();
+  // A session that owes the TOTP code gets no pushes and opens no session.
+  const signedIn = isAuthenticated && !mfaRequired;
+  // Auth resolved with no session. While auth loads (a cold-start tap), a tap waits.
+  const signedOut = !isLoading && !isAuthenticated;
+  const router = useRouter();
+  const navigationRef = useNavigationContainerRef();
+  const segments = useSegments() as string[];
+  const { id: routeProjectId } = useGlobalSearchParams<{ id?: string }>();
+  const pendingOpen = usePushStore((s) => s.pendingOpen);
+  const queryClient = useQueryClient();
+
+  const signedInRef = useRef(signedIn);
+  signedInRef.current = signedIn;
+  const signedOutRef = useRef(signedOut);
+  signedOutRef.current = signedOut;
+
+  // A tap queued while auth loaded, on a launch that resolved signed out.
+  useEffect(() => {
+    if (signedOut) usePushStore.setState({ pendingOpen: null });
+  }, [signedOut]);
+
+  // Channels, handler, and the tap and arrival listeners. The last response
+  // covers a tap that launched the app before this listener existed.
+  useEffect(() => {
+    setUpNotifications();
+    const Notifications = getNotifications();
+    if (!Notifications) return;
+    const subscriptions: { remove: () => void }[] = [];
+    try {
+      subscriptions.push(
+        Notifications.addNotificationResponseReceivedListener((response) => handleResponse(response, queryClient, signedOutRef)),
+        // A push that arrived while the app is open: refetch the inbox. A row
+        // of the session on screen is then read (ProjectScreen).
+        Notifications.addNotificationReceivedListener(() => {
+          void queryClient.invalidateQueries({ queryKey: qk.notifications.scope() });
+        })
+      );
+      handleResponse(Notifications.getLastNotificationResponse(), queryClient, signedOutRef);
+      Notifications.clearLastNotificationResponse();
+    } catch (error) {
+      log.warn('[PUSH] Notification listeners not set:', error);
+    }
+    return () => {
+      for (const subscription of subscriptions) subscription.remove();
+    };
+  }, [queryClient]);
+
+  // A token row a failed sign-out left: release it now and on each resume
+  // until the backend confirms. Needs no push support: the record exists
+  // only when a token did.
+  useEffect(() => {
+    void flushPendingRelease({ signedIn });
+    return addResumeListener(() => {
+      void flushPendingRelease({ signedIn: signedInRef.current });
+    }, PUSH_RESUME_DELAY_MS);
+  }, [signedIn]);
+
+  // Sign-in: register when permission is already granted. Back in the
+  // foreground with no register for this sign-in yet: the last one failed, or
+  // the user may have allowed it in Settings. With a pending release: the
+  // last register failed to bind the old row. Each resume also retries a
+  // failed preference sync (it skips values the server already has). That
+  // check waits until the resume work that cannot wait has run.
+  useEffect(() => {
+    if (!signedIn || !remotePushSupported()) return;
+    beginPushSignIn();
+    void syncPushRegistration();
+    return addResumeListener(() => {
+      if (!signedInRef.current) return;
+      const { pendingRelease } = usePushStore.getState();
+      if (!registeredForThisSignIn() || pendingRelease?.backendUrl === API_URL) {
+        void syncPushRegistration();
+      } else {
+        void syncPushPreferences();
+      }
+    }, PUSH_RESUME_DELAY_MS);
+  }, [signedIn]);
+
+  // This phone's switches → server, debounced.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = useNotificationStore.subscribe((state, prev) => {
+      if (state.preferences === prev.preferences) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (signedInRef.current) void syncPushPreferences();
+      }, PREFERENCE_SYNC_DEBOUNCE_MS);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+    };
+  }, []);
+
+  // A tapped notification: move to its project; ProjectScreen opens the
+  // session, or project home for an alert without one.
+  const rootSegment = segments[0] ?? '';
+  const currentProjectId =
+    rootSegment === 'projects' && segments[1] === '[id]' && typeof routeProjectId === 'string'
+      ? routeProjectId
+      : null;
+  useEffect(() => {
+    if (!pendingOpen || pendingOpen.navigated) return;
+    const move = notificationOpenMove({
+      signedIn,
+      rootSegment,
+      currentProjectId,
+      targetProjectId: pendingOpen.projectId,
+    });
+    if (move === 'wait') return;
+    usePushStore.getState().markOpenNavigated();
+    try {
+      if (move === 'replace-project') {
+        // A root-stack replace: router.replace cannot leave one `projects/[id]`
+        // for another (ProjectScreen's replaceProject does the same).
+        navigationRef.dispatch(StackActions.replace('projects/[id]', { id: pendingOpen.projectId }));
+      } else if (move === 'replace') {
+        router.replace(projectHref(pendingOpen.projectId));
+      }
+    } catch (error) {
+      log.warn('[PUSH] Could not open the tapped session:', error);
+    }
+  }, [pendingOpen, signedIn, rootSegment, currentProjectId, navigationRef, router]);
+
+  return null;
+}

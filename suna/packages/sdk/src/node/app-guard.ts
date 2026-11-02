@@ -1,0 +1,254 @@
+/**
+ * One identity resolver for a Kortix App, whichever route proved the viewer.
+ *
+ * ## The defect this makes unrepresentable
+ *
+ * An App reached through the Kortix gate gets a signed `x-kortix-app-viewer`
+ * header on every request, carrying user id, email AND group ids. The same App
+ * set to `public` gets no header at all — the gate deliberately sends nobody —
+ * so identity has to come from the App's own Kortix sign-in, which proves WHO
+ * and says nothing about group membership.
+ *
+ * An App that guards on groups therefore stopped guarding the moment somebody
+ * changed its access mode, silently, with no error and no failing test. That is
+ * not a bug in one App; it is a shape every App would reproduce. So it belongs
+ * here, once, rather than in each consumer.
+ *
+ * This resolver answers with the SAME viewer shape from either source, fetching
+ * and caching groups on the path that does not carry them. Callers ask who this
+ * is and never learn which mechanism answered.
+ *
+ * ## Everything fails closed
+ *
+ * `requireViewer` and `requireGroup` return either a viewer or a Response —
+ * there is no third option and no boolean to get backwards. A caller cannot
+ * write `if (!viewer) return true`, which is precisely the line that made every
+ * dashboard in a `public` App world-readable.
+ */
+
+import { stripTrailingSlashes } from '../platform/strings';
+import { readAppViewer } from './app-viewer';
+import type { KortixAuth } from './auth';
+
+/** The viewer, identical in shape no matter which route proved them. */
+export interface KortixGuardedViewer {
+  userId: string;
+  email: string | null;
+  /** Display name, when the source carries one. */
+  name?: string | null;
+  /** Profile picture URL, when the source carries one. */
+  picture?: string | null;
+  /** Always populated: from the signed header, or fetched on the sign-in path. */
+  groupIds: string[];
+  /** Names of the same groups, when the source carries them. */
+  groups?: string[];
+  /** The viewer's account role, when the source carries it. */
+  role?: string | null;
+  accountId: string;
+  /** Which route proved this identity. For diagnostics — never for authorization. */
+  source: 'app-gate' | 'kortix-sign-in';
+  /** A Kortix token that acts AS this viewer, when one is available. */
+  token: string | null;
+}
+
+export type KortixAppGuardResult =
+  | { viewer: KortixGuardedViewer; response?: undefined }
+  | { viewer?: undefined; response: Response };
+
+export interface KortixAppGuardOptions {
+  /** Verifies the gate's signed header. Defaults to `KORTIX_APP_VIEWER_SECRET`. */
+  secret?: string;
+  /** Kortix API base including the version prefix. Needed only for the sign-in path. */
+  backendUrl?: string;
+  /** The App's own sign-in, from `createKortixAuth`. Omit for a gate-only App. */
+  auth?: Pick<KortixAuth, 'viewer' | 'signInUrl'> | null;
+  /**
+   * The account that owns the App. Defaults to `KORTIX_APP_ACCOUNT_ID`, which
+   * Kortix sets on every App it hosts. On the sign-in path, groups are read in
+   * this account only, and a viewer outside it has none. Without it, group
+   * names are not trusted on that path (any account can create a group with
+   * the same name); group ids still match.
+   */
+  accountId?: string;
+  /** How long a fetched group list stays fresh. Default 60s. */
+  groupCacheTtlMs?: number;
+  fetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  now?: () => number;
+}
+
+export interface KortixAppGuard {
+  /** The viewer for this request, or null when nobody is signed in. */
+  viewer(request: Request): Promise<KortixGuardedViewer | null>;
+  /** The viewer, or the redirect to sign-in. Never a bare null to mis-handle. */
+  requireViewer(request: Request): Promise<KortixAppGuardResult>;
+  /** The viewer when they are in ANY of `groupIds`, otherwise a refusal. */
+  requireGroup(request: Request, groupIds: string[]): Promise<KortixAppGuardResult>;
+  /** Can this deployment identify anyone at all, by either route? */
+  identityConfigured(): boolean;
+}
+
+interface CacheEntry {
+  groupIds: string[];
+  groups: string[];
+  at: number;
+}
+
+function env(name: string): string | undefined {
+  try {
+    return typeof process !== 'undefined' ? process.env?.[name] || undefined : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function createKortixAppGuard(options: KortixAppGuardOptions = {}): KortixAppGuard {
+  /**
+   * Resolved per request, not captured at construction.
+   *
+   * A guard is normally built once and reused, so a secret captured up front
+   * would freeze whatever the environment held at first call. That is invisible
+   * in production (the env does not change) and wrong everywhere else: a test
+   * that unsets KORTIX_APP_VIEWER_SECRET would still verify headers, which is
+   * the difference between "this deployment shares no identity" and "this
+   * deployment trusts a signature it should no longer accept".
+   */
+  const resolveSecret = () => options.secret ?? env('KORTIX_APP_VIEWER_SECRET');
+  const ttl = options.groupCacheTtlMs ?? 60_000;
+  const now = options.now ?? (() => Date.now());
+  const fetchImpl =
+    options.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
+  const cache = new Map<string, CacheEntry>();
+
+  /**
+   * Groups for a viewer on the sign-in path.
+   *
+   * A failure yields an EMPTY list, never a throw and never a wildcard: the
+   * viewer stays authenticated, and anything group-gated denies. Treating an
+   * unreadable membership list as "no restriction" is how a transient 500
+   * becomes an open door.
+   */
+  async function fetchGroups(
+    accountId: string,
+    userId: string,
+    token: string,
+  ): Promise<{ groupIds: string[]; groups: string[] }> {
+    const none = { groupIds: [], groups: [] };
+    const key = `${accountId}:${userId}`;
+    const hit = cache.get(key);
+    if (hit && now() - hit.at < ttl) return hit;
+    if (!options.backendUrl) return none;
+
+    try {
+      const base = stripTrailingSlashes(options.backendUrl);
+      const res = await fetchImpl(
+        `${base}/accounts/${encodeURIComponent(accountId)}/iam/members/${encodeURIComponent(userId)}/groups`,
+        { headers: { accept: 'application/json', authorization: `Bearer ${token}` } },
+      );
+      if (!res.ok) return none;
+      const body = (await res.json()) as {
+        groups?: Array<{ group_id?: string; groupId?: string; name?: string }>;
+      };
+      const rows = body.groups ?? [];
+      const found = {
+        groupIds: rows.map((g) => g.group_id ?? g.groupId).filter((id): id is string => typeof id === 'string'),
+        groups: rows.map((g) => g.name).filter((name): name is string => typeof name === 'string'),
+      };
+      cache.set(key, { ...found, at: now() });
+      return found;
+    } catch {
+      return none;
+    }
+  }
+
+  async function viewer(request: Request): Promise<KortixGuardedViewer | null> {
+    // The gate first: one HMAC, no network, and it already carries groups. It is
+    // also the only source that proves the viewer for THIS App specifically.
+    const secret = resolveSecret();
+    const gated = await readAppViewer(request, secret ? { secret } : undefined);
+    if (gated) {
+      return {
+        userId: gated.userId,
+        email: gated.email,
+        name: gated.name ?? null,
+        picture: gated.picture ?? null,
+        groupIds: gated.groupIds ?? [],
+        groups: gated.groups ?? [],
+        role: gated.role ?? null,
+        accountId: gated.accountId,
+        source: 'app-gate',
+        token: gated.token,
+      };
+    }
+
+    if (!options.auth) return null;
+    const signedIn = await options.auth.viewer(request).catch(() => null);
+    if (!signedIn) return null;
+
+    // Sign-in proves who, not which account: `accounts` lists every account
+    // of the viewer, including ones they created themselves. Group names are
+    // unique only within an account, so names count only when read in the
+    // App's own account.
+    const appAccountId = options.accountId ?? env('KORTIX_APP_ACCOUNT_ID');
+    const accounts = signedIn.accounts ?? [];
+    const inAppAccount = Boolean(appAccountId) && accounts.some((a) => a.account_id === appAccountId);
+    const accountId = inAppAccount ? appAccountId! : (accounts[0]?.account_id ?? '');
+    // Outside the App's account, there are no groups to read.
+    const membership = accountId && (inAppAccount || !appAccountId)
+      ? await fetchGroups(accountId, signedIn.userId, signedIn.token)
+      : { groupIds: [], groups: [] };
+    return {
+      userId: signedIn.userId,
+      email: signedIn.email ?? null,
+      groupIds: membership.groupIds,
+      groups: inAppAccount ? membership.groups : [],
+      accountId,
+      source: 'kortix-sign-in',
+      token: signedIn.token,
+    };
+  }
+
+  function identityConfigured(): boolean {
+    return Boolean(resolveSecret()) || Boolean(options.auth);
+  }
+
+  /** 404, not 403 — "this exists and is not yours" is itself information. */
+  function refuse(): Response {
+    return Response.json({ error: 'not_found' }, { status: 404 });
+  }
+
+  return {
+    viewer,
+    identityConfigured,
+
+    async requireViewer(request) {
+      const found = await viewer(request);
+      if (found) return { viewer: found };
+      const signIn = options.auth?.signInUrl?.(new URL(request.url).pathname);
+      return {
+        response: signIn
+          ? Response.redirect(new URL(signIn, request.url).toString(), 302)
+          : refuse(),
+      };
+    },
+
+    async requireGroup(request, groupIds) {
+      const found = await viewer(request);
+      if (!found) {
+        const signIn = options.auth?.signInUrl?.(new URL(request.url).pathname);
+        return {
+          response: signIn
+            ? Response.redirect(new URL(signIn, request.url).toString(), 302)
+            : refuse(),
+        };
+      }
+      // An empty required-group list reads as "no restriction" to a careless
+      // caller. It means the opposite here, so a config bug that produces `[]`
+      // closes the resource instead of opening it to everyone.
+      if (groupIds.length === 0) return { response: refuse() };
+      // A group id or a group name. Names are unique only within one account,
+      // so the sign-in path fills `groups` only from the App's own account.
+      const allowed = groupIds.some((group) => found.groupIds.includes(group) || (found.groups ?? []).includes(group));
+      return allowed ? { viewer: found } : { response: refuse() };
+    },
+  };
+}

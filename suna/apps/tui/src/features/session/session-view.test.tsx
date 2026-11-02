@@ -1,0 +1,269 @@
+/**
+ * The session column's contract: one `useSession` call, one focused region at a
+ * time, and a row budget that never clips the composer off the bottom.
+ *
+ * The hook is injected through `useSessionImpl` — the same test seam
+ * `TerminalPanel` uses for its socket factory — so the layout and focus rules
+ * are asserted without an API, a sandbox or an SSE stream.
+ */
+
+import { describe, expect, mock, test } from 'bun:test';
+
+import { testRender } from '@opentui/react/test-utils';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act } from 'react';
+
+import type { ResolvedHost } from '../../auth/hosts.ts';
+import {
+  COMPOSER_CHROME_ROWS,
+  PROMPT_RESERVE_ROWS,
+  type SessionFocus,
+  SessionView,
+  TRANSCRIPT_MIN_ROWS,
+  composerReserve,
+  focusHints,
+  phaseGlyph,
+  terminalWidth,
+  transcriptRows,
+} from './session-view.tsx';
+import { lastReplyText, transcriptMarkdown } from './transcript-export.ts';
+import { fakeSession, message, textPart } from './transcript/test-session.ts';
+
+const HOST: ResolvedHost = {
+  name: 'local',
+  backendUrl: 'http://localhost:17408/v1',
+  token: 'test-token',
+  accountId: 'acc-1',
+  userEmail: 'dev@kortix.test',
+  source: 'config',
+};
+
+describe('row budget', () => {
+  test('a one-line composer reserves its chrome plus one row', () => {
+    expect(composerReserve({ rows: 1, aboveRows: 0, menuOpen: false })).toBe(
+      1 + COMPOSER_CHROME_ROWS,
+    );
+  });
+
+  test('an open slash menu reserves exactly the rows it draws', () => {
+    expect(composerReserve({ rows: 1, aboveRows: 10, menuOpen: true })).toBe(
+      1 + COMPOSER_CHROME_ROWS + 10,
+    );
+  });
+
+  test('the transcript takes what is left after the header and the composer', () => {
+    // 30 content rows − 1 header − (1 + 4) composer = 24.
+    expect(transcriptRows(30, { rows: 1, aboveRows: 0, menuOpen: false }, false)).toBe(24);
+  });
+
+  test('a pending question reserves room for its card', () => {
+    expect(transcriptRows(30, { rows: 1, aboveRows: 0, menuOpen: false }, true)).toBe(
+      24 - PROMPT_RESERVE_ROWS,
+    );
+  });
+
+  test('the transcript never goes below its floor, however big the composer gets', () => {
+    expect(transcriptRows(10, { rows: 6, aboveRows: 12, menuOpen: true }, true)).toBe(
+      TRANSCRIPT_MIN_ROWS,
+    );
+    expect(transcriptRows(1, { rows: 6, aboveRows: 12, menuOpen: true }, true)).toBe(
+      TRANSCRIPT_MIN_ROWS,
+    );
+  });
+});
+
+describe('terminalWidth', () => {
+  test('is 40% of the region', () => {
+    expect(terminalWidth(120)).toBe(48);
+  });
+
+  test('never shrinks a shell below 32 columns', () => {
+    expect(terminalWidth(60)).toBe(32);
+  });
+});
+
+describe('phaseGlyph and focusHints', () => {
+  test('a glyph per lifecycle phase', () => {
+    expect(phaseGlyph('ready')).toBe('●');
+    expect(phaseGlyph('starting')).toBe('○');
+    expect(phaseGlyph('error')).toBe('!');
+  });
+
+  test('the hints name the keys of the focused region', () => {
+    expect(focusHints('composer')).toContain('Enter send');
+    expect(focusHints('composer')).toContain('Alt+m model');
+    expect(focusHints('terminal')).toContain('Alt+X close');
+    expect(focusHints('transcript')).toContain('Esc composer');
+    expect(focusHints('sidebar')).toContain('Enter open');
+  });
+});
+
+const PI_CAPABILITIES = ['file.import', 'session.subagents'];
+
+async function mount(focus: SessionFocus | null, overrides: Record<string, unknown> = {}) {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const session = fakeSession({
+    messages: [message('m1', 'assistant', [textPart('t1', 'TRANSCRIPT-MARKER')])],
+    commands: [],
+    models: [],
+    agents: [],
+    picks: { model: null, agent: null, variant: null },
+    isSending: false,
+    switched: true,
+    agentName: 'galileo',
+    ...overrides,
+  });
+  const useSessionImpl = mock(() => session);
+  const readHealth = mock(async () => ({ health: { capabilities: PI_CAPABILITIES } }));
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, gcTime: 0 } },
+  });
+  const setup = await testRender(
+    <QueryClientProvider client={queryClient}>
+      <SessionView
+        host={HOST}
+        projectId="p1"
+        sessionId="s1"
+        title="Casual greeting"
+        focus={focus}
+        width={90}
+        height={24}
+        terminalOpen={false}
+        wide
+        onFocus={() => {}}
+        onCloseTerminal={() => {}}
+        context={{ hasProject: true, hasAccount: true }}
+        onCommand={() => {}}
+        onToast={() => {}}
+        useSessionImpl={useSessionImpl as never}
+        readHealth={readHealth as never}
+      />
+    </QueryClientProvider>,
+    { width: 120, height: 25 },
+  );
+  // `<markdown>` parses and highlights asynchronously and paints NOTHING on its
+  // first frame, so every assertion on transcript text has to settle first
+  // (`docs/opentui-notes.md`; same 600 ms the transcript's own tests use).
+  await setup.flush();
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+  });
+  await setup.flush();
+  return { ...setup, useSessionImpl, readHealth };
+}
+
+describe('SessionView', () => {
+  test('calls useSession exactly once per render pass', async () => {
+    const { useSessionImpl, renderer } = await mount('composer');
+    // One call per render, never one per child: the transcript, the prompts,
+    // the composer and the terminal panel all read the SAME object.
+    const calls = useSessionImpl.mock.calls as unknown as [string, string][];
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => call[0] === 'p1' && call[1] === 's1')).toBe(true);
+    renderer.destroy();
+  });
+
+  test('reads the runtime capabilities once it is up', async () => {
+    const { readHealth, renderer } = await mount('composer');
+    expect(readHealth.mock.calls as unknown[]).toEqual([['p1', 's1']]);
+    renderer.destroy();
+  });
+
+  test('a runtime that is not up yet is not asked for its capabilities', async () => {
+    const { readHealth, renderer } = await mount('composer', { switched: false });
+    expect(readHealth).not.toHaveBeenCalled();
+    renderer.destroy();
+  });
+
+  test('the header prints the session name, the phase glyph and the terminal hint', async () => {
+    const { captureCharFrame, renderer } = await mount('composer');
+    const header = captureCharFrame().split('\n')[1] ?? '';
+    expect(header).toContain('Casual greeting');
+    expect(header).toContain('●');
+    expect(header).toContain('terminal');
+    renderer.destroy();
+  });
+
+  test('a starting session prints its stage in the header', async () => {
+    const { captureCharFrame, renderer } = await mount('composer', {
+      phase: 'starting',
+      stage: 'provisioning',
+    });
+    expect(captureCharFrame().split('\n')[1] ?? '').toContain('provisioning');
+    renderer.destroy();
+  });
+
+  test('the transcript renders above the composer', async () => {
+    const { captureCharFrame, renderer } = await mount('composer');
+    const lines = captureCharFrame().split('\n');
+    const transcript = lines.findIndex((line) => line.includes('TRANSCRIPT-MARKER'));
+    const composer = lines.findIndex((line) => line.includes('Type a prompt'));
+    expect(transcript).toBeGreaterThan(0);
+    expect(composer).toBeGreaterThan(transcript);
+    renderer.destroy();
+  });
+
+  test('the composer placeholder is on screen when the composer has focus', async () => {
+    const { captureCharFrame, renderer } = await mount('composer');
+    expect(captureCharFrame()).toContain('Type a prompt · / for commands');
+    renderer.destroy();
+  });
+
+  test('focus moves the panel border highlight, not the layout', async () => {
+    const composerFocused = await mount('composer');
+    const withComposer = composerFocused.captureCharFrame();
+    composerFocused.renderer.destroy();
+
+    const transcriptFocused = await mount('transcript');
+    const withTranscript = transcriptFocused.captureCharFrame();
+    transcriptFocused.renderer.destroy();
+
+    // Same rows, same content: only the focused region changes, and the frame
+    // keeps the transcript and the composer where they were.
+    expect(withTranscript.split('\n').length).toBe(withComposer.split('\n').length);
+    expect(withTranscript).toContain('TRANSCRIPT-MARKER');
+    expect(withTranscript).toContain('Type a prompt · / for commands');
+  });
+
+  test('focus=null (the sidebar has it) still renders the whole column', async () => {
+    const { captureCharFrame, renderer } = await mount(null);
+    const frame = captureCharFrame();
+    expect(frame).toContain('Casual greeting');
+    expect(frame).toContain('TRANSCRIPT-MARKER');
+    renderer.destroy();
+  });
+});
+
+describe('/copy and /export text', () => {
+  // Session-log messages: what `useSessionLogThread` hands the session view.
+  const log = (id: string, role: 'user' | 'assistant', text: string) => ({
+    message_id: id,
+    thread_id: 'main',
+    seq: Number(id.slice(1)),
+    role,
+    kind: 'turn',
+    status: 'complete',
+    in_context: true,
+    producer: { harness: 'pi' },
+    created_at: '2026-10-30T00:00:00.000Z',
+    blocks: [{ block_id: `${id}-b`, type: 'text', text }],
+  });
+  const messages = [
+    log('m1', 'user', 'Fix the login bug'),
+    log('m2', 'assistant', 'First answer'),
+    log('m3', 'user', 'And the tests?'),
+    log('m4', 'assistant', 'Tests pass now.'),
+  ];
+
+  test('/copy takes the newest assistant reply', () => {
+    expect(lastReplyText(messages as never)).toBe('Tests pass now.');
+    expect(lastReplyText([] as never)).toBeNull();
+  });
+
+  test('/export writes every turn as Markdown under the title', () => {
+    const markdown = transcriptMarkdown(messages as never, 'Login fix');
+    expect(markdown.startsWith('# Login fix\n')).toBe(true);
+    expect(markdown).toContain('## You\n\nFix the login bug');
+    expect(markdown).toContain('## Kortix\n\nTests pass now.');
+  });
+});

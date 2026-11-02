@@ -1,0 +1,371 @@
+// Headless regular auth: /v1/auth/* translates to GoTrue server-side with the
+// API's own key and the caller's IP, passes GoTrue's errors through, rate
+// limits per IP, and the PKCE social flow keeps the verifier on the client.
+
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { createHash } from 'node:crypto';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+
+const testConfig: Record<string, unknown> = {
+  SUPABASE_URL: 'http://supabase.internal:8000',
+  SUPABASE_SERVICE_ROLE_KEY: 'service-role-jwt',
+  FRONTEND_URL: 'https://app.example',
+};
+mock.module('../config', () => ({ config: testConfig }));
+const claims = new Set<string>();
+/** When set, the refresh-token ledger insert throws this. */
+let ledgerFailure: Error | null = null;
+mock.module('../shared/db', () => ({ db: { execute: async (query: SQL) => {
+  if (ledgerFailure) throw ledgerFailure;
+  const rendered = new PgDialect().sqlToQuery(query);
+  const digest = rendered.params[0];
+  if (typeof digest !== 'string') throw new Error('missing token digest');
+  if (rendered.sql.startsWith('DELETE')) { claims.delete(digest); return []; }
+  if (claims.has(digest)) return [];
+  claims.add(digest);
+  return [{ token_hash: digest }];
+} } }));
+mock.module('../middleware/auth-audit', () => ({
+  auditLoginFail: () => {},
+  auditLoginSuccess: () => {},
+  auditLogout: () => {},
+  auditSessionFirstSight: () => {},
+}));
+
+// Sign-up policy and SSO-only domains (KRTX-1716). Defaults keep every other
+// test on today's open, SSO-free path.
+let signupsOpen = true;
+const realAccessControl = await import('../shared/access-control-cache');
+mock.module('../shared/access-control-cache', () => ({
+  ...realAccessControl,
+  canSignUp: (email: string) => signupsOpen || email.endsWith('@allowed.test'),
+}));
+const realSso = await import('../repositories/sso');
+mock.module('../repositories/sso', () => ({
+  ...realSso,
+  ssoEnforcedForEmail: async (email: string) => (email.endsWith('@sso.test') ? { id: 'idp' } : null),
+}));
+
+const gotrueModule = await import('../auth/gotrue');
+const { headlessAuthRouter } = await import('../auth/headless');
+
+type Seen = { url: string; method: string; headers: Record<string, string>; body: unknown };
+let seen: Seen[] = [];
+let respond: (s: Seen) => Response = () => Response.json({});
+
+gotrueModule.__setGoTrueFetch(async (input, init) => {
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries((init.headers ?? {}) as Record<string, string>)) headers[k.toLowerCase()] = v;
+  const s: Seen = { url: input, method: init.method ?? 'GET', headers, body: init.body ? JSON.parse(String(init.body)) : null };
+  seen.push(s);
+  return respond(s);
+});
+
+const SESSION = { access_token: 'sb_at', refresh_token: 'sb_rt', token_type: 'bearer', expires_in: 3600, expires_at: 1790000000, user: { id: 'u1', email: 'a@b.test' } };
+
+function app() {
+  const a = new Hono();
+  a.route('/v1/auth', headlessAuthRouter);
+  a.onError((err, c) => {
+    if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+    return c.json({ error: (err as Error).message }, 500);
+  });
+  return a;
+}
+const post = (path: string, body: unknown, ip = '203.0.113.7') =>
+  app().request(`/v1/auth${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': ip },
+    body: JSON.stringify(body),
+  });
+
+beforeEach(() => {
+  seen = [];
+  claims.clear();
+  ledgerFailure = null;
+  signupsOpen = true;
+  respond = () => Response.json(SESSION);
+});
+
+describe('/v1/auth headless routes', () => {
+  test('password sign-in → GoTrue /token?grant_type=password with the service key as apikey, the client IP forwarded, and the session returned', async () => {
+    const res = await post('/sign-in/password', { email: 'A@B.test', password: 'hunter22' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ session: { access_token: 'sb_at', refresh_token: 'sb_rt', token_type: 'bearer', expires_in: 3600, expires_at: 1790000000 }, user: { id: 'u1', email: 'a@b.test' } });
+    expect(seen[0].url).toBe('http://supabase.internal:8000/auth/v1/token?grant_type=password');
+    expect(seen[0].headers.apikey).toBe('service-role-jwt');
+    expect(seen[0].headers.authorization).toBeUndefined();
+    expect(seen[0].headers['x-forwarded-for']).toBe('203.0.113.7');
+    expect(seen[0].body).toEqual({ email: 'a@b.test', password: 'hunter22' });
+  });
+
+  test("GoTrue's error shapes are normalised and its status is passed through", async () => {
+    respond = () => Response.json({ code: 400, error_code: 'invalid_credentials', msg: 'Invalid login credentials' }, { status: 400 });
+    const res = await post('/sign-in/password', { email: 'a@b.test', password: 'nope' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_credentials', error_description: 'Invalid login credentials' });
+    respond = () => Response.json({ error: 'invalid_grant', error_description: 'Refresh Token Not Found' }, { status: 400 });
+    const r2 = await post('/refresh', { refresh_token: 'dead' });
+    expect(await r2.json()).toEqual({ error: 'invalid_grant', error_description: 'Refresh Token Not Found' });
+  });
+
+  test('the same refresh token is accepted at most once even if GoTrue allows reuse', async () => {
+    respond = () => Response.json({ ...SESSION, refresh_token: 'rotated' });
+    const first = await post('/refresh', { refresh_token: 'synthetic-refresh' });
+    const replay = await post('/refresh', { refresh_token: 'synthetic-refresh' });
+    expect(first.status).toBe(200);
+    expect(replay.status).toBe(400);
+    expect(seen.length).toBe(1);
+  });
+
+  test('an ambiguous upstream failure retains the claim even if GoTrue rotated before losing its response', async () => {
+    respond = () => Response.json({ error: 'unavailable' }, { status: 502 });
+    expect((await post('/refresh', { refresh_token: 'retry-token' })).status).toBe(502);
+    respond = () => Response.json(SESSION);
+    expect((await post('/refresh', { refresh_token: 'retry-token' })).status).toBe(400);
+    expect(seen).toHaveLength(1);
+  });
+
+  // KRTX-2977: only a connection-level failure is "temporarily unavailable".
+  // A missing table or a permission error is a fault the operator must see:
+  // it reaches the global handler, which logs its SQLSTATE and answers 500.
+  test('a connection failure on the refresh-token ledger is a 503; GoTrue is never called', async () => {
+    ledgerFailure = Object.assign(new Error('terminating connection due to administrator command'), { code: '57P01' });
+    const res = await post('/refresh', { refresh_token: 'ledger-down' });
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { error: string }).error).toBe('auth_unavailable');
+    expect(seen).toEqual([]);
+  });
+
+  test('any other ledger error is not reported as temporary; GoTrue is never called', async () => {
+    ledgerFailure = Object.assign(new Error('relation "kortix.used_refresh_tokens" does not exist'), { code: '42P01' });
+    const res = await post('/refresh', { refresh_token: 'ledger-missing' });
+    expect(res.status).toBe(500);
+    expect(seen).toEqual([]);
+  });
+
+  test('signup reports requires_email_confirmation when GoTrue returns a bare user', async () => {
+    respond = () => Response.json({ id: 'u2', email: 'new@b.test', confirmation_sent_at: 'now' });
+    const res = await post('/signup', { email: 'new@b.test', password: 'hunter22', redirect_to: 'https://app.example/welcome' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ requires_email_confirmation: true, session: null, user: { id: 'u2' } });
+    expect(seen[0].url).toBe('http://supabase.internal:8000/auth/v1/signup?redirect_to=https%3A%2F%2Fapp.example%2Fwelcome');
+    respond = () => Response.json(SESSION);
+    const auto = await post('/signup', { email: 'new2@b.test', password: 'hunter22' });
+    expect((await auto.json()).requires_email_confirmation).toBe(false);
+  });
+
+  test('magic link, otp verify and password reset hit /otp, /verify, /recover; reset never reveals an unknown address', async () => {
+    respond = () => Response.json({});
+    expect(await (await post('/sign-in/magic-link', { email: 'a@b.test', redirect_to: 'https://app.example/cb' })).json()).toEqual({ sent: true });
+    expect(seen[0].url).toBe('http://supabase.internal:8000/auth/v1/otp?redirect_to=https%3A%2F%2Fapp.example%2Fcb');
+    expect(seen[0].body).toEqual({ email: 'a@b.test', create_user: true, data: {} });
+    respond = () => Response.json(SESSION);
+    const v = await post('/verify-otp', { email: 'a@b.test', token: '123456', type: 'magiclink' });
+    expect(v.status).toBe(200);
+    expect(seen[1].url).toBe('http://supabase.internal:8000/auth/v1/verify');
+    expect(seen[1].body).toEqual({ email: 'a@b.test', token: '123456', type: 'magiclink' });
+    respond = () => Response.json({ code: 404, msg: 'User not found' }, { status: 404 });
+    const reset = await post('/password/reset', { email: 'ghost@b.test' });
+    expect(reset.status).toBe(200);
+    expect(await reset.json()).toEqual({ sent: true });
+    expect(seen[2].url).toBe('http://supabase.internal:8000/auth/v1/recover');
+  });
+
+  test('social sign-in: PKCE challenge goes to /authorize, the provider URL and the verifier come back, exchange uses grant_type=pkce', async () => {
+    respond = (s) =>
+      s.url.includes('/authorize')
+        ? new Response(null, { status: 302, headers: { location: 'https://accounts.google.com/o/oauth2/auth?state=x' } })
+        : Response.json(SESSION);
+    const start = await post('/sign-in/oauth', { provider: 'google', redirect_to: 'https://app.example/auth/callback' });
+    expect(start.status).toBe(200);
+    const { url, code_verifier } = await start.json();
+    expect(url).toBe('https://accounts.google.com/o/oauth2/auth?state=x');
+    const authorize = new URL(seen[0].url);
+    expect(authorize.pathname).toBe('/auth/v1/authorize');
+    expect(authorize.searchParams.get('provider')).toBe('google');
+    expect(authorize.searchParams.get('redirect_to')).toBe('https://app.example/auth/callback');
+    expect(authorize.searchParams.get('code_challenge_method')).toBe('s256');
+    expect(authorize.searchParams.get('code_challenge')).toBe(createHash('sha256').update(code_verifier).digest('base64url'));
+
+    const ex = await post('/oauth/exchange', { code: 'abc', code_verifier });
+    expect(ex.status).toBe(200);
+    expect(seen[1].url).toBe('http://supabase.internal:8000/auth/v1/token?grant_type=pkce');
+    expect(seen[1].body).toEqual({ auth_code: 'abc', code_verifier });
+  });
+
+  test('a non-http redirect_to is refused before reaching GoTrue; a bad email is a 400 from validation', async () => {
+    const res = await post('/sign-in/oauth', { provider: 'github', redirect_to: 'javascript:alert(1)' });
+    expect(res.status).toBe(400);
+    expect(seen).toHaveLength(0);
+    const bad = await post('/sign-in/password', { email: 'not-an-email', password: 'x' });
+    expect(bad.status).toBe(400);
+  });
+
+  test('per-IP rate limit: the 31st attempt in a minute is 429 with retry-after, another IP is unaffected', async () => {
+    let last: Response | null = null;
+    for (let i = 0; i < 31; i += 1) last = await post('/sign-in/password', { email: 'a@b.test', password: 'x' }, '198.51.100.9');
+    expect(last!.status).toBe(429);
+    expect(last!.headers.get('retry-after')).toBeTruthy();
+    expect((await last!.json()).error).toBe('over_request_rate_limit');
+    const other = await post('/sign-in/password', { email: 'a@b.test', password: 'x' }, '198.51.100.10');
+    expect(other.status).toBe(200);
+  });
+});
+
+/**
+ * SSO — the last sign-in method with no headless route.
+ *
+ * `apps/web` calls `supabase.auth.signInWithSSO({ domain })` to discover
+ * whether an email domain has an enterprise IdP and get the redirect URL. It is
+ * one call site, but leaving it behind would keep a Supabase client on the
+ * sign-in page — which is the one page that must not need one.
+ *
+ * Unauthenticated by design: the caller is signing IN, so there is no bearer
+ * yet, and the answer ("this domain has an IdP at this URL") is not a secret —
+ * it is the same thing the IdP's own discovery endpoint publishes.
+ */
+describe('POST /v1/auth/signup applies the sign-up rules of the web form', () => {
+  test('an SSO-only domain → 403 sso_required, GoTrue never called', async () => {
+    const res = await post('/signup', { email: 'new@sso.test', password: 'hunter22-long' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('sso_required');
+    expect(seen).toEqual([]);
+  });
+
+  test('closed sign-ups → 403 signup_closed for an address off the allowlist, GoTrue never called', async () => {
+    signupsOpen = false;
+    const res = await post('/signup', { email: 'stranger@example.test', password: 'hunter22-long' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'signup_closed', error_description: 'Sign-ups are closed for this email address.' });
+    expect(seen).toEqual([]);
+  });
+
+  test('closed sign-ups still admit an allowlisted address', async () => {
+    signupsOpen = false;
+    const res = await post('/signup', { email: 'Someone@Allowed.test', password: 'hunter22-long' });
+    expect(res.status).toBe(200);
+    expect(seen[0].url).toBe('http://supabase.internal:8000/auth/v1/signup');
+    expect((seen[0].body as { email: string }).email).toBe('someone@allowed.test');
+  });
+});
+
+describe('POST /v1/auth/sign-in/sso', () => {
+  test('asks GoTrue for the IdP redirect and returns the URL', async () => {
+    respond = () => Response.json({ url: 'https://idp.example/saml?RelayState=x' });
+    const response = await app().request('/v1/auth/sign-in/sso', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domain: 'sampleco.example', redirect_to: 'https://app.example/auth/callback' }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ url: 'https://idp.example/saml?RelayState=x' });
+
+    const call = seen.at(-1)!;
+    expect(call.method).toBe('POST');
+    expect(call.url).toContain('/sso');
+    expect(call.body).toMatchObject({ domain: 'sampleco.example' });
+  });
+
+  test('a domain with no provider is a clean refusal, not a 500', async () => {
+    respond = () => Response.json({ error: 'sso_provider_not_found', error_description: 'no provider' }, { status: 404 });
+    const response = await app().request('/v1/auth/sign-in/sso', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ domain: 'nobody.example' }),
+    });
+    expect(response.status).toBe(404);
+    expect((await response.json()).error).toBe('sso_provider_not_found');
+  });
+});
+
+describe('bodyless POSTs are a 400, never a 500 TypeError', () => {
+  // @hono/zod-openapi skips validation without content-type unless the body is required.
+  const BODY_ROUTES = [
+    '/signup',
+    '/sign-in/password',
+    '/sign-in/magic-link',
+    '/verify-otp',
+    '/sign-in/oauth',
+    '/oauth/exchange',
+    '/refresh',
+    '/sign-in/sso',
+    '/password/reset',
+  ];
+
+  test('no body and no content-type → 400 validation failure on every body route, upstream never called', async () => {
+    for (const path of BODY_ROUTES) {
+      const res = await app().request(`/v1/auth${path}`, {
+        method: 'POST',
+        headers: { 'x-forwarded-for': '198.51.100.77' },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: true, message: 'Validation failed' });
+    }
+    expect(seen).toHaveLength(0);
+  });
+
+  test('empty JSON body and malformed JSON are also a 400, not a 500', async () => {
+    const empty = await app().request('/v1/auth/sign-in/password', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.78' },
+      body: '{}',
+    });
+    expect(empty.status).toBe(400);
+    const malformed = await app().request('/v1/auth/sign-in/password', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.78' },
+      body: '',
+    });
+    expect(malformed.status).toBe(400);
+    expect(seen).toHaveLength(0);
+  });
+});
+
+describe('GET /v1/auth/client-config', () => {
+  const get = () =>
+    app().request('/v1/auth/client-config', { headers: { 'x-forwarded-for': '192.0.2.44' } });
+
+  test('returns the public sign-in config: public Supabase URL, anon key, web URL, auth lists; never the service role key', async () => {
+    Object.assign(testConfig, {
+      SUPABASE_PUBLIC_URL: 'https://auth.example',
+      SUPABASE_ANON_KEY: 'anon-jwt',
+      KORTIX_PUBLIC_AUTH_METHODS: 'password, magic',
+      KORTIX_PUBLIC_AUTH_PROVIDERS: '',
+    });
+    const res = await get();
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(JSON.parse(text)).toEqual({
+      supabase_url: 'https://auth.example',
+      supabase_anon_key: 'anon-jwt',
+      frontend_url: 'https://app.example',
+      auth_methods: ['password', 'magic'],
+      auth_providers: [],
+    });
+    expect(text).not.toContain('service-role-jwt');
+    expect(seen).toHaveLength(0);
+  });
+
+  test('unset values are null; without a public URL the Supabase URL is SUPABASE_URL', async () => {
+    Object.assign(testConfig, {
+      SUPABASE_PUBLIC_URL: undefined,
+      SUPABASE_ANON_KEY: '',
+      FRONTEND_URL: '',
+      KORTIX_PUBLIC_AUTH_METHODS: undefined,
+      KORTIX_PUBLIC_AUTH_PROVIDERS: undefined,
+    });
+    const res = await get();
+    expect(await res.json()).toEqual({
+      supabase_url: 'http://supabase.internal:8000',
+      supabase_anon_key: null,
+      frontend_url: null,
+      auth_methods: null,
+      auth_providers: null,
+    });
+    testConfig.FRONTEND_URL = 'https://app.example';
+  });
+});

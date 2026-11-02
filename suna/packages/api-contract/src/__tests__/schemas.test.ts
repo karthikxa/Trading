@@ -1,0 +1,1592 @@
+import { describe, expect, test } from 'bun:test';
+import {
+  type SessionWorking,
+  ConnectorAuthorizationStrategySchema,
+  ConnectionSchema,
+  ConnectionMetadataSchema,
+  FEATURE_FLAG_KEYS,
+  FeatureFlagStabilitySchema,
+  ErrorEnvelopeSchema,
+  OkResponseSchema,
+  OAuth2ApplicationInputSchema,
+  OAuth2AuthorizationStartInputSchema,
+  OAuth2ClientCredentialsSchema,
+  OAuth2DeviceAuthorizationStartInputSchema,
+  ProjectSchema,
+  ProjectSessionSandboxSchema,
+  ProjectSessionSchema,
+  SecretBrokerRequestSchema,
+  SecretBrokerResponseSchema,
+  ReconcileConnectionInputSchema,
+  SecretSchema,
+  SecretDeliveryStrategySchema,
+  SecretConsumerSchema,
+  SecretEgressPolicySchema,
+  UpdateSecretStrategyInputSchema,
+  ConnectorConnectionRequiredErrorSchema,
+  RequiredConnectorConnectionSchema,
+  SessionConnectorBindingInputSchema,
+  SessionConnectorBindingSchema,
+  SessionConnectorBindingsInputSchema,
+  SessionConnectorBindingsSchema,
+  SessionCreateAcceptedSchema,
+  SessionCreateInputSchema,
+  SessionUpdateInputSchema,
+  SessionGroupAssignInputSchema,
+  SessionGroupCreateInputSchema,
+  SessionGroupListSchema,
+  SessionGroupOrderInputSchema,
+  SessionGroupSchema,
+  SessionGroupUpdateInputSchema,
+  SESSION_GROUP_NAME_MAX,
+  SessionScopeInputSchema,
+  SessionScopeSchema,
+  SessionRuntimeContextSchema,
+  SessionStartResultSchema,
+  SharingIntentSchema,
+  TriggerListSchema,
+  TriggerSchema,
+  UpdateConnectionCredentialInputSchema,
+  WarmProjectSessionResultSchema,
+  ClaimWarmProjectSessionInputSchema,
+} from '../index';
+
+const NOW = '2026-07-01T12:00:00.000Z';
+
+describe('connector authorization strategy', () => {
+  test('accepts exactly project or user', () => {
+    expect(ConnectorAuthorizationStrategySchema.parse('project')).toBe('project');
+    expect(ConnectorAuthorizationStrategySchema.parse('user')).toBe('user');
+    expect(ConnectorAuthorizationStrategySchema.safeParse('both').success).toBe(false);
+    expect(ConnectorAuthorizationStrategySchema.safeParse('').success).toBe(false);
+    expect(ConnectorAuthorizationStrategySchema.safeParse(undefined).success).toBe(false);
+  });
+});
+
+describe('connection terminology', () => {
+  test('canonical connection schemas expose the connection wire shape', () => {
+    expect(
+      ConnectionSchema.parse({
+        connection_id: '11111111-2222-4333-8444-555555555555',
+        connector_alias: 'gmail',
+        owner_type: 'project',
+        owner_id: null,
+        label: 'Project Gmail',
+        status: 'active',
+        is_default: true,
+        metadata: {},
+      }),
+    ).toMatchObject({ connector_alias: 'gmail', status: 'active' });
+    const computer = {
+      connection_id: '11111111-2222-4333-8444-555555555556',
+      connector_alias: 'computer',
+      owner_type: 'member' as const,
+      owner_id: '11111111-2222-4333-8444-555555555557',
+      label: 'Studio Mac',
+      status: 'active' as const,
+      is_default: true,
+      metadata: {},
+      tunnel_id: '11111111-2222-4333-8444-555555555558',
+      machine: { online: true, last_heartbeat_at: '2026-09-28T00:00:00.000Z', platform: 'darwin' },
+    };
+    expect(ConnectionSchema.parse(computer)).toEqual(computer);
+    const asking = {
+      ...computer,
+      machine: { ...computer.machine, access: { mode: 'ask' as const, granted_until: null } },
+    };
+    expect(ConnectionSchema.parse(asking)).toEqual(asking);
+    expect(() =>
+      ConnectionSchema.parse({ ...computer, machine: { ...computer.machine, access: { mode: 'sometimes' } } }),
+    ).toThrow();
+    expect(ConnectionSchema.parse({ ...computer, tunnel_id: null, machine: null })).toMatchObject({
+      tunnel_id: null,
+      machine: null,
+    });
+    expect(
+      ReconcileConnectionInputSchema.parse({
+        connector_alias: 'gmail',
+        owner_type: 'project',
+        label: 'Project Gmail',
+      }),
+    ).toMatchObject({ connector_alias: 'gmail', owner_type: 'project' });
+    expect(UpdateConnectionCredentialInputSchema.parse({ value: 'secret-value' })).toEqual({
+      value: 'secret-value',
+    });
+  });
+
+  test('secret consumers accept connector and reject removed product nouns', () => {
+    expect(SecretConsumerSchema.parse('connector')).toBe('connector');
+    expect(SecretConsumerSchema.safeParse('executor').success).toBe(false);
+  });
+});
+
+function projectFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    project_id: '11111111-2222-4333-8444-555555555555',
+    account_id: '99999999-8888-4777-8666-555555555555',
+    name: 'Demo Project',
+    repo_url: 'https://github.com/acme/demo',
+    git_origin_url: 'https://github.com/acme/demo',
+    default_branch: 'main',
+    manifest_path: 'kortix.yaml',
+    status: 'active',
+    metadata: { onboarding_completed_at: NOW },
+    icon: '🚀',
+    icon_glyph: null,
+    last_opened_at: NOW,
+    created_at: NOW,
+    updated_at: NOW,
+    project_role: 'manager',
+    effective_project_role: 'manager',
+    dashboard_url: 'https://kortix.com/projects/11111111-2222-4333-8444-555555555555',
+    experimental: {
+      marketplace: false,
+      meta_agent: false,
+      monitors: false,
+      reminders: false,
+      warm_sessions: false,
+      secrets_egress: false,
+      pooled_provider_secrets: false,
+      us_region: false,
+      event_triggers: false,
+      notification_center: false,
+      volumes: false,
+      drives: false,
+      session_log_restore: false,
+      project_channels: false,
+      agent_rooms: false,
+      goals: false,
+      workspace_volume: false,
+      artifacts: false,
+      artifact_comments: false,
+      email_channel: false,
+      session_groups: false,
+      chrome: false,
+      agent_teams: false,
+    },
+    experimental_features: [],
+    default_sandbox_provider: null,
+    default_reasoning_effort: null,
+    available_sandbox_providers: ['daytona', 'platinum'],
+    ...overrides,
+  };
+}
+
+function sessionFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    session_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    account_id: '99999999-8888-4777-8666-555555555555',
+    project_id: '11111111-2222-4333-8444-555555555555',
+    branch_name: 'kortix/session-1',
+    base_ref: 'main',
+    sandbox_provider: 'daytona',
+    sandbox_id: null,
+    sandbox_url: null,
+    runtime_session_id: 'ses_abc',
+    opencode_session_id: 'ses_abc',
+    name: 'Fix the login bug',
+    custom_name: null,
+    labels: [],
+    agent_name: 'default',
+    status: 'running',
+    error: null,
+    metadata: { name: 'Fix the login bug' },
+    runtime_sessions: [],
+    opencode_sessions: [],
+    created_by: '99999999-8888-4777-8666-555555555555',
+    owner_email: null,
+    visibility: 'private',
+    origin: 'user',
+    space_id: null,
+    group_id: null,
+    first_prompt: null,
+    reply_count: null,
+    secrets_allowlist: null,
+    sharing: { mode: 'private', ownerId: '' },
+    is_owner: true,
+    can_manage_sharing: true,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  };
+}
+
+function sandboxFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    sandbox_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    session_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    project_id: '11111111-2222-4333-8444-555555555555',
+    account_id: '99999999-8888-4777-8666-555555555555',
+    provider: 'platinum',
+    external_id: 'sbx-123',
+    base_url: 'https://sbx-123.proxy.kortix.com',
+    status: 'active',
+    config: {},
+    metadata: {},
+    last_used_at: NOW,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  };
+}
+
+function triggerFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    slug: 'nightly-report',
+    path: 'kortix.yaml#triggers.nightly-report',
+    name: 'Nightly report',
+    type: 'cron',
+    agent: 'default',
+    model: null,
+    enabled: true,
+    cron: '0 0 3 * * *',
+    run_at: null,
+    timezone: 'UTC',
+    secret_env: null,
+    run: null,
+    mode: null,
+    interval_seconds: null,
+    expect_event_within_seconds: null,
+    event: null,
+    prompt_template: 'Summarize yesterday.',
+    session_mode: 'fresh',
+    session_id: null,
+    session_key: null,
+    filter: null,
+    last_fired_at: NOW,
+    last_status: 'queued',
+    last_error: null,
+    last_attempt_at: NOW,
+    webhook_url: null,
+    session_access: { mode: 'private', memberIds: [], groupIds: [] },
+    ...overrides,
+  };
+}
+
+function secretFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    // Unique per project — the handle an agent's `secrets` grant references.
+    // Authorization moved to the agent grant (by identifier); the old
+    // share_scope/sharing/usable_by_me per-member sharing model was retired.
+    identifier: 'openai-api-key-primary',
+    name: 'OPENAI_API_KEY',
+    project_id: '11111111-2222-4333-8444-555555555555',
+    secret_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    created_by: '99999999-8888-4777-8666-555555555555',
+    created_at: NOW,
+    updated_at: NOW,
+    system: false,
+    readonly: false,
+    purpose: null,
+    can_rotate: false,
+    managed_by: null,
+    configured: true,
+    mine: null,
+    effective_source: 'shared',
+    can_manage_shared: true,
+    strategy: 'runtime',
+    consumer: 'sandbox',
+    delivery_status: 'available',
+    egress_policy: null,
+    strategy_locked: false,
+    last_rotated_at: null,
+    requires_rotation: false,
+    ...overrides,
+  };
+}
+
+describe('ProjectSchema', () => {
+  test('accepts a full serialized project', () => {
+    expect(() => ProjectSchema.strict().parse(projectFixture())).not.toThrow();
+  });
+
+  test('accepts null roles for inherited access', () => {
+    const parsed = ProjectSchema.parse(
+      projectFixture({ project_role: null, effective_project_role: 'member' }),
+    );
+    expect(parsed.project_role).toBeNull();
+  });
+
+  test('accepts Platinum and Daytona and rejects retired sandbox providers in project pin fields', () => {
+    expect(() =>
+      ProjectSchema.parse(
+        projectFixture({
+          default_sandbox_provider: 'platinum',
+          available_sandbox_providers: ['platinum', 'daytona'],
+        }),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      ProjectSchema.parse(
+        projectFixture({
+          default_sandbox_provider: 'managed',
+        }),
+      ),
+    ).toThrow();
+    // E2B support is discontinued: `e2b` is a retired provider too.
+    const retiredProviders = ['e2b', ['local', 'docker'].join('_'), ['local', 'docker'].join('-')];
+    for (const retiredProvider of retiredProviders) {
+      expect(() =>
+        ProjectSchema.parse(
+          projectFixture({
+            default_sandbox_provider: retiredProvider,
+            available_sandbox_providers: [retiredProvider],
+          }),
+        ),
+      ).toThrow();
+    }
+  });
+
+  test('rejects an unknown status', () => {
+    expect(() => ProjectSchema.parse(projectFixture({ status: 'deleted' }))).toThrow();
+  });
+
+  test('rejects an experimental map missing a registered key', () => {
+    const { meta_agent: _dropped, ...partial } = projectFixture().experimental as Record<
+      string,
+      boolean
+    >;
+    expect(() => ProjectSchema.parse(projectFixture({ experimental: partial }))).toThrow();
+  });
+
+  test('experimental carries the graduated llm_gateway key only as a constant true', () => {
+    // Wire compat: the API still sends `llm_gateway: true` for older SDK and mobile clients.
+    const experimental = projectFixture().experimental as Record<string, boolean>;
+    expect(ProjectSchema.parse(projectFixture({ experimental: { ...experimental, llm_gateway: true } })).experimental.llm_gateway).toBe(true);
+    expect(() => ProjectSchema.parse(projectFixture({ experimental: { ...experimental, llm_gateway: false } }))).toThrow();
+  });
+
+  test('experimental carries the graduated session_log key only as a constant true', () => {
+    // Wire compat: the API still sends `session_log: true` for older SDK, CLI and mobile clients.
+    const experimental = projectFixture().experimental as Record<string, boolean>;
+    expect(ProjectSchema.parse(projectFixture({ experimental: { ...experimental, session_log: true } })).experimental.session_log).toBe(true);
+    expect(() => ProjectSchema.parse(projectFixture({ experimental: { ...experimental, session_log: false } }))).toThrow();
+  });
+
+  test('experimental carries the graduated pi_harness key only as a constant true', () => {
+    // Wire compat: the API still sends `pi_harness: true` for older SDK, CLI and mobile clients.
+    const experimental = projectFixture().experimental as Record<string, boolean>;
+    expect(ProjectSchema.parse(projectFixture({ experimental: { ...experimental, pi_harness: true } })).experimental.pi_harness).toBe(true);
+    expect(() => ProjectSchema.parse(projectFixture({ experimental: { ...experimental, pi_harness: false } }))).toThrow();
+  });
+
+  test('experimental carries the graduated genui key only as a constant true', () => {
+    // Wire compat: the API still sends `genui: true`; older web, SDK and mobile clients render blocks only while it is true.
+    const experimental = projectFixture().experimental as Record<string, boolean>;
+    expect(ProjectSchema.parse(projectFixture({ experimental: { ...experimental, genui: true } })).experimental.genui).toBe(true);
+    expect(() => ProjectSchema.parse(projectFixture({ experimental: { ...experimental, genui: false } }))).toThrow();
+  });
+
+  test('experimental carries the graduated connectors_v2 and connectors_api_discover keys only as a constant true', () => {
+    // Wire compat: the API still sends both as `true` for older SDK and hosts.
+    const experimental = projectFixture().experimental as Record<string, boolean>;
+    expect(ProjectSchema.parse(projectFixture({ experimental: { ...experimental, connectors_v2: true } })).experimental.connectors_v2).toBe(true);
+    expect(ProjectSchema.parse(projectFixture({ experimental: { ...experimental, connectors_api_discover: true } })).experimental.connectors_api_discover).toBe(true);
+    expect(() => ProjectSchema.parse(projectFixture({ experimental: { ...experimental, connectors_v2: false } }))).toThrow();
+  });
+
+  test('accepts a null icon', () => {
+    const parsed = ProjectSchema.parse(projectFixture({ icon: null }));
+    expect(parsed.icon).toBeNull();
+  });
+
+  test('rejects a project with no icon field (icon is always emitted, never omitted)', () => {
+    const { icon: _dropped, ...withoutIcon } = projectFixture();
+    expect(() => ProjectSchema.strict().parse(withoutIcon)).toThrow();
+  });
+});
+
+describe('ProjectSchema.icon_glyph', () => {
+  test('accepts a glyph object and null, rejects undefined', () => {
+    const base = projectFixture();
+    expect(
+      ProjectSchema.safeParse({ ...base, icon_glyph: { name: 'Rocket', color: 'blue' } }).success,
+    ).toBe(true);
+    expect(ProjectSchema.safeParse({ ...base, icon_glyph: null }).success).toBe(true);
+    // nullable, NOT optional — a missing key is a contract violation.
+    const { icon_glyph: _omitted, ...withoutKey } = { ...base, icon_glyph: null };
+    expect(ProjectSchema.safeParse(withoutKey).success).toBe(false);
+  });
+
+  test('rejects a bare string', () => {
+    const base = projectFixture();
+    expect(ProjectSchema.safeParse({ ...base, icon_glyph: 'Rocket' }).success).toBe(false);
+  });
+});
+
+describe('ProjectSessionSchema', () => {
+  test('working is additive and survives parsing independently of lifecycle status', () => {
+    const working: SessionWorking = { state: 'idle', since: null, turn_token: null, pending_delivery: false };
+    const parsed = ProjectSessionSchema.parse(sessionFixture({ working }));
+    expect(parsed.working).toEqual(working);
+    expect(String(parsed.status)).toBe(sessionFixture().status);
+    expect(ProjectSessionSchema.parse(sessionFixture()).working).toBeUndefined();
+    expect(ProjectSessionSchema.safeParse(sessionFixture({ working: { ...working, state: 'running' } })).success).toBe(false);
+  });
+
+  test('accepts a full serialized session', () => {
+    expect(() => ProjectSessionSchema.strict().parse(sessionFixture())).not.toThrow();
+  });
+
+  test.each([
+    { mode: 'project' },
+    { mode: 'private', ownerId: 'u1' },
+    { mode: 'members', memberIds: ['u1'], groupIds: [] },
+  ])('accepts sharing intent %#', (sharing) => {
+    expect(() => ProjectSessionSchema.parse(sessionFixture({ sharing }))).not.toThrow();
+  });
+
+  test('rejects a sharing intent with an unknown mode', () => {
+    expect(() =>
+      ProjectSessionSchema.parse(sessionFixture({ sharing: { mode: 'everyone' } })),
+    ).toThrow();
+  });
+
+  test('rejects a Date where an ISO string is expected', () => {
+    expect(() =>
+      ProjectSessionSchema.parse(sessionFixture({ created_at: new Date(NOW) })),
+    ).toThrow();
+  });
+});
+
+describe('session group contracts', () => {
+  const GROUP = {
+    group_id: '22222222-3333-4444-8555-666666666666',
+    name: 'Store A',
+    position: 0,
+    created_by: '99999999-8888-4777-8666-555555555555',
+    created_at: NOW,
+    updated_at: NOW,
+  };
+
+  test('a session carries the group it is filed in, or null', () => {
+    expect(ProjectSessionSchema.parse(sessionFixture()).group_id).toBeNull();
+    expect(ProjectSessionSchema.parse(sessionFixture({ group_id: GROUP.group_id })).group_id).toBe(GROUP.group_id);
+    expect(ProjectSessionSchema.safeParse(sessionFixture({ group_id: 'store-a' })).success).toBe(false);
+  });
+
+  test('a group and the list parse strictly', () => {
+    expect(SessionGroupSchema.parse(GROUP)).toEqual(GROUP);
+    expect(SessionGroupListSchema.parse({ groups: [GROUP] }).groups).toHaveLength(1);
+    expect(SessionGroupSchema.safeParse({ ...GROUP, color: 'red' }).success).toBe(false);
+  });
+
+  test('a name is trimmed and 1..SESSION_GROUP_NAME_MAX characters', () => {
+    expect(SessionGroupCreateInputSchema.parse({ name: '  Store A  ' })).toEqual({ name: 'Store A' });
+    expect(SessionGroupCreateInputSchema.safeParse({ name: '   ' }).success).toBe(false);
+    expect(SessionGroupCreateInputSchema.safeParse({ name: 'x'.repeat(SESSION_GROUP_NAME_MAX + 1) }).success).toBe(false);
+    expect(SessionGroupCreateInputSchema.safeParse({ name: 'x'.repeat(SESSION_GROUP_NAME_MAX) }).success).toBe(true);
+    expect(SessionGroupUpdateInputSchema.parse({ name: ' Store B ' })).toEqual({ name: 'Store B' });
+    expect(SessionGroupCreateInputSchema.safeParse({ name: 'Store A', position: 3 }).success).toBe(false);
+  });
+
+  test('an order names each group once, by id', () => {
+    const ids = ['22222222-3333-4444-8555-666666666666', '22222222-3333-4444-8555-777777777777'];
+    expect(SessionGroupOrderInputSchema.parse({ group_ids: ids }).group_ids).toEqual(ids);
+    expect(SessionGroupOrderInputSchema.safeParse({ group_ids: [ids[0], ids[0]] }).success).toBe(false);
+    expect(SessionGroupOrderInputSchema.safeParse({ group_ids: ['store-a'] }).success).toBe(false);
+  });
+
+  test('filing takes a group id, or null for no group', () => {
+    expect(SessionGroupAssignInputSchema.parse({ group_id: GROUP.group_id })).toEqual({ group_id: GROUP.group_id });
+    expect(SessionGroupAssignInputSchema.parse({ group_id: null })).toEqual({ group_id: null });
+    expect(SessionGroupAssignInputSchema.safeParse({}).success).toBe(false);
+    expect(SessionGroupAssignInputSchema.safeParse({ group_id: 'store-a' }).success).toBe(false);
+  });
+});
+
+describe('warm project session schemas', () => {
+  test('accepts the ensure response with workspace refresh state', () => {
+    expect(
+      WarmProjectSessionResultSchema.parse({
+        session: sessionFixture(),
+        reused: true,
+        workspace_refresh: {
+          status: 'updated',
+          before_sha: 'abc123',
+          after_sha: 'def456',
+        },
+      }),
+    ).toMatchObject({
+      reused: true,
+      workspace_refresh: { status: 'updated' },
+    });
+  });
+
+  test('requires an RFC 4122 v4 session_id for claims', () => {
+    expect(
+      ClaimWarmProjectSessionInputSchema.safeParse({
+        session_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        agent_name: 'default',
+        sandbox_slug: 'default',
+      }).success,
+    ).toBe(true);
+    expect(ClaimWarmProjectSessionInputSchema.safeParse({ session_id: 'not-a-uuid' }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('SessionStartResultSchema', () => {
+  test('accepts the provisioning payload without sandbox or runtime_url', () => {
+    const parsed = SessionStartResultSchema.strict().parse({
+      stage: 'provisioning',
+      agent_name: 'default',
+      retriable: true,
+      sandbox: null,
+      opencode_session_id: null,
+    });
+    expect(parsed.runtime_url).toBeUndefined();
+  });
+
+  test('accepts the ready payload with a serialized sandbox', () => {
+    const parsed = SessionStartResultSchema.parse({
+      stage: 'ready',
+      agent_name: 'default',
+      retriable: false,
+      sandbox: sandboxFixture(),
+      opencode_session_id: 'ses_abc',
+      runtime_url: '/p/sbx-123/8000',
+      reason: 'pinned',
+    });
+    expect(parsed.sandbox?.provider).toBe('platinum');
+  });
+
+  test('accepts a typed provider-neutral terminal capacity failure', () => {
+    const parsed = SessionStartResultSchema.strict().parse({
+      stage: 'failed',
+      agent_name: 'default',
+      retriable: false,
+      sandbox: sandboxFixture({ status: 'error' }),
+      opencode_session_id: null,
+      failure: {
+        category: 'provider-capacity',
+        message: 'The sandbox provider is at capacity right now. Try again in a minute.',
+        retryable: true,
+      },
+    });
+    expect(parsed.failure?.category).toBe('provider-capacity');
+  });
+
+  test('rejects an unknown stage', () => {
+    expect(() =>
+      SessionStartResultSchema.parse({
+        stage: 'booting',
+        agent_name: 'default',
+        retriable: true,
+        sandbox: null,
+        opencode_session_id: null,
+      }),
+    ).toThrow();
+  });
+});
+
+describe('pending session prompt contract', () => {
+  test('accepts a durable prompt draft on normal create and warm claim', () => {
+    const pendingPrompt = {
+      text: 'Map the flood risk for this parcel.',
+      agent: 'kortix',
+      model: { providerID: 'kortix', modelID: 'auto' },
+      variant: null,
+      attachment_names: ['parcel.geojson'],
+    };
+
+    expect(
+      SessionCreateInputSchema.strict().parse({ pending_prompt: pendingPrompt }).pending_prompt,
+    ).toEqual(pendingPrompt);
+    expect(
+      ClaimWarmProjectSessionInputSchema.strict().parse({
+        session_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        pending_prompt: pendingPrompt,
+      }).pending_prompt,
+    ).toEqual(pendingPrompt);
+  });
+
+  test('accepts a file-only draft with an empty text field', () => {
+    const pendingPrompt = {
+      text: '',
+      attachment_names: ['parcel.geojson'],
+    };
+
+    expect(
+      SessionCreateInputSchema.strict().parse({ pending_prompt: pendingPrompt }).pending_prompt,
+    ).toEqual(pendingPrompt);
+
+    expect(() =>
+      SessionCreateInputSchema.strict().parse({ pending_prompt: { text: '' } }),
+    ).toThrow();
+  });
+});
+
+describe('ProjectSessionSandboxSchema', () => {
+  test('accepts every provider the platform can emit', () => {
+    for (const provider of ['platinum', 'daytona']) {
+      expect(() =>
+        ProjectSessionSandboxSchema.strict().parse(sandboxFixture({ provider })),
+      ).not.toThrow();
+    }
+  });
+});
+
+describe('TriggerSchema', () => {
+  test('keeps exact cron time distinct from jittered execution and accepts older APIs', () => {
+    const parsed = TriggerSchema.strict().parse(triggerFixture({
+      next_cron_at: '2026-10-10T09:00:00.000Z', next_fire_at: '2026-10-10T09:15:00.000Z',
+    }));
+    expect(parsed.next_cron_at).toBe('2026-10-10T09:00:00.000Z');
+    expect(parsed.next_fire_at).toBe('2026-10-10T09:15:00.000Z');
+    expect(TriggerSchema.strict().parse(triggerFixture()).next_cron_at).toBeUndefined();
+  });
+  test('accepts a cron trigger and a webhook trigger', () => {
+    expect(() => TriggerSchema.strict().parse(triggerFixture())).not.toThrow();
+    expect(() =>
+      TriggerSchema.strict().parse(
+        triggerFixture({
+          type: 'webhook',
+          cron: null,
+          secret_env: 'HOOK_SECRET',
+          webhook_url: 'https://api.kortix.com/v1/webhooks/projects/p/hook',
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test('filter: a value or exactly one operator per path (KRTX-1721)', () => {
+    const filter = {
+      'body.type': 'push',
+      'body.sender.login': { not: ['kortix-bot'] },
+      'body.action': { in: ['opened'] },
+      'body.pull_request': { exists: true },
+      'body.base': { prefix: ['release/'] },
+      'body.ref': { not_prefix: ['refs/heads/kortix/'] },
+    };
+    expect(() => TriggerSchema.strict().parse(triggerFixture({ filter }))).not.toThrow();
+    expect(TriggerSchema.safeParse(triggerFixture({ filter: { 'body.ref': { in: ['a'], not: ['b'] } } })).success).toBe(false);
+    expect(TriggerSchema.safeParse(triggerFixture({ filter: { 'body.ref': { nott: ['a'] } } })).success).toBe(false);
+  });
+
+  test('accepts an event trigger with its subscription state', () => {
+    const event = {
+      connector: 'github',
+      account: 'acme-bot',
+      connected_as: 'bot@example.test',
+      type: 'GITHUB_PULL_REQUEST_EVENT',
+      config: { owner: 'acme' },
+      source: 'composio',
+      provider: 'composio',
+      app: 'github',
+      status: 'needs_connection',
+      error: 'Connect a shared GitHub account to activate this trigger.',
+      last_event_at: null,
+    };
+    const trigger = triggerFixture({ type: 'event', cron: null, event });
+    expect(() => TriggerSchema.strict().parse(trigger)).not.toThrow();
+    expect(
+      TriggerSchema.safeParse(triggerFixture({ type: 'event', event: { ...event, status: 'bogus' } })).success,
+    ).toBe(false);
+    // `account` is null for the connector default and `connected_as` null when no account feeds it.
+    expect(TriggerSchema.safeParse(triggerFixture({ type: 'event', event: { ...event, account: null, connected_as: null } })).success).toBe(true);
+  });
+
+  // `monitor` is the third trigger type:
+  // no cron/secret_env wiring, a `run` command plus a `mode` instead.
+  test('accepts a monitor trigger', () => {
+    expect(() =>
+      TriggerSchema.strict().parse(
+        triggerFixture({
+          type: 'monitor',
+          cron: null,
+          run: './monitors/checkout-errors.ts',
+          mode: 'poll',
+          interval_seconds: 60,
+          expect_event_within_seconds: 86400,
+          session_mode: 'reuse',
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test('list response is an envelope, not a bare array', () => {
+    expect(() =>
+      TriggerListSchema.strict().parse({
+        triggers: [triggerFixture()],
+        triggers_paused: false,
+        errors: [{ slug: 'bad', path: 'kortix.yaml#triggers.bad', error: 'invalid cron' }],
+      }),
+    ).not.toThrow();
+    expect(TriggerListSchema.safeParse([triggerFixture()]).success).toBe(false);
+  });
+
+  test('requires a normalized trigger session access policy', () => {
+    expect(
+      TriggerSchema.safeParse(
+        triggerFixture({
+          session_access: {
+            mode: 'members',
+            memberIds: ['11111111-2222-4333-8444-555555555555'],
+            groupIds: ['aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'],
+          },
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      TriggerSchema.safeParse(
+        triggerFixture({
+          session_access: { mode: 'account', memberIds: [], groupIds: [] },
+        }),
+      ).success,
+    ).toBe(false);
+    expect(
+      TriggerSchema.safeParse({
+        ...triggerFixture(),
+        session_access: undefined,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('SecretSchema', () => {
+  test('accepts the shared view and the personal-override view', () => {
+    expect(() => SecretSchema.strict().parse(secretFixture())).not.toThrow();
+    expect(() =>
+      SecretSchema.strict().parse(
+        secretFixture({
+          configured: false,
+          secret_id: null,
+          created_by: null,
+          mine: { active: true, updated_at: NOW },
+          effective_source: 'mine',
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test('status is ok or undecryptable, and optional for older servers', () => {
+    for (const status of ['ok', 'undecryptable'] as const) {
+      expect(SecretSchema.strict().parse(secretFixture({ status })).status).toBe(status);
+    }
+    expect(SecretSchema.strict().parse(secretFixture()).status).toBeUndefined();
+    expect(SecretSchema.safeParse(secretFixture({ status: 'missing' })).success).toBe(false);
+  });
+
+  test("mine.status reports the caller's override apart from the shared status", () => {
+    const mine = { active: true, updated_at: NOW, status: 'undecryptable' };
+    const parsed = SecretSchema.strict().parse(
+      secretFixture({ status: 'ok', effective_source: 'mine', mine }),
+    );
+    expect(parsed.status).toBe('ok');
+    expect(parsed.mine?.status).toBe('undecryptable');
+    expect(SecretSchema.parse(secretFixture({ mine: { active: true, updated_at: NOW } })).mine?.status).toBeUndefined();
+    expect(SecretSchema.safeParse(secretFixture({ mine: { ...mine, status: 'missing' } })).success).toBe(false);
+  });
+
+  test('accepts the system git-auth secret shape', () => {
+    expect(() =>
+      SecretSchema.parse(
+        secretFixture({
+          name: 'KORTIX_GIT_AUTH_TOKEN',
+          system: true,
+          readonly: true,
+          purpose: 'git_auth',
+          can_rotate: true,
+          managed_by: 'project_secret',
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test('accepts every delivery strategy and rejects unknown values', () => {
+    for (const strategy of ['runtime', 'egress', 'broker', 'denied'] as const) {
+      expect(SecretDeliveryStrategySchema.parse(strategy)).toBe(strategy);
+    }
+    expect(SecretDeliveryStrategySchema.safeParse('env').success).toBe(false);
+  });
+
+  test('accepts a broker policy and handle prefix in the update input', () => {
+    expect(UpdateSecretStrategyInputSchema.parse({ strategy: 'denied' })).toEqual({
+      strategy: 'denied',
+    });
+    expect(
+      UpdateSecretStrategyInputSchema.parse({
+        strategy: 'broker',
+        consumer: 'http_broker',
+        egress_policy: {
+          backend: 'kortix_fetch',
+          rules: [{ host: 'api.example.com', methods: ['POST'], path: '/v1/*' }],
+          inject: { kind: 'header', name: 'authorization', template: 'Bearer {{secret}}' },
+        },
+        handle_prefix: 'example_',
+      }),
+    ).toEqual({
+      strategy: 'broker',
+      consumer: 'http_broker',
+      egress_policy: {
+        backend: 'kortix_fetch',
+        rules: [{ host: 'api.example.com', methods: ['POST'], path: '/v1/*' }],
+        inject: { kind: 'header', name: 'authorization', template: 'Bearer {{secret}}' },
+      },
+      handle_prefix: 'example_',
+    });
+    expect(
+      UpdateSecretStrategyInputSchema.safeParse({ strategy: 'runtime', value: 'secret' }).success,
+    ).toBe(false);
+    expect(
+      UpdateSecretStrategyInputSchema.parse({ strategy: 'broker', consumer: 'llm_gateway' }),
+    ).toEqual({ strategy: 'broker', consumer: 'llm_gateway' });
+  });
+
+  test('validates the generic HTTPS broker request and response envelopes', () => {
+    expect(
+      SecretBrokerRequestSchema.parse({
+        url: 'https://api.example.com/v1/messages',
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body_base64: 'e30=',
+      }),
+    ).toEqual({
+      url: 'https://api.example.com/v1/messages',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body_base64: 'e30=',
+    });
+    expect(SecretBrokerRequestSchema.parse({ url: 'https://api.example.com' }).method).toBe('GET');
+    expect(
+      SecretBrokerRequestSchema.safeParse({
+        url: 'https://api.example.com',
+        headers: Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`x-${index}`, 'x'])),
+      }).success,
+    ).toBe(false);
+    expect(
+      SecretBrokerResponseSchema.parse({ status: 200, headers: {}, body_base64: 'b2s=' }),
+    ).toEqual({ status: 200, headers: {}, body_base64: 'b2s=' });
+  });
+});
+
+describe('envelopes', () => {
+  test('error envelope tolerates both string and boolean error fields', () => {
+    expect(() => ErrorEnvelopeSchema.parse({ error: 'Not found' })).not.toThrow();
+    expect(() =>
+      ErrorEnvelopeSchema.parse({ error: true, message: 'Validation failed', status: 400 }),
+    ).not.toThrow();
+  });
+
+  test('ok response requires literal true', () => {
+    expect(() => OkResponseSchema.parse({ ok: true })).not.toThrow();
+    expect(OkResponseSchema.safeParse({ ok: false }).success).toBe(false);
+  });
+
+  test('session-create 202 envelope parses', () => {
+    expect(() =>
+      SessionCreateAcceptedSchema.strict().parse({
+        status: 'queued',
+        command_id: 'cmd_1',
+        session_id: null,
+        reason: null,
+      }),
+    ).not.toThrow();
+  });
+
+  test('feature flag keys stay in sync with the map schema', () => {
+    // The static tuple order of a zod `keyof()` follows union order, which tsgo
+    // (TypeScript 7) sorts differently from tsc 5; the runtime order is the contract.
+    expect(FEATURE_FLAG_KEYS as readonly string[]).toEqual([
+      'marketplace',
+      'meta_agent',
+      'reminders',
+      'warm_sessions',
+      'secrets_egress',
+      'pooled_provider_secrets',
+      'us_region',
+      'event_triggers',
+      'notification_center',
+      'volumes',
+      'drives',
+      'session_log_restore',
+      'project_channels',
+      'agent_rooms',
+      'goals',
+      'workspace_volume',
+      'artifacts',
+      'artifact_comments',
+      'email_channel',
+      'session_groups',
+      'chrome',
+      'agent_teams',
+    ]);
+  });
+
+  test('stability admits stable — a settled feature can still ship behind a flag', () => {
+    expect(FeatureFlagStabilitySchema.options).toEqual(['experimental', 'beta', 'stable']);
+    expect(FeatureFlagStabilitySchema.options).toContain('stable');
+  });
+
+  test('sharing intent normalizes readonly member lists', () => {
+    const parsed = SharingIntentSchema.parse({ mode: 'members', memberIds: ['u1'] });
+    expect(parsed).toEqual({ mode: 'members', memberIds: ['u1'] });
+  });
+});
+
+test('SessionCreateInputSchema still accepts the withdrawn persistent_machine field (inert)', () => {
+  expect(SessionCreateInputSchema.strict().parse({ persistent_machine: true })).toMatchObject({ persistent_machine: true });
+});
+
+describe('SessionCreateInputSchema initial_context', () => {
+  test('accepts a bounded context beside the prompt and drops it when absent', () => {
+    const parsed = SessionCreateInputSchema.parse({
+      initial_prompt: 'Reply with the single word pong',
+      initial_context: '--- session contract ---\nDo not spawn other sessions.',
+    });
+    expect(parsed.initial_context).toMatch(/Do not spawn other sessions/);
+    expect(SessionCreateInputSchema.parse({ initial_prompt: 'hi' }).initial_context).toBeUndefined();
+    expect(SessionCreateInputSchema.parse({}).initial_context).toBeUndefined();
+  });
+
+  test('rejects an empty or oversized context', () => {
+    expect(SessionCreateInputSchema.safeParse({ initial_context: '' }).success).toBe(false);
+    expect(
+      SessionCreateInputSchema.safeParse({ initial_context: 'x'.repeat(8_193) }).success,
+    ).toBe(false);
+    expect(
+      SessionCreateInputSchema.safeParse({ initial_context: 'x'.repeat(8_192) }).success,
+    ).toBe(true);
+  });
+});
+
+describe('SessionCreateInputSchema runtime_context', () => {
+  test('accepts a bounded scalar map and the complete public create shape', () => {
+    const parsed = SessionCreateInputSchema.parse({
+      session_id: '11111111-1111-4111-a111-111111111111',
+      agent_name: 'veyris',
+      provider: 'daytona',
+      branch_already_created: true,
+      initial_prompt: 'Do the task.\n\n--- session contract ---\n…',
+      title_source: 'Do the task.',
+      runtime_context: {
+        workspace_id: 'org_123',
+        'wrapper.locale': 'de',
+        licensed: true,
+        risk_score: 0.25,
+        optional: null,
+      },
+    });
+    expect(parsed.runtime_context?.workspace_id).toBe('org_123');
+  });
+
+  test('rejects nested values, arrays and non-finite numbers', () => {
+    for (const value of [
+      { nested: { nope: true } },
+      { list: ['nope'] },
+      { score: Number.POSITIVE_INFINITY },
+    ]) {
+      expect(SessionRuntimeContextSchema.safeParse(value).success).toBe(false);
+    }
+  });
+
+  test('makes reserved environment names impossible as context keys', () => {
+    for (const key of ['PATH', 'NODE_OPTIONS', 'KORTIX_TOKEN', 'OPENCODE_CONFIG_CONTENT']) {
+      expect(SessionRuntimeContextSchema.safeParse({ [key]: 'shadow' }).success).toBe(false);
+    }
+  });
+
+  test('rejects credential-like keys from the non-secret context envelope', () => {
+    for (const key of [
+      'access_token',
+      'wrapper.secret',
+      'api_key',
+      'db-password',
+      'authorization',
+      'session.cookie',
+    ]) {
+      expect(SessionRuntimeContextSchema.safeParse({ [key]: 'must-not-land-here' }).success).toBe(
+        false,
+      );
+    }
+  });
+
+  test('enforces key-count and UTF-8 byte bounds', () => {
+    const tooMany = Object.fromEntries(
+      Array.from({ length: 65 }, (_, index) => [`key_${index}`, index]),
+    );
+    expect(SessionRuntimeContextSchema.safeParse(tooMany).success).toBe(false);
+    expect(SessionRuntimeContextSchema.safeParse({ payload: 'é'.repeat(9_000) }).success).toBe(
+      false,
+    );
+  });
+
+  test('rejects unknown create fields instead of accepting raw env or MCP config', () => {
+    expect(
+      SessionCreateInputSchema.safeParse({ runtime_env: { VEYRIS_TOKEN: 'secret' } }).success,
+    ).toBe(false);
+    expect(
+      SessionCreateInputSchema.safeParse({ mcp: { url: 'https://attacker.test' } }).success,
+    ).toBe(false);
+  });
+
+  test('accepts the model under its neutral name', () => {
+    expect(SessionCreateInputSchema.safeParse({ model: 'kortix/glm-5.3-flash' }).success).toBe(true);
+    expect(SessionCreateInputSchema.safeParse({ model: '' }).success).toBe(false);
+  });
+
+  test('retains deprecated camelCase inputs already accepted by the route', () => {
+    expect(
+      SessionCreateInputSchema.safeParse({
+        baseRef: 'main',
+        agentName: 'veyris',
+        sandboxSlug: 'default',
+        initialPrompt: 'hello',
+        opencodeModel: 'kortix/glm-5.3-flash',
+        sessionId: '11111111-1111-4111-a111-111111111111',
+        branchAlreadyCreated: true,
+      }).success,
+    ).toBe(true);
+  });
+});
+
+describe('session connection contracts', () => {
+  const connectionId = '11111111-1111-4111-a111-111111111111';
+
+  test('accepts only canonical connection binding input', () => {
+    expect(SessionConnectorBindingInputSchema.parse({ connection_id: connectionId })).toEqual({
+      connection_id: connectionId,
+    });
+  });
+
+  test('rejects missing, conflicting, and unknown binding input', () => {
+    expect(SessionConnectorBindingInputSchema.safeParse({}).success).toBe(false);
+    expect(
+      SessionConnectorBindingInputSchema.safeParse({
+        authorization_id: connectionId,
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionConnectorBindingInputSchema.safeParse({
+        connection_id: connectionId,
+        credential: 'secret',
+      }).success,
+    ).toBe(false);
+  });
+
+  test('emits only canonical connector binding output', () => {
+    expect(SessionConnectorBindingSchema.parse({ connection_id: connectionId })).toEqual({
+      connection_id: connectionId,
+    });
+    expect(
+      SessionConnectorBindingSchema.safeParse({ authorization_id: connectionId }).success,
+    ).toBe(false);
+    expect(
+      SessionConnectorBindingsSchema.safeParse({
+        veyris: { authorization_id: connectionId, connection_id: connectionId },
+      }).success,
+    ).toBe(false);
+  });
+
+  test('normalizes connector binding maps before session creation', () => {
+    expect(
+      SessionCreateInputSchema.parse({
+        connector_bindings: { veyris: { connection_id: connectionId } },
+      }).connector_bindings,
+    ).toEqual({ veyris: { connection_id: connectionId } });
+    expect(
+      SessionConnectorBindingsInputSchema.safeParse({
+        veyris: { connection_id: connectionId, credential: 'secret' },
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionConnectorBindingsInputSchema.safeParse({
+        VEYRIS: { connection_id: connectionId },
+      }).success,
+    ).toBe(false);
+  });
+
+  test('bounds binding count and non-secret connection metadata', () => {
+    const tooMany = Object.fromEntries(
+      Array.from({ length: 65 }, (_, index) => [
+        `connector_${index}`,
+        { connection_id: connectionId },
+      ]),
+    );
+    expect(SessionConnectorBindingsInputSchema.safeParse(tooMany).success).toBe(false);
+    expect(ConnectionMetadataSchema.safeParse({ access_token: 'nope' }).success).toBe(false);
+    expect(ConnectionMetadataSchema.safeParse({ payload: 'é'.repeat(9_000) }).success).toBe(false);
+  });
+
+  test('connection reconcile and credential mutation reject unknown or oversized input', () => {
+    const valid = {
+      connector_alias: 'veyris',
+      owner_type: 'external' as const,
+      owner_id: 'thread-123',
+      label: 'VEYRIS thread',
+      metadata: { workspace_id: 'workspace-1' },
+    };
+    expect(ReconcileConnectionInputSchema.safeParse(valid).success).toBe(true);
+    expect(
+      ReconcileConnectionInputSchema.safeParse({ ...valid, credential: 'secret' }).success,
+    ).toBe(false);
+    expect(
+      UpdateConnectionCredentialInputSchema.safeParse({ value: 'x'.repeat(65537) }).success,
+    ).toBe(false);
+    expect(
+      UpdateConnectionCredentialInputSchema.safeParse({
+        oauth2: {
+          type: 'oauth2_client_credentials',
+          token_url: 'https://login.microsoftonline.com/tenant/oauth2/v2.0/token',
+          client_id: 'client-id',
+          token_endpoint_auth_method: 'client_secret_post',
+          client_secret: 'client-secret',
+          scopes: ['https://graph.microsoft.com/.default'],
+          resource: 'https://resource.example.com',
+          token_params: { tenant_hint: 'tenant-123' },
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      UpdateConnectionCredentialInputSchema.safeParse({
+        oauth2: {
+          type: 'oauth2_client_credentials',
+          token_url: 'http://localhost/token',
+          client_id: 'client-id',
+          token_endpoint_auth_method: 'client_secret_post',
+          client_secret: 'client-secret',
+        },
+      }).success,
+    ).toBe(false);
+    for (const reserved of [
+      'grant_type',
+      'client_id',
+      'client_secret',
+      'client_assertion',
+      'client_assertion_type',
+      'scope',
+      'resource',
+      'audience',
+    ]) {
+      expect(
+        UpdateConnectionCredentialInputSchema.safeParse({
+          oauth2: {
+            type: 'oauth2_client_credentials',
+            token_url: 'https://identity.example.com/token',
+            client_id: 'client-id',
+            token_endpoint_auth_method: 'none',
+            token_params: { [reserved]: 'override' },
+          },
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      UpdateConnectionCredentialInputSchema.safeParse({
+        oauth2: {
+          type: 'oauth2_client_credentials',
+          token_url: 'https://identity.example.com/token',
+          client_id: 'client-id',
+          token_endpoint_auth_method: 'none',
+          token_params: Object.fromEntries(
+            Array.from({ length: 33 }, (_, index) => [`hint_${index}`, 'value']),
+          ),
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      UpdateConnectionCredentialInputSchema.safeParse({
+        oauth2: {
+          type: 'oauth2_client_credentials',
+          token_url: 'https://identity.example.com/token',
+          client_id: 'client-id',
+          token_endpoint_auth_method: 'none',
+          token_params: { 'invalid parameter': 'value' },
+        },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('session scope contracts', () => {
+  const connectionId = '11111111-1111-4111-a111-111111111111';
+
+  test('accepts canonical binding input and rejects an empty replacement', () => {
+    expect(
+      SessionScopeInputSchema.parse({
+        connector_bindings: { gmail: { connection_id: connectionId } },
+      }),
+    ).toEqual({
+      connector_bindings: { gmail: { connection_id: connectionId } },
+    });
+    expect(SessionScopeInputSchema.safeParse({}).success).toBe(false);
+    expect(SessionScopeInputSchema.safeParse({ secret_values: [] }).success).toBe(false);
+  });
+
+  test('accepts a null connector_bindings clear', () => {
+    // `null` is the REVERT verb: drop the stored override and go back to the
+    // project defaults. `{}` is its opposite — an explicit "zero connectors".
+    expect(SessionScopeInputSchema.parse({ connector_bindings: null })).toEqual({
+      connector_bindings: null,
+    });
+    expect(SessionScopeInputSchema.parse({ connector_bindings: {} })).toEqual({
+      connector_bindings: {},
+    });
+  });
+
+  test('emits only connection_id in authoritative scope output', () => {
+    const value = {
+      secrets_allowlist: ['GMAIL_TOKEN'],
+      // @deprecated Always null now — no session requires connectors any more
+      // (SessionScopeSchema's own doc comment). The schema is `z.null()`, so
+      // anything else fails to parse.
+      required_connectors: null,
+      connector_bindings: { gmail: { connection_id: connectionId } },
+      dropped_secrets: [],
+      added_secrets: ['GMAIL_TOKEN'],
+      dropped_bindings: [],
+      retroactive: true,
+      // Whether the session HOLDS a connector override at all. Without it a
+      // client cannot tell an inherited project default from a saved
+      // zero-connector override, and every save writes one by accident.
+      connector_bindings_configured: true,
+      connector_bindings_inherit_unbound: false,
+      detail: 'Applies from the next prompt.',
+    };
+    expect(SessionScopeSchema.parse(value)).toEqual(value);
+    expect(
+      SessionScopeSchema.safeParse({
+        ...value,
+        connector_bindings: { gmail: { authorization_id: connectionId } },
+      }).success,
+    ).toBe(false);
+  });
+
+  test('rejects a non-null required_connectors — no session requires connectors any more', () => {
+    expect(
+      SessionScopeSchema.safeParse({
+        secrets_allowlist: ['GMAIL_TOKEN'],
+        required_connectors: ['gmail'],
+        connector_bindings: { gmail: { connection_id: connectionId } },
+        dropped_secrets: [],
+        added_secrets: ['GMAIL_TOKEN'],
+        dropped_bindings: [],
+        retroactive: true,
+        connector_bindings_configured: true,
+        connector_bindings_inherit_unbound: false,
+        detail: 'Applies from the next prompt.',
+      }).success,
+    ).toBe(false);
+  });
+
+  test('reports applied_live when the scope was pushed to the running sandbox', () => {
+    // Mirrors the model route's applied_live: the caller can tell "in effect
+    // now" from "stored, applies at next boot". The field is optional so a
+    // response that omits it (e.g. a secrets-untouched re-scope) still parses.
+    const value = {
+      secrets_allowlist: null,
+      required_connectors: null,
+      connector_bindings: {},
+      dropped_secrets: [],
+      added_secrets: ['STRIPE_KEY'],
+      dropped_bindings: [],
+      retroactive: true,
+      connector_bindings_configured: false,
+      connector_bindings_inherit_unbound: true,
+      applied_live: true,
+      detail:
+        'Applied to the running sandbox now — the OpenCode process and new shells see the new scope.',
+    };
+    expect(SessionScopeSchema.parse(value)).toEqual(value);
+  });
+
+  test('reports push_failed when a required live push failed (half-applied change)', () => {
+    // The row is written but the running harness still answers from the OLD
+    // scope. `applied_live: false` alone cannot express this (it is also the
+    // benign no-active-sandbox answer), so a client must read push_failed to
+    // tell a half-applied change from a stored one. Mirrors the model route's
+    // push_failed.
+    const value = {
+      secrets_allowlist: null,
+      required_connectors: null,
+      connector_bindings: {},
+      dropped_secrets: [],
+      added_secrets: ['STRIPE_KEY'],
+      dropped_bindings: [],
+      retroactive: true,
+      connector_bindings_configured: false,
+      connector_bindings_inherit_unbound: true,
+      applied_live: false,
+      push_failed: true as const,
+      push_reason: 'daemon unreachable',
+      detail: 'Applies from the next prompt.',
+    };
+    expect(SessionScopeSchema.parse(value)).toEqual(value);
+  });
+
+  test('rejects an unknown extra field even with the new optional ones', () => {
+    // .strict() is preserved: adding a field the schema does not name fails,
+    // so the contract stays exhaustive.
+    const value = {
+      secrets_allowlist: null,
+      required_connectors: null,
+      connector_bindings: {},
+      dropped_secrets: [],
+      added_secrets: [],
+      dropped_bindings: [],
+      retroactive: true,
+      connector_bindings_configured: false,
+      connector_bindings_inherit_unbound: true,
+      applied_live: false,
+      detail: 'No change to the secrets scope.',
+      surprise: true,
+    };
+    expect(SessionScopeSchema.safeParse(value).success).toBe(false);
+  });
+});
+
+describe('required connection contracts', () => {
+  const connection = {
+    id: '11111111-1111-4111-a111-111111111111',
+    slug: 'gmail-read',
+    name: 'Gmail read only',
+    authorization_strategy: 'user' as const,
+  };
+
+  test('accepts the public missing-connection shape', () => {
+    expect(RequiredConnectorConnectionSchema.parse(connection)).toEqual(connection);
+  });
+
+  test('accepts the structured session-create conflict and rejects extra fields', () => {
+    const value = {
+      code: 'CONNECTOR_CONNECTION_REQUIRED' as const,
+      message: 'Create the required connections before starting this session.',
+      connector_connections: [connection],
+    };
+    expect(ConnectorConnectionRequiredErrorSchema.parse(value)).toEqual(value);
+    expect(
+      ConnectorConnectionRequiredErrorSchema.safeParse({
+        ...value,
+        connector_connections: [{ ...connection, authorization_id: connection.id }],
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('native OAuth2 lifecycle schemas', () => {
+  test('accepts every client-credentials endpoint authentication method', () => {
+    const base = {
+      type: 'oauth2_client_credentials' as const,
+      token_url: 'https://identity.example.com/token',
+      client_id: 'client-123',
+      token_params: { tenant_hint: 'tenant-123' },
+    };
+    expect(
+      OAuth2ClientCredentialsSchema.safeParse({
+        ...base,
+        token_endpoint_auth_method: 'none',
+      }).success,
+    ).toBe(true);
+    for (const token_endpoint_auth_method of [
+      'client_secret_post',
+      'client_secret_basic',
+      'client_secret_jwt',
+    ] as const) {
+      expect(
+        OAuth2ClientCredentialsSchema.safeParse({
+          ...base,
+          token_endpoint_auth_method,
+          client_secret: 'secret-123',
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      OAuth2ClientCredentialsSchema.safeParse({
+        ...base,
+        token_endpoint_auth_method: 'private_key_jwt',
+        private_key: 'pem-private-key',
+        certificate_thumbprint: 'certificate-thumbprint',
+      }).success,
+    ).toBe(true);
+  });
+
+  test('requires all key material selected by the endpoint authentication method', () => {
+    const base = {
+      type: 'oauth2_client_credentials' as const,
+      token_url: 'https://identity.example.com/token',
+      client_id: 'client-123',
+    };
+    for (const token_endpoint_auth_method of [
+      'client_secret_post',
+      'client_secret_basic',
+      'client_secret_jwt',
+    ] as const) {
+      expect(
+        OAuth2ClientCredentialsSchema.safeParse({
+          ...base,
+          token_endpoint_auth_method,
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      OAuth2ClientCredentialsSchema.safeParse({
+        ...base,
+        token_endpoint_auth_method: 'private_key_jwt',
+        private_key: 'pem-private-key',
+      }).success,
+    ).toBe(true);
+    expect(
+      OAuth2ClientCredentialsSchema.safeParse({
+        ...base,
+        token_endpoint_auth_method: 'private_key_jwt',
+      }).success,
+    ).toBe(false);
+  });
+
+  test('accepts a provider-independent Authorization Code application with PKCE', () => {
+    expect(
+      OAuth2ApplicationInputSchema.parse({
+        authorization_url: 'https://identity.example.com/oauth2/authorize',
+        token_url: 'https://identity.example.com/oauth2/token',
+        revocation_url: 'https://identity.example.com/oauth2/revoke',
+        client_id: 'client-123',
+        token_endpoint_auth_method: 'client_secret_basic',
+        client_secret: 'secret-123',
+        scopes: ['files.read', 'files.write'],
+      }),
+    ).toMatchObject({ client_id: 'client-123' });
+  });
+
+  test('accepts public clients and rejects non-HTTPS provider endpoints', () => {
+    expect(
+      OAuth2ApplicationInputSchema.safeParse({
+        authorization_url: 'https://identity.example.com/authorize',
+        token_url: 'https://identity.example.com/token',
+        client_id: 'public-client',
+        token_endpoint_auth_method: 'none',
+      }).success,
+    ).toBe(true);
+    expect(
+      OAuth2ApplicationInputSchema.safeParse({
+        authorization_url: 'http://127.0.0.1/authorize',
+        token_url: 'https://identity.example.com/token',
+        client_id: 'public-client',
+        token_endpoint_auth_method: 'none',
+      }).success,
+    ).toBe(false);
+  });
+
+  test('requires the selected client credential', () => {
+    expect(
+      OAuth2ApplicationInputSchema.safeParse({
+        token_url: 'https://identity.example.com/token',
+        client_id: 'confidential-client',
+        token_endpoint_auth_method: 'client_secret_jwt',
+      }).success,
+    ).toBe(false);
+    expect(
+      OAuth2ApplicationInputSchema.safeParse({
+        token_url: 'https://identity.example.com/token',
+        client_id: 'confidential-client',
+        token_endpoint_auth_method: 'private_key_jwt',
+        private_key: 'private-key',
+      }).success,
+    ).toBe(true);
+  });
+
+  test('validates authorization and device start inputs', () => {
+    expect(
+      OAuth2AuthorizationStartInputSchema.parse({
+        success_redirect_uri: 'https://dev.kortix.com/projects/p1',
+      }),
+    ).toEqual({ success_redirect_uri: 'https://dev.kortix.com/projects/p1' });
+    expect(
+      OAuth2AuthorizationStartInputSchema.safeParse({
+        success_redirect_uri: 'http://localhost:15300/projects/p1',
+      }).success,
+    ).toBe(true);
+    expect(
+      OAuth2AuthorizationStartInputSchema.safeParse({
+        success_redirect_uri: 'http://example.com/projects/p1',
+      }).success,
+    ).toBe(false);
+    expect(OAuth2DeviceAuthorizationStartInputSchema.parse({ scopes: ['read'] })).toEqual({
+      scopes: ['read'],
+    });
+  });
+});
+
+describe('removed usage-attribution fields', () => {
+  test('rejects usage-attribution fields in session-create input', () => {
+    expect(SessionCreateInputSchema.safeParse({ end_user_ref: 'customer-1' }).success).toBe(false);
+    expect(SessionCreateInputSchema.safeParse({ origin_ref: 'customer-1' }).success).toBe(false);
+  });
+
+  test('rejects usage-attribution fields in serialized sessions', () => {
+    expect(ProjectSessionSchema.strict().safeParse(sessionFixture()).success).toBe(true);
+    expect(
+      ProjectSessionSchema.strict().safeParse(sessionFixture({ end_user_ref: 'customer-1' }))
+        .success,
+    ).toBe(false);
+    expect(
+      ProjectSessionSchema.strict().safeParse(sessionFixture({ origin_ref: 'customer-1' })).success,
+    ).toBe(false);
+  });
+});
+
+describe('SessionCreateInputSchema backend secret bounds', () => {
+  test('bounds create-time provider pools', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    expect(SessionCreateInputSchema.safeParse({ provider_secret_pools: { anthropic: [id] } }).success).toBe(true);
+    expect(SessionCreateInputSchema.safeParse({ provider_secret_pools: { anthropic: Array(11).fill(id) } }).success).toBe(false);
+  });
+  test('secrets: accepts an identifier list and [] (narrow to zero), rejects an over-long list', () => {
+    expect(
+      SessionCreateInputSchema.safeParse({ secrets: ['GMAIL_TOKEN', 'STRIPE_KEY'] }).success,
+    ).toBe(true);
+    expect(SessionCreateInputSchema.safeParse({ secrets: [] }).success).toBe(true);
+    expect(
+      SessionCreateInputSchema.safeParse({
+        secrets: Array.from({ length: 129 }, (_, i) => `S${i}`),
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('SecretEgressPolicySchema — `inject` is optional', () => {
+  const hosts = { rules: [{ host: 'api.example.com' }], on_no_match: 'deny' as const };
+
+  test('accepts a host-list-only policy (substitution row, exposure model §6)', () => {
+    const parsed = SecretEgressPolicySchema.safeParse(hosts);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.inject).toBeUndefined();
+  });
+
+  test('still accepts a legacy policy that carries an injection slot', () => {
+    const parsed = SecretEgressPolicySchema.safeParse({
+      ...hosts,
+      inject: { kind: 'header', name: 'authorization', template: 'Bearer {{secret}}' },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.inject).toEqual({
+      kind: 'header',
+      name: 'authorization',
+      template: 'Bearer {{secret}}',
+    });
+  });
+
+  test('a malformed slot is still rejected — optional is not "anything goes"', () => {
+    expect(
+      SecretEgressPolicySchema.safeParse({ ...hosts, inject: { kind: 'cookie', name: 'x' } })
+        .success,
+    ).toBe(false);
+  });
+});
+test('session create bounds labels', () => {
+  expect(SessionCreateInputSchema.parse({ labels: ['  urgent  '] }).labels).toEqual(['urgent']);
+  expect(SessionCreateInputSchema.safeParse({ labels: Array(21).fill('x') }).success).toBe(false);
+  expect(SessionCreateInputSchema.safeParse({ labels: [' '] }).success).toBe(false);
+  expect(SessionCreateInputSchema.safeParse({ labels: ['x'.repeat(65)] }).success).toBe(false);
+  expect(SessionCreateInputSchema.parse({ labels: ['bug', ' bug', 'ui'] }).labels).toEqual(['bug', 'ui']);
+});
+test('session metadata is capped at 16 KB of JSON on create and update', () => {
+  expect(SessionCreateInputSchema.safeParse({ metadata: { a: 'x'.repeat(16_000) } }).success).toBe(true);
+  expect(SessionCreateInputSchema.safeParse({ metadata: { a: 'x'.repeat(16_385) } }).success).toBe(false);
+  expect(SessionUpdateInputSchema.safeParse({ metadata: { a: 'x'.repeat(16_385) } }).success).toBe(false);
+});
+test('session update accepts name, labels and metadata only', () => {
+  expect(SessionUpdateInputSchema.parse({ labels: ['a', 'a'], metadata: { k: null } })).toEqual({ labels: ['a'], metadata: { k: null } });
+  expect(SessionUpdateInputSchema.parse({ name: null })).toEqual({ name: null });
+  expect(SessionUpdateInputSchema.safeParse({ labels: 'a' }).success).toBe(false);
+});

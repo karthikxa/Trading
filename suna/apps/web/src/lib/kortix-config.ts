@@ -1,0 +1,86 @@
+'use client';
+
+/**
+ * The one place apps/web wires itself into @kortix/sdk. The entire data layer
+ * now lives in the SDK; this injects web's identity (Supabase token + user) and
+ * its UI sinks (toast / OS notifications) into the single config seam. Imported
+ * for side-effect by the root provider so it runs before any SDK call.
+ */
+import { errorToast, infoToast, successToast, warningToast } from '@kortix/ui/toast';
+import type { UiTranslator } from '@/i18n/translator';
+import { kortixGetToken } from '@/lib/auth-token';
+import { isBillingEnabled } from '@/lib/config';
+import { getEnv } from '@/lib/env-config';
+import { handleApiError } from '@kortix/ui/internal/lib/error-handler';
+import { createClient } from '@/lib/supabase/client';
+import {
+  notifyPermissionRequest,
+  notifyQuestion,
+  notifySessionError,
+  notifyTaskComplete,
+} from '@kortix/ui/internal/lib/web-notifications';
+import { configureKortix, parseFlagOverride } from '@kortix/sdk';
+
+let configured = false;
+let uiTranslator: UiTranslator | null = null;
+
+export function ensureKortixConfigured(tI18nComplete: UiTranslator): void {
+  uiTranslator = tI18nComplete;
+  if (configured) return;
+  configured = true;
+
+  configureKortix({
+    backendUrl: getEnv().BACKEND_URL,
+    getToken: kortixGetToken,
+    clientVersion: getEnv().VERSION ? `web/${getEnv().VERSION}` : undefined,
+    getUserId: async () => {
+      try {
+        const {
+          data: { session },
+        } = await createClient().auth.getSession();
+        return session?.user?.id ?? null;
+      } catch {
+        return null;
+      }
+    },
+    sandboxId: getEnv().SANDBOX_ID ?? null,
+    billingEnabled: isBillingEnabled(),
+    // Literal dotted process.env.NEXT_PUBLIC_* reads are the ONLY form Next's
+    // client-bundle compiler inlines — the SDK's own dynamic env lookup yields
+    // undefined in the browser, so the flags must be wired here.
+    featureFlags: {
+      disableMobileAdvertising: parseFlagOverride(
+        process.env.NEXT_PUBLIC_DISABLE_MOBILE_ADVERTISING,
+      ),
+      enableDinoGame: parseFlagOverride(process.env.NEXT_PUBLIC_ENABLE_DINO_GAME),
+      enableProjects: parseFlagOverride(process.env.NEXT_PUBLIC_ENABLE_PROJECTS),
+    },
+    onToast: (level, message, options) => {
+      const opts = options as Parameters<typeof infoToast>[1];
+      if (level === 'success') successToast(message, opts);
+      else if (level === 'error') errorToast(message, opts);
+      else if (level === 'warning') warningToast(message, opts);
+      else infoToast(message, opts);
+    },
+    onNotify: (e) => {
+      if (!uiTranslator) return;
+      const title = e.sessionTitle as string | undefined;
+      // The session's project, set by the live stream and the turn-end watch.
+      const projectId = typeof e.projectId === 'string' ? e.projectId : undefined;
+      // Set only by the turn-end watch: the session page was not mounted.
+      const watchedSinceMs = typeof e.watchedSinceMs === 'number' ? e.watchedSinceMs : undefined;
+      if (e.kind === 'task-complete')
+        notifyTaskComplete(e.sessionId, title, uiTranslator, { watchedSinceMs, projectId });
+      else if (e.kind === 'session-error')
+        notifySessionError(e.sessionId, e.errorTitle as string, title, uiTranslator, projectId);
+      else if (e.kind === 'question')
+        notifyQuestion(e.sessionId, e.questionText as string, title, uiTranslator, projectId);
+      else if (e.kind === 'permission')
+        notifyPermissionRequest(e.sessionId, e.toolName as string, title, uiTranslator, projectId);
+    },
+    onError: (error, context) => {
+      if (!uiTranslator) return;
+      handleApiError(error, context as Parameters<typeof handleApiError>[1], uiTranslator);
+    },
+  });
+}

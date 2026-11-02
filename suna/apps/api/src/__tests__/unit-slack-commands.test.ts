@@ -1,0 +1,398 @@
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { chatIdentityStub } from './helpers/chat-identity-stub';
+
+// Slash command handlers for agent/model selection + session visibility.
+
+let dbResults: unknown[][] = [];
+function makeChain(): any {
+  const chain: any = {};
+  for (const m of ['from', 'where', 'limit', 'orderBy', 'set', 'values', 'returning']) {
+    chain[m] = () => chain;
+  }
+  chain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve(dbResults.shift() ?? []));
+  return chain;
+}
+let deletes = 0;
+mock.module('../shared/db', () => ({
+  db: {
+    select: () => makeChain(),
+    update: () => makeChain(),
+    delete: () => {
+      deletes++;
+      return makeChain();
+    },
+  },
+  hasDatabase: () => true,
+}));
+
+// Controllable selection layer.
+let selection: unknown = { projectId: 'p1', agentName: null, opencodeModel: null };
+let setAgentResult: { ok: true } | { ok: false; reason: 'no_binding' | 'unknown_agent' } = { ok: true };
+let setModelResult = true;
+const setAgentCalls: Array<string | null> = [];
+const setModelCalls: Array<string | null> = [];
+const setPolicyCalls: string[] = [];
+mock.module('../channels/slack/selection', () => ({
+  currentChannelSelection: async () => selection,
+  setChannelAgent: async (_ctx: unknown, a: string | null) => { setAgentCalls.push(a); return setAgentResult; },
+  setChannelModel: async (_ctx: unknown, m: string | null) => { setModelCalls.push(m); return setModelResult; },
+  listProjectAgents: async () => [{ name: 'reviewer', description: 'Reviews code', mode: null }],
+  RECOMMENDED_MODELS: [
+    { id: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8', hint: 'Most capable' },
+    { id: 'openai/gpt-5.5', label: 'GPT-5.5', hint: 'OpenAI flagship' },
+  ],
+  isValidModelId: (s: string) => { const i = s.indexOf('/'); return i > 0 && i < s.length - 1 && !/\s/.test(s); },
+  modelLabel: (id: string) => (id === 'anthropic/claude-opus-4-8' ? 'Claude Opus 4.8' : id),
+  setChannelConversationPolicy: async (_ctx: unknown, p: string) => { setPolicyCalls.push(p); return true; },
+}));
+
+// Model decisions no longer read a hardcoded RECOMMENDED_MODELS list off the
+// selection module. They resolve the channel's project/account through
+// `model-gate`, then list the REAL served catalog (managed + connected BYOK)
+// through the picker, so a pick can never 404. Mock that graph — mocking only
+// `selection` leaves `channelModelContext` unmocked, it returns null against no
+// DB, and every model command answers "connect a project first" instead of
+// exercising what these tests are about.
+let modelGate: unknown = {
+  projectId: 'p1',
+  accountId: 'a1',
+  ownerUserId: 'u1',
+  freeManagedOnly: false,
+};
+mock.module('../channels/slack/model-gate', () => ({
+  // The gate follows the binding: an unbound channel has no project.
+  channelModelContext: async () => (selection ? modelGate : null),
+}));
+let servable = true;
+mock.module('../llm-gateway/resolution/default-model', () => ({
+  isModelServableForAccount: async () => servable,
+  resolveEffectiveModel: async () => ({ model: 'anthropic/claude-opus-4-8', source: 'project' }),
+}));
+mock.module('../llm-gateway/models/picker', () => ({
+  listPickerModels: async () => ({
+    models: [
+      {
+        id: 'anthropic/claude-opus-4-8',
+        label: 'Claude Opus 4.8',
+        provider: 'anthropic',
+        managed: false,
+        hint: 'Most capable',
+      },
+      { id: 'kortix/glm-5.3-flash', label: 'GLM 5.3 Flash', provider: 'kortix', managed: true, hint: null },
+    ],
+    projectDefault: { model: 'kortix/glm-5.3-flash', source: 'project', label: 'GLM 5.3 Flash' },
+  }),
+  labelForModelRef: (id: string) =>
+    id === 'anthropic/claude-opus-4-8' ? 'Claude Opus 4.8' : id,
+}));
+
+// `/kortix models` and `/kortix model` delegate to slack/model-choice.ts,
+// whose list, checks and copy are pinned in unit-slack-model-choice.
+const modelCalls: Array<{ fn: string; ctx: unknown; choice?: string }> = [];
+const pickerResponse = { response_type: 'ephemeral', blocks: [{ type: 'header', text: { type: 'plain_text', text: 'Models' } }] };
+mock.module('../channels/slack/model-choice', () => ({
+  buildSlackModelsResponse: async (c: unknown) => {
+    modelCalls.push({ fn: 'list', ctx: c });
+    return pickerResponse;
+  },
+  applySlackModelChoice: async (c: unknown, choice: string) => {
+    modelCalls.push({ fn: 'apply', ctx: c, choice });
+    return `applied ${choice}`;
+  },
+  slackChannelIsDm: (id: string) => id.startsWith('D'),
+  slackModelScope: async () => null,
+}));
+
+// Identity layer — kept out of the db chain so it doesn't disturb dbResults
+// ordering. Controllable per-test via `identityRow` and `settingsActor`.
+let identityRow: { userId: string } | null = null;
+let settingsActor: { userId: string } | { reason: 'unlinked' | 'not_member' } = { userId: 'user-1' };
+const actorChecks: Array<{ projectId: string; action: string }> = [];
+mock.module('../channels/core/identity', () =>
+  chatIdentityStub({
+  
+  lookupChatIdentity: async () => identityRow,
+  linkChatIdentity: async () => {},
+  revokeChatIdentity: async () => true,
+  lookupChatUserForKortixUser: async () => null,
+  resolveChatActor: async () => ({ userId: 'user-1' }),
+  resolveProjectChatActor: async (_user: unknown, projectId: string, action: string) => {
+    actorChecks.push({ projectId, action });
+    return settingsActor;
+  },
+}),
+);
+mock.module('../accounts/core/app', () => ({
+  lookupEmailsByUserIds: async (ids: string[]) =>
+    new Map(ids.map((id) => [id, `${id}@example.com`])),
+  defaultAccountName: (email: string | null | undefined) => email ?? 'Account',
+}));
+
+// Repo previews are probed over the network; these tests decide which load.
+let loadablePreviews = new Map<string, string>();
+const previewRequests: string[][] = [];
+const realRepoPreview = await import('../channels/repo-preview');
+mock.module('../channels/repo-preview', () => ({
+  ...realRepoPreview,
+  repoPreviewImages: async (urls: Iterable<string | null | undefined>) => {
+    const list = [...urls].filter((u): u is string => Boolean(u));
+    previewRequests.push(list);
+    return new Map(list.filter((u) => loadablePreviews.has(u)).map((u) => [u, loadablePreviews.get(u)!]));
+  },
+}));
+let recentSessions: unknown[] | null = [];
+mock.module('../channels/core/sessions', () => ({ listVisibleChatSessions: async () => recentSessions }));
+
+const { config } = await import('../config');
+const { handleSlashCommand } = await import('../channels/slack/commands');
+
+const ctx = { teamId: 'T1', channelId: 'C1', slackUserId: 'U1', command: '/kortix' };
+
+// Flatten all stringy text out of a blocks array for easy assertions.
+function allText(resp: any): string {
+  return JSON.stringify(resp.blocks ?? resp.text ?? '');
+}
+function actionIds(resp: any): string[] {
+  const ids: string[] = [];
+  for (const b of resp.blocks ?? []) {
+    if (b.accessory?.action_id) ids.push(b.accessory.action_id);
+    for (const el of b.elements ?? []) if (el.action_id) ids.push(el.action_id);
+  }
+  return ids;
+}
+
+beforeEach(() => {
+  dbResults = [];
+  identityRow = null;
+  selection = { projectId: 'p1', agentName: null, opencodeModel: null };
+  setAgentResult = { ok: true };
+  setModelResult = true;
+  setAgentCalls.length = 0;
+  setModelCalls.length = 0;
+  setPolicyCalls.length = 0;
+  settingsActor = { userId: 'user-1' };
+  actorChecks.length = 0;
+  deletes = 0;
+  servable = true;
+});
+
+describe('help', () => {
+  // Discovery moved into the one `/kortix` panel; help now documents the
+  // typed shortcuts that survived it. Asserting the retired `agents`/`models`
+  // list here just pinned the old design.
+  test('points at the panel and lists the typed shortcuts', async () => {
+    const resp = await handleSlashCommand('help', '', ctx);
+    const txt = allText(resp);
+    expect(txt).toContain('control panel');
+    for (const shortcut of ['model <id>', 'agent <name>', 'switch', 'policy', 'sessions']) {
+      expect(txt).toContain(shortcut);
+    }
+  });
+});
+
+describe('unknown subcommand', () => {
+  test('points at help', async () => {
+    const resp = await handleSlashCommand('frobnicate', '', ctx);
+    expect(resp.text).toContain('Unknown subcommand');
+  });
+});
+
+describe('identity feature gated OFF', () => {
+  const originalRequireIdentity = config.SLACK_REQUIRE_USER_IDENTITY;
+
+  beforeEach(() => {
+    config.SLACK_REQUIRE_USER_IDENTITY = false;
+  });
+
+  afterEach(() => {
+    config.SLACK_REQUIRE_USER_IDENTITY = originalRequireIdentity;
+  });
+
+  test('/login is an unknown subcommand', async () => {
+    const resp = await handleSlashCommand('login', '', ctx);
+    expect(resp.text).toContain('Unknown subcommand');
+  });
+  test('/logout is an unknown subcommand', async () => {
+    const resp = await handleSlashCommand('logout', '', ctx);
+    expect(resp.text).toContain('Unknown subcommand');
+  });
+  test('help does not list login/logout', async () => {
+    const resp = await handleSlashCommand('help', '', ctx);
+    expect(allText(resp)).not.toContain('runs as you');
+  });
+});
+
+describe('/kortix models', () => {
+  test('shows the picker for the person who typed, in this channel', async () => {
+    modelCalls.length = 0;
+    const resp = await handleSlashCommand('models', '', ctx);
+    expect(resp).toEqual(pickerResponse as never);
+    expect(modelCalls).toEqual([{ fn: 'list', ctx: expect.objectContaining({ teamId: 'T1', channelId: 'C1', slackUserId: 'U1', command: '/kortix' }) }]);
+  });
+});
+
+describe('/kortix model <id>', () => {
+  test('applies the choice as the person who typed, and answers in private', async () => {
+    modelCalls.length = 0;
+    const resp = await handleSlashCommand('model', 'anthropic/claude-opus-4-8', ctx);
+    expect(resp).toEqual({ response_type: 'ephemeral', text: 'applied anthropic/claude-opus-4-8' });
+    expect(modelCalls).toEqual([
+      { fn: 'apply', ctx: expect.objectContaining({ teamId: 'T1', channelId: 'C1', slackUserId: 'U1' }), choice: 'anthropic/claude-opus-4-8' },
+    ]);
+  });
+
+  test('no id → the picker', async () => {
+    modelCalls.length = 0;
+    await handleSlashCommand('model', '  ', ctx);
+    expect(modelCalls.map((c) => c.fn)).toEqual(['list']);
+  });
+});
+
+describe('/kortix agent <name>', () => {
+  test('sets a named agent', async () => {
+    const resp = await handleSlashCommand('agent', 'reviewer', ctx);
+    expect(setAgentCalls).toEqual(['reviewer']);
+    expect(resp.text).toContain('reviewer');
+  });
+  test('"default" clears the override (null)', async () => {
+    await handleSlashCommand('agent', 'default', ctx);
+    expect(setAgentCalls).toEqual([null]);
+  });
+  test('no arg → usage', async () => {
+    const resp = await handleSlashCommand('agent', '', ctx);
+    expect(resp.text).toContain('Usage');
+    expect(setAgentCalls.length).toBe(0);
+  });
+  test('unknown agent in a governed project → clear error, not the generic "bind a project" message', async () => {
+    setAgentResult = { ok: false, reason: 'unknown_agent' };
+    const resp = await handleSlashCommand('agent', 'ghost', ctx);
+    expect(resp.text).toContain('is not a declared agent');
+    expect(resp.text).toContain('ghost');
+  });
+  test('no binding → prompts to switch', async () => {
+    setAgentResult = { ok: false, reason: 'no_binding' };
+    const resp = await handleSlashCommand('agent', 'reviewer', ctx);
+    expect(resp.text).toContain('Bind a project first');
+  });
+});
+
+describe('/kortix agents (list)', () => {
+  test('acks immediately (the real list posts async via response_url)', async () => {
+    const resp = await handleSlashCommand('agents', '', { ...ctx, responseUrl: undefined });
+    expect(resp.text).toContain('Loading agents');
+  });
+  test('/kortix agents <name> is an alias for set', async () => {
+    await handleSlashCommand('agents', 'reviewer', ctx);
+    expect(setAgentCalls).toEqual(['reviewer']);
+  });
+});
+
+describe('/kortix session (singular)', () => {
+  test('renders the latest channel session + an Open button', async () => {
+    dbResults = [[{ sessionId: 'sess-9', status: 'running', agentName: 'reviewer', createdAt: new Date() }]];
+    const resp = await handleSlashCommand('session', '', ctx);
+    const ids = actionIds(resp);
+    expect(ids).toContain('session_open');
+    const txt = allText(resp);
+    expect(txt).toContain('/projects/p1/sessions/sess-9');
+    expect(txt).toContain('running');
+  });
+  test('no sessions yet → empty state', async () => {
+    dbResults = [[]];
+    const resp = await handleSlashCommand('session', '', ctx);
+    expect(allText(resp)).toContain('No sessions started in this channel');
+  });
+  test('unbound channel → prompts to switch', async () => {
+    selection = null;
+    const resp = await handleSlashCommand('session', '', ctx);
+    expect(allText(resp)).toContain('No project bound');
+  });
+});
+
+describe('/kortix whoami', () => {
+  test('surfaces the current agent + model', async () => {
+    selection = { projectId: 'p1', agentName: 'reviewer', opencodeModel: 'anthropic/claude-opus-4-8' };
+    // whoami also fetches the project row.
+    dbResults = [[{ projectId: 'p1', name: 'Proj', repoUrl: 'https://github.com/o/r' }]];
+    const resp = await handleSlashCommand('whoami', '', ctx);
+    const txt = allText(resp);
+    expect(txt).toContain('reviewer');
+    expect(txt).toContain('Claude Opus 4.8');
+  });
+});
+
+/**
+ * A channel's project, agent, model and policy are project settings. Changing
+ * one from Slack needs what the web binding editor needs: a linked Kortix
+ * account with `project.connector.write` on the channel's project (project
+ * managers, account owners and admins).
+ */
+describe('channel settings need a linked project manager', () => {
+  test('an unlinked caller cannot change the agent; nothing is written', async () => {
+    settingsActor = { reason: 'unlinked' };
+    const resp = await handleSlashCommand('agent', 'reviewer', ctx);
+    expect(resp.text).toContain('Connect your Kortix account first');
+    expect(setAgentCalls).toEqual([]);
+  });
+
+  test('a caller without the capability cannot change the session policy', async () => {
+    settingsActor = { reason: 'not_member' };
+    const resp = await handleSlashCommand('policy', 'owner_only', ctx);
+    expect(resp.text).toContain('Only a project manager');
+    expect(setPolicyCalls).toEqual([]);
+  });
+
+  test('a caller without the capability cannot unbind the channel; nothing is deleted', async () => {
+    settingsActor = { reason: 'not_member' };
+    const resp = await handleSlashCommand('unbind', '', ctx);
+    expect(resp.text).toContain('Only a project manager');
+    expect(deletes).toBe(0);
+  });
+
+  test('a project manager changes each setting', async () => {
+    expect((await handleSlashCommand('agent', 'reviewer', ctx)).text).toContain('reviewer');
+    expect((await handleSlashCommand('policy', 'owner_only', ctx)).text).toContain('policy set to');
+    expect(allText(await handleSlashCommand('unbind', '', ctx))).toContain('Unbound');
+    expect(setAgentCalls).toEqual(['reviewer']);
+    expect(setPolicyCalls).toEqual(['owner_only']);
+    expect(deletes).toBe(1);
+  });
+});
+
+// A private repository has no GitHub preview (GitHub answers 429 HTML), and a
+// Kortix-hosted one has an internal name. Neither should reach a card.
+describe('repo previews and labels', () => {
+  const HOSTED = 'https://github.com/managed-kortix/proj-11111111-1111-4111-8111-111111111111';
+  afterEach(() => {
+    loadablePreviews = new Map();
+    previewRequests.length = 0;
+    recentSessions = [];
+  });
+
+  test('/kortix sessions shows each session title, and a preview only when it loads', async () => {
+    loadablePreviews = new Map([['https://github.com/o/public', 'https://opengraph.githubassets.com/1/o/public']]);
+    recentSessions = [
+      { projectId: 'p1', projectName: 'Public', repoUrl: 'https://github.com/o/public', sessionId: 's1', lastMessageAt: new Date(), title: 'Fix the flaky test', status: 'completed' },
+      { projectId: 'p2', projectName: 'Private', repoUrl: 'https://github.com/o/private', sessionId: 's2', lastMessageAt: new Date(), title: null, status: 'running' },
+    ];
+    const resp: any = await handleSlashCommand('sessions', '', ctx);
+    const sections = resp.blocks.filter((b: any) => b.type === 'section');
+    expect(sections[0].text.text).toContain('*Fix the flaky test*');
+    expect(sections[0].accessory).toMatchObject({ type: 'image', image_url: 'https://opengraph.githubassets.com/1/o/public' });
+    expect(sections[1].accessory).toBeUndefined();
+  });
+
+  test('/kortix whoami never links a Kortix-hosted repository, and names it "Hosted by Kortix"', async () => {
+    const owner = config.MANAGED_GIT_GITHUB_OWNER;
+    (config as any).MANAGED_GIT_GITHUB_OWNER = 'managed-kortix';
+    try {
+      selection = { projectId: 'p1', agentName: null, opencodeModel: null };
+      dbResults = [[{ projectId: 'p1', name: 'Proj', repoUrl: HOSTED }]];
+      const txt = allText(await handleSlashCommand('whoami', '', ctx));
+      expect(txt).toContain('Hosted by Kortix');
+      expect(txt).not.toContain('managed-kortix');
+    } finally {
+      (config as any).MANAGED_GIT_GITHUB_OWNER = owner;
+    }
+  });
+});

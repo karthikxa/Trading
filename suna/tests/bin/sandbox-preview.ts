@@ -1,0 +1,249 @@
+#!/usr/bin/env bun
+import { appendFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
+import {
+  PREVIEW_SUITE_REFUSED,
+  PREVIEW_SUITE_SUPERSEDED,
+  previewSuiteSuperseded,
+  type SandboxPreviewProvider,
+  branchEnvSandboxName,
+  runSandboxPreview,
+} from '../src/core/sandbox-preview';
+import {
+  type SandboxPreviewDeploymentInput,
+  deployPlatinumPreview,
+  runPlatinumPreviewSuite,
+  reconcilePlatinumPreviews,
+  teardownPlatinumPreview,
+} from '../src/core/sandbox-preview-providers';
+import { readPreviewRuntimeSecrets } from '../src/core/preview-stack';
+
+function value(name: string, fallback = ''): string {
+  return process.env[name]?.trim() || fallback;
+}
+
+function required(name: string): string {
+  const result = value(name);
+  if (!result) throw new Error(`${name} is required`);
+  return result;
+}
+
+function positiveInteger(name: string): number {
+  const result = Number(required(name));
+  if (!Number.isSafeInteger(result) || result < 1)
+    throw new Error(`${name} must be a positive integer`);
+  return result;
+}
+
+function provider(): SandboxPreviewProvider {
+  const selected = value('PREVIEW_SANDBOX_PROVIDER', 'auto').toLowerCase();
+  if (selected === 'auto' || selected === 'platinum') return selected;
+  throw new Error(
+    `previews run on Platinum only: PREVIEW_SANDBOX_PROVIDER must be auto or platinum; received ${selected}`,
+  );
+}
+
+async function writeOutput(name: string, outputValue: string): Promise<void> {
+  const output = process.env.GITHUB_OUTPUT;
+  if (output) await appendFile(output, `${name}=${outputValue}\n`);
+  console.log(`[sandbox-preview] ${name}=${outputValue}`);
+}
+
+/** False when GitHub cannot answer: only a positive answer stops a suite. */
+async function pullRequestSuperseded(
+  repository: string,
+  prNumber: number,
+  sha: string,
+  token: string,
+): Promise<boolean> {
+  const response = await fetch(`https://api.github.com/repos/${repository}/pulls/${prNumber}`, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: 'application/vnd.github+json',
+      'x-github-api-version': '2022-11-28',
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) return false;
+  return previewSuiteSuperseded(await response.json(), sha);
+}
+
+async function activePreviewPullRequests(
+  repository: string,
+  token: string,
+): Promise<Map<number, string>> {
+  const active = new Map<number, string>();
+  for (let page = 1; ; page += 1) {
+    const response = await fetch(
+      `https://api.github.com/repos/${repository}/pulls?state=open&per_page=100&page=${page}`,
+      {
+        headers: {
+          authorization: `Bearer ${token}`,
+          accept: 'application/vnd.github+json',
+          'x-github-api-version': '2022-11-28',
+        },
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    if (!response.ok) throw new Error(`GitHub pull request list returned ${response.status}`);
+    const pulls = (await response.json()) as Array<{
+      number: number;
+      labels?: Array<{ name?: string }>;
+      head?: { sha?: string; repo?: { full_name?: string } };
+    }>;
+    for (const pull of pulls) {
+      const approved = pull.labels?.some((label) => label.name === 'preview');
+      const sameRepository = pull.head?.repo?.full_name === repository;
+      const sha = pull.head?.sha ?? '';
+      if (approved && sameRepository && /^[0-9a-f]{40}$/.test(sha)) active.set(pull.number, sha);
+    }
+    if (pulls.length < 100) return active;
+  }
+}
+
+/**
+ * The slugged sandbox name of every branch that currently exists on the remote.
+ *
+ * A branch environment is retired by its BRANCH disappearing, not by its pull
+ * request closing, so the sweep compares against this rather than against open
+ * pull requests. Slugging both sides is what makes the lossy
+ * `branchEnvSandboxName` mapping comparable.
+ */
+async function liveBranchNames(repository: string, token: string): Promise<Set<string>> {
+  const names = new Set<string>();
+  for (let page = 1; ; page += 1) {
+    const response = await fetch(
+      `https://api.github.com/repos/${repository}/branches?per_page=100&page=${page}`,
+      {
+        headers: {
+          authorization: `Bearer ${token}`,
+          accept: 'application/vnd.github+json',
+          'x-github-api-version': '2022-11-28',
+        },
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    // Failing OPEN here would make every branch look deleted and the sweep would
+    // delete every branch environment at once.
+    if (!response.ok) throw new Error(`GitHub branch list returned ${response.status}`);
+    const branches = (await response.json()) as Array<{ name?: string }>;
+    for (const branch of branches) {
+      if (branch.name) names.add(branchEnvSandboxName(branch.name));
+    }
+    if (branches.length < 100) return names;
+  }
+}
+
+const action = process.argv[2] ?? 'deploy';
+const repository = value('GITHUB_REPOSITORY', 'kortix-ai/suna');
+const platinum = {
+  apiUrl: value('PLATINUM_API_URL', 'https://api.platinum.dev'),
+  apiKey: value('PLATINUM_API_KEY'),
+};
+
+if (action === 'deploy') {
+  const prNumber = positiveInteger('PREVIEW_PR_NUMBER');
+  const sha = required('PREVIEW_SHA');
+  // PREVIEW_BRANCH_ENV turns this deploy into a PERSISTENT per-branch
+  // environment: the sandbox is reused instead of replaced, so the URL is
+  // stable across pushes (see branchEnvSandboxName).
+  const branchEnv = process.env.PREVIEW_BRANCH_ENV?.trim() || undefined;
+  // A branch environment is a place to work: the suite is 40-80 min and proves
+  // nothing the stack health check has not, so it is off by default there.
+  // PREVIEW_RUN_TESTS=1 (the workflow's dispatch) forces a deliberate full run. The deploy never runs it: it is the
+  // separate `suite` action, so the workflow publishes the origin first.
+  const runTests = process.env.PREVIEW_RUN_TESTS?.trim() === '1' || !branchEnv;
+  // PREVIEW_PUBLIC_ORIGIN is the stable name a proxy serves the environment at.
+  // The stack is configured with it; the provider's own hostname stays the
+  // proxy's target and comes back as `sandboxOrigin`. It is supplied by the
+  // caller, never hardcoded here — a preview origin is provider-issued unless
+  // an operator deliberately fronts it.
+  const publicOrigin = process.env.PREVIEW_PUBLIC_ORIGIN?.trim() || undefined;
+  const deployment: SandboxPreviewDeploymentInput = {
+    ...(branchEnv ? { branchEnv } : {}),
+    ...(publicOrigin ? { publicOrigin } : {}),
+    repository,
+    ref: value('PREVIEW_REF', sha),
+    sha,
+    prNumber,
+    runId: value('GITHUB_RUN_ID', `local-${Date.now()}`),
+    runAttempt: value('GITHUB_RUN_ATTEMPT', '1'),
+    root: resolve(value('PREVIEW_ROOT', resolve(import.meta.dir, '../..'))),
+    lockfileHash: required('PREVIEW_LOCKFILE_SHA256'),
+    secrets: readPreviewRuntimeSecrets(process.env),
+    platinum,
+  };
+  const result = await runSandboxPreview(
+    { provider: provider(), prNumber, repository, sha },
+    {
+      platinum: () => deployPlatinumPreview(deployment),
+    },
+  );
+  await writeOutput('provider', result.provider);
+  await writeOutput('sandbox_id', result.sandboxId ?? '');
+  await writeOutput('preview_url', result.previewUrl ?? '');
+  // WHETHER THE SUITE WILL RUN, from the one place that decided it. The
+  // workflow gates its `suite` step on this, and its status line and sticky
+  // comment read the suite step's own outcome — never "tested" from a deploy.
+  // Emitted rather than re-derived from PREVIEW_RUN_TESTS in YAML: the rule is
+  // `PREVIEW_RUN_TESTS === '1' || !branchEnv`, and a second copy of it in the
+  // workflow is a second copy that can drift.
+  await writeOutput('suite', runTests ? '1' : '0');
+  process.exitCode = result.exitCode;
+} else if (action === 'suite') {
+  // `pnpm test -- --target-full` against the sandbox this run's deploy step
+  // returned. Only a run that tests links `/_tests/`: a persistent sandbox
+  // keeps whatever an earlier run left there.
+  const prNumber = positiveInteger('PREVIEW_PR_NUMBER');
+  const sha = required('PREVIEW_SHA');
+  // A push (or removing the label) makes this run's commit stale. Stop the
+  // suite then, so the newer commit's redeploy is not queued behind it.
+  const token = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim();
+  const superseded = token ? () => pullRequestSuperseded(repository, prNumber, sha, token) : undefined;
+  const exitCode = await runPlatinumPreviewSuite({
+    repository,
+    sha,
+    ...(superseded ? { superseded } : {}),
+    prNumber,
+    runId: value('GITHUB_RUN_ID', `local-${Date.now()}`),
+    runAttempt: value('GITHUB_RUN_ATTEMPT', '1'),
+    root: resolve(value('PREVIEW_ROOT', resolve(import.meta.dir, '../..'))),
+    sandboxId: required('PREVIEW_SANDBOX_ID'),
+    platinum,
+    ...(process.env.PREVIEW_BRANCH_ENV?.trim() ? { branchEnv: process.env.PREVIEW_BRANCH_ENV.trim() } : {}),
+  });
+  // A refused or superseded suite wrote no report; `/_tests/` still holds an older run's.
+  const previewUrl = value('PREVIEW_URL');
+  const wroteReport = exitCode !== PREVIEW_SUITE_REFUSED && exitCode !== PREVIEW_SUITE_SUPERSEDED;
+  await writeOutput('report_url', previewUrl && wroteReport ? `${previewUrl.replace(/\/$/, '')}/_tests/` : '');
+  // Superseded is not a failure of this commit: the step succeeds and says why.
+  await writeOutput('superseded', exitCode === PREVIEW_SUITE_SUPERSEDED ? '1' : '0');
+  process.exitCode = exitCode === PREVIEW_SUITE_SUPERSEDED ? 0 : exitCode;
+} else if (action === 'teardown') {
+  // A persistent environment's sandbox is named after the BRANCH, so teardown
+  // has to be told which branch or it deletes nothing and the box runs forever.
+  // A branch-deleted event carries the branch and no pull request, so the number
+  // is optional whenever the branch is known.
+  const branchEnv = process.env.PREVIEW_BRANCH_ENV?.trim() || undefined;
+  const prNumber =
+    branchEnv && !process.env.PREVIEW_PR_NUMBER?.trim()
+      ? undefined
+      : positiveInteger('PREVIEW_PR_NUMBER');
+  const platinumDeleted = await teardownPlatinumPreview({
+    ...platinum,
+    ...(prNumber === undefined ? {} : { prNumber }),
+    ...(branchEnv ? { branchEnv } : {}),
+  });
+  console.log(`[sandbox-preview] teardown platinum=${platinumDeleted}`);
+} else if (action === 'reconcile') {
+  const token = required('GITHUB_TOKEN');
+  const active = await activePreviewPullRequests(repository, token);
+  // A branch environment is retired by its BRANCH disappearing, not by its pull
+  // request closing, so the sweep needs to know which branches still exist.
+  const liveBranchSandboxNames = await liveBranchNames(repository, token);
+  const platinumDeleted = await reconcilePlatinumPreviews({ ...platinum, activePullRequests: active, liveBranchSandboxNames });
+  console.log(`[sandbox-preview] reconcile active=${active.size} platinum_deleted=${platinumDeleted}`);
+} else {
+  throw new Error(`unknown sandbox preview action: ${action}`);
+}

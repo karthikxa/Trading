@@ -1,0 +1,1131 @@
+/**
+ * Project access control + group grants + account-invite accept-side.
+ *
+ * Maps to spec §6 (PACC-*) and §5 invites accept-side (INV-*).
+ *
+ * Three surfaces, all real flows (no mocking; INV-9 and PACC-8 seed one row
+ * the API cannot create on demand — an expired invite, a shadow membership):
+ *  - Per-user project membership: GET/PUT/DELETE /projects/:id/access/:userId
+ *    + email invite + the pending-invite queue (list/cancel/resend) for
+ *    emails with no Kortix account yet.
+ *  - Group grants: attach an IAM group to a project at a role
+ *    (GET/POST/PATCH/DELETE /projects/:id/group-grants).
+ *  - Account invites the recipient acts on:
+ *    GET/accept/decline /account-invites/:inviteId.
+ *
+ * Project roles are manager|member (`user` is the legacy spelling of `member`;
+ * `editor` was removed on 2026-08-18 and now 400s on write). Member-management
+ * routes gate on PROJECT_MEMBERS_MANAGE (manager-only) — a project member
+ * is denied. Source of truth: apps/api/src/projects/index.ts (access +
+ * group-grants handlers) and apps/api/src/accounts/invites.ts.
+ */
+import { assert } from '../core/expect';
+import { flow } from '../core/flow';
+import { withDb } from '../fixtures/chat';
+import { adminUpdateUserEmail } from '../fixtures/supabase';
+import { waitForMailpit } from '../fixtures/mailpit';
+
+// ─── Per-user project access (list / grant / revoke) ─────────────────────
+
+flow(
+  'PACC-1',
+  {
+    domain: 'projects',
+    routes: [
+      'GET /v1/projects/:projectId/access',
+      'PUT /v1/projects/:projectId/access/:userId',
+      'DELETE /v1/projects/:projectId/access/:userId',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const p = await team.project();
+    const member = await team.addMember('member');
+    await ctx.step('OWNER grants member manager on project → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .put(
+          '/v1/projects/:projectId/access/:userId',
+          { role: 'manager' },
+          { params: { projectId: p.id, userId: member.userId! } },
+        );
+      r.status(200)
+        .body()
+        .has('$.project_role', 'manager')
+        .has('$.effective_project_role', 'manager');
+    });
+    await ctx.step('the removed `editor` role is rejected on write → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .put(
+          '/v1/projects/:projectId/access/:userId',
+          { role: 'editor' },
+          { params: { projectId: p.id, userId: member.userId! } },
+        );
+      r.status(400);
+    });
+    await ctx.step('GET access lists the granted member → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .get('/v1/projects/:projectId/access', { params: { projectId: p.id } });
+      r.status(200).body().has('$.project_id', p.id).has('$.can_manage', true).exists('$.members');
+    });
+    await ctx.step('PUT a role on the account owner → 200, stays implicit manager with no direct grant', async () => {
+      (await ctx.client.as(ctx.P.OWNER).put('/v1/projects/:projectId/access/:userId', { role: 'member' }, { params: { projectId: p.id, userId: ctx.P.OWNER.userId! } }))
+        .status(200).body().has('$.account_role', 'owner').has('$.project_role', null).has('$.effective_project_role', 'manager').has('$.has_implicit_access', true);
+    });
+    await ctx.step('OWNER revokes the grant → 200', async () => {
+      const r = await ctx.client.as(ctx.P.OWNER).del('/v1/projects/:projectId/access/:userId', {
+        params: { projectId: p.id, userId: member.userId! },
+      });
+      r.status(200).body().has('$.ok', true);
+    });
+    await ctx.step('NONMEMBER cannot read access → 404 (project not loadable)', async () => {
+      const r = await ctx.client
+        .as(ctx.P.NONMEMBER)
+        .get('/v1/projects/:projectId/access', { params: { projectId: p.id } });
+      r.status([403, 404]);
+    });
+  },
+);
+
+// PACC-8 — a shadow account_members row (user_id = account_id, no auth user)
+// never reaches the access roster. Seeded in the database: no route writes it.
+flow(
+  'PACC-8',
+  { domain: 'projects', requires: ['database'], routes: ['GET /v1/projects/:projectId/access'] },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const p = await team.project();
+    try {
+      await ctx.step('an account membership with no auth user (user_id = account_id) is not listed; the real owner is', async () => {
+        await withDb(ctx, (db) => db.query('INSERT INTO kortix.account_memberships (user_id, account_id) VALUES ($1, $1) ON CONFLICT DO NOTHING', [team.id]));
+        const r = await ctx.client.as(ctx.P.OWNER).get('/v1/projects/:projectId/access', { params: { projectId: p.id } });
+        r.status(200);
+        const ids = r.json<{ members: Array<{ user_id: string }> }>().members.map((m) => m.user_id);
+        if (ids.includes(team.id)) throw new Error('the shadow member is listed');
+        if (!ids.includes(ctx.P.OWNER.userId!)) throw new Error('the real owner is missing');
+      });
+    } finally {
+      await withDb(ctx, (db) => db.query('DELETE FROM kortix.account_memberships WHERE user_id = $1 AND account_id = $1', [team.id]));
+    }
+  },
+);
+
+flow(
+  'PACC-3',
+  {
+    domain: 'projects',
+    routes: ['PUT /v1/projects/:projectId/access/:userId'],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const p = await team.project();
+    const plain = await team.addMember('member');
+    const target = await team.addMember('member');
+    await ctx.step('OWNER grants the first member the floor role (read + run)', async () => {
+      await team.grantProjectRole(p.id, plain.userId!, 'member');
+    });
+    await ctx.step('a floor project member cannot manage members → 403', async () => {
+      // PROJECT_MEMBERS_MANAGE is manager-only; `member` has neither it nor write.
+      const r = await ctx.client
+        .as(plain)
+        .put(
+          '/v1/projects/:projectId/access/:userId',
+          { role: 'user' },
+          { params: { projectId: p.id, userId: target.userId! } },
+        );
+      r.status([403, 404]);
+    });
+    await ctx.step('invalid role → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .put(
+          '/v1/projects/:projectId/access/:userId',
+          { role: 'wizard' },
+          { params: { projectId: p.id, userId: target.userId! } },
+        );
+      r.status(400);
+    });
+    await ctx.step('target who is not an account member → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .put(
+          '/v1/projects/:projectId/access/:userId',
+          { role: 'user' },
+          { params: { projectId: p.id, userId: '00000000-0000-4000-a000-000000000000' } },
+        );
+      r.status(404);
+    });
+  },
+);
+
+flow(
+  'PACC-4',
+  {
+    domain: 'projects',
+    routes: ['DELETE /v1/projects/:projectId/access/:userId'],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const p = await team.project();
+    const member = await team.addMember('member');
+    const admin = await team.addMember('admin');
+    await ctx.step('grant then revoke a real member → 200', async () => {
+      await team.grantProjectRole(p.id, member.userId!, 'user');
+      const r = await ctx.client.as(ctx.P.OWNER).del('/v1/projects/:projectId/access/:userId', {
+        params: { projectId: p.id, userId: member.userId! },
+      });
+      r.status(200).body().has('$.ok', true);
+    });
+    await ctx.step("revoking an account admin's implicit access → 409", async () => {
+      // Owners/admins hold implicit Manager on every project — there's no
+      // explicit grant to remove.
+      const r = await ctx.client.as(ctx.P.OWNER).del('/v1/projects/:projectId/access/:userId', {
+        params: { projectId: p.id, userId: admin.userId! },
+      });
+      r.status(409);
+    });
+    await ctx.step('revoking a non-account-member → 404', async () => {
+      const r = await ctx.client.as(ctx.P.OWNER).del('/v1/projects/:projectId/access/:userId', {
+        params: { projectId: p.id, userId: '00000000-0000-4000-a000-000000000000' },
+      });
+      r.status(404);
+    });
+  },
+);
+
+// ─── Email invite to a project + pending-invite queue ────────────────────
+
+flow(
+  'PACC-5',
+  {
+    domain: 'projects',
+    routes: [
+      'POST /v1/projects/:projectId/access/invite',
+      'GET /v1/projects/:projectId/access/pending-invites',
+      'POST /v1/projects/:projectId/access/pending-invites/:inviteId/resend',
+      'DELETE /v1/projects/:projectId/access/pending-invites/:inviteId',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const p = await team.project();
+    const inviteEmail = `${ctx.fixtures.name('pacc-invitee')}@ke2e.kortix.test`.toLowerCase();
+    let inviteId = '';
+    await ctx.step('invite a brand-new email → 201 pending invitation', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access/invite',
+          { email: inviteEmail, role: 'manager' },
+          { params: { projectId: p.id } },
+        );
+      r.status(201)
+        .body()
+        .has('$.status', 'invited')
+        .has('$.project_role', 'manager')
+        .exists('$.invite_id');
+      inviteId = r.json<any>().invite_id;
+    });
+    await ctx.step('missing email → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access/invite',
+          { role: 'manager' },
+          { params: { projectId: p.id } },
+        );
+      r.status(400);
+    });
+    await ctx.step('invalid role → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access/invite',
+          { email: `${ctx.fixtures.name('x')}@ke2e.kortix.test`, role: 'wizard' },
+          { params: { projectId: p.id } },
+        );
+      r.status(400);
+    });
+    await ctx.step("pending-invites lists this project's queued invite → 200", async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .get('/v1/projects/:projectId/access/pending-invites', { params: { projectId: p.id } });
+      r.status(200).body().exists('$.pending');
+    });
+    await ctx.step('resend the pending invite → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access/pending-invites/:inviteId/resend',
+          {},
+          { params: { projectId: p.id, inviteId } },
+        );
+      r.status(200).body().has('$.ok', true).exists('$.expires_at');
+    });
+    await ctx.step('resend unknown invite → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access/pending-invites/:inviteId/resend',
+          {},
+          { params: { projectId: p.id, inviteId: '00000000-0000-4000-a000-000000000000' } },
+        );
+      r.status(404);
+    });
+    await ctx.step('cancel the pending invite → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .del('/v1/projects/:projectId/access/pending-invites/:inviteId', {
+          params: { projectId: p.id, inviteId },
+        });
+      r.status(200).body().has('$.ok', true);
+    });
+    await ctx.step('cancel again (gone) → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .del('/v1/projects/:projectId/access/pending-invites/:inviteId', {
+          params: { projectId: p.id, inviteId },
+        });
+      r.status(404);
+    });
+  },
+);
+
+// ─── Project group grants (IAM V2 bulk-access channel) ───────────────────
+
+flow(
+  'PACC-6',
+  {
+    domain: 'projects',
+    routes: [
+      'GET /v1/projects/:projectId/group-grants',
+      'POST /v1/projects/:projectId/group-grants',
+      'PATCH /v1/projects/:projectId/group-grants/:groupId',
+      'DELETE /v1/projects/:projectId/group-grants/:groupId',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team({ enterprise: true });
+    const p = await team.project();
+    let groupId = '';
+    await ctx.step('create an IAM group to attach', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/accounts/:accountId/iam/groups',
+          { name: ctx.fixtures.name('grp') },
+          { params: { accountId: team.id } },
+        );
+      r.status(201).body().exists('$.group_id');
+      groupId = r.json<any>().group_id;
+    });
+    await ctx.step('list grants (empty) → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .get('/v1/projects/:projectId/group-grants', { params: { projectId: p.id } });
+      r.status(200).body().exists('$.grants');
+    });
+    await ctx.step('attach group at manager → 201', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/group-grants',
+          { group_id: groupId, role: 'manager' },
+          { params: { projectId: p.id } },
+        );
+      r.status(201).body().has('$.group_id', groupId).has('$.role', 'manager');
+    });
+    await ctx.step('missing group_id → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/group-grants',
+          { role: 'manager' },
+          { params: { projectId: p.id } },
+        );
+      r.status(400);
+    });
+    await ctx.step('attach a foreign/unknown group → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/group-grants',
+          { group_id: '00000000-0000-4000-a000-000000000000', role: 'user' },
+          { params: { projectId: p.id } },
+        );
+      r.status(404);
+    });
+    await ctx.step('PATCH role to user → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .patch(
+          '/v1/projects/:projectId/group-grants/:groupId',
+          { role: 'user' },
+          { params: { projectId: p.id, groupId } },
+        );
+      r.status(200).body().has('$.role', 'user');
+    });
+    await ctx.step('PATCH unknown grant → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .patch(
+          '/v1/projects/:projectId/group-grants/:groupId',
+          { role: 'user' },
+          { params: { projectId: p.id, groupId: '00000000-0000-4000-a000-000000000000' } },
+        );
+      r.status(404);
+    });
+    await ctx.step('detach the group → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .del('/v1/projects/:projectId/group-grants/:groupId', {
+          params: { projectId: p.id, groupId },
+        });
+      r.status(200).body().has('$.ok', true);
+    });
+  },
+);
+
+// PACC-7 — resource grants are AGENT-ONLY (Marko, resource-model
+// simplification). `agent` is the only member/department-scopable resource:
+// assigning an agent lets the assignee USE it (and inherit its declared
+// skills/connectors/secrets to USE, not edit). Skills and secrets are NO
+// LONGER member-scopable resources — a POST with resource_type=skill|secret
+// is rejected 400 (the guard runs before any config/DB load, so it needs no
+// existing resource). Reading/listing/revoking pre-existing skill/secret
+// grant rows still works (back-compat), but none can be CREATED here.
+flow(
+  'PACC-7',
+  {
+    domain: 'projects',
+    routes: [
+      'GET /v1/projects/:projectId/resource-grants',
+      'POST /v1/projects/:projectId/resource-grants',
+      'DELETE /v1/projects/:projectId/resource-grants/:grantId',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const member = await team.addMember('member');
+    const p = await team.project();
+    const NONEXISTENT_GRANT = '00000000-0000-4000-a000-000000000000';
+
+    let firstAgentId = '';
+    await ctx.step('OWNER lists grantable resources and existing grants → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .get('/v1/projects/:projectId/resource-grants', { params: { projectId: p.id } });
+      r.status(200).body().exists('$.resources').exists('$.grants');
+      const agents = r.json<any>()?.resources?.agents ?? [];
+      firstAgentId = agents[0]?.id ?? '';
+    });
+
+    // ── The core agent-only invariant: skill/secret creation is rejected ──
+    await ctx.step('scoping a SECRET is rejected (agent-only) → 400', async () => {
+      const r = await ctx.client.as(ctx.P.OWNER).post(
+        '/v1/projects/:projectId/resource-grants',
+        {
+          resource_type: 'secret',
+          resource_id: 'ANY_SECRET',
+          principal_type: 'member',
+          principal_id: member.userId,
+        },
+        { params: { projectId: p.id } },
+      );
+      r.status(400);
+    });
+
+    await ctx.step('scoping a SKILL is rejected (agent-only) → 400', async () => {
+      const r = await ctx.client.as(ctx.P.OWNER).post(
+        '/v1/projects/:projectId/resource-grants',
+        {
+          resource_type: 'skill',
+          resource_id: 'any-skill',
+          principal_type: 'member',
+          principal_id: member.userId,
+        },
+        { params: { projectId: p.id } },
+      );
+      r.status(400);
+    });
+
+    await ctx.step('invalid resource type → 400', async () => {
+      const r = await ctx.client.as(ctx.P.OWNER).post(
+        '/v1/projects/:projectId/resource-grants',
+        {
+          resource_type: 'database',
+          resource_id: 'x',
+          principal_type: 'member',
+          principal_id: member.userId,
+        },
+        { params: { projectId: p.id } },
+      );
+      r.status(400);
+    });
+
+    // ── Agent happy path (only when the project declares an agent) ──
+    let grantId = '';
+    await ctx.step(
+      'OWNER scopes an AGENT to an account member → 201 (skipped if no agent in config)',
+      async () => {
+        if (!firstAgentId) return; // bare project with no declared agents — nothing to scope
+        const r = await ctx.client.as(ctx.P.OWNER).post(
+          '/v1/projects/:projectId/resource-grants',
+          {
+            resource_type: 'agent',
+            resource_id: firstAgentId,
+            principal_type: 'member',
+            principal_id: member.userId,
+          },
+          { params: { projectId: p.id } },
+        );
+        r.status(201).body().exists('$.grant_id').has('$.resource_type', 'agent');
+        grantId = r.json<any>().grant_id;
+      },
+    );
+
+    await ctx.step(
+      'OWNER deletes the agent grant → 200 (skipped if none was created)',
+      async () => {
+        if (!grantId) return;
+        const r = await ctx.client
+          .as(ctx.P.OWNER)
+          .del('/v1/projects/:projectId/resource-grants/:grantId', {
+            params: { projectId: p.id, grantId },
+          });
+        r.status(200).body().has('$.ok', true);
+      },
+    );
+
+    // Always exercise the DELETE route (coverage) with a nonexistent grant.
+    await ctx.step('deleting a nonexistent grant → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .del('/v1/projects/:projectId/resource-grants/:grantId', {
+          params: { projectId: p.id, grantId: grantId || NONEXISTENT_GRANT },
+        });
+      // If a real grant was created+deleted above, re-deleting it is 404 too.
+      r.status(404);
+    });
+  },
+);
+
+// ─── Account-invite accept side (recipient-driven) ───────────────────────
+//
+// A clean accept/decline needs the invited user to sign in as the addressed
+// email — the suite synthesizes members but the account-invite (no Kortix
+// user yet) recipient isn't a provisioned principal, so we cover the
+// recipient-facing routes via real invite creation + the describe/error
+// boundaries that don't require being the addressee.
+
+flow(
+  'INV-3',
+  {
+    domain: 'projects',
+    routes: [
+      'GET /v1/account-invites/:inviteId',
+      'POST /v1/account-invites/:inviteId/accept',
+      'POST /v1/account-invites/:inviteId/decline',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const inviteEmail = `${ctx.fixtures.name('inv3')}@ke2e.kortix.test`.toLowerCase();
+    let inviteId = '';
+    await ctx.step('create a pending account invite (new email)', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/accounts/:accountId/members',
+          { email: inviteEmail, role: 'member' },
+          { params: { accountId: team.id } },
+        );
+      r.status(201).body().has('$.status', 'pending').exists('$.invite_id');
+      inviteId = r.json<any>().invite_id;
+    });
+    await ctx.step(
+      'describe as a non-addressee → 200 but identifying fields redacted',
+      async () => {
+        // OWNER isn't the invited email → email_matches_caller:false, no account leak.
+        const r = await ctx.client
+          .as(ctx.P.OWNER)
+          .get('/v1/account-invites/:inviteId', { params: { inviteId } });
+        r.status(200).body().has('$.email_matches_caller', false).has('$.email', null);
+      },
+    );
+    await ctx.step('describe unknown invite → 404', async () => {
+      const r = await ctx.client.as(ctx.P.OWNER).get('/v1/account-invites/:inviteId', {
+        params: { inviteId: '00000000-0000-4000-a000-000000000000' },
+      });
+      r.status(404);
+    });
+    // A mangled invite link (`/invites/abc`) reached Postgres as a uuid and
+    // answered 500 (KRTX-1731).
+    await ctx.step('a malformed invite id → 404 on describe, accept and decline, never 500', async () => {
+      const params = { inviteId: 'not-a-uuid' };
+      (await ctx.client.as(ctx.P.OWNER).get('/v1/account-invites/:inviteId', { params })).status(404);
+      (await ctx.client.as(ctx.P.OWNER).post('/v1/account-invites/:inviteId/accept', {}, { params })).status(404);
+      (await ctx.client.as(ctx.P.OWNER).post('/v1/account-invites/:inviteId/decline', {}, { params })).status(404);
+    });
+    await ctx.step('ANON cannot describe → 401', async () => {
+      const r = await ctx.client
+        .as(ctx.P.ANON)
+        .get('/v1/account-invites/:inviteId', { params: { inviteId } });
+      r.status(401);
+    });
+  },
+);
+
+// INV-10 — the invite page names the project an email invite grants
+// (KRTX-1731). The describe route returned no projects, so the page said
+// "join a team" for a project invite.
+flow(
+  'INV-10',
+  {
+    domain: 'projects',
+    routes: ['POST /v1/projects/:projectId/access/invite', 'GET /v1/account-invites/:inviteId'],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const project = await team.project();
+    const inviteEmail = `${ctx.fixtures.name('inv10')}@ke2e.kortix.test`.toLowerCase();
+    let inviteId = '';
+    await ctx.step('a project invite to an address with no Kortix user yet → 201 invited', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post('/v1/projects/:projectId/access/invite', { email: inviteEmail, role: 'member' }, { params: { projectId: project.id } });
+      r.status(201).body().has('$.status', 'invited').exists('$.invite_id');
+      inviteId = r.json<{ invite_id: string }>().invite_id;
+    });
+    await ctx.step('the invitee reads the project name and role in the describe', async () => {
+      const invitee = await ctx.fixtures.userWithEmail(inviteEmail);
+      const r = await ctx.client.as(invitee).get('/v1/account-invites/:inviteId', { params: { inviteId } });
+      r.status(200)
+        .body()
+        .has('$.email_matches_caller', true)
+        .has('$.projects[0].project_id', project.id)
+        .has('$.projects[0].role', 'member')
+        .exists('$.projects[0].name');
+    });
+    await ctx.step('anyone else gets no projects (redacted)', async () => {
+      const r = await ctx.client.as(ctx.P.OWNER).get('/v1/account-invites/:inviteId', { params: { inviteId } });
+      r.status(200).body().has('$.email_matches_caller', false);
+      if ((r.json<{ projects?: unknown[] }>().projects ?? []).length !== 0) throw new Error('a non-addressee read the invited projects');
+    });
+  },
+);
+
+flow(
+  'INV-4',
+  {
+    domain: 'projects',
+    routes: ['POST /v1/account-invites/:inviteId/accept'],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const inviteEmail = `${ctx.fixtures.name('inv4')}@ke2e.kortix.test`.toLowerCase();
+    let inviteId = '';
+    await ctx.step('create a pending account invite', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/accounts/:accountId/members',
+          { email: inviteEmail, role: 'member' },
+          { params: { accountId: team.id } },
+        );
+      r.status(201);
+      inviteId = r.json<any>().invite_id;
+    });
+    await ctx.step('accept as the wrong email → 403', async () => {
+      // OWNER's email != the invited address → the invite refuses.
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post('/v1/account-invites/:inviteId/accept', {}, { params: { inviteId } });
+      r.status(403);
+    });
+    await ctx.step('accept an unknown invite → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/account-invites/:inviteId/accept',
+          {},
+          { params: { inviteId: '00000000-0000-4000-a000-000000000000' } },
+        );
+      r.status(404);
+    });
+    await ctx.step('ANON cannot accept → 401', async () => {
+      const r = await ctx.client
+        .as(ctx.P.ANON)
+        .post('/v1/account-invites/:inviteId/accept', {}, { params: { inviteId } });
+      r.status(401);
+    });
+  },
+);
+
+flow(
+  'INV-5',
+  {
+    domain: 'projects',
+    routes: ['POST /v1/account-invites/:inviteId/decline'],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const inviteEmail = `${ctx.fixtures.name('inv5')}@ke2e.kortix.test`.toLowerCase();
+    let inviteId = '';
+    await ctx.step('create a pending account invite', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/accounts/:accountId/members',
+          { email: inviteEmail, role: 'member' },
+          { params: { accountId: team.id } },
+        );
+      r.status(201);
+      inviteId = r.json<any>().invite_id;
+    });
+    await ctx.step('decline as the wrong email → 403', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post('/v1/account-invites/:inviteId/decline', {}, { params: { inviteId } });
+      r.status(403);
+    });
+    await ctx.step('decline an unknown invite → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/account-invites/:inviteId/decline',
+          {},
+          { params: { inviteId: '00000000-0000-4000-a000-000000000000' } },
+        );
+      r.status(404);
+    });
+    await ctx.step('ANON cannot decline → 401', async () => {
+      const r = await ctx.client
+        .as(ctx.P.ANON)
+        .post('/v1/account-invites/:inviteId/decline', {}, { params: { inviteId } });
+      r.status(401);
+    });
+  },
+);
+
+// INV-6 — invite accept lifecycle: first accept → 200 {already_accepted:false};
+// RE-accept by the same addressee → 200 {already_accepted:true} (the idempotent
+// self-healing path — acceptance is re-runnable so a bootstrap grant that was
+// never written gets repaired on re-click, per apps/api/src/accounts/invites.ts
+// lines 307-354). The describe endpoint then reflects accepted_at. This is the
+// state-machine edge case INV-3/4 could NOT cover (no addressee principal).
+flow(
+  'INV-6',
+  {
+    domain: 'projects',
+    serial: true,
+    routes: [
+      'POST /v1/accounts/:accountId/members',
+      'POST /v1/account-invites/:inviteId/accept',
+      'GET /v1/account-invites/:inviteId',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    // An email with NO existing Kortix user → POST .../members creates a pending
+    // invite (members.ts:269) rather than adding the user immediately.
+    const inviteEmail = `${ctx.fixtures.name('inv6')}@${ctx.env.testEmailDomain}`.toLowerCase();
+    let inviteId = '';
+    await ctx.step('create a pending account invite (new email, no user)', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/accounts/:accountId/members',
+          { email: inviteEmail, role: 'member' },
+          { params: { accountId: team.id } },
+        );
+      r.status(201).body().has('$.status', 'pending').exists('$.invite_id');
+      inviteId = r.json<any>().invite_id;
+    });
+    // NOW mint the matching identity so the flow can act as the addressee —
+    // the accept/decline handlers reject any caller whose email != invite.email.
+    const addressee = await ctx.fixtures.userWithEmail(inviteEmail, { label: 'INV6-ADDRESSEE' });
+
+    await ctx.step('first accept as the addressee → 200 {already_accepted:false}', async () => {
+      const r = await ctx.client
+        .as(addressee)
+        .post('/v1/account-invites/:inviteId/accept', {}, { params: { inviteId } });
+      r.status(200)
+        .body()
+        .has('$.account_id', team.id)
+        .has('$.account_role', 'member')
+        .has('$.already_accepted', false)
+        .exists('$.bootstrap_grants_applied');
+    });
+    await ctx.step('re-accept (idempotent self-heal) → 200 {already_accepted:true}', async () => {
+      // The handler deliberately keeps an already-accepted invite redeemable so
+      // re-entry can repair a grant that was never written (invites.ts:307-312).
+      const r = await ctx.client
+        .as(addressee)
+        .post('/v1/account-invites/:inviteId/accept', {}, { params: { inviteId } });
+      r.status(200).body().has('$.already_accepted', true);
+    });
+    await ctx.step('describe as the addressee reflects the accepted state', async () => {
+      const r = await ctx.client
+        .as(addressee)
+        .get('/v1/account-invites/:inviteId', { params: { inviteId } });
+      r.status(200)
+        .body()
+        .has('$.email_matches_caller', true)
+        .has('$.expired', false)
+        .exists('$.accepted_at')
+        .has('$.account_id', team.id)
+        .has('$.email', inviteEmail)
+        .has('$.initial_role', 'member')
+        .has('$.inviter_email', ctx.P.OWNER.email!.toLowerCase());
+    });
+    await ctx.step(
+      'a NONMEMBER stranger describing the accepted invite is still redacted',
+      async () => {
+        const r = await ctx.client
+          .as(ctx.P.NONMEMBER)
+          .get('/v1/account-invites/:inviteId', { params: { inviteId } });
+        r.status(200).body().has('$.email_matches_caller', false).has('$.email', null);
+      },
+    );
+    // Last: it moves the addressee off the address, so a later describe would redact.
+    await ctx.step('another user who now holds the address cannot use the accepted invite → 409', async () => {
+      await adminUpdateUserEmail(ctx.env, addressee.userId!, `${ctx.fixtures.name('inv6-moved')}@${ctx.env.testEmailDomain}`.toLowerCase());
+      const successor = await ctx.fixtures.userWithEmail(inviteEmail, { label: 'INV6-SUCCESSOR' });
+      (await ctx.client.as(successor).post('/v1/account-invites/:inviteId/accept', {}, { params: { inviteId } }))
+        .status(409).body().has('$.error', 'Invite has already been accepted by another account.');
+    });
+  },
+);
+
+// INV-9 — an expired invite. Expiry is 7 days out, so the row is aged in the
+// database; accept, list and resend all go through the real routes.
+flow(
+  'INV-9',
+  {
+    domain: 'projects',
+    serial: true,
+    requires: ['database'],
+    routes: [
+      'POST /v1/accounts/:accountId/members',
+      'GET /v1/accounts/:accountId/invites',
+      'POST /v1/accounts/:accountId/invites/:inviteId/resend',
+      'POST /v1/account-invites/:inviteId/accept',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const params = { accountId: team.id };
+    const owner = ctx.client.as(ctx.P.OWNER);
+    const email = `${ctx.fixtures.name('inv9')}@${ctx.env.testEmailDomain}`.toLowerCase();
+    let inviteId = '';
+    const listed = async () => {
+      const r = await owner.get('/v1/accounts/:accountId/invites', { params });
+      r.status(200);
+      return r.json<Array<{ invite_id: string }>>().some((i) => i.invite_id === inviteId);
+    };
+    await ctx.step('create a pending invite, then age it past its expiry', async () => {
+      const r = await owner.post('/v1/accounts/:accountId/members', { email, role: 'member' }, { params });
+      r.status(201).body().has('$.status', 'pending');
+      inviteId = r.json<{ invite_id: string }>().invite_id;
+      await withDb(ctx, (db) =>
+        db.query("UPDATE kortix.account_invitations SET expires_at = now() - interval '1 minute' WHERE invite_id = $1", [inviteId]),
+      );
+    });
+    const addressee = await ctx.fixtures.userWithEmail(email, { label: 'INV9-ADDRESSEE' });
+    await ctx.step('accepting the expired invite → 410; the owner no longer lists it as pending', async () => {
+      (await ctx.client.as(addressee).post('/v1/account-invites/:inviteId/accept', {}, { params: { inviteId } }))
+        .status(410).body().has('$.error', 'This invite has expired. Ask the owner to send a new one.');
+      if (await listed()) throw new Error('an expired invite is still listed');
+    });
+    await ctx.step('resend renews the expiry → 200 with a future expires_at; the invite is listed again', async () => {
+      const r = await owner.post('/v1/accounts/:accountId/invites/:inviteId/resend', {}, { params: { ...params, inviteId } });
+      r.status(200).body().has('$.ok', true);
+      if (Date.parse(r.json<{ expires_at: string }>().expires_at) <= Date.now()) throw new Error('resend did not renew the expiry');
+      if (!(await listed())) throw new Error('a renewed invite is not listed');
+    });
+    await ctx.step('the renewed invite accepts → 200 {already_accepted:false}', async () => {
+      (await ctx.client.as(addressee).post('/v1/account-invites/:inviteId/accept', {}, { params: { inviteId } }))
+        .status(200).body().has('$.account_id', team.id).has('$.already_accepted', false);
+    });
+  },
+);
+
+// INV-8 — the invitee's own pending invites. The reported bug: an invitee who
+// signed up WITHOUT clicking the email link landed in an auto-created project
+// and never saw the invite. `GET /v1/account-invites` lists every pending
+// invite addressed to the caller's email, including the project the invite
+// grants, so the `/projects` selector can offer Join.
+flow(
+  'INV-8',
+  {
+    domain: 'projects',
+    serial: true,
+    routes: [
+      'POST /v1/projects/:projectId/access/invite',
+      'GET /v1/account-invites',
+      'POST /v1/account-invites/:inviteId/accept',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const p = await team.project();
+    const inviteEmail = `${ctx.fixtures.name('inv8')}@${ctx.env.testEmailDomain}`.toLowerCase();
+    let inviteId = '';
+    await ctx.step('invite an email with no Kortix account to a project → 201', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access/invite',
+          { email: inviteEmail, role: 'member' },
+          { params: { projectId: p.id } },
+        );
+      r.status(201).body().has('$.status', 'invited').exists('$.invite_id');
+      inviteId = r.json<any>().invite_id;
+    });
+    // The invitee signs up without the email link.
+    const addressee = await ctx.fixtures.userWithEmail(inviteEmail, { label: 'INV8-ADDRESSEE' });
+
+    await ctx.step('the invitee lists the invite with its workspace and project', async () => {
+      const r = await ctx.client.as(addressee).get('/v1/account-invites');
+      r.status(200);
+      const mine = (r.json<any>().invites as any[]).find((invite) => invite.invite_id === inviteId);
+      const actual = mine
+        ? {
+            account_id: mine.account_id,
+            initial_role: mine.initial_role,
+            projects: (mine.projects as any[]).map((g) => ({ project_id: g.project_id, role: g.role })),
+            has_project_name: typeof mine.projects[0]?.name === 'string' && mine.projects[0].name.length > 0,
+            has_expiry: typeof mine.expires_at === 'string',
+          }
+        : null;
+      const expected = {
+        account_id: team.id,
+        initial_role: 'member',
+        projects: [{ project_id: p.id, role: 'member' }],
+        has_project_name: true,
+        has_expiry: true,
+      };
+      assert({
+        kind: 'body',
+        description: 'the pending invite is listed with its account, role and project',
+        expected,
+        actual,
+        pass: JSON.stringify(actual) === JSON.stringify(expected),
+      });
+    });
+    await ctx.step('another user never sees an invite addressed to someone else', async () => {
+      const r = await ctx.client.as(ctx.P.OWNER).get('/v1/account-invites');
+      r.status(200);
+      const ids = (r.json<any>().invites as any[]).map((invite) => invite.invite_id);
+      assert({
+        kind: 'body',
+        description: "OWNER's list excludes the invite addressed to another email",
+        expected: 'absent',
+        actual: ids.includes(inviteId) ? 'present' : 'absent',
+        pass: !ids.includes(inviteId),
+      });
+    });
+    await ctx.step('ANON cannot list invites → 401', async () => {
+      const r = await ctx.client.as(ctx.P.ANON).get('/v1/account-invites');
+      r.status(401);
+    });
+    await ctx.step('joining grants the project and removes the invite from the list', async () => {
+      const accept = await ctx.client
+        .as(addressee)
+        .post('/v1/account-invites/:inviteId/accept', {}, { params: { inviteId } });
+      accept.status(200).body().has('$.account_id', team.id);
+      const granted = JSON.stringify(accept.json<any>().bootstrap_grants_applied);
+      const expectedGrant = JSON.stringify([{ project_id: p.id, role: 'member' }]);
+      assert({
+        kind: 'body',
+        description: 'accept applies the invited project grant',
+        expected: expectedGrant,
+        actual: granted,
+        pass: granted === expectedGrant,
+      });
+      const r = await ctx.client.as(addressee).get('/v1/account-invites');
+      r.status(200);
+      const ids = (r.json<any>().invites as any[]).map((invite) => invite.invite_id);
+      assert({
+        kind: 'body',
+        description: 'an accepted invite is no longer pending',
+        expected: 'absent',
+        actual: ids.includes(inviteId) ? 'present' : 'absent',
+        pass: !ids.includes(inviteId),
+      });
+    });
+  },
+);
+
+// INV-7 — decline state machine: an already-accepted invite CANNOT be declined
+// → 409 (invites.ts:393-394); declining a PENDING invite (then describing /
+// accepting it) → the row is deleted outright, so a later decline/accept is a
+// 404 (invites.ts:401, 391). Proves the exact status a client depends on, not
+// just "not 2xx".
+flow(
+  'INV-7',
+  {
+    domain: 'projects',
+    serial: true,
+    routes: [
+      'POST /v1/accounts/:accountId/members',
+      'POST /v1/account-invites/:inviteId/accept',
+      'POST /v1/account-invites/:inviteId/decline',
+      'GET /v1/account-invites/:inviteId',
+    ],
+  },
+  async (ctx) => {
+    // ── (a) decline an already-accepted invite → 409 ──────────────────────
+    const teamA = await ctx.fixtures.team();
+    const emailA = `${ctx.fixtures.name('inv7a')}@${ctx.env.testEmailDomain}`.toLowerCase();
+    let inviteA = '';
+    await ctx.step('create a pending invite A (new email, no user)', async () => {
+      const cr = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/accounts/:accountId/members',
+          { email: emailA, role: 'member' },
+          { params: { accountId: teamA.id } },
+        );
+      cr.status(201).body().has('$.status', 'pending');
+      inviteA = cr.json<any>().invite_id;
+    });
+    // Mint the matching identity AFTER the invite exists, so the members route
+    // took the "no user yet" pending-invite branch rather than the immediate-add.
+    const addresseeA = await ctx.fixtures.userWithEmail(emailA, { label: 'INV7-A' });
+    await ctx.step('accept invite A as the addressee → 200 {already_accepted:false}', async () => {
+      const ar = await ctx.client
+        .as(addresseeA)
+        .post('/v1/account-invites/:inviteId/accept', {}, { params: { inviteId: inviteA } });
+      ar.status(200).body().has('$.already_accepted', false);
+    });
+    await ctx.step('decline the already-accepted invite → 409', async () => {
+      // The addressee accepted; a decline now must be refused with 409, not 200
+      // (declining would silently strip a membership the user already has).
+      const r = await ctx.client
+        .as(addresseeA)
+        .post('/v1/account-invites/:inviteId/decline', {}, { params: { inviteId: inviteA } });
+      r.status(409);
+    });
+
+    // ── (b) decline a PENDING invite deletes the row → subsequent 404 ──────
+    const teamB = await ctx.fixtures.team();
+    const emailB = `${ctx.fixtures.name('inv7b')}@${ctx.env.testEmailDomain}`.toLowerCase();
+    let inviteB = '';
+    await ctx.step('create a pending invite B (new email)', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/accounts/:accountId/members',
+          { email: emailB, role: 'member' },
+          { params: { accountId: teamB.id } },
+        );
+      r.status(201);
+      inviteB = r.json<any>().invite_id;
+    });
+    const addresseeB = await ctx.fixtures.userWithEmail(emailB, { label: 'INV7-B' });
+    await ctx.step('decline the pending invite as the addressee → 200 {ok:true}', async () => {
+      const r = await ctx.client
+        .as(addresseeB)
+        .post('/v1/account-invites/:inviteId/decline', {}, { params: { inviteId: inviteB } });
+      r.status(200).body().has('$.ok', true);
+    });
+    await ctx.step('describe the declined (deleted) invite → 404', async () => {
+      const r = await ctx.client
+        .as(addresseeB)
+        .get('/v1/account-invites/:inviteId', { params: { inviteId: inviteB } });
+      r.status(404);
+    });
+    await ctx.step('accept the declined (deleted) invite → 404 (not 200/410)', async () => {
+      // The row is gone, so there's nothing to accept OR to 410-expire — 404.
+      const r = await ctx.client
+        .as(addresseeB)
+        .post('/v1/account-invites/:inviteId/accept', {}, { params: { inviteId: inviteB } });
+      r.status(404);
+    });
+    await ctx.step(
+      'decline the declined (deleted) invite again → 404 (idempotent delete)',
+      async () => {
+        const r = await ctx.client
+          .as(addresseeB)
+          .post('/v1/account-invites/:inviteId/decline', {}, { params: { inviteId: inviteB } });
+        r.status(404);
+      },
+    );
+  },
+);
+
+// PACC-2 — project email invite. A brand-new email (no Kortix account yet)
+// creates an account invitation carrying a bootstrap project grant → 201
+// {status:"invited"}. Validation (missing email / bad role → 400) and the
+// manage gate (non-member → 404, project not loadable) are enforced.
+flow(
+  'PACC-2',
+  { domain: 'projects', routes: ['POST /v1/projects/:projectId/access/invite'] },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const p = await team.project();
+    await ctx.step('invite an email with no Kortix account → 201 invitation created', async () => {
+      const email = `${ctx.fixtures.name('invitee')}@example.com`.toLowerCase();
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access/invite',
+          { email, role: 'manager' },
+          { params: { projectId: p.id } },
+        );
+      r.status(201)
+        .body()
+        .has('$.status', 'invited')
+        .has('$.project_role', 'manager')
+        .exists('$.invite_id');
+    });
+    const member = await team.addMember('member');
+    await ctx.step('invite an existing user → immediate access and an added-to-project email', async () => {
+      const r = await ctx.client.as(ctx.P.OWNER).post(
+        '/v1/projects/:projectId/access/invite',
+        { email: member.email, role: 'member' },
+        { params: { projectId: p.id } },
+      );
+      r.status(200).body().has('$.project_role', 'member');
+      if (!ctx.env.mailpitUrl || !member.email) throw new Error('Mailpit and recipient are required');
+      const messages = await waitForMailpit(ctx.env.mailpitUrl, member.email, (mails) =>
+        mails.some((mail) => mail.Subject === `Open "${p.name}" on Kortix`),
+      );
+      assert({ kind: 'mail', description: 'existing member receives notification', expected: true, actual: messages.length > 0, pass: messages.length > 0 });
+    });
+    await ctx.step('missing email → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access/invite',
+          { role: 'manager' },
+          { params: { projectId: p.id } },
+        );
+      r.status(400);
+    });
+    await ctx.step('invalid role → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access/invite',
+          { email: 'nope@example.com', role: 'superboss' },
+          { params: { projectId: p.id } },
+        );
+      r.status(400);
+    });
+    await ctx.step('NONMEMBER cannot invite → 403 (not a member of the account)', async () => {
+      const r = await ctx.client
+        .as(ctx.P.NONMEMBER)
+        .post(
+          '/v1/projects/:projectId/access/invite',
+          { email: 'stranger@example.com', role: 'user' },
+          { params: { projectId: p.id } },
+        );
+      r.status(403);
+    });
+  },
+);

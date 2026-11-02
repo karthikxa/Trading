@@ -1,0 +1,94 @@
+/**
+ * Step 5 — change the model, with a typesafe model picker.
+ *
+ * Changes the PROJECT default model via `project.modelDefaults.set(...)`,
+ * then re-reads the defaults and asserts the change stuck. Every new session
+ * in the project resolves to this model unless a prompt overrides it.
+ *
+ * Kortix managed models are whatever Platinum Inference offers, so the id is
+ * a runtime value: the project's model picker lists the current ones.
+
+ * Project selection: argv[3] → KORTIX_PROJECT_ID (required).
+ *
+ * Run:
+ *   KORTIX_API_URL=http://localhost:8008/v1 KORTIX_API_KEY=kortix_pat_... \
+ *     bun run playground/chat/14-change-default-model.ts glm-5.3-flash [projectId]
+ *
+ * As an npm consumer, the import lines change to:
+ *   import { createKortix } from '@kortix/sdk';
+ */
+
+import { createKortix } from "../../src/index";
+
+/** The shape `session.setModel(...)` and `session.send(text, { model })` take. */
+function toSessionModel(modelID: string) {
+  return { providerID: "kortix", modelID } as const;
+}
+
+async function main() {
+  const backendUrl = process.env.KORTIX_API_URL ?? "http://localhost:8008/v1";
+  const apiKey = process.env.KORTIX_API_KEY;
+  if (!apiKey) {
+    console.error(
+      "Set KORTIX_API_KEY (mint one: user settings → API keys → Create API key).",
+    );
+    process.exit(1);
+  }
+
+  const requested = process.argv[2];
+  if (!requested) {
+    console.error("✗ no model given — pass a model id from the project's model picker");
+    process.exit(1);
+    return;
+  }
+  const model = requested;
+
+  const projectId = process.argv[3] ?? process.env.KORTIX_PROJECT_ID;
+  if (!projectId) {
+    console.error("✗ no project given — pass argv[3] or set KORTIX_PROJECT_ID");
+    process.exit(1);
+    return;
+  }
+
+  const kortix = createKortix({ backendUrl, getToken: async () => apiKey });
+  const project = kortix.project(projectId);
+
+  const before = await project.modelDefaults.get();
+  if (before.freeTier) {
+    console.warn(
+      "⚠ account is free-tier — the gateway may reject managed models",
+    );
+  }
+  console.log(
+    `current: project=${before.projectDefault ?? "(unset)"} account=${before.accountDefault ?? "(unset)"} platform=${before.platformDefault}`,
+  );
+  console.log(
+    `resolved for this project: ${before.resolvedForCaller ?? "(none)"} · source: ${before.resolvedSource ?? "n/a"}`,
+  );
+
+  await project.modelDefaults.set({ scope: "project", model });
+  console.log(`✓ set project default → ${model}`);
+
+  const after = await project.modelDefaults.get();
+  if (after.projectDefault !== model) {
+    console.error(
+      `✗ step 5 FAILED — re-read projectDefault is ${after.projectDefault ?? "(unset)"}, expected ${model}`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `✓ re-read defaults — projectDefault is ${after.projectDefault}, resolves via '${after.resolvedSource ?? "project"}'`,
+  );
+
+  console.log("\nper-session override (paste into step 4 before send):");
+  console.log(`  session.setModel(${JSON.stringify(toSessionModel(model))})`);
+  console.log(
+    `  // or one-shot: session.send(prompt, { model: ${JSON.stringify(toSessionModel(model))} })`,
+  );
+}
+
+main().catch((error) => {
+  console.error("✗ step 5 FAILED");
+  console.error(error);
+  process.exit(1);
+});

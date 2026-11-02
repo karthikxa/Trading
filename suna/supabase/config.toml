@@ -1,0 +1,105 @@
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║  Supabase Local Development Configuration                                  ║
+# ║                                                                             ║
+# ║  Used by `supabase start` to spin up the local Supabase stack.             ║
+# ║  pg_cron and pg_net are built into Supabase's local postgres image —       ║
+# ║  no custom compilation needed (replaces services/postgres/Dockerfile).     ║
+# ║                                                                             ║
+# ║  Usage:                                                                     ║
+# ║    supabase start          (first time — pulls images, ~2 min)             ║
+# ║    supabase status         (show URLs, keys, ports)                        ║
+# ║    supabase db reset       (re-run migrations from scratch)                ║
+# ║    supabase stop           (stop all containers)                           ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+project_id = "kortix-local"
+
+# ─── API (PostgREST) ─────────────────────────────────────────────────────────
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "kortix"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+# ─── Database ─────────────────────────────────────────────────────────────────
+[db]
+port = 54322
+major_version = 17
+
+[db.pooler]
+enabled = false
+
+# ─── Auth (GoTrue) ────────────────────────────────────────────────────────────
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+# kortix://** — the mobile app's deep links (auth/callback for magic links and
+# OAuth, auth/reset-password). Without it GoTrue drops the redirect and sends
+# the user to site_url instead of back into the app.
+additional_redirect_urls = ["http://127.0.0.1:3000", "http://localhost:3000", "kortix://**"]
+enable_signup = true
+# GoTrue must reject a rotated refresh token even outside the Kortix proxy.
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 0
+
+# Authenticator-app (TOTP) MFA: Settings → Security enrolls a factor, and the
+# step-up dialog verifies it. Without this section GoTrue rejects both calls.
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false
+
+# GitHub OAuth — "Sign in with GitHub" on /auth, and NOTHING else.
+#
+# It deliberately does NOT back linking a GitHub App installation to an
+# account. That flow used to mint its identity proof here, which made an
+# unrelated feature depend on this provider's config and broke it in
+# production when the provider was switched off on one Supabase project. It
+# now uses the GitHub App's OWN OAuth client instead — see
+# apps/api/src/platform/routes/github-app.ts (oauth/authorize + oauth/callback)
+# and KORTIX_GITHUB_APP_CLIENT_ID/KORTIX_GITHUB_APP_CLIENT_SECRET. Keep the
+# two separate: this one is per-user product login, that one is
+# per-account/org GitHub App authority.
+#
+# Requires a GitHub OAuth App with callback http://127.0.0.1:54321/auth/v1/callback.
+# Set SUPABASE_AUTH_EXTERNAL_GITHUB_CLIENT_ID and
+# SUPABASE_AUTH_EXTERNAL_GITHUB_SECRET in the supabase CLI environment
+# before running `supabase start` / `supabase stop && supabase start`.
+[auth.external.github]
+enabled = true
+client_id = "env(SUPABASE_AUTH_EXTERNAL_GITHUB_CLIENT_ID)"
+secret = "env(SUPABASE_AUTH_EXTERNAL_GITHUB_SECRET)"
+redirect_uri = "http://127.0.0.1:54321/auth/v1/callback"
+
+# ─── Realtime ─────────────────────────────────────────────────────────────────
+[realtime]
+enabled = false
+
+# ─── Storage ──────────────────────────────────────────────────────────────────
+# Enabled for the public "avatars" bucket (profile pictures). See
+# migrations/00000000000060_avatars_storage_bucket.sql.
+[storage]
+enabled = true
+file_size_limit = "50MiB"
+
+# ─── Edge Functions ───────────────────────────────────────────────────────────
+[edge_runtime]
+enabled = false
+
+# ─── Studio (Dashboard UI) ───────────────────────────────────────────────────
+[studio]
+enabled = true
+port = 54323
+
+# ─── Inbucket (Email testing) ────────────────────────────────────────────────
+[inbucket]
+enabled = true
+port = 54324
+
+# ─── Analytics ────────────────────────────────────────────────────────────────
+[analytics]
+enabled = false

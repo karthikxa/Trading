@@ -1,0 +1,187 @@
+/**
+ * Platform API client — sandbox lifecycle (providers, ensure/get/create/list,
+ * discovery, restart/stop, cancel/reactivate).
+ */
+
+import {
+  createProjectSession,
+  getProject,
+  startProjectSession,
+  listProjects,
+  restartProjectSession,
+  stopProjectSession,
+} from '../projects-client';
+import type {
+  SandboxInfo,
+  SandboxProviderName,
+  ServerTypeOption,
+  ProvidersInfo,
+} from './types';
+import { backendApi } from '../../http/api-client';
+import {
+  findProjectSessionSandbox,
+  getSessionById,
+  listProjectSessionSandboxes,
+  projectSessionToSandboxInfo,
+  normalizeSandboxId,
+  resolveProjectSessionId,
+} from './shared';
+
+/**
+ * Get available sandbox providers from the platform service.
+ */
+export async function getProviders(): Promise<ProvidersInfo> {
+  const response = await backendApi.get<ProvidersInfo>('/setup/sandbox-providers');
+  if (response.error) throw response.error;
+  return response.data!;
+}
+
+/**
+ * Ensure a sandbox is running. Idempotent:
+ *   - Running  → return it
+ *   - Stopped  → start it
+ *   - Missing  → create it
+ */
+export async function ensureSandbox(opts?: {
+  provider?: SandboxProviderName;
+  serverType?: ServerTypeOption;
+}): Promise<{ sandbox: SandboxInfo; created: boolean }> {
+  const existing = await findProjectSessionSandbox();
+  if (existing) return { sandbox: existing.sandbox, created: false };
+
+  const projects = await listProjects();
+  const project = projects[0];
+  if (!project) {
+    throw new Error('Create a project before starting a sandbox');
+  }
+
+  const session = await createProjectSession(project.project_id, {
+    ...(opts?.provider ? { provider: opts.provider } : {}),
+  });
+  const runtime = (await startProjectSession(project.project_id, session.session_id))?.sandbox ?? null;
+  return { sandbox: projectSessionToSandboxInfo(project, session, runtime), created: true };
+}
+
+/**
+ * Get the user's sandbox.
+ * Returns null if no sandbox exists (call ensureSandbox first).
+ */
+export async function getSandbox(): Promise<SandboxInfo | null> {
+  const row = await findProjectSessionSandbox().catch(() => null);
+  return row?.sandbox ?? null;
+}
+
+/**
+ * Create a brand new remote sandbox.
+ *
+ * Use this when the user explicitly clicks a provider in the Instance Manager.
+ * For idempotent "make sure I have a sandbox" logic, use ensureSandbox() instead.
+ */
+export async function createSandbox(opts?: {
+  provider?: SandboxProviderName;
+  serverType?: ServerTypeOption;
+  name?: string;
+}): Promise<{ sandbox: SandboxInfo }> {
+  const result = await ensureSandbox(opts);
+  return { sandbox: result.sandbox };
+}
+
+/**
+ * One sandbox by its session id (`session_id == sandbox_id`), or `null`.
+ * Reads the session and its project by id (`GET /v1/sessions/:id`, then
+ * `GET /v1/projects/:id`), so a session older than every list page resolves.
+ * A provider external id still resolves, but only for a session on its
+ * project's first sessions page; pass the session id.
+ */
+export async function getSandboxById(sandboxId: unknown): Promise<SandboxInfo | null> {
+  const normalizedSandboxId = normalizeSandboxId(sandboxId);
+  if (!normalizedSandboxId) return null;
+
+  try {
+    const session = await getSessionById(normalizedSandboxId);
+    if (!session) return (await findProjectSessionSandbox(normalizedSandboxId))?.sandbox ?? null;
+    return projectSessionToSandboxInfo(await getProject(session.project_id), session, null);
+  } catch {
+    return null;
+  }
+}
+
+export async function renameSandbox(sandboxId: string, _name: string): Promise<SandboxInfo> {
+  if (!(await resolveProjectSessionId(sandboxId))) throw new Error('Project session sandbox not found');
+  throw new Error('Renaming project-session sandboxes is not exposed by the current API');
+}
+
+/**
+ * List all sandboxes for the user's account.
+ */
+export async function listSandboxes(sandboxId?: unknown): Promise<SandboxInfo[]> {
+  const normalizedSandboxId = normalizeSandboxId(sandboxId);
+
+  const rows = await listProjectSessionSandboxes().catch(() => []);
+  return rows
+    .map((row) => row.sandbox)
+    .filter((sandbox) =>
+      !normalizedSandboxId ||
+      sandbox.sandbox_id === normalizedSandboxId ||
+      sandbox.external_id === normalizedSandboxId
+    );
+}
+
+/**
+ * @deprecated The API deleted `GET /v1/platform/local-bridge/status` with the
+ * local instance system. There is no local sandbox to discover: always
+ * resolves `null`, without a request. Removed in the next major.
+ */
+export async function discoverLocalSandbox(): Promise<SandboxInfo | null> {
+  return null;
+}
+
+/**
+ * Restart a sandbox workload. For a remote instance this repairs the workload
+ * container/service and only starts the host if it is currently stopped.
+ *
+ * `sandboxId` is the session id (`session_id == sandbox_id`): one read by id
+ * (`GET /v1/sessions/:id`) finds its project, however old the session is. A
+ * provider external id resolves only for a session on its project's first
+ * sessions page. With the project id at hand, call
+ * `restartProjectSession(projectId, sessionId)` (or `s.restart()`) directly.
+ */
+export async function restartSandbox(sandboxId?: string): Promise<void> {
+  if (!sandboxId) {
+    throw new Error('No sandbox selected for workload restart');
+  }
+  const target = await resolveProjectSessionId(sandboxId);
+  if (!target) throw new Error('Project session sandbox not found');
+  await restartProjectSession(target.projectId, target.sessionId);
+}
+
+/**
+ * Stop a sandbox in place — pauses the running sandbox (disk kept, resumable
+ * via restart/start) without deleting the session. `sandboxId` is resolved as
+ * in `restartSandbox`. With the project id at hand, call
+ * `stopProjectSession(projectId, sessionId)` (or `s.stop()`) directly.
+ *
+ * Previously this called deleteProjectSession, which destroys the session
+ * instead of pausing it — fixed to use the dedicated stop endpoint.
+ */
+export async function stopSandbox(sandboxId?: string): Promise<void> {
+  if (!sandboxId) throw new Error('No sandbox selected to stop');
+  const target = await resolveProjectSessionId(sandboxId);
+  if (!target) throw new Error('Project session sandbox not found');
+  await stopProjectSession(target.projectId, target.sessionId);
+}
+
+/**
+ * Schedule a sandbox for cancellation at end of billing period.
+ * The instance keeps running until then; reactivate to reverse.
+ */
+export async function cancelSandbox(sandboxId?: string): Promise<{ cancel_at: string | null }> {
+  throw new Error('Cancellation is not exposed for project-session sandboxes');
+}
+
+/**
+ * Reverse a scheduled cancellation — subscription continues as normal.
+ */
+export async function reactivateSandbox(sandboxId?: string): Promise<void> {
+  throw new Error('Reactivation is not exposed for project-session sandboxes');
+}

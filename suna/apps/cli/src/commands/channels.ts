@@ -1,0 +1,591 @@
+import { readFileSync } from 'node:fs';
+import { ApiError } from '../api/client.ts';
+import { splitHelp } from '../command-argv.ts';
+import {
+  emitJson,
+  fail,
+  resolveProjectContext,
+  surfaceApiError,
+  takeFlagBool,
+  takeFlagValue,
+  takeFlagValues,
+} from '../command-helpers.ts';
+import { C, help, status } from '../style.ts';
+import { bindingsLs, bindingsPatch } from './channels-bindings.ts';
+import type { EmailInstallation, EmailMode } from './channels-email.ts';
+import type { TeamsInstallation } from './channels-teams.ts';
+import { emailCommand } from './channels-email.ts';
+import { teamsConnect, teamsDisconnect, teamsManifest, teamsStatus } from './channels-teams.ts';
+
+const HELP = help`Usage: kortix channels <subcommand> [options]
+
+Connect this project to a chat platform (Slack by default; MS Teams via
+--platform teams), give it an email inbox, and decide which agent/model each
+bound channel runs.
+
+Subcommands:
+  status                  Show Slack, Teams and Email connection states.
+  connect                 Connect. Slack: on Kortix Cloud (or any host with the
+                          shared Slack app configured) this prints a one-click
+                          "Add to Slack" install link — open it, pick the
+                          workspace, Allow. Done: no app to create, no tokens.
+                          Manual token mode (self-host without the shared app)
+                          kicks in automatically, or force it with --manual.
+                          Teams: prints the Microsoft admin-consent URL (open
+                          it, grant tenant-wide consent, the app is published
+                          to your Teams catalog automatically).
+  disconnect              Drop the project's connection (Slack, or Teams with
+                          --platform teams).
+  manifest                Print the app manifest JSON — MANUAL/self-host
+                          setup only. Slack: paste into api.slack.com/apps →
+                          "From a manifest". Teams: prints the Teams app
+                          manifest from the server. The one-click install
+                          never needs this.
+
+Email (Resend Inboxes, experimental — kortix projects features enable email_channel;
+  your own Resend account: https://resend.com/docs/dashboard/inboxes/introduction):
+  Every inbox is an ACCOUNT of the project's email connector (kortix_email):
+  add as many as you need; each is only yours or shared with the project.
+  email inboxes [--json]          The inboxes you can see.
+  email inboxes add [options]     Add an inbox: --username, --domain, --api-key,
+                                  --share me|project (default project), --label.
+  email inboxes rm <address|id>   Remove one (Resend deletes it when Kortix made it).
+  email inboxes policy <address|id> --allow … | --allow-all
+                                  Replace who may email that inbox.
+  email inboxes default <address|id>
+                                  Make it the default inbox of its owner.
+  email status [--json]           The default inbox + delivery mode.
+  email connect --api-key <re_…>  Add a shared inbox (same as inboxes add).
+                                  A key from resend.com/api-keys, on a domain
+                                  with receiving on. Without a key: only where
+                                  Kortix-managed email is on.
+  email domains [--api-key k]     Domains an inbox can use (no key: the managed one).
+  email domains add <domain>      Add a custom domain to your Resend account
+                                  (--api-key); prints the DNS records to set.
+  email domains verify <id>       Check that domain's DNS records again.
+  email disconnect                Remove the default inbox.
+  email policy [options]          Replace who may email the default inbox.
+
+Channel bindings (which agent/model/join-policy one bound channel uses):
+  bindings [ls] [--json]          List every bound channel + what it resolves to.
+  bind <bindingId> [options]      Change one binding.
+
+Global options:
+  --platform <slack|teams>  Filter status; other commands default to Slack.
+  --project <id>          Operate on this project id (default: linked or
+                          \$KORTIX_PROJECT_ID).
+  --host <name>           Use this host instead of the linked / active one.
+  --json                  Machine-readable output (status/connect).
+  -h, --help              Show this help.
+
+Connect options:
+  --wait                  After printing the install link, poll until the
+                          workspace is connected (Ctrl+C to stop). Slack only.
+  --timeout <sec>         Give up --wait after this many seconds (default 300).
+  --manual                Skip the one-click flow; save a bot token + signing
+                          secret instead. Slack only.
+  --bot-token <xoxb-…>    Bot User OAuth Token (implies --manual). Or env
+                          SLACK_BOT_TOKEN. Or \`-\` for stdin.
+  --signing-secret <…>    Signing secret (implies --manual). Or env
+                          SLACK_SIGNING_SECRET. Or \`-\` for stdin.
+
+Email options:
+  --api-key <re_…>        Your Resend API key (full access). Or \`-\` for stdin.
+                          Required unless Kortix-managed email is on.
+  --display-name <n>      From-name on outgoing mail (default: project name).
+  --username <u>          Local part of a NEW inbox.
+  --domain <d>            Domain of a NEW inbox (your Resend domain, or the
+                          managed one).
+  --share <me|project>    inboxes add: only you, or the project (default).
+  --label <name>          inboxes add: the account's name (default: address).
+  --inbox-id <id>         Attach an EXISTING Resend inbox. Needs --email too.
+  --email <addr>          That inbox's address. Needs --inbox-id too.
+  --allow <email|@domain> Repeatable. Only these senders reach the agent. A bare
+                          value with no \`@\` (or a leading \`@\`) is a DOMAIN.
+                          Any --allow puts the policy in \`restricted\` mode.
+  --allow-regex <re>      Also accept senders matching this regex.
+  --allow-all             policy: clear the list — accept every sender again.
+
+Bind options:
+  --agent <name>          Run this declared agent in the channel.
+  --no-agent              Fall back to the project's default agent.
+  --model <id>            Pin a gateway wire model id.
+  --no-model              Fall back to the agent/project/account default.
+  --policy <p>            Who may join a conversation: owner_approval,
+                          owner_only, or project_open.
+
+Email + bind writes need \`project.connector.write\`.
+`;
+
+interface SlackInstallation {
+  workspaceId: string;
+  workspaceName: string | null;
+  botUserId: string | null;
+  installedAt: string;
+}
+
+interface SlackMode {
+  oauth_available: boolean;
+  install_url: string | null;
+}
+
+type Platform = 'slack' | 'teams';
+
+type ProjectCtx = NonNullable<Awaited<ReturnType<typeof resolveProjectContext>>>;
+
+/** Extra flags the email/bindings subcommands take; parsed here, consumed there. */
+export interface ExtraFlags {
+  connector?: string;
+  apiKey?: string;
+  displayName?: string;
+  username?: string;
+  domain?: string;
+  inboxId?: string;
+  email?: string;
+  /** `email inboxes add`: `me` (only you) or `project` (shared, the default). */
+  share?: string;
+  /** `email inboxes add`: the account's name (default: the address). */
+  label?: string;
+  allow: string[];
+  allowRegex?: string;
+  allowAll: boolean;
+  agent?: string;
+  noAgent: boolean;
+  model?: string;
+  noModel: boolean;
+  policy?: string;
+}
+
+export async function runChannels(argv: string[]): Promise<number> {
+  // A bare `kortix channels` runs `status`; only a help flag prints the help.
+  const helpCode = argv.length > 0 ? splitHelp(argv, HELP) : null;
+  if (helpCode !== null) return helpCode;
+
+  const rest = argv.slice();
+
+  const json = takeFlagBool(rest, ['--json']);
+  const manual = takeFlagBool(rest, ['--manual']);
+  const wait = takeFlagBool(rest, ['--wait']);
+  let projectFlag: string | undefined;
+  let hostFlag: string | undefined;
+  let botTokenFlag: string | undefined;
+  let signingSecretFlag: string | undefined;
+  let timeoutFlag: string | undefined;
+  let platformFlag: string | undefined;
+  let extra: ExtraFlags;
+  try {
+    projectFlag = takeFlagValue(rest, ['--project']);
+    hostFlag = takeFlagValue(rest, ['--host']);
+    botTokenFlag = takeFlagValue(rest, ['--bot-token']);
+    signingSecretFlag = takeFlagValue(rest, ['--signing-secret']);
+    timeoutFlag = takeFlagValue(rest, ['--timeout']);
+    platformFlag = takeFlagValue(rest, ['--platform']);
+    extra = {
+      // `--allow`/`--no-agent`/… must come out BEFORE the positional filter
+      // below, or a flag value ends up read as a subcommand argument.
+      allow: takeFlagValues(rest, ['--allow']),
+      allowAll: takeFlagBool(rest, ['--allow-all']),
+      noAgent: takeFlagBool(rest, ['--no-agent', '--default-agent']),
+      noModel: takeFlagBool(rest, ['--no-model', '--default-model']),
+      connector: takeFlagValue(rest, ['--connector', '--connector-slug']),
+      apiKey: takeFlagValue(rest, ['--api-key']),
+      displayName: takeFlagValue(rest, ['--display-name']),
+      username: takeFlagValue(rest, ['--username']),
+      domain: takeFlagValue(rest, ['--domain']),
+      inboxId: takeFlagValue(rest, ['--inbox-id']),
+      email: takeFlagValue(rest, ['--email']),
+      share: takeFlagValue(rest, ['--share']),
+      label: takeFlagValue(rest, ['--label']),
+      allowRegex: takeFlagValue(rest, ['--allow-regex']),
+      agent: takeFlagValue(rest, ['--agent']),
+      model: takeFlagValue(rest, ['--model']),
+      policy: takeFlagValue(rest, ['--policy']),
+    };
+  } catch (err) {
+    return fail((err as Error).message);
+  }
+  const subIndex = rest.findIndex((arg) => !arg.startsWith('-'));
+  const sub = subIndex < 0 ? 'status' : rest.splice(subIndex, 1)[0];
+  const platform: Platform = platformFlag === 'teams' ? 'teams' : 'slack';
+  if (platformFlag && platformFlag !== 'slack' && platformFlag !== 'teams') {
+    return fail(`--platform must be 'slack' or 'teams', got '${platformFlag}'`);
+  }
+  const ctxOpts = { projectArg: projectFlag, hostArg: hostFlag };
+
+  switch (sub) {
+    case 'status':
+      if (!platformFlag) return allChannelsStatus(ctxOpts, extra.connector, json);
+      return platform === 'teams' ? teamsStatus(ctxOpts, json) : channelsStatus(ctxOpts, json);
+    case 'connect': {
+      // Reject an invalid --timeout here, at the one read site: a
+      // non-numeric or negative value used to reach the poll deadline raw,
+      // and NaN never satisfies `Date.now() >= deadline` (Infinity never
+      // does either), so `connect --wait` hung forever. A finite value whose
+      // ms multiplication overflows (`--timeout 2e305`) hangs the same way.
+      const timeoutSec = timeoutFlag ? Number(timeoutFlag) : 300;
+      if (timeoutSec < 0 || !Number.isFinite(timeoutSec * 1000)) {
+        return fail(`--timeout requires a non-negative number of seconds, got '${timeoutFlag}'`);
+      }
+      return platform === 'teams'
+        ? teamsConnect(ctxOpts, { json })
+        : channelsConnect(ctxOpts, {
+            json,
+            manual,
+            wait,
+            timeoutSec,
+            botTokenFlag,
+            signingSecretFlag,
+          });
+    }
+    case 'disconnect':
+    case 'remove':
+    case 'rm':
+      return platform === 'teams' ? teamsDisconnect(ctxOpts) : channelsDisconnect(ctxOpts);
+    case 'manifest':
+      return platform === 'teams' ? teamsManifest(ctxOpts) : channelsManifest(ctxOpts);
+    case 'email':
+      return emailCommand(ctxOpts, rest, extra, json);
+    case 'bindings':
+      return bindingsLs(ctxOpts, rest, json);
+    case 'bind':
+      return bindingsPatch(ctxOpts, rest, extra, json);
+    default:
+      process.stderr.write(`${status.err(`unknown subcommand "${sub}"`)}\n\n${HELP}`);
+      return 2;
+  }
+}
+
+async function allChannelsStatus(
+  ctxOpts: { projectArg?: string; hostArg?: string },
+  connector: string | undefined,
+  json: boolean,
+): Promise<number> {
+  const ctx = await resolveProjectContext(ctxOpts);
+  if (!ctx) return 1;
+  const base = `/projects/${ctx.projectId}/channels`;
+  try {
+    const [slack, teams, mode, email] = await Promise.all([
+      ctx.client.get<SlackInstallation | null>(`${base}/slack/installation`),
+      ctx.client.get<TeamsInstallation | null>(`${base}/teams/installation`),
+      ctx.client.get<EmailMode>(`${base}/email/mode`),
+      ctx.client.get<EmailInstallation | null>(
+        `${base}/email/installation?connector_slug=${encodeURIComponent(connector ?? 'kortix_email')}`,
+      ),
+    ]);
+    if (json) {
+      emitJson({
+        slack: { connected: Boolean(slack), installation: slack ?? null },
+        teams: { connected: Boolean(teams), installation: teams ?? null },
+        email: { connected: Boolean(email), mode, installation: email ?? null },
+      });
+    } else {
+      process.stdout.write(
+        `CHANNEL  STATUS\n` +
+          `slack    ${slack ? 'connected' : 'not connected'}\n` +
+          `teams    ${teams ? 'connected' : 'not connected'}\n` +
+          `email    ${!mode.enabled ? 'off (kortix projects features enable email_channel)' : email ? 'connected' : 'not connected'}\n` +
+          `\nDetails: kortix channels status --platform <slack|teams> or kortix channels email status\n`,
+      );
+    }
+    return 0;
+  } catch (err) {
+    return surfaceApiError(err);
+  }
+}
+
+async function channelsStatus(
+  ctxOpts: { projectArg?: string; hostArg?: string },
+  json: boolean,
+): Promise<number> {
+  const ctx = await resolveProjectContext(ctxOpts);
+  if (!ctx) return 1;
+  try {
+    const install = await ctx.client.get<SlackInstallation | null>(
+      `/projects/${ctx.projectId}/channels/slack/installation`,
+    );
+    if (json) {
+      emitJson({ connected: Boolean(install), installation: install ?? null });
+      return 0;
+    }
+    if (!install) {
+      process.stdout.write(
+        `${C.dim}slack${C.reset}  not connected\n` +
+          `       Run ${C.cyan}kortix channels connect${C.reset} — it prints a one-click "Add to Slack" link.\n`,
+      );
+      return 0;
+    }
+    printInstall(ctx, install, status.ok('Slack'));
+    return 0;
+  } catch (err) {
+    return surfaceApiError(err);
+  }
+}
+
+interface ConnectOpts {
+  json: boolean;
+  manual: boolean;
+  wait: boolean;
+  timeoutSec: number;
+  botTokenFlag: string | undefined;
+  signingSecretFlag: string | undefined;
+}
+
+async function channelsConnect(
+  ctxOpts: { projectArg?: string; hostArg?: string },
+  opts: ConnectOpts,
+): Promise<number> {
+  const ctx = await resolveProjectContext(ctxOpts);
+  if (!ctx) return 1;
+
+  // Explicit credentials always mean manual mode — never second-guess them.
+  const wantsManual = opts.manual || Boolean(opts.botTokenFlag) || Boolean(opts.signingSecretFlag);
+  if (wantsManual) {
+    return connectManual(ctx, opts);
+  }
+
+  let mode: SlackMode = { oauth_available: false, install_url: null };
+  try {
+    mode = await ctx.client.get<SlackMode>(`/projects/${ctx.projectId}/channels/slack/mode`);
+  } catch (err) {
+    // A host too old to serve /mode still supports manual connect.
+    if (!(err instanceof ApiError && err.status === 404)) return surfaceApiError(err);
+  }
+
+  if (!mode.oauth_available || !mode.install_url) {
+    process.stdout.write(
+      `${C.dim}One-click install isn't configured on this host (no shared Slack app) — manual setup:${C.reset}\n`,
+    );
+    return connectManual(ctx, opts);
+  }
+
+  let existing: SlackInstallation | null = null;
+  try {
+    existing = await ctx.client.get<SlackInstallation | null>(
+      `/projects/${ctx.projectId}/channels/slack/installation`,
+    );
+  } catch {
+    // Non-fatal: fall through and offer the install link anyway.
+  }
+
+  if (opts.json) {
+    emitJson({
+      connected: Boolean(existing),
+      installation: existing ?? null,
+      install_url: mode.install_url,
+      note: existing
+        ? 'Already connected. Opening install_url again re-installs or switches the workspace.'
+        : 'Open install_url in a browser: pick the workspace, click Allow, done. Link is valid ~10 minutes.',
+    });
+    if (!opts.wait || existing) return 0;
+  } else if (existing) {
+    printInstall(ctx, existing, status.ok('Already connected'));
+    process.stdout.write(
+      `\n  To reinstall or switch workspaces, open:\n` +
+        `  ${C.cyan}${mode.install_url}${C.reset}\n` +
+        `  ${C.dim}(or run \`kortix channels disconnect\` first)${C.reset}\n`,
+    );
+    return 0;
+  } else {
+    process.stdout.write(
+      `\n  ${C.bold}Add to Slack — one click:${C.reset}\n\n` +
+        `  ${C.cyan}${mode.install_url}${C.reset}\n\n` +
+        `  Open the link, pick your workspace, click ${C.bold}Allow${C.reset} — that's the whole setup.\n` +
+        `  ${C.dim}No Slack app to create, no manifest, no tokens. Link valid ~10 minutes.${C.reset}\n` +
+        `  Confirm after installing with ${C.cyan}kortix channels status${C.reset}.\n\n`,
+    );
+  }
+
+  if (!opts.wait) return 0;
+  return waitForInstall(ctx, opts.timeoutSec, opts.json);
+}
+
+async function waitForInstall(ctx: ProjectCtx, timeoutSec: number, json: boolean): Promise<number> {
+  const deadline = Date.now() + timeoutSec * 1000;
+  const intervalMs = 4000;
+  if (!json) {
+    process.stdout.write(`  ${C.dim}Waiting for the install… (Ctrl+C to stop)${C.reset}\n`);
+  }
+  for (;;) {
+    let install: SlackInstallation | null = null;
+    try {
+      install = await ctx.client.get<SlackInstallation | null>(
+        `/projects/${ctx.projectId}/channels/slack/installation`,
+      );
+    } catch {
+      // Transient poll errors are fine; keep waiting until the deadline.
+    }
+    if (install) {
+      if (json) {
+        emitJson({ connected: true, installation: install });
+      } else {
+        printInstall(
+          ctx,
+          install,
+          status.ok(`Connected to ${install.workspaceName ?? install.workspaceId}`),
+        );
+      }
+      return 0;
+    }
+    if (Date.now() >= deadline) {
+      process.stderr.write(
+        `${status.err(`Still not connected after ${timeoutSec}s.`)} The link stays usable — ` +
+          `check later with ${C.cyan}kortix channels status${C.reset}.\n`,
+      );
+      return 1;
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
+async function connectManual(ctx: ProjectCtx, opts: ConnectOpts): Promise<number> {
+  const botToken = resolveSecret('bot token', opts.botTokenFlag, 'SLACK_BOT_TOKEN');
+  const signingSecret = resolveSecret(
+    'signing secret',
+    opts.signingSecretFlag,
+    'SLACK_SIGNING_SECRET',
+  );
+  if (botToken === null || signingSecret === null) {
+    process.stderr.write(
+      `\nManual setup: create the app with ${C.cyan}kortix channels manifest${C.reset} ` +
+        `(api.slack.com/apps → "From a manifest"), install it to the workspace, then re-run\n` +
+        `${C.cyan}kortix channels connect --bot-token xoxb-… --signing-secret …${C.reset}\n`,
+    );
+    return 2;
+  }
+  if (!botToken.startsWith('xoxb-')) return fail('Bot token must start with `xoxb-`.');
+
+  let install: SlackInstallation;
+  try {
+    install = await ctx.client.post<SlackInstallation>(
+      `/projects/${ctx.projectId}/channels/slack/connect`,
+      { bot_token: botToken, signing_secret: signingSecret },
+    );
+  } catch (err) {
+    return surfaceApiError(err);
+  }
+
+  if (opts.json) {
+    emitJson({ connected: true, installation: install });
+    return 0;
+  }
+  printInstall(
+    ctx,
+    install,
+    status.ok(`Connected to ${install.workspaceName ?? install.workspaceId}`),
+  );
+  return 0;
+}
+
+function apiV1Base(url: string): string {
+  return `${url.trim().replace(/\/+$/, '').replace(/\/v1$/, '')}/v1`;
+}
+
+function printInstall(ctx: ProjectCtx, install: SlackInstallation, headline: string): void {
+  const name = install.workspaceName ?? install.workspaceId;
+  const webhookUrl = `${apiV1Base(ctx.client.apiBase)}/webhooks/slack/${ctx.projectId}`;
+  process.stdout.write(
+    `${headline}  ${C.bold}${name}${C.reset}\n` +
+      `         team       ${C.dim}${install.workspaceId}${C.reset}\n` +
+      `         bot        ${C.dim}${install.botUserId ?? '—'}${C.reset}\n` +
+      `         webhook    ${C.dim}${webhookUrl}${C.reset}\n`,
+  );
+}
+
+async function channelsDisconnect(ctxOpts: {
+  projectArg?: string;
+  hostArg?: string;
+}): Promise<number> {
+  const ctx = await resolveProjectContext(ctxOpts);
+  if (!ctx) return 1;
+  try {
+    await ctx.client.delete(`/projects/${ctx.projectId}/channels/slack/installation`);
+  } catch (err) {
+    return surfaceApiError(err);
+  }
+  process.stdout.write(`${status.ok('Disconnected')} ${C.dim}— secrets removed${C.reset}\n`);
+  return 0;
+}
+
+async function channelsManifest(ctxOpts: {
+  projectArg?: string;
+  hostArg?: string;
+}): Promise<number> {
+  const ctx = await resolveProjectContext(ctxOpts);
+  if (!ctx) return 1;
+
+  const requestUrl = `${apiV1Base(ctx.client.apiBase)}/webhooks/slack/${ctx.projectId}`;
+
+  const manifest = {
+    display_information: {
+      name: 'Kortix',
+      description: 'Run a Kortix project from Slack',
+      background_color: '#0a0a0a',
+    },
+    features: { bot_user: { display_name: 'kortix', always_online: true } },
+    oauth_config: {
+      scopes: {
+        bot: [
+          'app_mentions:read',
+          'channels:history',
+          'channels:read',
+          'channels:join',
+          'chat:write',
+          'chat:write.public',
+          'files:read',
+          'files:write',
+          'groups:history',
+          'groups:read',
+          'im:history',
+          'im:read',
+          'im:write',
+          'mpim:history',
+          'mpim:read',
+          'reactions:read',
+          'reactions:write',
+          'users:read',
+        ],
+      },
+    },
+    settings: {
+      event_subscriptions: {
+        request_url: requestUrl,
+        bot_events: [
+          'app_mention',
+          'message.im',
+          'message.channels',
+          'message.groups',
+          'message.mpim',
+          'reaction_added',
+          'reaction_removed',
+          'member_joined_channel',
+          'file_shared',
+        ],
+      },
+      org_deploy_enabled: false,
+      socket_mode_enabled: false,
+      token_rotation_enabled: false,
+    },
+  };
+  process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
+  return 0;
+}
+
+function resolveSecret(
+  label: string,
+  flagValue: string | undefined,
+  envName: string,
+): string | null {
+  let value = flagValue?.trim() ?? '';
+  if (value === '-') {
+    value = readFileSync(0, 'utf-8').trim();
+  } else if (!value) {
+    value = (process.env[envName] ?? '').trim();
+  }
+  if (!value) {
+    process.stderr.write(
+      `${status.err(`Missing ${label}. Pass --${label.replace(' ', '-')} or set ${envName}.`)}\n`,
+    );
+    return null;
+  }
+  return value;
+}

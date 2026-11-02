@@ -1,0 +1,229 @@
+---
+title: "How we screen inbound applicants"
+description: An agent connected to our applications inbox, the role's written rubric, and Google Calendar that scores each resume against the rubric with evidence and proposes interview slots for strong matches.
+date: "2026-03-19"
+author: team
+tags:
+  - People
+  - Case Study
+  - Team
+template: resume-triage
+---
+
+Every open role brings in more applications than anyone can read carefully, so
+screening gets rushed: a few seconds per resume, inconsistent from one reviewer to
+the next, and easy to drift from the criteria the role was actually written
+against. Good candidates get skimmed past and the standard moves depending on who
+is reading.
+
+We run an agent on Kortix that does the first read consistently. Each application
+triggers a session that scores the resume against the role's written rubric, writes
+a structured screen with evidence, and proposes interview slots for strong matches.
+A person makes every advance-or-reject call; the agent never rejects anyone. This
+is how we screen our own inbound applicants.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Every inbound application</Fact>
+  <Fact label="Connected systems">Applications inbox / ATS · Role rubric · Google Calendar</Fact>
+  <Fact label="Mode">Trigger-driven · a person makes every decision</Fact>
+</KeyFacts>
+
+## The problem
+
+The first read of a resume is where screening gets inconsistent. Volume forces it
+to be fast, and fast reads drift: the same resume gets a different verdict from a
+different reviewer, or against a criterion the role never listed. Strong
+candidates get missed and the bar moves with whoever is reading.
+
+The usual fixes trade one problem for another. Keyword filters reject on the wrong
+signal and quietly drop good people. A rushed human pass is inconsistent by the
+afternoon. An AI screener that scores against its own idea of "good" is a fairness
+problem: opaque, unaccountable, and impossible to check.
+
+## What we built
+
+On Kortix, each inbound application triggers an agent. The application spawns an
+isolated session (a cloud sandbox) with the role's written rubric and scoped access
+to Google Calendar. The agent reads the resume against the rubric, writes a
+structured screen — strengths, gaps, a score, and supporting quotes as evidence —
+and for strong matches proposes interview slots on the hiring manager's calendar. A
+person decides every case.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the resume-scoring skill and the 15-minute
+trigger, and opens a change request for you to review. Prefer clicks? Choose
+**Use this template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a resume triage agent in this project.
+
+1. Create the agent agents/resume-triage.md. Its job is to screen each new application in Greenhouse against the role's written rubric, and propose interview times for strong matches. It may use the Greenhouse and Google Calendar connectors.
+
+2. Create the skill skills/resume-scoring/SKILL.md with these rules:
+   - Read the Role rubric in full before any application. Score against it and nothing else.
+   - Screen only applications that have no screen yet, one at a time. Nothing from one candidate carries into the next.
+   - Mark each criterion met, partially met or not met, and quote the resume line behind every judgment. A required criterion that is not met caps the overall score.
+   - Write a screen back to Greenhouse with the overall score, the strengths, the gaps and the quotes. Then mark the application screened.
+   - For strong matches only, propose 2 to 3 tentative slots in the next few business days on the hiring manager's primary calendar. Never send an invite.
+   - Never reject or advance a candidate. A person makes every decision.
+
+3. Add a cron trigger application-screen-sweep to kortix.yaml. It runs the resume-triage agent every 15 minutes with the prompt "Load the resume-scoring skill and screen every new application in Greenhouse against the Role rubric."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your applicant tracking system
+and the hiring manager's calendar. Credentials are brokered server-side and
+never enter the agent's machine.
+
+<ToolList>
+  <ToolNeed name="Greenhouse" domain="greenhouse.com" tag="Required" alternatives={[['Lever', 'lever.co'], ['Ashby', 'ashbyhq.com'], ['Workday', 'workday.com']]}>
+    Reads new applications and writes the structured screen back.
+  </ToolNeed>
+  <ToolNeed name="Google Calendar" domain="calendar.google.com" tag="Required" alternatives={[['Microsoft Outlook', 'outlook.com']]}>
+    Proposes interview slots on the hiring manager calendar.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **resume-triage** agent
+and send this prompt. Read the first screens against the rubric before you let
+the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Screen the new applications in Greenhouse.
+
+1. Read the Role rubric in full.
+2. Find every application that has no screen yet, and read each one in full.
+3. Mark each rubric criterion met, partially met or not met, with the resume quote behind it.
+4. Write the screen back to Greenhouse: overall score, strengths, gaps and quotes. Mark the application screened.
+5. For strong matches, propose 2 to 3 tentative slots on the hiring manager's primary calendar. Do not send invites, and do not reject or advance anyone.`}
+/>
+
+</Step>
+<Step title="Let the 15-minute schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every 15 minutes, each run in a new session on its own cloud computer. To
+change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: application-screen-sweep
+    name: Application screen sweep
+    on:
+      cron: "0 */15 * * * *"
+    run:
+      agent: resume-triage
+      prompt: Load the resume-scoring skill and screen every new application in Greenhouse against the Role rubric.`}
+/>
+
+</Step>
+<Step title="A person makes every hiring decision">
+
+The agent has no reject or advance action. It writes a screen with evidence and
+proposes slots as tentative holds. The hiring manager reads the screen,
+decides, and confirms any interview.
+
+</Step>
+<Step title="Read the screens">
+
+Each new application gets one screen in Greenhouse. This is what a sweep looks
+like in the session:
+
+<ExampleRun
+  title="Application screen sweep · 11:30"
+  message="Load the resume-scoring skill and screen every new application in Greenhouse against the Role rubric."
+  worked="Worked for 3m 05s"
+  tools={[
+    'greenhouse · list applications',
+    'greenhouse · get application × 6',
+    'greenhouse · add note × 6',
+    'google calendar · find free slots',
+    'google calendar · create tentative hold × 3',
+  ]}
+  note="Illustrative example. Your results depend on your applicants and your rubric."
+>
+  Screened **6** new applications against the Role rubric. **1** is a strong
+  match: it meets every required criterion and **3 of 4** preferred ones, so I
+  proposed **3** tentative slots for the hiring manager to confirm. The other
+  **5** screens are in Greenhouse with their quotes. No candidate was advanced
+  or rejected.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A **trigger** on every application spawns a session with the role's rubric as
+  **skills** and **memory** and a scoped **connector** into Google Calendar. The
+  agent scores only against the written rubric and surfaces the evidence; it never
+  auto-rejects, and a person makes every decision.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Daily digest for the hiring manager"
+  code="Every day at 17:00, send the hiring manager one Slack message with the day's screens ranked by score, each with a link."
+/>
+
+<CopyBlock
+  title="Find unclear criteria"
+  code="When three or more candidates are partially met on the same criterion, tell me and suggest a clearer wording for it."
+/>
+
+<CopyBlock
+  title="Screen referrals first"
+  code="In each sweep, screen referred applications before the others, and mark them as referrals in the screen."
+/>
+
+## Guardrails
+
+The agent reads candidate applications and its output shapes hiring, so fairness
+and human judgment are built into the controls:
+
+- **Isolation.** Every application runs in its own isolated sandbox. The session
+  reads only the resume it's seeded with and reaches only the calendar; only the
+  screen and proposed slots are written back out.
+- **Scoped secrets.** The inbox, ATS, and calendar credentials are encrypted in the
+  Secrets Manager and injected into the sandbox at runtime, scoped to the agents you grant them to.
+- **Human approval gate.** The agent never auto-rejects. It scores only against the
+  written rubric and always surfaces the evidence behind every score, and a person
+  makes every advance-or-reject decision.
+- **Everything is code.** The rubric, the agent's configuration, and its
+  permissions are files in the repo, versioned and changed through a reviewed
+  **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every application" label="Read against the same written rubric, with evidence" />
+  <Stat value="A person decides" label="No candidate is ever auto-rejected by the agent" />
+  <Stat value="3 systems" label="Applications inbox, rubric, and calendar in one agent" />
+</StatGrid>
+
+The first read is now consistent and checkable: every application is scored against
+the same written rubric with the quotes that support each score, and strong matches
+arrive with interview times already proposed. The hiring manager spends their time
+deciding on evidence rather than skimming resumes, and every advance-or-reject call
+stays with a person.

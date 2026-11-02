@@ -1,0 +1,1851 @@
+'use client';
+
+import { HubLink, useHubSearchParams } from '@kortix/ui/internal/account-hub/account-hub-location';
+import { hubTarget, openAccountPanel } from '@kortix/ui/internal/stores/account-panel-store';
+import { useTranslations } from '@/i18n/use-translations';
+// Guided identity setup — Vercel-style wizards for SAML SSO and Directory
+// Sync (SCIM). Screen 1 picks the identity provider; screen 2 walks the
+// provider-specific steps (guides.ts) with a vertical stepper, copyable
+// values, and INLINE pivotal steps: SSO imports the IdP metadata right in the
+// wizard, Directory Sync mints the SCIM bearer token right in the wizard —
+// no bouncing to settings with values in a notepad. Step completion persists
+// per account+flow+provider in localStorage.
+
+import { errorToast, successToast, warningToast } from '@kortix/ui/toast';
+import { useLocalizedUiCatalog } from '@kortix/ui/i18n';
+import {
+  ArrowLeftIcon as ArrowLeft,
+  ArrowRightIcon as ArrowRight,
+  CheckIcon as Check,
+  CaretRightIcon as ChevronRight,
+  CopyIcon as Copy,
+  ArrowSquareOutIcon as ExternalLink,
+  KeyIcon as KeyRound,
+  ArrowClockwiseIcon as RefreshCw,
+  ArrowCounterClockwiseIcon as RotateCcw,
+  MagnifyingGlassIcon as Search,
+  ShieldCheckIcon as ShieldCheck,
+  UsersIcon as Users,
+} from '@phosphor-icons/react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import Image from 'next/image';
+import { type ReactNode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+
+import { EnterpriseUpsell } from '@/components/iam/enterprise-upsell';
+import { Badge } from '@kortix/ui/badge';
+import { Button } from '@kortix/ui/button';
+import { Checkbox } from '@kortix/ui/checkbox';
+import { ConfirmDialog } from '@kortix/ui/confirm-dialog';
+import { InfoBanner } from '@kortix/ui/info-banner';
+import { Input } from '@kortix/ui/input';
+import { Label } from '@kortix/ui/label';
+import Loading from '@kortix/ui/loading';
+import { Skeleton } from '@kortix/ui/skeleton';
+import { useAuth } from '@/features/providers/auth-provider';
+import { useAccountState } from '@kortix/ui/internal/billing/use-account-state';
+import { getEnv } from '@/lib/env-config';
+import {
+  type CreatedScimToken,
+  createScimToken,
+  getSsoProvider,
+  importSsoProviderFromMetadata,
+  listGroups,
+  listScimTokens,
+} from '@/lib/iam-client';
+import { type SamlSpUrls, buildSamlSpUrls } from '@/lib/saml-sp';
+import { latestScimSyncAt, scimSyncFreshness } from '@/lib/scim-sync';
+import { buildScimBaseUrl } from '@/lib/scim-url';
+import { cn } from '@kortix/ui';
+import { relativeTime } from '@/lib/utils/date';
+import { listAccountMembers } from '@kortix/sdk';
+import {
+  type GuideStep,
+  PROVIDER_GUIDES,
+  type ProviderConfig,
+  type ProviderGuide,
+  SCIM_PROVIDER_GUIDES,
+  type StepBlock,
+  type StepSchematic,
+  getProviderGuide,
+  getScimGuide,
+} from './guides';
+
+// Monochrome brand marks (same currentColor + dark:invert technique as the
+// LLM provider pickers — see packages/ui/src/internal/lib/provider-branding.tsx). The
+// dedicated google-workspace mark exists because provider-icons/google.svg is
+// the Gemini star, not the Workspace G.
+const PROVIDER_ICONS: Record<ProviderGuide['id'], string> = {
+  entra: '/provider-icons/azure.svg',
+  okta: '/provider-icons/okta.svg',
+  google: '/provider-icons/google-workspace.svg',
+  cloudflare: '/provider-icons/cloudflare.svg',
+  onelogin: '/provider-icons/onelogin.svg',
+  jumpcloud: '/provider-icons/jumpcloud.svg',
+  pingone: '/provider-icons/pingone.svg',
+  auth0: '/provider-icons/auth0.svg',
+  custom: '/provider-icons/generic-provider.svg',
+};
+
+type Flow = 'sso' | 'scim';
+
+const FLOW_CONFIG: Record<
+  Flow,
+  { heading: string; subheading: string; entitlement: 'sso' | 'scim' }
+> = {
+  sso: {
+    heading: 'Select your identity provider',
+    subheading: 'Let your team sign in with the identity provider you already run.',
+    entitlement: 'sso',
+  },
+  scim: {
+    heading: 'Set up Directory Sync',
+    subheading: 'Provision and deprovision accounts automatically from your identity provider.',
+    entitlement: 'scim',
+  },
+};
+
+// Explicit literals (not a template) so the keys stay greppable.
+function storageKey(flow: Flow, accountId: string, provider: string) {
+  const prefix = flow === 'sso' ? 'kortix:sso-setup' : 'kortix:scim-setup';
+  return `${prefix}:${accountId}:${provider}`;
+}
+
+function loadCompleted(flow: Flow, accountId: string, provider: string): string[] {
+  try {
+    const raw = window.localStorage.getItem(storageKey(flow, accountId, provider));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCompleted(flow: Flow, accountId: string, provider: string, ids: string[]) {
+  try {
+    window.localStorage.setItem(storageKey(flow, accountId, provider), JSON.stringify(ids));
+  } catch {
+    // Non-critical — the wizard still works, progress just isn't remembered.
+  }
+}
+
+// ─── Metadata stash: the metadata-input step captures the IdP metadata and
+// the import step arrives prefilled — paste once, never re-hunt the value. ──
+
+type MetadataStash = { kind: 'url' | 'xml'; value: string };
+
+function metadataStashKey(accountId: string, provider: string) {
+  return `kortix:sso-setup:${accountId}:${provider}:metadata`;
+}
+
+function loadMetadataStash(accountId: string, provider: string): MetadataStash | null {
+  try {
+    const raw = window.localStorage.getItem(metadataStashKey(accountId, provider));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if ((parsed?.kind === 'url' || parsed?.kind === 'xml') && typeof parsed.value === 'string') {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function saveMetadataStash(accountId: string, provider: string, stash: MetadataStash) {
+  try {
+    window.localStorage.setItem(metadataStashKey(accountId, provider), JSON.stringify(stash));
+  } catch {
+    // Non-critical — the import step just won't prefill.
+  }
+}
+
+async function copyValue(value: string, successMessage: string, failureMessage: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+    successToast(successMessage);
+  } catch {
+    warningToast(failureMessage);
+  }
+}
+
+/**
+ * Instruction text with the quoted IdP-console labels ("Basic SAML
+ * Configuration", "Create your own application") rendered as code chips —
+ * the admin scans for exactly those strings in the other tab.
+ */
+function InstructionText({ text }: { text: string }) {
+  const parts = text.split(/"([^"]+)"/g);
+  // Key each segment by its character offset in the source text — stable and
+  // unique even when the same fragment appears twice.
+  const nodes: ReactNode[] = [];
+  let offset = 0;
+  parts.forEach((part, i) => {
+    const quoted = i % 2 === 1;
+    nodes.push(
+      quoted ? (
+        <code
+          key={`q${offset}`}
+          className="bg-muted/60 text-foreground rounded px-1 py-0.5 font-mono text-xs"
+        >
+          {part}
+        </code>
+      ) : (
+        <span key={`t${offset}`}>{part}</span>
+      ),
+    );
+    offset += part.length + (quoted ? 2 : 0);
+  });
+  return <>{nodes}</>;
+}
+
+/**
+ * Schematic stand-in for a console screenshot — OUR OWN styled panel (never a
+ * copy of a vendor's screenshot) rendering the step's `schematic` data: a
+ * title bar naming the console + click path, then labeled rows shaped like
+ * the field/button/badge they represent. This is the DEFAULT rendering for a
+ * screenshot slot that hasn't landed yet; a real screenshot silently takes
+ * over the moment its file exists (see StepFigure below).
+ */
+function SchematicPanel({ schematic }: { schematic: StepSchematic }) {
+  return (
+    <div className="border-border/60 bg-popover w-full overflow-hidden rounded-md border">
+      <div className="border-border/60 bg-muted/30 border-b px-3 py-2">
+        <p className="text-muted-foreground truncate text-xs font-medium">{schematic.title}</p>
+      </div>
+      <div className="divide-border/40 divide-y">
+        {schematic.rows.map((row) => (
+          <div
+            key={row.label}
+            className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2"
+          >
+            <span className="text-muted-foreground min-w-0 truncate text-xs">{row.label}</span>
+            {row.as === 'button' ? (
+              <span className="border-border/70 bg-secondary text-foreground shrink-0 rounded px-2 py-0.5 text-xs font-medium">
+                {row.value ?? row.label}
+              </span>
+            ) : row.as === 'badge' ? (
+              <Badge variant="outline" size="xs" className="shrink-0">
+                {row.value ?? row.label}
+              </Badge>
+            ) : row.value ? (
+              <code className="bg-muted/50 max-w-[60%] min-w-0 truncate rounded px-1.5 py-0.5 font-mono text-xs">
+                {row.value}
+              </code>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Console screenshot for a guide step. Guides can declare image slots before
+ * the capture run lands the PNGs — instead of a broken-image frame (looks
+ * like a bug) or rendering nothing (looks like the step is incomplete), a
+ * missing asset falls back to a schematic (when the guide provides one) or a
+ * labeled placeholder, so the admin always sees SOMETHING useful and can
+ * still read the alt text describing what the real screenshot would show.
+ */
+function StepFigure({
+  src,
+  alt,
+  schematic,
+}: {
+  src: string;
+  alt: string;
+  schematic?: StepSchematic;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const [missing, setMissing] = useState(false);
+  return (
+    <figure className="space-y-1">
+      {missing ? (
+        schematic ? (
+          <SchematicPanel schematic={schematic} />
+        ) : (
+          <div className="border-border/60 bg-muted/30 text-muted-foreground flex aspect-video w-full flex-col items-center justify-center gap-1 rounded-md border border-dashed px-4 text-center text-xs">
+            <span className="font-medium">{tI18nComplete.raw('textefff9994c52b')}</span>
+            <span className="text-muted-foreground/80">{alt}</span>
+          </div>
+        )
+      ) : (
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          onError={() => setMissing(true)}
+          className="border-border/60 w-full rounded-md border"
+        />
+      )}
+    </figure>
+  );
+}
+
+function CopyRow({ label, value }: { label: string; value: string }) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs">{label}</Label>
+      <div className="flex items-center gap-2">
+        <code className="border-border/60 bg-muted/30 min-w-0 flex-1 truncate rounded border px-3 py-2 font-mono text-xs">
+          {value}
+        </code>
+        <Button
+          variant="outline"
+          size="icon"
+          aria-label={`Copy ${label}`}
+          onClick={() =>
+            copyValue(
+              value,
+              tI18nComplete.raw('text8d525e5f158b'),
+              tI18nComplete.raw('text19efd469fc32'),
+            )
+          }
+        >
+          <Copy className="size-3.5 shrink-0" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Claim-mapping table (Vercel layout): Name (+Required) → Source Attribute,
+ * copy buttons on both sides so the admin never types an attribute path.
+ */
+function ClaimsTable({
+  rows,
+}: {
+  rows: Array<{ name: string; source: string; required?: boolean }>;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  return (
+    <div className="border-border/60 bg-popover overflow-hidden rounded-md border">
+      <div className="border-border/40 text-muted-foreground grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2 border-b px-4 py-2 text-xs font-medium">
+        <span>{tI18nComplete.raw('textdcd1d5223f73')}</span>
+        <span>{tI18nComplete.raw('text20f25bdb24b4')}</span>
+      </div>
+      <ul className="divide-border/40 divide-y">
+        {rows.map((row) => (
+          <li
+            key={row.name}
+            className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-2 px-4 py-2"
+          >
+            <span className="flex min-w-0 items-center gap-1.5">
+              <code className="text-foreground truncate font-mono text-xs">{row.name}</code>
+              {row.required && (
+                <Badge variant="outline" size="xs" className="shrink-0">
+                  {tI18nComplete.raw('text4850b174b713')}
+                </Badge>
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 shrink-0"
+                aria-label={tI18nComplete('textd5ff152d9a54', { value0: row.name })}
+                onClick={() =>
+                  copyValue(
+                    row.name,
+                    tI18nComplete.raw('texte0d8e95e7401'),
+                    tI18nComplete.raw('text19efd469fc32'),
+                  )
+                }
+              >
+                <Copy className="size-3" />
+              </Button>
+            </span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <ArrowRight className="text-muted-foreground/60 size-3 shrink-0" />
+              <code className="text-foreground truncate font-mono text-xs">{row.source}</code>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 shrink-0"
+                aria-label={tI18nComplete('text9b5549456e23', { value0: row.source })}
+                onClick={() =>
+                  copyValue(
+                    row.source,
+                    tI18nComplete.raw('textc98000c7438d'),
+                    tI18nComplete.raw('text19efd469fc32'),
+                  )
+                }
+              >
+                <Copy className="size-3" />
+              </Button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// window.location.origin never changes for a loaded document, so the
+// subscription is a no-op; the server snapshot is empty.
+const subscribeToOrigin = () => () => {};
+const getBrowserOrigin = () => window.location.origin;
+const getServerOrigin = () => '';
+
+function SpValueRows({
+  urls,
+  entityIdLabel = 'Identifier (Entity ID)',
+  acsLabel = 'Reply URL (ACS)',
+  acsFirst = false,
+  includeSignOnUrl = false,
+}: {
+  urls: SamlSpUrls | null;
+  /** Per-IdP field names — show the words the admin sees in their console. */
+  entityIdLabel?: string;
+  acsLabel?: string;
+  acsFirst?: boolean;
+  includeSignOnUrl?: boolean;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  // The SP-initiated sign-in page is this app's own origin — the exact value
+  // we set live ({origin}/auth), computed instead of described. Read through
+  // useSyncExternalStore (same pattern as use-deployment-cli-install-command)
+  // so the browser value settles during hydration instead of after paint.
+  const origin = useSyncExternalStore(subscribeToOrigin, getBrowserOrigin, getServerOrigin);
+  const signOnUrl = origin ? `${origin}/auth` : null;
+  if (!urls) return null;
+  const entityRow = <CopyRow label={entityIdLabel} value={urls.entityId} />;
+  const acsRow = <CopyRow label={acsLabel} value={urls.acsUrl} />;
+  return (
+    <div className="border-border/60 bg-popover space-y-3 rounded-md border p-4">
+      {acsFirst ? acsRow : entityRow}
+      {acsFirst ? entityRow : acsRow}
+      {includeSignOnUrl && signOnUrl && (
+        <CopyRow label={tI18nComplete.raw('text8a0b88c0ea43')} value={signOnUrl} />
+      )}
+    </div>
+  );
+}
+
+// ─── Screen 1: provider select ─────────────────────────────────────────────
+
+function ProviderSelect({
+  flow,
+  accountId,
+  ssoConnected,
+  onPick,
+}: {
+  flow: Flow;
+  accountId: string;
+  ssoConnected: boolean;
+  onPick: (id: string) => void;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const flowConfig = useLocalizedUiCatalog(FLOW_CONFIG);
+  const [query, setQuery] = useState('');
+  const all = flow === 'sso' ? PROVIDER_GUIDES : SCIM_PROVIDER_GUIDES;
+  const guides = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return all;
+    return all.filter((g) => `${g.name} ${g.blurb}`.toLowerCase().includes(q));
+  }, [all, query]);
+
+  return (
+    <div className="mx-auto w-full max-w-xl">
+      <h1 className="text-foreground text-center text-2xl font-semibold">
+        {flowConfig[flow].heading}
+      </h1>
+      <p className="text-muted-foreground mt-2 text-center text-sm">
+        {flowConfig[flow].subheading}
+      </p>
+      {flow === 'scim' && !ssoConnected && (
+        <div className="mt-6">
+          <InfoBanner
+            tone="info"
+            title={tI18nComplete.raw('text65716e73a7c3')}
+            action={
+              <Button asChild variant="outline" size="sm">
+                <HubLink to={hubTarget(accountId, { tab: 'identity', setup: 'sso' })}>
+                  {tI18nComplete.raw('text8bf926d1ef32')}
+                </HubLink>
+              </Button>
+            }
+          >
+            {tI18nComplete.raw('text88f8c1416b7d')}
+          </InfoBanner>
+        </div>
+      )}
+      <div className="border-border/70 bg-card mt-8 overflow-hidden rounded-md border">
+        <div className="border-border/60 relative border-b">
+          <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-4 size-4 -translate-y-1/2" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={tI18nComplete.raw('texta39dcc7acc78')}
+            className="h-12 rounded-none border-0 pl-11 shadow-none focus-visible:ring-0"
+          />
+        </div>
+        {guides.map((g) => (
+          <button
+            key={g.id}
+            type="button"
+            onClick={() => onPick(g.id)}
+            className="group border-border/40 hover:bg-muted/40 flex w-full items-center gap-3.5 border-b px-4 py-3.5 text-left transition-colors last:border-b-0"
+          >
+            <span className="border-border/60 bg-background flex size-10 shrink-0 items-center justify-center rounded-md border">
+              <Image
+                src={PROVIDER_ICONS[g.id]}
+                alt=""
+                width={20}
+                height={20}
+                className="object-contain dark:invert"
+              />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="text-foreground block text-sm font-medium">{g.name}</span>
+              <span className="text-muted-foreground block truncate text-xs">{g.blurb}</span>
+            </span>
+            <ChevronRight className="text-muted-foreground size-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+          </button>
+        ))}
+        {guides.length === 0 && (
+          <p className="text-muted-foreground px-5 py-6 text-sm">
+            {tI18nComplete.raw('text1f97b1d85d84')}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Metadata-input step (Vercel's "Set Identity Provider Metadata") ────────
+
+function MetadataInputStep({
+  accountId,
+  providerId,
+  config,
+  doneLabel,
+  onDone,
+}: {
+  accountId: string;
+  providerId: string;
+  config: ProviderConfig;
+  doneLabel: string;
+  onDone: () => void;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const [mode, setMode] = useState<'url' | 'xml'>(config.preferredMetadata ?? 'url');
+  const [url, setUrl] = useState('');
+  const [xml, setXml] = useState('');
+
+  // Restore a previously pasted value (revisit / resume).
+  useEffect(() => {
+    const stash = loadMetadataStash(accountId, providerId);
+    if (!stash) return;
+    setMode(stash.kind);
+    if (stash.kind === 'url') setUrl(stash.value);
+    else setXml(stash.value);
+  }, [accountId, providerId]);
+
+  const value = mode === 'url' ? url : xml;
+  const ready = mode === 'url' ? /^https?:\/\/.+/i.test(url.trim()) : xml.trim().length > 40;
+
+  const persist = (kind: 'url' | 'xml', v: string) =>
+    saveMetadataStash(accountId, providerId, { kind, value: v.trim() });
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        {
+          // Google (and any xml-preferred IdP) hosts NO metadata URL, so the
+          // 'url' card would send a rule-following admin to a dead input.
+          // Drop it — and its "Recommended" lure — for those providers.
+          (config.preferredMetadata === 'xml'
+            ? ([
+                [
+                  'xml',
+                  tI18nComplete.raw('textf68119748553'),
+                  tI18nComplete.raw('text990a8502b6f1'),
+                ],
+              ] as const)
+            : ([
+                [
+                  'url',
+                  tI18nComplete.raw('text5a673d73be7d'),
+                  tI18nComplete.raw('text0ad3b7155490'),
+                ],
+                [
+                  'xml',
+                  tI18nComplete.raw('text2e22eec2a812'),
+                  tI18nComplete.raw('textf68119748553'),
+                ],
+              ] as const)
+          ).map(([m, title, sub]) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMode(m)}
+              aria-pressed={mode === m}
+              className={cn(
+                'rounded-md border px-4 py-3 text-left transition-colors',
+                mode === m
+                  ? 'border-foreground bg-popover'
+                  : 'border-border/60 bg-card hover:border-border text-muted-foreground',
+              )}
+            >
+              <span className={cn('block text-sm font-medium', mode === m && 'text-foreground')}>
+                {title}
+              </span>
+              <span className="text-muted-foreground block text-xs">{sub}</span>
+            </button>
+          ))
+        }
+      </div>
+
+      <div className="border-border/60 bg-popover space-y-1.5 rounded-md border p-4">
+        <Label htmlFor="sso-idp-metadata">
+          {mode === 'url'
+            ? tI18nComplete.raw('text98b2093683f0')
+            : tI18nComplete.raw('text6158d619dcb8')}
+        </Label>
+        {mode === 'url' ? (
+          <Input
+            id="sso-idp-metadata"
+            value={url}
+            onChange={(e) => {
+              setUrl(e.target.value);
+              persist('url', e.target.value);
+            }}
+            placeholder={config.metadataUrlPlaceholder ?? 'https://'}
+            className="text-xs"
+          />
+        ) : (
+          <textarea
+            id="sso-idp-metadata"
+            value={xml}
+            onChange={(e) => {
+              setXml(e.target.value);
+              persist('xml', e.target.value);
+            }}
+            placeholder={tI18nComplete.raw('textb76700893c7c')}
+            rows={5}
+            className="border-border bg-background focus-visible:ring-ring w-full resize-y rounded-md border px-3 py-2 font-mono text-xs outline-none focus-visible:ring-1"
+          />
+        )}
+      </div>
+
+      <div className="border-border/70 bg-popover flex items-center justify-between gap-3 rounded-md border py-3 pr-3 pl-4">
+        <span className="flex min-w-0 items-center gap-2.5">
+          <span
+            className={cn(
+              'flex size-6 shrink-0 items-center justify-center rounded-full transition-colors',
+              ready ? 'bg-kortix-green/15' : 'bg-muted',
+            )}
+          >
+            <Check
+              className={cn('size-3.5', ready ? 'text-kortix-green' : 'text-muted-foreground')}
+            />
+          </span>
+          <span className="text-foreground truncate text-sm">{doneLabel}</span>
+        </span>
+        <Button
+          onClick={() => {
+            persist(mode, value);
+            onDone();
+          }}
+          disabled={!ready}
+          className="shrink-0 gap-1.5"
+        >
+          {tI18nComplete.raw('text31fbef162594')}
+          <ArrowRight className="size-3.5 shrink-0" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── SSO: inline metadata import ───────────────────────────────────────────
+
+function ImportForm({
+  accountId,
+  providerId,
+  providerName,
+  config,
+  alreadyConnected,
+  onDone,
+}: {
+  accountId: string;
+  providerId: string;
+  providerName: string;
+  config: ProviderConfig;
+  alreadyConnected: boolean;
+  onDone: () => void;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  // The current admin's own email domain — if they route it to the IdP and
+  // aren't ALSO the identity that comes back from that IdP, they can lock
+  // themselves out or (worse) silently land signed in as someone else via
+  // IdP session reuse. Warn before that surprises anyone.
+  const adminEmailDomain = user?.email?.split('@')[1]?.trim().toLowerCase() || null;
+  const [name, setName] = useState(providerName);
+  const [domain, setDomain] = useState('');
+  const [claim, setClaim] = useState(config.groupClaimName);
+  const [autoCreate, setAutoCreate] = useState(true);
+  // Default ON: connecting an IdP should make its groups appear in Kortix
+  // without hand-mapping each claim — the admin just attaches project roles.
+  // (Groups auto-created this way are source='sso' and never annex manual
+  // groups; the toggle stays for admins who want mapping-only.)
+  const [autoProvision, setAutoProvision] = useState(true);
+  // Default to the form this IdP actually hands out (Google: XML only).
+  const [metaKind, setMetaKind] = useState<'url' | 'xml'>(config.preferredMetadata ?? 'url');
+  const [metaUrl, setMetaUrl] = useState('');
+  const [metaXml, setMetaXml] = useState('');
+
+  // Prefill from the metadata-input step's stash — paste once, arrive ready.
+  useEffect(() => {
+    const stash = loadMetadataStash(accountId, providerId);
+    if (!stash || !stash.value) return;
+    setMetaKind(stash.kind);
+    if (stash.kind === 'url') setMetaUrl(stash.value);
+    else setMetaXml(stash.value);
+  }, [accountId, providerId]);
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      importSsoProviderFromMetadata(accountId, {
+        name: name.trim(),
+        primary_domain: domain.trim().toLowerCase(),
+        group_claim_name: claim.trim() || config.groupClaimName,
+        auto_create_members: autoCreate,
+        auto_provision_groups: autoProvision,
+        ...(metaKind === 'xml'
+          ? { metadata_xml: metaXml.trim() }
+          : { metadata_url: metaUrl.trim() }),
+      }),
+    onSuccess: () => {
+      successToast(tI18nComplete.raw('text4e454ace879c'));
+      queryClient.invalidateQueries({ queryKey: ['iam-sso-provider', accountId] });
+      onDone();
+    },
+    onError: (err: Error) => errorToast(err.message || tI18nComplete.raw('textc28d0504b164')),
+  });
+
+  const metadataReady =
+    metaKind === 'xml' ? metaXml.trim().length > 40 : /^https?:\/\/.+/i.test(metaUrl.trim());
+  const ready =
+    name.trim().length > 0 && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain.trim()) && metadataReady;
+
+  if (alreadyConnected) {
+    return (
+      <div className="space-y-3">
+        <InfoBanner tone="info" title={tI18nComplete.raw('textbe03b81f11cb')}>
+          {tI18nComplete.raw('text053d2dc26869')}
+        </InfoBanner>
+        <Button onClick={onDone} className="gap-1.5">
+          {tI18nComplete.raw('textc75bd371076e')}
+          <ArrowRight className="size-3.5 shrink-0" />
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>{tI18nComplete.raw('text2b7f6a84de91')}</Label>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={mutation.isPending}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label>{tI18nComplete.raw('text196f5a9a744a')}</Label>
+          <Input
+            value={domain}
+            onChange={(e) => setDomain(e.target.value)}
+            placeholder={tI18nComplete.raw('text1194228da8fd')}
+            disabled={mutation.isPending}
+          />
+          <p className="text-muted-foreground text-xs">{tI18nComplete.raw('texte6c1f062119d')}</p>
+          {adminEmailDomain && domain.trim().toLowerCase() === adminEmailDomain && (
+            <p className="text-kortix-yellow text-xs">{tI18nComplete.raw('textcd93ff59e7c2')}</p>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label>{tI18nComplete.raw('texte75adb62c8c7')}</Label>
+        <Input
+          value={claim}
+          onChange={(e) => setClaim(e.target.value)}
+          className="font-mono text-xs"
+          disabled={mutation.isPending}
+        />
+        {/* Per-provider truth about the VALUES inside the claim — Entra sends
+            GUIDs, Okta/Google send names — so admins map the right thing. */}
+        <p className="text-muted-foreground text-xs">{config.groupValueHint}</p>
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <Label htmlFor="entra-federation-metadata">{tI18nComplete.raw('text57daca724d75')}</Label>
+          <div className="border-border/70 inline-flex overflow-hidden rounded-md border">
+            {(
+              [
+                ['url', tI18nComplete.raw('text8d71559c9817')],
+                ['xml', tI18nComplete.raw('text40d0593ae5fc')],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setMetaKind(k)}
+                disabled={mutation.isPending}
+                className={
+                  metaKind === k
+                    ? 'bg-secondary text-foreground px-2.5 py-1 text-xs font-medium'
+                    : 'text-muted-foreground hover:bg-muted/50 px-2.5 py-1 text-xs'
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {metaKind === 'url' ? (
+          <Input
+            id="entra-federation-metadata"
+            value={metaUrl}
+            onChange={(e) => setMetaUrl(e.target.value)}
+            placeholder={config.metadataUrlPlaceholder ?? 'https://…/saml/metadata.xml'}
+            className="text-xs"
+            disabled={mutation.isPending}
+          />
+        ) : (
+          <textarea
+            id="entra-federation-metadata"
+            value={metaXml}
+            onChange={(e) => setMetaXml(e.target.value)}
+            placeholder={tI18nComplete.raw('textb76700893c7c')}
+            disabled={mutation.isPending}
+            rows={5}
+            className="border-border bg-background focus-visible:ring-ring w-full resize-y rounded-md border px-3 py-2 font-mono text-xs outline-none focus-visible:ring-1"
+          />
+        )}
+      </div>
+
+      <label className="text-foreground flex cursor-pointer items-start gap-2 text-sm">
+        <Checkbox
+          checked={autoCreate}
+          onCheckedChange={(v) => setAutoCreate(v === true)}
+          disabled={mutation.isPending}
+          className="mt-0.5"
+        />
+        <span>
+          <span className="font-medium">{tI18nComplete.raw('text33e17e895ebc')}</span>
+          <span className="text-muted-foreground block text-xs">
+            {tI18nComplete.raw('textbce8671d3706')}
+          </span>
+        </span>
+      </label>
+      <label className="text-foreground flex cursor-pointer items-start gap-2 text-sm">
+        <Checkbox
+          checked={autoProvision}
+          onCheckedChange={(v) => setAutoProvision(v === true)}
+          disabled={mutation.isPending}
+          className="mt-0.5"
+        />
+        <span>
+          <span className="font-medium">{tI18nComplete.raw('text459ff8f45278')}</span>
+          <span className="text-muted-foreground block text-xs">
+            {tI18nComplete.raw('textb9acc1017895')}
+          </span>
+        </span>
+      </label>
+
+      <Button
+        onClick={() => mutation.mutate()}
+        disabled={!ready || mutation.isPending}
+        className="gap-1.5"
+      >
+        {mutation.isPending ? <Loading className="size-4 shrink-0" /> : null}
+        {tI18nComplete.raw('texte1ad3eb2a000')}
+      </Button>
+    </div>
+  );
+}
+
+// ─── Directory Sync: inline token mint ─────────────────────────────────────
+//
+// The minted token/tenant URL are lifted to WizardCore (not local state here)
+// so they survive navigating to later steps — a persistent values panel
+// (ScimValuesPanel below) then keeps both visible on every remaining Entra
+// step, instead of vanishing the moment you click Continue.
+
+/** Content-derived key for a static guide block (kind + its distinguishing
+ *  field), so keys survive without leaning on the iteration index. */
+function stepBlockKey(block: StepBlock): string {
+  switch (block.kind) {
+    case 'text':
+      return `text:${block.text}`;
+    case 'sp-values':
+      return `sp-values:${block.entityIdLabel ?? ''}:${block.acsLabel ?? ''}`;
+    case 'claims-table':
+      return `claims-table:${block.rows.map((r) => r.name).join(',')}`;
+    case 'schematic':
+      return `schematic:${block.schematic.title}`;
+    default:
+      return `image:${block.src}`;
+  }
+}
+
+function StepBlocks({ blocks, spUrls }: { blocks: StepBlock[]; spUrls: SamlSpUrls | null }) {
+  // Static guide data — keys come from block content, with a per-render
+  // occurrence counter to disambiguate a repeated identical block.
+  const seen = new Map<string, number>();
+  const keyed = blocks.map((block) => {
+    const base = stepBlockKey(block);
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return { block, key: n === 0 ? base : `${base}#${n}` };
+  });
+  return (
+    <>
+      {keyed.map(({ block, key }) =>
+        block.kind === 'text' ? (
+          <p key={key} className="text-foreground text-sm leading-relaxed">
+            <InstructionText text={block.text} />
+          </p>
+        ) : block.kind === 'sp-values' ? (
+          <SpValueRows
+            key={key}
+            urls={spUrls}
+            entityIdLabel={block.entityIdLabel}
+            acsLabel={block.acsLabel}
+            acsFirst={block.acsFirst}
+            includeSignOnUrl={block.includeSignOnUrl}
+          />
+        ) : block.kind === 'claims-table' ? (
+          <ClaimsTable key={key} rows={block.rows} />
+        ) : block.kind === 'schematic' ? (
+          // Standalone schematic — no backing screenshot (SCIM provider guides).
+          <SchematicPanel key={key} schematic={block.schematic} />
+        ) : (
+          <StepFigure key={key} src={block.src} alt={block.alt} schematic={block.schematic} />
+        ),
+      )}
+    </>
+  );
+}
+
+function ScimTokenStep({
+  accountId,
+  providerName,
+  tenantUrl,
+  minted,
+  onMinted,
+  onDone,
+  connectContent,
+  spUrls,
+}: {
+  accountId: string;
+  providerName: string;
+  tenantUrl: string;
+  minted: CreatedScimToken | null;
+  onMinted: (token: CreatedScimToken) => void;
+  onDone: () => void;
+  /** The "now paste these into your IdP" instructions — rendered on THIS page
+   *  right below the freshly minted values so mint + connect are one page. */
+  connectContent?: StepBlock[];
+  spUrls: SamlSpUrls | null;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const [name, setName] = useState(`${providerName} provisioning`);
+
+  // Resume case: a token was minted on a previous visit, so its secret is gone
+  // from this session (shown once, by design). Detect it and explain the path
+  // forward instead of presenting a silently empty mint form.
+  const priorTokensQuery = useQuery({
+    queryKey: ['scim-tokens', accountId],
+    queryFn: () => listScimTokens(accountId),
+    enabled: !minted,
+    staleTime: 30_000,
+  });
+  // Only ACTIVE tokens count — a revoked/expired one can't authenticate the
+  // IdP, so it must not invite the admin to skip minting.
+  const priorTokens = (priorTokensQuery.data ?? []).filter((t) => t.status === 'active');
+
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: () => createScimToken(accountId, { name: name.trim() }),
+    onSuccess: (token) => {
+      onMinted(token);
+      // Keep the settings SCIM card and this step's own resume detection in
+      // sync — both read ['scim-tokens', accountId] with a 30s staleTime.
+      queryClient.invalidateQueries({ queryKey: ['scim-tokens', accountId] });
+      successToast(tI18nComplete.raw('text9bae517c4742'));
+    },
+    onError: (err: Error) => errorToast(err.message || tI18nComplete.raw('text8b624587552a')),
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="border-border/60 bg-popover space-y-3 rounded-md border p-4">
+        <CopyRow label={tI18nComplete.raw('text097fe0b10cc3')} value={tenantUrl} />
+        <p className="text-muted-foreground text-xs">{tI18nComplete.raw('text4755e88f3955')}</p>
+      </div>
+
+      {minted ? (
+        <div className="border-border/60 bg-popover space-y-3 rounded-md border p-4">
+          <CopyRow label={tI18nComplete.raw('textd1598dde2f63')} value={minted.secret} />
+          <p className="text-muted-foreground text-xs">
+            {tI18nComplete.raw('texta5d97cacb6f4')}
+            {minted.public_prefix}
+            {tI18nComplete.raw('textd3062e403163')}
+          </p>
+        </div>
+      ) : null}
+
+      {!minted && (
+        <div className="space-y-3">
+          {priorTokens.length > 0 && (
+            <InfoBanner tone="info" title={tI18nComplete.raw('textcbe414dc8d0f')}>
+              {tI18nComplete.raw('text3bac8a95f83a')}
+              {priorTokens[0].public_prefix}
+              {tI18nComplete.raw('textc41427dae9e4')}
+            </InfoBanner>
+          )}
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-56 space-y-1.5">
+              <Label>{tI18nComplete.raw('text2e4186244bbd')}</Label>
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={mutation.isPending}
+              />
+            </div>
+            <Button
+              onClick={() => mutation.mutate()}
+              disabled={name.trim().length === 0 || mutation.isPending}
+              className="gap-1.5"
+            >
+              {mutation.isPending ? (
+                <Loading className="size-3.5 shrink-0" />
+              ) : (
+                <KeyRound className="size-3.5 shrink-0" />
+              )}
+              {tI18nComplete.raw('text4f4003ab9539')}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {(minted || priorTokens.length > 0) && connectContent && connectContent.length > 0 && (
+        <div className="space-y-4">
+          <div className="border-border/60 border-t pt-4">
+            <h4 className="text-foreground text-sm font-semibold">
+              {tI18nComplete.raw('textf3d75361a203')} {providerName}
+            </h4>
+            <p className="text-muted-foreground mt-1 text-xs">
+              {minted
+                ? tI18nComplete.raw('textcc7e587a074a')
+                : tI18nComplete.raw('text504328ab57c1')}
+            </p>
+          </div>
+          <StepBlocks blocks={connectContent} spUrls={spUrls} />
+          {minted ? (
+            <Button onClick={onDone}>
+              {tI18nComplete.raw('text31fbef162594')}
+              <ArrowRight className="ml-1.5 size-3.5 shrink-0" />
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={onDone}>
+              {tI18nComplete.raw('texte80f2760aa78')}
+              <ArrowRight className="ml-1.5 size-3.5 shrink-0" />
+            </Button>
+          )}
+        </div>
+      )}
+
+      {minted && (!connectContent || connectContent.length === 0) && (
+        <Button onClick={onDone}>
+          {tI18nComplete.raw('text31fbef162594')}
+          <ArrowRight className="ml-1.5 size-3.5 shrink-0" />
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Persistent "your values" panel — pinned above the step content on every
+ * Entra-side SCIM step once the token is minted. Fixes the #1 complaint
+ * about this wizard: the Tenant URL + secret token were only ever visible on
+ * the one step where you minted them, so by the time you reached the Entra
+ * screen that needed them, you were copy-pasting from memory or scrollback.
+ * Hidden on the mint step itself (ScimTokenStep already shows these same
+ * rows there) and once the wizard is finished (the page navigates away).
+ */
+function ScimValuesPanel({
+  tenantUrl,
+  minted,
+}: {
+  tenantUrl: string;
+  minted: CreatedScimToken | null;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  return (
+    <div className="border-border/70 bg-popover space-y-3 rounded-md border p-4">
+      <p className="text-muted-foreground flex items-center gap-1.5 text-xs font-medium">
+        <KeyRound className="size-3.5 shrink-0" />
+        {tI18nComplete.raw('textc09407a43df3')}
+      </p>
+      <CopyRow label={tI18nComplete.raw('text097fe0b10cc3')} value={tenantUrl} />
+      {minted ? (
+        <CopyRow label={tI18nComplete.raw('textd1598dde2f63')} value={minted.secret} />
+      ) : (
+        <p className="text-muted-foreground text-xs">{tI18nComplete.raw('textef44f52c8b32')}</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Live status for the verify step — polls the account's existing member and
+ * group lists (no new API surface) so an admin watching Entra's provisioning
+ * run doesn't have to tab back and forth to see whether anything landed.
+ * SCIM-provisioned groups are already tagged `source: 'scim'` by the groups
+ * API; there is no equivalent per-member tag today, so member count is
+ * reported for the whole account (framed honestly below) while the
+ * SCIM-group figures are exact.
+ */
+/**
+ * Live verification for the SSO test step — the SAML counterpart of the SCIM
+ * flow's ProvisionedStatusPanel. Snapshots the member list when the step
+ * opens, then polls: anyone who arrives AFTER the snapshot is the test user
+ * signing in, surfaced as an explicit success ("they're in") instead of the
+ * admin eyeballing a second browser window.
+ */
+function SsoTestStatusPanel({
+  accountId,
+  baselineRef,
+}: {
+  accountId: string;
+  /** Owned by WizardCore (which outlives step navigation) so the baseline —
+   *  and therefore the "your test user arrived" confirmation — survives the
+   *  admin flipping to another step and back. A panel-local ref would be
+   *  re-seeded from the query cache that already contains the arrival. */
+  baselineRef: React.MutableRefObject<Set<string> | null>;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const membersQuery = useQuery({
+    queryKey: ['sso-verify-members', accountId],
+    queryFn: () => listAccountMembers(accountId),
+    refetchInterval: 8_000,
+    staleTime: 4_000,
+  });
+
+  // Baseline = whoever was already a member when the TEST STEP was first
+  // reached this visit. Stored once; never updated, so every later arrival
+  // stays highlighted for the rest of the visit.
+  const members = membersQuery.data ?? null;
+  if (members && baselineRef.current === null) {
+    baselineRef.current = new Set(members.map((m) => m.user_id));
+  }
+  const arrived = (members ?? []).filter(
+    (m) => baselineRef.current && !baselineRef.current.has(m.user_id),
+  );
+
+  return (
+    <div className="border-border/70 bg-popover space-y-3 rounded-md border p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-muted-foreground flex items-center gap-1.5 text-xs font-medium">
+          <span className="bg-kortix-green relative flex size-1.5 shrink-0 rounded-full">
+            <span className="bg-kortix-green absolute inline-flex size-full animate-ping rounded-full opacity-75" />
+          </span>
+          {tI18nComplete.raw('text7c59656bfc86')}
+        </p>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6"
+          aria-label={tI18nComplete.raw('text148677068467')}
+          onClick={() => membersQuery.refetch()}
+        >
+          {membersQuery.isFetching ? (
+            <Loading className="size-3.5" />
+          ) : (
+            <RefreshCw className="size-3.5" />
+          )}
+        </Button>
+      </div>
+      {membersQuery.isLoading ? (
+        <Skeleton className="h-10 w-full rounded-md" />
+      ) : arrived.length > 0 ? (
+        <div className="border-kortix-green/30 bg-kortix-green/10 flex items-start gap-2.5 rounded-md border p-3">
+          <Check className="text-kortix-green mt-0.5 size-4 shrink-0" />
+          <div className="min-w-0 text-sm">
+            <p className="text-foreground font-medium">
+              {arrived.length === 1
+                ? tI18nComplete.raw('texta94a9c97db84')
+                : tI18nComplete('textd5d95217828e', { value0: arrived.length })}
+            </p>
+            <p className="text-muted-foreground truncate text-xs">
+              {arrived.map((m) => m.email ?? m.user_id).join(', ')}{' '}
+              {tI18nComplete.raw('texte36024fe4756')}
+            </p>
+          </div>
+        </div>
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          {members?.length ?? '—'} {tI18nComplete.raw('textd649bd5b85d2')}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ProvisionedStatusPanel({
+  accountId,
+  cadenceHint,
+}: {
+  accountId: string;
+  /** Per-provider "when does the IdP push" copy (guide.config.syncCadenceHint). */
+  cadenceHint?: string;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const membersQuery = useQuery({
+    queryKey: ['scim-verify-members', accountId],
+    queryFn: () => listAccountMembers(accountId),
+    refetchInterval: 8_000,
+    staleTime: 4_000,
+  });
+  const groupsQuery = useQuery({
+    queryKey: ['scim-verify-groups', accountId],
+    queryFn: () => listGroups(accountId),
+    refetchInterval: 8_000,
+    staleTime: 4_000,
+  });
+  // Same key as the connect step's resume query — this observer just adds
+  // polling so "Last sync activity" ticks while the admin watches the IdP run.
+  const tokensQuery = useQuery({
+    queryKey: ['scim-tokens', accountId],
+    queryFn: () => listScimTokens(accountId),
+    refetchInterval: 8_000,
+    staleTime: 4_000,
+  });
+
+  const scimGroups = (groupsQuery.data ?? []).filter((g) => g.source === 'scim');
+  const scimMemberCount = scimGroups.reduce((sum, g) => sum + (g.member_count ?? 0), 0);
+  const totalMembers = membersQuery.data?.length ?? null;
+  const isLoading = membersQuery.isLoading || groupsQuery.isLoading;
+
+  // Kortix is the SCIM server: the freshest signal we own is when the IdP
+  // last made an authenticated SCIM call (stamped on every request, including
+  // no-change reconciliation reads). Active tokens only.
+  const lastSyncAt = latestScimSyncAt(tokensQuery.data ?? []);
+  const freshness = scimSyncFreshness(lastSyncAt);
+
+  return (
+    <div className="border-border/70 bg-popover space-y-3 rounded-md border p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-muted-foreground flex items-center gap-1.5 text-xs font-medium">
+          <span className="bg-kortix-green relative flex size-1.5 shrink-0 rounded-full">
+            <span className="bg-kortix-green absolute inline-flex size-full animate-ping rounded-full opacity-75" />
+          </span>
+          {tI18nComplete.raw('text8043aa58ae92')}
+        </p>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6"
+          aria-label={tI18nComplete.raw('text148677068467')}
+          onClick={() => {
+            membersQuery.refetch();
+            groupsQuery.refetch();
+            tokensQuery.refetch();
+          }}
+        >
+          {isLoading ? <Loading className="size-3.5" /> : <RefreshCw className="size-3.5" />}
+        </Button>
+      </div>
+      {/* Two lines on purpose — mirrors the SCIM card's panel so the label +
+          value never wrap mid-phrase on narrow layouts. */}
+      <div className="space-y-0.5 text-xs">
+        <p className="flex items-center gap-1.5">
+          <span
+            className={cn(
+              'size-1.5 shrink-0 rounded-full',
+              freshness === 'live' && 'bg-kortix-green',
+              freshness === 'recent' && 'bg-kortix-green/60',
+              freshness === 'quiet' && 'bg-muted-foreground/40',
+              freshness === 'never' && 'bg-kortix-orange',
+            )}
+          />
+          <span className="text-muted-foreground whitespace-nowrap">
+            {tI18nComplete.raw('text97df9d6eae8f')}
+          </span>
+          <span className="text-foreground font-medium whitespace-nowrap">
+            {lastSyncAt ? relativeTime(lastSyncAt) : tI18nComplete.raw('text98ca0d518997')}
+          </span>
+        </p>
+        {freshness === 'never' && !tokensQuery.isLoading && (
+          <p className="text-muted-foreground pl-3">{tI18nComplete.raw('text60872f0408fe')}</p>
+        )}
+      </div>
+      {isLoading ? (
+        <Skeleton className="h-12 w-full rounded-md" />
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="border-border/60 bg-background flex items-center gap-3 rounded-md border p-3">
+            <Users className="text-muted-foreground size-4 shrink-0" />
+            <div>
+              <p className="text-foreground text-lg leading-none font-semibold tabular-nums">
+                {totalMembers ?? '—'}
+              </p>
+              <p className="text-muted-foreground text-xs">
+                {tI18nComplete.raw('text1c92f49889dd')}
+              </p>
+            </div>
+          </div>
+          <div className="border-border/60 bg-background flex items-center gap-3 rounded-md border p-3">
+            <ShieldCheck className="text-muted-foreground size-4 shrink-0" />
+            <div>
+              <p className="text-foreground text-lg leading-none font-semibold tabular-nums">
+                {scimMemberCount}
+              </p>
+              <p className="text-muted-foreground text-xs">
+                {tI18nComplete.raw('textb84655f012ef')} {scimGroups.length}{' '}
+                {tI18nComplete.raw('text6ec62587abb7')}
+                {scimGroups.length === 1 ? '' : 's'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+      <p className="text-muted-foreground text-xs">
+        {tI18nComplete.raw('textba88c968e1e5')}{' '}
+        {cadenceHint ?? tI18nComplete.raw('textab080c35a997')}
+      </p>
+    </div>
+  );
+}
+
+// ─── Step body ───────────────────────────────────────────────────────────────
+
+function StepBody({
+  flow,
+  step,
+  spUrls,
+  accountId,
+  providerId,
+  providerName,
+  config,
+  alreadyConnected,
+  scimTenantUrl,
+  scimMinted,
+  onScimMinted,
+  ssoBaselineRef,
+  onCompleteStep,
+  onFinish,
+}: {
+  flow: Flow;
+  step: GuideStep;
+  spUrls: SamlSpUrls | null;
+  accountId: string;
+  providerId: string;
+  providerName: string;
+  config: ProviderConfig;
+  alreadyConnected: boolean;
+  /** SCIM-only: lifted so the values panel below can outlive the mint step. */
+  scimTenantUrl: string;
+  scimMinted: CreatedScimToken | null;
+  onScimMinted: (token: CreatedScimToken) => void;
+  /** SSO-only: arrival baseline owned by WizardCore (survives step nav). */
+  ssoBaselineRef: React.MutableRefObject<Set<string> | null>;
+  onCompleteStep: () => void;
+  onFinish: () => void;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  // The test step's bullets are a verification CHECKLIST (unordered outcomes);
+  // every other step's bullets are a numbered sequence of console actions.
+  const isChecklist = step.kind === 'test';
+  // Shown on every SCIM step once minting has happened at least once this
+  // visit — except the mint step itself, which already shows these rows.
+  const showScimValuesPanel = flow === 'scim' && step.kind !== 'scim-token' && !!scimMinted;
+
+  return (
+    <div className="space-y-4">
+      {showScimValuesPanel && <ScimValuesPanel tenantUrl={scimTenantUrl} minted={scimMinted} />}
+
+      {(step.where || step.menuPath) && (
+        <div className="border-border/60 bg-muted/20 flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-md border px-3 py-2">
+          {step.where && (
+            <Badge variant="outline" size="xs" className="shrink-0 gap-1 font-medium">
+              {step.where === 'idp' ? (
+                <ExternalLink className="size-3" />
+              ) : (
+                <ShieldCheck className="size-3" />
+              )}
+              {step.where === 'idp' ? providerName : tI18nComplete.raw('text7144535c8be1')}
+            </Badge>
+          )}
+          {step.menuPath && (
+            <span className="text-muted-foreground min-w-0 flex-1 font-mono text-xs">
+              {step.menuPath}
+            </span>
+          )}
+        </div>
+      )}
+
+      <p className="text-muted-foreground text-sm">
+        <InstructionText text={step.intro} />
+      </p>
+
+      {step.kind !== 'scim-token' && step.content && (
+        <StepBlocks blocks={step.content} spUrls={spUrls} />
+      )}
+
+      {step.bullets && (
+        <ol className="space-y-2.5">
+          {step.bullets.map((b, n) => (
+            <li key={b} className="flex items-start gap-3">
+              <span className="bg-muted text-muted-foreground mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full text-xs font-medium tabular-nums">
+                {isChecklist ? <Check className="size-3" /> : n + 1}
+              </span>
+              <span className="text-foreground min-w-0 text-sm leading-relaxed">
+                <InstructionText text={b} />
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {step.image && (
+        <StepFigure src={step.image.src} alt={step.image.alt} schematic={step.image.schematic} />
+      )}
+
+      {step.showSpValues && <SpValueRows urls={spUrls} />}
+
+      {step.success && (
+        <InfoBanner tone="success" title={tI18nComplete.raw('textb274aca9dee1')}>
+          {step.success}
+        </InfoBanner>
+      )}
+
+      {step.warning && (
+        <InfoBanner tone="warning" title={tI18nComplete.raw('text4f9baa5ecfd7')}>
+          {step.warning}
+        </InfoBanner>
+      )}
+
+      {step.note && <p className="text-muted-foreground text-xs">{step.note}</p>}
+
+      {step.kind === 'metadata-input' ? (
+        <MetadataInputStep
+          accountId={accountId}
+          providerId={providerId}
+          config={config}
+          doneLabel={step.doneLabel ?? tI18nComplete.raw('textaaa072ad6fc2')}
+          onDone={onCompleteStep}
+        />
+      ) : step.kind === 'import' ? (
+        <ImportForm
+          accountId={accountId}
+          providerId={providerId}
+          providerName={providerName}
+          config={config}
+          alreadyConnected={alreadyConnected}
+          onDone={onCompleteStep}
+        />
+      ) : step.kind === 'scim-token' ? (
+        <ScimTokenStep
+          accountId={accountId}
+          providerName={providerName}
+          tenantUrl={scimTenantUrl}
+          minted={scimMinted}
+          onMinted={onScimMinted}
+          onDone={onCompleteStep}
+          connectContent={step.content}
+          spUrls={spUrls}
+        />
+      ) : step.kind === 'test' ? (
+        <div className="space-y-4">
+          {flow === 'scim' && (
+            <ProvisionedStatusPanel accountId={accountId} cadenceHint={config.syncCadenceHint} />
+          )}
+          {flow === 'sso' && (
+            <SsoTestStatusPanel accountId={accountId} baselineRef={ssoBaselineRef} />
+          )}
+          <div className="flex flex-wrap items-center gap-3">
+            {flow === 'sso' && (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    copyValue(
+                      `${typeof window === 'undefined' ? '' : window.location.origin}/auth`,
+                      tI18nComplete.raw('text3f6029ebc897'),
+                      tI18nComplete.raw('text19efd469fc32'),
+                    )
+                  }
+                >
+                  {tI18nComplete.raw('text02c2b41a99e7')}
+                  <Copy className="ml-1.5 size-3.5 shrink-0" />
+                </Button>
+                <span className="text-muted-foreground text-xs">
+                  {tI18nComplete.raw('text311659f8380c')}
+                </span>
+              </>
+            )}
+            <Button onClick={onFinish}>
+              {tI18nComplete.raw('texta6c7a84baa67')}
+              <Check className="ml-1.5 size-3.5 shrink-0" />
+            </Button>
+          </div>
+        </div>
+      ) : (
+        // Vercel-style completion bar: the step's outcome as a checkable
+        // statement + Continue.
+        <div className="border-border/70 bg-popover flex items-center justify-between gap-3 rounded-md border py-3 pr-3 pl-4">
+          <span className="flex min-w-0 items-center gap-2.5">
+            <span className="bg-kortix-green/15 flex size-6 shrink-0 items-center justify-center rounded-full">
+              <Check className="text-kortix-green size-3.5" />
+            </span>
+            <span className="text-foreground truncate text-sm">
+              {step.doneLabel ?? tI18nComplete.raw('textfc90a89c4980')}
+            </span>
+          </span>
+          <Button onClick={onCompleteStep} className="shrink-0 gap-1.5">
+            {tI18nComplete.raw('text31fbef162594')}
+            <ArrowRight className="size-3.5 shrink-0" />
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── The wizard ────────────────────────────────────────────────────────────
+
+function WizardCore({ accountId, flow }: { accountId: string; flow: Flow }) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const flowConfig = useLocalizedUiCatalog(FLOW_CONFIG);
+  // The wizard is a pane of the account hub, which writes `accountProvider` on
+  // the page URL. Only the hub's translator maps it back to `provider`; a raw
+  // `useSearchParams().get('provider')` is always null, so every provider
+  // click re-rendered the picker (2026-09-14).
+  const providerId = useHubSearchParams().get('provider');
+  // Localizing a guide builds a new object. Memoize it so the guide keeps one
+  // identity per provider and locale instead of a new one per render.
+  const guide = useMemo(
+    () =>
+      flow === 'sso'
+        ? getProviderGuide(providerId, tI18nComplete)
+        : getScimGuide(providerId, tI18nComplete),
+    [flow, providerId, tI18nComplete],
+  );
+  const config = flowConfig[flow];
+
+  const accountStateQuery = useAccountState({ accountId, enabled: !!accountId });
+  const entitlements = accountStateQuery.data?.tier?.entitlements;
+  const entitled = !!entitlements?.[config.entitlement];
+
+  const providerQuery = useQuery({
+    queryKey: ['iam-sso-provider', accountId],
+    queryFn: () => getSsoProvider(accountId),
+    staleTime: 30_000,
+  });
+
+  const spUrls = useMemo(() => buildSamlSpUrls(getEnv().SUPABASE_URL), []);
+  // SCIM-only, but harmless to compute for the SSO flow too — pure function
+  // of accountId. Lifted here (rather than local to the token step) so the
+  // values panel can keep showing both after the step unmounts.
+  const scimTenantUrl = useMemo(
+    () =>
+      buildScimBaseUrl(
+        accountId,
+        getEnv().BACKEND_URL,
+        typeof window === 'undefined' ? null : window.location.origin,
+      ),
+    [accountId],
+  );
+  const [scimMinted, setScimMinted] = useState<CreatedScimToken | null>(null);
+  // SSO test-step arrival baseline — lives here (not in the panel) so step
+  // navigation within one visit can't erase a confirmed test sign-in.
+  const ssoBaselineRef = useRef<Set<string> | null>(null);
+
+  const [activeStep, setActiveStep] = useState(0);
+  const [completed, setCompleted] = useState<string[]>([]);
+  // Change-provider / start-over confirmation (Kortix allows ONE SSO provider
+  // per account, so switching mid-setup abandons the current one). Declared
+  // with the other hooks — above the early returns — so it can never be called
+  // conditionally (react-hooks/rules-of-hooks).
+  const [confirmAction, setConfirmAction] = useState<'change' | 'reset' | null>(null);
+
+  // Restore progress when a guide opens; jump to the first incomplete step.
+  // Keyed on the provider id, never on the localized guide object: when this
+  // effect followed the object it ran after every render, set a fresh
+  // `completed` array (render loop), and snapped `activeStep` back to the first
+  // open step, so Back and the step rail did nothing (2026-09-14). Step ids
+  // are not translated, so the unlocalized table is enough here.
+  useEffect(() => {
+    const source = (flow === 'sso' ? PROVIDER_GUIDES : SCIM_PROVIDER_GUIDES).find(
+      (candidate) => candidate.id === providerId,
+    );
+    if (!source) return;
+    const done = loadCompleted(flow, accountId, source.id);
+    setCompleted(done);
+    const doneSet = new Set(done);
+    const firstOpen = source.steps.findIndex((s) => !doneSet.has(s.id));
+    setActiveStep(firstOpen === -1 ? source.steps.length - 1 : firstOpen);
+  }, [accountId, flow, providerId]);
+
+  if (accountStateQuery.isLoading) {
+    return <Skeleton className="mx-auto h-96 w-full max-w-3xl rounded-md" />;
+  }
+  if (!entitled) {
+    return (
+      <div className="mx-auto w-full max-w-xl">
+        <EnterpriseUpsell feature="identity" accountId={accountId} />
+      </div>
+    );
+  }
+
+  if (!guide) {
+    return (
+      <ProviderSelect
+        flow={flow}
+        accountId={accountId}
+        ssoConnected={!!providerQuery.data}
+        // The wizard is a pane of the hub's Identity section, so picking a
+        // provider is a move INSIDE the modal: it replaces the one history
+        // entry the hub pushed rather than adding a navigation.
+        onPick={(id) =>
+          openAccountPanel(hubTarget(accountId, { tab: 'identity', setup: flow, provider: id }))
+        }
+      />
+    );
+  }
+
+  const markDone = (stepId: string) => {
+    const next = completed.includes(stepId) ? completed : [...completed, stepId];
+    setCompleted(next);
+    saveCompleted(flow, accountId, guide.id, next);
+    const idx = guide.steps.findIndex((s) => s.id === stepId);
+    if (idx >= 0 && idx < guide.steps.length - 1) setActiveStep(idx + 1);
+  };
+
+  // In-progress state = anything that would be lost by switching away or
+  // resetting. Kortix allows ONE SSO provider per account, so changing
+  // provider mid-setup abandons the current one — mirror Vercel and confirm
+  // + actually reset it, rather than leaking stale half-configured state.
+  // (confirmAction is declared with the hooks above — never after a return.)
+  const metadataStashed =
+    typeof window !== 'undefined' && guide
+      ? loadMetadataStash(accountId, guide.id) !== null
+      : false;
+  const hasProgress = completed.length > 0 || metadataStashed || scimMinted !== null;
+
+  const clearCurrentProgress = () => {
+    if (!guide) return;
+    setCompleted([]);
+    saveCompleted(flow, accountId, guide.id, []);
+    setScimMinted(null);
+    ssoBaselineRef.current = null;
+    try {
+      window.localStorage.removeItem(metadataStashKey(accountId, guide.id));
+    } catch {
+      /* non-critical */
+    }
+  };
+
+  const startOver = () => {
+    clearCurrentProgress();
+    setActiveStep(0);
+  };
+
+  // Back to the provider picker: the same wizard pane with no `provider`.
+  const goChangeProvider = () => {
+    clearCurrentProgress();
+    openAccountPanel(hubTarget(accountId, { tab: 'identity', setup: flow }));
+  };
+
+  const finish = () => {
+    markDone(guide.steps[guide.steps.length - 1]?.id);
+    openAccountPanel(hubTarget(accountId, { tab: 'identity' }));
+  };
+
+  // biome-ignore lint/style/noNonNullAssertion: guide.steps is always non-empty (guide is checked above) and the index is clamped into range.
+  const step = guide.steps[Math.min(activeStep, guide.steps.length - 1)]!;
+
+  // One Set for the per-step done lookups in the rail below.
+  const completedSet = new Set(completed);
+
+  return (
+    <div className="mx-auto w-full max-w-5xl">
+      <div className="mb-8 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="text-muted-foreground size-4" />
+          <span className="text-foreground text-sm font-medium">{guide.name}</span>
+          <span className="text-muted-foreground text-xs">
+            ·{' '}
+            {flow === 'sso'
+              ? tI18nComplete.raw('text405e739d53d2')
+              : tI18nComplete.raw('textea18bba8cbdb')}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => (hasProgress ? setConfirmAction('reset') : startOver())}
+            className="gap-1.5"
+          >
+            <RotateCcw className="size-3.5 shrink-0" />
+            {tI18nComplete.raw('text5eed7e9fc8f3')}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => (hasProgress ? setConfirmAction('change') : goChangeProvider())}
+            className="gap-1.5"
+          >
+            <ArrowLeft className="mr-1.5 size-3.5 shrink-0" />
+            {tI18nComplete.raw('textc8d2a9446813')}
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid gap-10 md:grid-cols-[240px_minmax(0,1fr)]">
+        {/* Vercel-style rail: no connector line — soft-green done circles,
+            solid active circle, muted upcoming. Whole row is the target. */}
+        <nav aria-label={tI18nComplete.raw('text1eba90226b10')} className="space-y-1 self-start">
+          {guide.steps.map((s, i) => {
+            const isDone = completedSet.has(s.id);
+            const isActive = i === activeStep;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => setActiveStep(i)}
+                aria-current={isActive ? 'step' : undefined}
+                className="group hover:bg-muted/40 flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors"
+              >
+                <span
+                  className={cn(
+                    'flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium tabular-nums transition-colors',
+                    isDone
+                      ? 'bg-kortix-green/15 text-kortix-green'
+                      : isActive
+                        ? 'bg-foreground text-background'
+                        : 'bg-muted text-muted-foreground',
+                  )}
+                >
+                  {isDone ? <Check className="size-3.5" /> : i + 1}
+                </span>
+                <span
+                  className={cn(
+                    'min-w-0 truncate text-sm transition-colors',
+                    isActive
+                      ? 'text-foreground font-medium'
+                      : 'text-muted-foreground group-hover:text-foreground',
+                  )}
+                >
+                  {s.title}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="min-w-0">
+          <p className="text-muted-foreground text-xs font-medium">
+            {tI18nComplete.raw('text8e6a6cca7aae')} {activeStep + 1}{' '}
+            {tI18nComplete.raw('text28391d3bc64e')} {guide.steps.length}
+          </p>
+          <h2 className="text-foreground mt-1 text-xl font-semibold">{step.title}</h2>
+          <div className="mt-4">
+            <StepBody
+              flow={flow}
+              step={step}
+              spUrls={spUrls}
+              accountId={accountId}
+              providerId={guide.id}
+              providerName={guide.name}
+              config={guide.config}
+              alreadyConnected={!!providerQuery.data}
+              scimTenantUrl={scimTenantUrl}
+              scimMinted={scimMinted}
+              onScimMinted={setScimMinted}
+              ssoBaselineRef={ssoBaselineRef}
+              onCompleteStep={() => markDone(step.id)}
+              onFinish={finish}
+            />
+          </div>
+          <div className="border-border/40 mt-8 flex items-center justify-between gap-3 border-t pt-4">
+            {activeStep > 0 ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => setActiveStep(activeStep - 1)}
+              >
+                <ArrowLeft className="size-3.5 shrink-0" />
+                {tI18nComplete.raw('text76900f1bfd16')}
+              </Button>
+            ) : (
+              <span />
+            )}
+            <span className="text-muted-foreground text-xs">
+              {activeStep < guide.steps.length - 1
+                ? `Next: ${guide.steps[activeStep + 1]?.title}`
+                : tI18nComplete.raw('text7c8f89daffea')}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <ConfirmDialog
+        open={confirmAction !== null}
+        onOpenChange={(open) => !open && setConfirmAction(null)}
+        title={
+          confirmAction === 'change'
+            ? tI18nComplete.raw('text988d146cc0be')
+            : tI18nComplete.raw('textd48f39d295a7')
+        }
+        description={
+          confirmAction === 'change' ? (
+            <span>
+              {tI18nComplete.raw('textfb77a2e0d116')} <strong>{guide.name}</strong>{' '}
+              {tI18nComplete.raw('text77793c7508f1')}
+            </span>
+          ) : (
+            <span>
+              {tI18nComplete.raw('text9b08dc863a27')} <strong>{guide.name}</strong>{' '}
+              {tI18nComplete.raw('text3b894362f7ae')}
+            </span>
+          )
+        }
+        confirmLabel={
+          confirmAction === 'change'
+            ? tI18nComplete.raw('textc8d2a9446813')
+            : tI18nComplete.raw('text5eed7e9fc8f3')
+        }
+        confirmVariant="destructive"
+        onConfirm={() => {
+          if (confirmAction === 'change') goChangeProvider();
+          else startOver();
+          setConfirmAction(null);
+        }}
+      />
+    </div>
+  );
+}
+
+export function SsoSetupWizard({ accountId }: { accountId: string }) {
+  return <WizardCore accountId={accountId} flow="sso" />;
+}
+
+export function ScimSetupWizard({ accountId }: { accountId: string }) {
+  return <WizardCore accountId={accountId} flow="scim" />;
+}

@@ -1,0 +1,312 @@
+# ── dev-us-east-2 — dev's API/gateway, colocated with the dev database ────────
+#
+# Problem this root fixes: dev's API ran in us-west-2 while dev's Supabase
+# Postgres runs in us-east-2. Every request makes 7-13 SEQUENTIAL database
+# round trips (verified via Server-Timing), so the cross-continent hop is
+# paid 7-13 times per request: /accounts/me measured 2084ms on dev vs 24ms on
+# prod (colocated), for identical code and identical query counts.
+#
+#   dev-api-use2.kortix.com     → Cloudflare (proxied, Full strict) → ALB → API
+#   gateway-dev-use2.kortix.com → Cloudflare (proxied, Full strict) → ALB → gateway
+#
+# These are this stack's origin hostnames. The dev-api Worker
+# (infra/cloudflare/workers/api-router) routes dev-api.kortix.com to them
+# (ACTIVE_BACKEND "us-east-2"). README.md in this directory has the apply
+# steps and the record of the move from us-west-2.
+#
+# Naming: local.name is "kortix-dev-use2", NOT "kortix-dev". IAM roles and
+# policies are ACCOUNT-GLOBAL, and the old us-west-2 stack owned the
+# "kortix-dev" names while both stacks ran in parallel during the move. That
+# stack was destroyed on 2026-10-12; the names stay so nothing is replaced.
+
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = ">= 4.0, < 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token != "" ? var.cloudflare_api_token : (var.cloudflare_api_key != "" ? null : "0000000000000000000000000000000000000000")
+  email     = var.cloudflare_api_key != "" ? var.cloudflare_email : null
+  api_key   = var.cloudflare_api_key != "" ? var.cloudflare_api_key : null
+}
+
+locals {
+  name = "kortix-dev-use2"
+  cloudflare_ip_ranges = [
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+  ]
+  tags = {
+    Environment = "dev"
+    Region      = "us-east-2"
+    Service     = "kortix-api"
+    ManagedBy   = "terraform"
+  }
+}
+
+# ── Network (VPC + public/private subnets + NAT) ──────────────────────────────
+module "network" {
+  source             = "../../modules/network"
+  name               = local.name
+  cidr               = "10.14.0.0/16" # distinct from dev (10.10), staging (10.20), staging-euw2 (10.24)
+  az_count           = 2
+  single_nat_gateway = true # dev: one NAT to save cost
+  tags               = local.tags
+}
+
+# ── TLS cert (ACM, DNS-validated via Cloudflare) ───────────────────────────────
+# The *.kortix.com validation CNAME was already in the zone when this root was
+# created, so this request validates against that existing record without this
+# root creating one (manage_validation_records = false). Covers both the
+# primary API hostname and the gateway hostname with one cert, so no separate
+# gateway_certificate_arn plumbing is needed.
+module "certificate" {
+  count                     = var.enable_https ? 1 : 0
+  source                    = "../../modules/acm-cloudflare"
+  domain_name               = "*.kortix.com"
+  subject_alternative_names = ["kortix.com"]
+  manage_validation_records = false
+  zone_id                   = var.cloudflare_zone_id
+  tags                      = merge(local.tags, { Service = "certificate" })
+  providers = {
+    aws        = aws
+    cloudflare = cloudflare
+  }
+}
+
+# ── ECS Fargate API service (autoscaled) ──────────────────────────────────────
+data "aws_secretsmanager_secret" "env" {
+  name = "kortix-dev-env"
+}
+
+# ── Project snapshot object store (S3 config provider) ────────────────────────
+# Snapshots are DERIVED data (rebuilt from Git on a cache miss), so this bucket
+# started empty. The old us-west-2 cache "kortix-dev-project-snapshots" was
+# deleted on 2026-10-12.
+module "project_snapshots" {
+  source                = "../../modules/project-snapshots-bucket"
+  name                  = "${local.name}-project-snapshots"
+  tags                  = local.tags
+  transfer_acceleration = true # sandboxes are not colocated with this bucket
+}
+
+# ── Audit-event archive (WORM) ────────────────────────────────────────────────
+# Weekly kortix.audit_events partitions older than the 90-day hot window,
+# exported by the API as gzip JSONL with Object Lock retention (365 days). The
+# task names it through AUDIT_ARCHIVE_BUCKET / AUDIT_ARCHIVE_REGION in the
+# deploy workflow. Applying this creates the bucket, its KMS key, and the
+# task-role grant only.
+module "audit_archive" {
+  source = "../../modules/audit-archive-bucket"
+  name   = "${local.name}-audit-archive"
+  # Disposable environment: GOVERNANCE lets an operator with s3:BypassGovernanceRetention
+  # clear test data. Prod uses COMPLIANCE (the module default).
+  object_lock_mode = "GOVERNANCE"
+  tags             = local.tags
+}
+
+# ── Kortix Capture store ──────────────────────────────────────────────────────
+# Private bucket the Kortix Capture desktop app writes the capture format to
+# (orgs/<account_id>/<device_id>/…), the SQS queue of its `*.manifest.json`
+# events, and the device role the API assumes with a per-device session policy.
+# The task names them through the non-secret KORTIX_CAPTURE_S3_BUCKET /
+# _S3_REGION / _SQS_QUEUE_URL / _STS_ROLE_ARN overrides in the deploy workflow.
+# Nothing records until an account turns Capture on.
+module "capture_store" {
+  source            = "../../modules/capture-store"
+  name              = "${local.name}-capture-store"
+  api_task_role_arn = module.api.task_role_arn
+  tags              = local.tags
+}
+
+module "api" {
+  source     = "../../modules/ecs-api"
+  name       = local.name
+  aws_region = var.aws_region
+
+  vpc_id = module.network.vpc_id
+  public_subnet_ids = [
+    module.network.public_subnet_ids[0],
+    module.network.public_subnet_ids[1],
+  ]
+  private_subnet_ids = module.network.private_subnet_ids
+
+  image           = var.api_image
+  container_port  = var.container_port
+  certificate_arn = one(module.certificate[*].certificate_arn)
+  environment = merge(var.api_environment, {
+    LLM_GATEWAY_PROXY_TARGET = "https://gateway-dev-use2.kortix.com"
+  })
+  secrets                     = var.api_secrets
+  secrets_blob_arn            = data.aws_secretsmanager_secret.env.arn
+  ses_send_region             = "us-east-2"
+  ses_send_identity_names     = ["kortix.com", "kortix.ai"]
+  project_snapshots_enabled   = true
+  project_snapshot_bucket_arn = module.project_snapshots.bucket_arn
+  audit_archive_enabled       = true
+  audit_archive_bucket_arn    = module.audit_archive.bucket_arn
+  audit_archive_kms_key_arn   = module.audit_archive.kms_key_arn
+  capture_enabled             = true
+  capture_bucket_arn          = module.capture_store.bucket_arn
+  capture_queue_arn           = module.capture_store.queue_arn
+  capture_device_role_arn     = module.capture_store.device_role_arn
+
+  # api.kortix-dev-use2.internal → task IPs, for the gateway (below).
+  service_discovery        = { namespace_id = aws_service_discovery_private_dns_namespace.internal.id }
+  extra_security_group_ids = [aws_security_group.api_internal.id]
+
+  alb_ingress_cidrs = local.cloudflare_ip_ranges
+
+  # The us-west-2 dev stack's sizing (its history has the OOM-driven
+  # task_memory floor). Identical instance class, different region.
+  task_cpu                   = 1024
+  task_memory                = 4096
+  desired_count              = 2
+  min_capacity               = 2
+  max_capacity               = 6
+  use_fargate_spot           = true
+  requests_per_target_target = 600
+  tags                       = local.tags
+}
+
+# ── Gateway (LLM proxy) as its own ECS Fargate service ────────────────────────
+module "gateway" {
+  source     = "../../modules/ecs-api"
+  name       = "${local.name}-gateway"
+  aws_region = var.aws_region
+
+  vpc_id             = module.network.vpc_id
+  public_subnet_ids  = module.network.public_subnet_ids
+  private_subnet_ids = module.network.private_subnet_ids
+
+  image             = var.gateway_image
+  container_name    = "gateway"
+  container_port    = 8090
+  health_check_path = "/health/live"
+  certificate_arn   = one(module.certificate[*].certificate_arn)
+  environment       = merge(var.gateway_environment, { KORTIX_API_URL = "https://dev-api.kortix.com" })
+  secrets           = var.api_secrets
+  secrets_blob_arn  = data.aws_secretsmanager_secret.env.arn
+
+  alb_ingress_cidrs        = local.cloudflare_ip_ranges
+  extra_security_group_ids = [aws_security_group.gateway_internal.id]
+
+  task_cpu                   = 512
+  task_memory                = 2048
+  desired_count              = 2
+  min_capacity               = 2
+  max_capacity               = 8
+  use_fargate_spot           = true
+  deregistration_delay       = 300
+  stop_timeout               = 120
+  requests_per_target_target = 120
+  tags                       = local.tags
+}
+
+# ── Gateway → API inside the VPC ──────────────────────────────────────────────
+# The gateway's control-plane calls (/internal/gateway/*) went gateway → NAT →
+# Cloudflare → api-router Worker → ALB → API: 15 ms min, 27 ms p50, 54 ms p90
+# per call (gateway /health checks.api.latency_ms, 40 samples, 2026-10-20).
+# The gateway now calls http://api.kortix-dev-use2.internal:8008 directly
+# (KORTIX_API_INTERNAL_URL in deploy-dev.yml) and falls back to the public URL
+# on a connection error. Plaintext HTTP: the hop never leaves the VPC, only
+# the gateway's security group may open it, and the bearer token plus the edge
+# key are still checked by the API on every /internal call.
+resource "aws_service_discovery_private_dns_namespace" "internal" {
+  name = "${local.name}.internal"
+  vpc  = module.network.vpc_id
+  tags = local.tags
+}
+
+# Inline rules on the module's task security groups are authoritative, so a
+# standalone rule against them would be removed on the next apply. These two
+# extra groups carry only the gateway → API rule.
+resource "aws_security_group" "api_internal" {
+  #checkov:skip=CKV2_AWS_5:Attached to the ECS service through module.api extra_security_group_ids.
+  name        = "${local.name}-api-internal"
+  description = "API tasks: ingress from the gateway tasks inside the VPC"
+  vpc_id      = module.network.vpc_id
+  # Drata 8028 cannot resolve local.tags; keep inventory keys literal.
+  tags = {
+    ManagedBy   = "terraform"
+    Environment = "dev"
+    Region      = "us-east-2"
+    Service     = "kortix-api"
+    Name        = "${local.name}-api-internal"
+  }
+}
+
+resource "aws_security_group" "gateway_internal" {
+  #checkov:skip=CKV2_AWS_5:Attached to the ECS service through module.gateway extra_security_group_ids.
+  name        = "${local.name}-gateway-internal"
+  description = "Gateway tasks: egress to the API tasks inside the VPC"
+  vpc_id      = module.network.vpc_id
+  # Drata 8028 cannot resolve local.tags; keep inventory keys literal.
+  tags = {
+    ManagedBy   = "terraform"
+    Environment = "dev"
+    Region      = "us-east-2"
+    Service     = "kortix-api"
+    Name        = "${local.name}-gateway-internal"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "api_from_gateway" {
+  security_group_id            = aws_security_group.api_internal.id
+  referenced_security_group_id = aws_security_group.gateway_internal.id
+  ip_protocol                  = "tcp"
+  from_port                    = var.container_port
+  to_port                      = var.container_port
+  description                  = "Gateway control-plane calls"
+}
+
+resource "aws_vpc_security_group_egress_rule" "gateway_to_api" {
+  security_group_id            = aws_security_group.gateway_internal.id
+  referenced_security_group_id = aws_security_group.api_internal.id
+  ip_protocol                  = "tcp"
+  from_port                    = var.container_port
+  to_port                      = var.container_port
+  description                  = "Gateway control-plane calls"
+}
+
+# ── DNS: this stack's origin hostnames ────────────────────────────────────────
+# dev-api-use2 / gateway-dev-use2 → this root's ALBs. The dev-api Worker decides
+# which origin serves dev-api.kortix.com, so these records never change at the
+# switch-over.
+module "dns" {
+  source  = "../../modules/cloudflare-dns"
+  count   = var.manage_dns ? 1 : 0
+  zone_id = var.cloudflare_zone_id
+
+  records = {
+    dev-api-use2 = {
+      name    = "dev-api-use2"
+      type    = "CNAME"
+      value   = module.api.alb_dns_name
+      proxied = true
+      ttl     = 1
+    }
+    gateway-dev-use2 = {
+      name    = "gateway-dev-use2"
+      type    = "CNAME"
+      value   = module.gateway.alb_dns_name
+      proxied = true
+      ttl     = 1
+    }
+  }
+}

@@ -1,0 +1,404 @@
+'use client';
+
+import { useTranslations } from '@/i18n/use-translations';
+
+import {
+  WarningCircleIcon as AlertCircle,
+  ArrowLeftIcon as ArrowLeft,
+  PowerIcon as Power,
+} from '@phosphor-icons/react';
+import Link from 'next/link';
+import { useEffect, useState } from 'react';
+
+import { KortixLogo } from '@/components/sidebar/kortix-logo';
+import { translateUiCatalogText } from '@kortix/ui/i18n';
+import { REMAINING_UI_TRANSLATION_KEYS } from '@kortix/ui/i18n/ui-catalog/remaining-ui-translation-keys.generated';
+import { PROJECT_LANDING_PATH } from '@kortix/ui/internal/lib/onboarding/landing-destination';
+import { useAppHome } from '@kortix/ui/internal/lib/onboarding/use-app-home';
+import { STAGE_LABELS, type ProvisioningStageInfo } from '@/lib/provisioning-stages';
+
+/**
+ * ConnectingScreen — canonical lightweight loader for auth, project routing,
+ * and project-session connectivity. The props pick the mode:
+ *
+ *   - `provisioning`:  determinate progress + stage, for sandbox boot
+ *   - `error`:         red error state with retry actions
+ *   - `stopped`:       neutral "workspace stopped" state
+ *   - none of these:   the connecting signal (auth and routing gates)
+ *
+ * It reads no connection state: a session's connection states render in the
+ * session view.
+ */
+export function ConnectingScreen({
+  overrideStage,
+  title,
+  labelOverride,
+  provisioning,
+  error,
+  stopped,
+  backHref,
+  minimal = false,
+  hideWorkspacePicker = false,
+}: ConnectingScreenProps = {}) {
+  const appHome = useAppHome();
+  const tHardcodedUi = useTranslations('hardcodedUi');
+
+  // `useAppHome` reads document.cookie, which the server pass cannot see, so it
+  // resolves to the landing door there and to the remembered project here. An
+  // href that differs between the two passes desyncs hydration — seed the state
+  // with the door and adopt the real answer after mount.
+  const [resolvedHome, setResolvedHome] = useState(PROJECT_LANDING_PATH);
+  useEffect(() => setResolvedHome(appHome), [appHome]);
+
+  // The error, stopped and provisioning views render when the runtime is not
+  // up, so the escape hatch is the control most likely to meet a bad RSC
+  // response. It is an anchor: Next prefetches it and the click never runs
+  // that fetch.
+  const escapeHref = backHref || resolvedHome;
+
+  const serverLabel = labelOverride?.trim() || 'workspace';
+
+  if (error) {
+    return (
+      <FullScreenShell showWorkspacePicker={!hideWorkspacePicker}>
+        <ErrorView
+          label={labelOverride || serverLabel}
+          message={error.message}
+          location={error.location}
+          serverType={error.serverType}
+          backHref={escapeHref}
+        />
+      </FullScreenShell>
+    );
+  }
+
+  if (stopped) {
+    return (
+      <FullScreenShell showWorkspacePicker={!hideWorkspacePicker}>
+        <StoppedView label={stopped.name || labelOverride || serverLabel} backHref={escapeHref} />
+      </FullScreenShell>
+    );
+  }
+
+  if (provisioning) {
+    return (
+      <FullScreenShell showWorkspacePicker={!hideWorkspacePicker}>
+        <ProvisioningView
+          label={labelOverride || serverLabel}
+          title={title || tHardcodedUi.raw('i18nComplete.texta9ae0049edf7')}
+          progress={provisioning.progress}
+          stageLabel={provisioning.stageLabel}
+          stages={provisioning.stages}
+          currentStage={provisioning.currentStage}
+          machineInfo={provisioning.machineInfo}
+          backHref={escapeHref}
+        />
+      </FullScreenShell>
+    );
+  }
+
+  return <CompactConnectingSignal title={title} overrideStage={overrideStage} minimal={minimal} />;
+}
+
+export interface ConnectingScreenProps {
+  /** Pin the stage label (Auth / Routing / Reaching / Restoring). */
+  overrideStage?: Stage;
+  /** Override the screen headline (e.g. "Provisioning workspace"). */
+  title?: string;
+  /** Override the workspace label when the server store is not populated yet. */
+  labelOverride?: string;
+  /** Determinate provisioning mode — shows real progress + stages. */
+  provisioning?: {
+    progress: number;
+    stageLabel?: string;
+    stages?: ProvisioningStageInfo[] | null;
+    currentStage?: string | null;
+    machineInfo?: {
+      ip: string;
+      serverType: string;
+      location: string;
+    } | null;
+  };
+  /** Error state — workspace failed to provision or is otherwise broken. */
+  error?: {
+    message: string;
+    serverType?: string;
+    location?: string;
+  };
+  /** Stopped state — workspace exists but is not running. */
+  stopped?: {
+    name?: string;
+  };
+  /** Where "Back" / switch buttons should navigate. */
+  backHref?: string;
+  /**
+   * Minimal mode for auth / OAuth consent gates where no workspace context exists.
+   * Normal connecting waits render only the top progress line.
+   */
+  minimal?: boolean;
+  /**
+   * Compatibility flag for pages that previously hid loader chrome.
+   */
+  hideWorkspacePicker?: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared shell
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type Stage = 'auth' | 'routing' | 'reaching' | 'restoring';
+
+const STAGE_COPY: Record<Stage, string> = {
+  auth: 'Authenticating',
+  routing: 'Connecting',
+  reaching: 'Reaching workspace',
+  restoring: 'Restoring session',
+};
+
+function FullScreenShell({
+  children,
+}: {
+  children: React.ReactNode;
+  /** Kept for call-site compatibility; loader chrome no longer renders it. */
+  showWorkspacePicker?: boolean;
+}) {
+  return (
+    <div className="bg-background fixed inset-0 z-[60] flex items-center justify-center">
+      <div className="relative z-10 flex w-full max-w-[420px] flex-col items-center gap-8 px-8">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Connecting signal — initial load, in-app switch, first-time connect
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CompactConnectingSignal({
+  title,
+  overrideStage,
+  minimal = false,
+}: {
+  title?: string;
+  overrideStage?: Stage;
+  minimal?: boolean;
+}) {
+  const status = title || (!minimal && overrideStage ? STAGE_COPY[overrideStage] : 'Connecting');
+
+  return (
+    <div
+      className="pointer-events-none fixed inset-0 z-[60] flex items-center justify-center"
+      role="status"
+      aria-label={status}
+    >
+      <ProgressLine />
+    </div>
+  );
+}
+
+/** Hairline indeterminate progress bar — our single, canonical "working" signal. */
+function ProgressLine() {
+  return (
+    <div
+      className="bg-foreground/[0.06] h-[1.5px] w-[160px] overflow-hidden rounded-full"
+      aria-hidden
+    >
+      <div className="bg-foreground/50 animate-connect-progress h-full w-1/3 rounded-full" />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Provisioning view — determinate progress, stages, machine info
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ProvisioningView({
+  label,
+  title,
+  progress,
+  stageLabel,
+  stages,
+  currentStage,
+  machineInfo,
+  backHref,
+}: {
+  label: string;
+  title: string;
+  progress: number;
+  stageLabel?: string;
+  stages?: ProvisioningStageInfo[] | null;
+  currentStage?: string | null;
+  machineInfo?: {
+    ip: string;
+    serverType: string;
+    location: string;
+  } | null;
+  backHref: string;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const pct = Math.max(0, Math.min(100, progress));
+  const rawStageText =
+    stageLabel || (currentStage ? STAGE_LABELS[currentStage] : undefined) || 'Preparing workspace';
+  const stageText = translateUiCatalogText(
+    rawStageText,
+    tI18nComplete,
+    REMAINING_UI_TRANSLATION_KEYS,
+  );
+
+  return (
+    <>
+      <KortixLogo size={40} />
+
+      <p className="text-foreground/55 max-w-[320px] truncate text-sm font-normal">{label}</p>
+
+      <DeterminateProgress pct={pct} />
+
+      <div className="text-muted-foreground/50 flex items-center gap-2 text-xs">
+        <span className="font-medium tabular-nums">{Math.round(pct)}%</span>
+        <span className="bg-foreground/[0.08] h-[10px] w-px" aria-hidden />
+        <span className="max-w-[220px] truncate">{stageText}</span>
+      </div>
+
+      {machineInfo?.ip && (
+        <div className="text-muted-foreground/35 inline-flex items-center gap-1.5 font-mono text-xs tracking-wide">
+          <span className="bg-foreground/40 h-1 w-1 rounded-full" />
+          {machineInfo.location?.toLowerCase().match(/us|hil/) ? 'US' : 'EU'}
+          <span>·</span>
+          {machineInfo.ip}
+        </div>
+      )}
+
+      <BackLink href={backHref} />
+    </>
+  );
+}
+
+/** Determinate progress line — same geometry as the indeterminate one. */
+function DeterminateProgress({ pct }: { pct: number }) {
+  return (
+    <div
+      className="bg-foreground/[0.06] h-[1.5px] w-[160px] overflow-hidden rounded-full"
+      aria-hidden
+    >
+      <div
+        className="bg-foreground/60 h-full rounded-full transition-[width] duration-500 ease-out"
+        style={{ width: `${Math.max(pct, 2)}%` }}
+      />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Error view — provisioning failed
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ErrorView({
+  label,
+  message,
+  location,
+  serverType,
+  backHref,
+}: {
+  label: string;
+  message: string;
+  location?: string;
+  serverType?: string;
+  backHref: string;
+}) {
+  const tHardcodedUi = useTranslations('hardcodedUi');
+  return (
+    <>
+      <div
+        className="border-destructive/20 bg-destructive/10 flex h-12 w-12 items-center justify-center rounded-full border"
+        aria-hidden
+      >
+        <AlertCircle className="text-destructive/70 h-5 w-5" />
+      </div>
+
+      <div className="flex flex-col items-center gap-1">
+        <h1 className="text-foreground/90 text-sm font-medium">
+          {tHardcodedUi.raw('componentsDashboardConnectingScreen.line422JsxTextCouldnAposTStart')}{' '}
+          {label}
+        </h1>
+        {(serverType || location) && (
+          <p className="text-muted-foreground/35 font-mono text-xs">
+            {[serverType, location].filter(Boolean).join(' · ')}
+          </p>
+        )}
+      </div>
+
+      <p className="text-muted-foreground/60 max-w-[320px] text-center text-xs leading-relaxed wrap-break-word">
+        {message}
+      </p>
+
+      <Link
+        href={backHref}
+        prefetch
+        className="border-border/40 text-foreground/70 hover:border-border/70 hover:text-foreground inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border px-4 text-xs font-medium transition-colors"
+      >
+        <ArrowLeft className="h-3 w-3" />
+        {tHardcodedUi.raw('i18nComplete.text76900f1bfd16')}
+      </Link>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stopped view — workspace exists but is not running
+// ─────────────────────────────────────────────────────────────────────────────
+
+function StoppedView({ label, backHref }: { label: string; backHref: string }) {
+  const tHardcodedUi = useTranslations('hardcodedUi');
+  return (
+    <>
+      <div
+        className="border-border/40 bg-foreground/[0.03] flex h-12 w-12 items-center justify-center rounded-full border"
+        aria-hidden
+      >
+        <Power className="text-muted-foreground/60 h-5 w-5" />
+      </div>
+
+      <div className="flex flex-col items-center gap-1">
+        <h1 className="text-foreground/90 text-sm font-medium">
+          {label}
+          {tHardcodedUi.raw('componentsDashboardConnectingScreen.line469JsxTextIsStopped')}
+        </h1>
+        <p className="text-muted-foreground/55 max-w-[300px] text-center text-xs leading-relaxed">
+          {tHardcodedUi.raw(
+            'componentsDashboardConnectingScreen.line472JsxTextOpenANewSessionOrReturnToProjects',
+          )}
+        </p>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <Link
+          href={backHref}
+          prefetch
+          className="border-border/40 text-foreground/70 hover:border-border/70 hover:text-foreground inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border px-4 text-xs font-medium transition-colors"
+        >
+          <ArrowLeft className="h-3 w-3" />
+          {tHardcodedUi.raw('i18nComplete.text76900f1bfd16')}
+        </Link>
+      </div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared fragments
+// ─────────────────────────────────────────────────────────────────────────────
+
+function BackLink({ href }: { href: string }) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  return (
+    <Link
+      href={href}
+      prefetch
+      className="text-muted-foreground/35 hover:text-foreground/70 fixed top-[calc(1.25rem+var(--kx-titlebar-inset,0px))] left-5 inline-flex cursor-pointer items-center gap-1.5 text-xs transition-colors"
+    >
+      <ArrowLeft className="h-3 w-3" />
+      {tI18nComplete.raw('text76900f1bfd16')}
+    </Link>
+  );
+}

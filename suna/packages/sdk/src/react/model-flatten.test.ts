@@ -1,0 +1,306 @@
+import { describe, expect, test } from 'bun:test';
+
+import { flattenModels, isOfferedModel, type FlatModel } from './model-flatten';
+import type { ProviderListResponse } from './use-opencode-sessions';
+
+// Regression coverage for the "every provider shows as Kortix" picker bug:
+// the gateway exposes its ENTIRE catalog under one synthetic `kortix`
+// opencode provider. `flattenModels` must carry the model's REAL upstream
+// `provider` field (and `reasoningOptions`) through onto `FlatModel` so
+// downstream grouping/gating never has to recover them by string-splitting
+// the wire model id — see model-selector.tsx's `pickerGroupId`.
+function gatewayProviderList(
+  models: Record<string, Record<string, unknown>>,
+): ProviderListResponse {
+  return {
+    connected: ['kortix'],
+    all: [{ id: 'kortix', name: 'Kortix', source: 'custom', models }],
+  } as unknown as ProviderListResponse;
+}
+
+describe('flattenModels — free catalog flag', () => {
+  test('normalizes true, false, and absent free flags without changing other fields', () => {
+    const models = gatewayProviderList({
+      paid: { name: 'Paid' },
+      free: { name: 'Free', free: true },
+      disabled: { name: 'Disabled', free: false },
+    });
+    const flat = flattenModels(models);
+    expect(flat.map(({ modelID, free, capabilities }) => ({ modelID, free, capabilities }))).toEqual([
+      { modelID: 'paid', free: false, capabilities: { reasoning: false, vision: undefined, toolcall: false } },
+      { modelID: 'free', free: true, capabilities: { reasoning: false, vision: undefined, toolcall: false } },
+      { modelID: 'disabled', free: false, capabilities: { reasoning: false, vision: undefined, toolcall: false } },
+    ]);
+  });
+});
+
+describe('flattenModels — gateway `provider` + `reasoning_options` pass-through', () => {
+  test('carries the explicit `provider` field for a BYOK model registered under the kortix provider', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'anthropic/claude-opus-4-8': {
+          name: 'Claude Opus 4.8',
+          provider: 'anthropic',
+          reasoning: true,
+          reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high'] }],
+        },
+      }),
+    );
+    expect(flat?.providerID).toBe('kortix');
+    expect(flat?.provider).toBe('anthropic');
+    expect(flat?.reasoningOptions).toEqual([{ type: 'effort', values: ['low', 'medium', 'high'] }]);
+  });
+
+  // A BYOK provider without a hand-written label (OpenCode Go) was named after
+  // the synthetic provider: "Kortix". The gateway serves the real name.
+  test('names a BYOK model after its real provider, keeping the kortix providerID', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'opencode-go/glm-5.3': { name: 'GLM-5.3', provider: 'opencode-go', provider_name: 'OpenCode Go' },
+      }),
+    );
+    expect(flat?.providerID).toBe('kortix');
+    expect(flat?.providerName).toBe('OpenCode Go');
+  });
+
+  test('a model without `provider_name` keeps the provider list name', () => {
+    const [flat] = flattenModels(gatewayProviderList({ 'glm-5.3-flash': { name: 'GLM', provider: 'kortix' } }));
+    expect(flat?.providerName).toBe('Kortix');
+  });
+
+  test('carries `provider: "kortix"` for a managed model, distinct from its providerID', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'claude-opus-4.8': { name: 'Claude Opus 4.8', provider: 'kortix', reasoning: true },
+      }),
+    );
+    expect(flat?.provider).toBe('kortix');
+  });
+
+  test('carries `provider: "codex"` for a ChatGPT-subscription model, distinct from raw `openai`', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'codex/gpt-5.6-sol': { name: 'GPT-5.6 Sol (ChatGPT)', provider: 'codex', reasoning: true },
+      }),
+    );
+    expect(flat?.provider).toBe('codex');
+  });
+
+  test('a model with two embedded slashes still resolves via the explicit field, not string-splitting', () => {
+    // e.g. models.dev's own id can itself contain a "/" (mixlayer/qwen/qwen3.5-9b) —
+    // the explicit `provider` field sidesteps any ambiguity about where to split.
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'mixlayer/qwen/qwen3.5-9b': { name: 'Qwen3.5 9B', provider: 'mixlayer', reasoning: false },
+      }),
+    );
+    expect(flat?.provider).toBe('mixlayer');
+    expect(flat?.modelID).toBe('mixlayer/qwen/qwen3.5-9b');
+  });
+
+  test('`provider` and `reasoningOptions` are undefined for a stale/older catalog entry without them', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'anthropic/claude-legacy': { name: 'Claude Legacy', reasoning: false },
+      }),
+    );
+    expect(flat?.provider).toBeUndefined();
+    expect(flat?.reasoningOptions).toBeUndefined();
+  });
+
+  // MUST-FIX regression (adversarial review of PR #5010): description,
+  // open_weights, and last_updated used to stop at LlmProviderModel/
+  // GatewayModel and never reach FlatModel — silently dropped on the last
+  // hop despite being threaded everywhere upstream.
+  test('carries description/openWeights/lastUpdated through onto FlatModel', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'anthropic/claude-opus-4-8': {
+          name: 'Claude Opus 4.8',
+          provider: 'anthropic',
+          description: 'Most capable Claude model',
+          open_weights: false,
+          last_updated: '2026-05-28',
+        },
+      }),
+    );
+    expect(flat?.description).toBe('Most capable Claude model');
+    expect(flat?.openWeights).toBe(false);
+    expect(flat?.lastUpdated).toBe('2026-05-28');
+  });
+
+  // A `reasoning_options` entry with no `values` (the budget_tokens/toggle
+  // shapes) must round-trip too — not just the `effort` shape's array.
+  test('carries a budget_tokens-shaped reasoning_options entry through verbatim', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'anthropic/claude-haiku-4-5': {
+          name: 'Claude Haiku 4.5',
+          provider: 'anthropic',
+          reasoning_options: [{ type: 'budget_tokens', min: 1024 }],
+        },
+      }),
+    );
+    expect(flat?.reasoningOptions).toEqual([{ type: 'budget_tokens', min: 1024 }]);
+  });
+});
+
+// The gateway is the only model path: `kortix` is the one renderable
+// provider. A native provider in a runtime answer is a bypass and is dropped,
+// and the deprecated `providerMode: 'native'` changes nothing.
+describe('flattenModels — native providers never render', () => {
+  const list = {
+    connected: ['anthropic', 'kortix'],
+    all: [
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        source: 'env',
+        models: { 'claude-sonnet-4-6': { name: 'Claude Sonnet 4.6' } },
+      },
+      { id: 'kortix', name: 'Kortix', source: 'custom', models: { 'glm-5.3-flash': { name: 'GLM' } } },
+    ],
+  } as unknown as ProviderListResponse;
+
+  test('only the kortix provider flattens, whatever providerMode says', () => {
+    for (const opts of [undefined, { providerMode: 'gateway' as const }, { providerMode: 'native' as const }]) {
+      expect(flattenModels(list, opts).map((m) => `${m.providerID}/${m.modelID}`)).toEqual([
+        'kortix/glm-5.3-flash',
+      ]);
+    }
+  });
+});
+
+// `enabled` is the server's per-project enablement answer (`/model-picker`).
+// Every consumer that asks "may this key be offered/resolved?" must go through
+// isOfferedModel — a second, client-local visibility heuristic is exactly what
+// made the picker and "Manage models" disagree (#5932 half-revert).
+// `vision` decides whether the composer REFUSES to send an attached image, so
+// "the catalog said nothing" and "the catalog said no" must stay distinct. A
+// catalog entry with no modality signal at all (a custom/self-hosted provider)
+// carries no verdict, and flattening it to `false` would silently block images
+// on a model that may well read them.
+describe('flattenModels — vision is reported, never guessed', () => {
+  test('gateway: `modalities.input` containing image reports vision true', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'kortix/seer': { name: 'Seer', modalities: { input: ['text', 'image'] } },
+      }),
+    );
+    expect(flat?.capabilities?.vision).toBe(true);
+  });
+
+  test('gateway: `modalities.input` without image reports vision false', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'kortix/textonly': { name: 'Text Only', modalities: { input: ['text'] } },
+      }),
+    );
+    expect(flat?.capabilities?.vision).toBe(false);
+  });
+
+  test('gateway: an explicit `attachment: false` reports vision false', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({ 'kortix/noattach': { name: 'No Attach', attachment: false } }),
+    );
+    expect(flat?.capabilities?.vision).toBe(false);
+  });
+
+  test('gateway: a catalog entry with no modality signal leaves vision undefined', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({ 'custom/mystery': { name: 'Mystery' } }),
+    );
+    expect(flat?.capabilities?.vision).toBeUndefined();
+  });
+
+  test('capabilities shape: `input.image` true reports vision true', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'custom/sighted': { name: 'Sighted', capabilities: { input: { image: true } } },
+      }),
+    );
+    expect(flat?.capabilities?.vision).toBe(true);
+  });
+
+  test('capabilities shape: `input` present without image reports vision false', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'custom/blind': { name: 'Blind', capabilities: { input: { image: false } } },
+      }),
+    );
+    expect(flat?.capabilities?.vision).toBe(false);
+  });
+
+  test('capabilities shape: no `input` block leaves vision undefined', () => {
+    const [flat] = flattenModels(
+      gatewayProviderList({
+        'custom/silent': { name: 'Silent', capabilities: { reasoning: true } },
+      }),
+    );
+    expect(flat?.capabilities?.vision).toBeUndefined();
+  });
+});
+
+describe('isOfferedModel', () => {
+  const models = [
+    { providerID: 'kortix', modelID: 'anthropic/claude-fable-5', enabled: true },
+    { providerID: 'kortix', modelID: 'anthropic/claude-opus-4-1', enabled: false },
+    { providerID: 'kortix', modelID: 'glm-5.3-flash' },
+  ] as FlatModel[];
+
+  test('offers a model the server enabled', () => {
+    expect(isOfferedModel(models, { providerID: 'kortix', modelID: 'anthropic/claude-fable-5' })).toBe(
+      true,
+    );
+  });
+
+  test('refuses a model the server disabled', () => {
+    expect(
+      isOfferedModel(models, { providerID: 'kortix', modelID: 'anthropic/claude-opus-4-1' }),
+    ).toBe(false);
+  });
+
+  test('offers a model from a catalog that carries no enablement at all', () => {
+    // Native/legacy catalogs never stamp `enabled`; absence means "not
+    // applicable", never "hidden".
+    expect(isOfferedModel(models, { providerID: 'kortix', modelID: 'glm-5.3-flash' })).toBe(true);
+  });
+
+  test('refuses a key that is not in the catalog', () => {
+    expect(isOfferedModel(models, { providerID: 'kortix', modelID: 'gone/model' })).toBe(false);
+  });
+});
+
+// These behaviors once diverged from the web-host copy of the flattener
+// (KRTX-451 phase 1 characterized the drift against
+// apps/web/src/features/session/model-flatten.ts; KRTX-455 phase 4 deleted
+// that host file, so the SDK is the single definition). They stay as
+// regression pins on the SDK semantics every picker now runs on.
+describe('flattenModels — semantics that once diverged from the deleted host copy', () => {
+  const driftList = gatewayProviderList({
+    // Stale pre-removal entries a baked catalog can still carry.
+    auto: { name: 'Auto' },
+    'kortix/auto': { name: 'Kortix Auto' },
+    'custom/mystery': { name: 'Mystery' },
+    'custom/silent': { name: 'Silent', capabilities: { reasoning: true } },
+    // Zero-cost managed model: the gateway stamps `free`.
+    'kortix/free-tier': { name: 'Free Tier', free: true, cost: { input: 0, output: 0 } },
+    'kortix/paid-tier': { name: 'Paid Tier', cost: { input: 1, output: 2 } },
+  });
+
+  test('gateway mode drops stale pre-removal auto/kortix/auto entries', () => {
+    const flat = flattenModels(driftList);
+    expect(flat.map((m) => m.modelID).sort()).toEqual([
+      'custom/mystery',
+      'custom/silent',
+      'kortix/free-tier',
+      'kortix/paid-tier',
+    ]);
+  });
+
+  test('free is carried on the SDK FlatModel for both free and paid models', () => {
+    const flat = flattenModels(driftList);
+    expect(flat.find((m) => m.modelID === 'kortix/free-tier')?.free).toBe(true);
+    expect(flat.find((m) => m.modelID === 'kortix/paid-tier')?.free).toBe(false);
+  });
+});

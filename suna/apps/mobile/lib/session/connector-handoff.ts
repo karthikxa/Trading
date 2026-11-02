@@ -1,0 +1,280 @@
+/**
+ * Pure decisions behind the in-chat connector connect/approve hand-off
+ * (COR-158, connector remainder — the model-provider half is
+ * `lib/session/connect-model.ts` / `components/session/ConnectProviderSheet.tsx`).
+ *
+ * Web's mechanism: a `kortix-connectors_call` denial for an unconnected
+ * connector carries `connect_url` — an agent-minted `/connect/<token>` setup
+ * link (`apps/api/src/connectors/principal-access.ts` `connectorDenialBody`,
+ * `apps/api/src/connectors/db-deps.ts` `mintConnectorConnectLink`). Web's
+ * markdown link interceptor turns that link into `SetupLinkButton` /
+ * `ConnectorIntake` wherever the agent happens to paste it in prose. Mobile
+ * reads the SAME field straight off the `kortix-connectors_call` tool part
+ * (`components/session/tool/tools/connector-tools.tsx`'s `ConnectorCallTool`)
+ * — the tool part is the one place this fact is guaranteed to show up — and
+ * draws the same row for a link in prose (`lib/markdown/setup-links.ts`,
+ * `components/session/turn/setup-link-card.tsx`).
+ *
+ * The connect hand-off itself prefers the project's own Pipedream connect
+ * round trip (`lib/projects/projects-client.ts` `pipedreamConnect` /
+ * `pipedreamFinalize`) over opening the agent's `connect_url` directly: the
+ * project-scoped flow mints a URL that supports a `kortix://` redirect, so
+ * the in-app browser auto-dismisses; the public `/connect/<token>` page does
+ * not, and is kept only as a fallback (`ConnectorAuthSheet`).
+ *
+ * A call that needs a human renders as a STANDALONE transcript row
+ * (`connectorHandoffCallIds` → `standaloneCallIdsFor`, `turn-body.ts`), never
+ * inside a burst's activity sheet: the Connect row and the approval prompt
+ * need the transcript's `ConnectorHandoffContext`, and a sheet opened from
+ * inside another sheet would stack two overlays.
+ */
+
+import type { SessionLogBlock } from '@kortix/sdk';
+
+import { partInput, partOutput } from './tool-part-accessors';
+import { parseConnectorOutput } from './tool-output-parsers';
+
+/** "google_drive" / "gmail" → "Google Drive" / "Gmail" — a friendly fallback
+ *  name from a slug. */
+export function prettifyConnectorName(slug: string): string {
+  const out = slug
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+  return out || slug;
+}
+
+export interface ConnectorConnectNeed {
+  slug: string;
+  label: string;
+  /** The agent's own setup-link URL — a `/connect/<token>` public page. */
+  connectUrl: string;
+}
+
+/**
+ * A `kortix-connectors_call` denial whose remedy is "connect the app" —
+ * `connectorDenialBody`'s `connector_not_connected` case is the only denial
+ * reason that carries `connect_url`, so its presence is the signal, not just
+ * the reason string (a future denial reason that also mints a link should
+ * still show the row).
+ */
+export function connectorConnectNeed(
+  input: Record<string, unknown>,
+  parsed: Record<string, unknown> | null,
+): ConnectorConnectNeed | null {
+  if (!parsed) return null;
+  if (parsed.ok === true) return null;
+  if (parsed.status !== 'denied') return null;
+  const connectUrl = typeof parsed.connect_url === 'string' ? parsed.connect_url.trim() : '';
+  if (!connectUrl) return null;
+  const slug = String(parsed.connector ?? input.connector ?? '').trim();
+  if (!slug) return null;
+  return { slug, label: prettifyConnectorName(slug), connectUrl };
+}
+
+export interface ConnectorApprovalArg {
+  key: string;
+  value: string;
+}
+
+export interface ConnectorApprovalNeed {
+  executionId: string;
+  connector: string;
+  /** The action the call runs (`send_email`). Empty when neither the payload
+   *  nor the tool input names one. */
+  action: string;
+  /** `connector.action` — what the prompt names, so the reader knows what
+   *  they approve. */
+  actionRef: string;
+  /** The first `APPROVAL_ARGS_MAX` top-level call arguments, each value cut
+   *  to `APPROVAL_ARG_VALUE_MAX` characters. */
+  argsPreview: ConnectorApprovalArg[];
+  summary: string | null;
+  instructions: string | null;
+  risk: string | null;
+}
+
+/** A `kortix-connectors_call` awaiting a human approve/deny — never a connect. */
+export function connectorApprovalNeed(
+  input: Record<string, unknown>,
+  parsed: Record<string, unknown> | null,
+): ConnectorApprovalNeed | null {
+  if (!parsed) return null;
+  if (parsed.status !== 'pending_approval') return null;
+  const executionId = typeof parsed.execution_id === 'string' ? parsed.execution_id.trim() : '';
+  if (!executionId) return null;
+  const connector = String(parsed.connector ?? input.connector ?? '').trim();
+  const action = String(parsed.action ?? input.action ?? '').trim();
+  return {
+    executionId,
+    connector,
+    action,
+    actionRef: connector && action ? `${connector}.${action}` : connector || action,
+    argsPreview: approvalArgsPreview(input.args),
+    summary: typeof parsed.approval_summary === 'string' ? parsed.approval_summary : null,
+    instructions:
+      typeof parsed.approval_instructions === 'string' ? parsed.approval_instructions : null,
+    risk: typeof parsed.risk === 'string' ? parsed.risk : null,
+  };
+}
+
+export const APPROVAL_ARGS_MAX = 4;
+export const APPROVAL_ARG_VALUE_MAX = 80;
+
+function approvalArgsPreview(args: unknown): ConnectorApprovalArg[] {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return [];
+  return Object.entries(args as Record<string, unknown>)
+    .slice(0, APPROVAL_ARGS_MAX)
+    .map(([key, raw]) => {
+      let value: string;
+      try {
+        value = typeof raw === 'string' ? raw : (JSON.stringify(raw) ?? String(raw));
+      } catch {
+        value = String(raw);
+      }
+      if (value.length > APPROVAL_ARG_VALUE_MAX) value = `${value.slice(0, APPROVAL_ARG_VALUE_MAX - 1)}…`;
+      return { key, value };
+    });
+}
+
+/**
+ * True for `kortix-connectors_call` under every spelling `ToolRegistry.get`
+ * resolves to that renderer: `_`/`-` swapped, any case, a namespace prefix.
+ */
+export function isConnectorCallTool(tool: string): boolean {
+  const name = tool.trim().toLowerCase().replace(/-/g, '_');
+  const short = name.slice(name.lastIndexOf('/') + 1);
+  return short === 'kortix_connectors_call' || short.endsWith('_kortix_connectors_call');
+}
+
+/**
+ * The call ids of `kortix-connectors_call` calls that ask a human for
+ * something — connect an app (`connectorConnectNeed`) or approve a call
+ * (`connectorApprovalNeed`). `standaloneCallIdsFor` breaks these out of their
+ * burst, so their Connect row and approval prompt render in the transcript.
+ */
+export function connectorHandoffCallIds(blocks: ReadonlyArray<SessionLogBlock>): string[] {
+  const ids: string[] = [];
+  for (const block of blocks) {
+    if (block.type !== 'tool_call' || !isConnectorCallTool(block.name)) continue;
+    const parsed = parseConnectorOutput(partOutput(block));
+    if (!parsed) continue;
+    const input = partInput(block);
+    if (connectorConnectNeed(input, parsed) || connectorApprovalNeed(input, parsed)) ids.push(block.call_id);
+  }
+  return ids;
+}
+
+/**
+ * What the in-chat approval prompt shows:
+ * - `unknown`  — the review list cannot vouch for the call yet: not loaded,
+ *   failed, or fetched before the call settled. Render nothing: a resolved
+ *   call never flashes Approve / Deny, and a viewer the API would refuse
+ *   never gets them (KRTX-1724);
+ * - `pending`  — Approve / Deny;
+ * - `waiting`  — still pending, but this viewer may not decide it: only a
+ *   project manager or the person who started the session may (KRTX-1724).
+ *   No Approve / Deny, which the API would refuse with 403;
+ * - `approved` / `denied` — the outcome is known;
+ * - `resolved` — decided elsewhere (web, the Review page, before a remount),
+ *   outcome not known.
+ */
+export type ConnectorApprovalState =
+  | 'unknown'
+  | 'pending'
+  | 'waiting'
+  | 'approved'
+  | 'denied'
+  | 'resolved';
+
+export interface ConnectorApprovalStateInput {
+  executionId: string;
+  /** The project's pending approvals (`useReviewItems` with `kind: 'approval'`).
+   *  The API adapts only still-pending connector calls into the review list, as
+   *  `call:<execution_id>`. `undefined` until it loads. `canResolve` is the
+   *  call's own verdict (`ReviewApprovalAction.canResolve`), when known.
+   *  A failed request holds no list, so no verdict: `unknown`. */
+  reviewItems: ReadonlyArray<{ id: string; status: string; canResolve?: boolean }> | undefined;
+  /** When that list was fetched (react-query `dataUpdatedAt`), epoch ms. */
+  reviewFetchedAtMs: number;
+  /** When the tool call settled, epoch ms. A list fetched before it cannot
+   *  carry the call yet, so its absence proves nothing. */
+  callSettledAtMs: number | null;
+  /** A decision this prompt made itself (it outlives the refetch that drops
+   *  the call from the list). */
+  localDecision: 'approve' | 'deny' | null;
+}
+
+/**
+ * A pending connector call this viewer may not decide (KRTX-1724). The API
+ * lists it as `waiting` for such a viewer; an API older than that still says
+ * `needs_you`, but its `canResolve` (from `args_preview_authorized`) is false.
+ */
+export function approvalWaitsOnOthers(item: { status: string; canResolve?: boolean }): boolean {
+  return item.status === 'waiting' || (item.status === 'needs_you' && item.canResolve === false);
+}
+
+export function connectorApprovalState(input: ConnectorApprovalStateInput): ConnectorApprovalState {
+  if (input.localDecision) return input.localDecision === 'approve' ? 'approved' : 'denied';
+  if (!input.reviewItems) return 'unknown';
+
+  const item = input.reviewItems.find((row) => row.id === `call:${input.executionId}`);
+  if (item) {
+    if (approvalWaitsOnOthers(item)) return 'waiting';
+    if (item.status === 'needs_you') return 'pending';
+    if (item.status === 'approved') return 'approved';
+    if (item.status === 'rejected') return 'denied';
+    return 'resolved';
+  }
+  // Absent from a list fetched before the call settled: too early to say.
+  if (listPredatesCall(input.reviewFetchedAtMs, input.callSettledAtMs)) return 'unknown';
+  return 'resolved';
+}
+
+/** A list fetched at or before the call settled cannot carry it yet. */
+export function listPredatesCall(reviewFetchedAtMs: number, callSettledAtMs: number | null): boolean {
+  return callSettledAtMs !== null && reviewFetchedAtMs <= callSettledAtMs;
+}
+
+/**
+ * The line that says who decides a call this viewer may not decide. A session
+ * started with an API token or a service account is decided by managers only
+ * (`resolvers: 'managers'`, KRTX-1724).
+ */
+export function approvalWaitingWhoKey(
+  resolvers: 'managers' | 'managers_and_launcher' | undefined,
+): 'approvals.waitingManagers' | 'approvals.waitingWho' {
+  return resolvers === 'managers' ? 'approvals.waitingManagers' : 'approvals.waitingWho';
+}
+
+/**
+ * The connect sheet's words. The title is the card's title, so the sheet
+ * continues the row that opened it. The body says where the sign-in happens
+ * and the one thing a reader worries about; the pill names where it goes.
+ */
+export function connectorHandoffCopy(
+  providerLabel: string,
+  projectName?: string | null,
+): { title: string; body: string; action: string } {
+  return {
+    title: projectName ? `Connect ${providerLabel} to ${projectName}` : `Connect ${providerLabel}`,
+    body: `You sign in on ${providerLabel} in the browser, then come back to this chat. Kortix never sees your password.`,
+    action: `Continue to ${providerLabel}`,
+  };
+}
+
+export function connectorHandoffToast(providerLabel: string, connected: boolean): string {
+  return connected ? `${providerLabel} connected` : `${providerLabel} not connected`;
+}
+
+/**
+ * A connector counts as connected once it has a stored credential. `credentialMode` is
+ * always `'shared'` today, so `secretSet` alone is the whole answer — kept as
+ * a function (not an inline `.secretSet` read) so the one rule has one name.
+ */
+export function isConnectorConnected(
+  connector: { secretSet?: boolean } | null | undefined,
+): boolean {
+  return !!connector?.secretSet;
+}

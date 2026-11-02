@@ -1,0 +1,145 @@
+import type { Metadata } from 'next';
+import { getLocale, getTranslations } from '@/i18n/get-translations';
+
+import { defaultLocale, locales, type Locale } from '@/i18n/config';
+import { localizeUiCatalog } from '@kortix/ui/i18n';
+import { PUBLIC_METADATA_TRANSLATION_KEYS } from '@/i18n/public-metadata-translation-keys.generated';
+import { getMarketingRecord } from '@/lib/seo/public-content';
+import { CANONICAL_ORIGIN, siteMetadata } from '@kortix/ui/internal/lib/site-metadata';
+
+export const DEFAULT_OG_IMAGE = {
+  url: '/banner.png',
+  width: 1200,
+  height: 630,
+  alt: siteMetadata.title,
+} as const;
+
+// Next.js replaces (not deep-merges) the parent `openGraph`/`twitter` objects
+// when a page defines its own, so every page-level metadata object must carry
+// the full social card — images included — or the root banner is lost.
+export function socialMetadata(title: string, description: string | undefined, url: string) {
+  return {
+    openGraph: {
+      title,
+      description,
+      url,
+      siteName: siteMetadata.name,
+      type: 'website',
+      locale: 'en_US',
+      images: [DEFAULT_OG_IMAGE],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
+      site: '@kortix',
+      creator: '@kortix',
+      images: [DEFAULT_OG_IMAGE.url],
+    },
+  } satisfies Pick<Metadata, 'openGraph' | 'twitter'>;
+}
+
+/** Search engines show about 155 characters. A record's description is
+ *  written in full for llms.txt and the .md mirrors; the meta description
+ *  keeps whole sentences up to that length; a longer first sentence is cut at
+ *  a word boundary. */
+export function metaDescription(description: string | undefined, max = 155): string | undefined {
+  if (!description || description.length <= max) return description;
+  const sentences = description.match(/[^.!?]+[.!?]+(?=\s|$)/g) ?? [description];
+  let out = '';
+  for (const sentence of sentences) {
+    const next = (out + sentence).trim();
+    if (next.length > max) break;
+    out = next;
+  }
+  // A first sentence longer than the limit is cut at a word, not mid-word.
+  return out || `${description.slice(0, max - 1).replace(/\s+\S*$/, '')}…`;
+}
+
+export function marketingMetadata(
+  pathname: string,
+  recordOverride?: ReturnType<typeof getMarketingRecord>,
+): Metadata {
+  const record = recordOverride ?? getMarketingRecord(pathname);
+  if (!record) throw new Error(`Missing marketing SEO record for ${pathname}`);
+  const url = `${CANONICAL_ORIGIN}${pathname}`;
+  const description = metaDescription(record.description);
+  return {
+    title: record.title,
+    description,
+    alternates: { canonical: url },
+    ...socialMetadata(record.title, description, url),
+  };
+}
+
+export function localePath(locale: Locale, pathname: string): string {
+  if (locale === defaultLocale) return pathname;
+  return `/${locale}${pathname === '/' ? '' : pathname}`;
+}
+
+// hreflang map for a locale-routed marketing pathname. `x-default` points at
+// the unprefixed English URL, matching the sitemap alternates.
+export function languageAlternates(pathname: string): Record<string, string> {
+  const languages = Object.fromEntries(
+    locales.map((locale) => [locale, `${CANONICAL_ORIGIN}${localePath(locale, pathname)}`]),
+  );
+  languages['x-default'] = `${CANONICAL_ORIGIN}${localePath(defaultLocale, pathname)}`;
+  return languages;
+}
+
+// Open Graph names a locale as language_TERRITORY. The Portuguese copy is
+// Brazilian (arquivo, tela, celular).
+const OPEN_GRAPH_LOCALE: Record<Locale, string> = {
+  en: 'en_US',
+  de: 'de_DE',
+  it: 'it_IT',
+  zh: 'zh_CN',
+  ja: 'ja_JP',
+  pt: 'pt_BR',
+  fr: 'fr_FR',
+  es: 'es_ES',
+  sr: 'sr_RS',
+};
+
+/** `og:locale` for the page's own locale and `og:locale:alternate` for the
+ *  others, matching the hreflang set (KRTX-3254). */
+export function openGraphLocales(locale: Locale): { locale: string; alternateLocale: string[] } {
+  return {
+    locale: OPEN_GRAPH_LOCALE[locale],
+    alternateLocale: locales.filter((other) => other !== locale).map((other) => OPEN_GRAPH_LOCALE[other]),
+  };
+}
+
+// Every page renders under app/[locale]. The locale comes from that segment
+// (next/root-params via i18n/request.ts), not from a request header, so each
+// locale variant stays static and self-canonicalizes to its own URL.
+export async function requestLocale(): Promise<Locale> {
+  const locale = await getLocale();
+  return locales.includes(locale as Locale) ? (locale as Locale) : defaultLocale;
+}
+
+// Metadata for the locale-routed marketing pages (/, /legal, /pricing, …):
+// per-locale canonical plus a full hreflang set in the <head>.
+// MARKETING_ROUTES in middleware.ts matches by prefix, so anything under a
+// listed route is locale-routed without a further entry there.
+export async function localizedMarketingMetadata(pathname: string): Promise<Metadata> {
+  const tI18nComplete = await getTranslations('hardcodedUi.i18nComplete');
+  const sourceRecord = getMarketingRecord(pathname);
+  const record = sourceRecord
+    ? localizeUiCatalog(sourceRecord, tI18nComplete, PUBLIC_METADATA_TRANSLATION_KEYS)
+    : undefined;
+  const base = marketingMetadata(pathname, record);
+  const locale = await requestLocale();
+  const canonical = `${CANONICAL_ORIGIN}${localePath(locale, pathname)}`;
+  return {
+    ...base,
+    // The homepage title is the full brand line; running it through the root
+    // `%s | Kortix CompanyOS` template would double the brand. `absolute` also keeps the
+    // rendered title distinct from the root-layout default — a resolved title
+    // identical to the parent default is dropped from the streamed metadata,
+    // leaving the page with no <title> in the served HTML.
+    ...(pathname === '/' ? { title: { absolute: record?.title ?? siteMetadata.title } } : {}),
+    alternates: { canonical, languages: languageAlternates(pathname) },
+    openGraph: { ...base.openGraph, url: canonical, ...openGraphLocales(locale) },
+  };
+}

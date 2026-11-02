@@ -1,0 +1,159 @@
+/**
+ * Where the v2 session log comes from, and when a client reads it.
+ *
+ * NEGOTIATION. A session reads `kortix.session/2`, always: the first read of an open is
+ * `GET …/log`. The project flag `session_log` is not read (the API deletes it). Any answer
+ * without a page (a 404 coded `session_log_missing`, a 404 without that code, a failed read, an
+ * invalid page) keeps the session on the log with nothing in it. No v1 transcript is read
+ * (`GET …/transcript`, P8.3). The runtime is not asked: the stored log is the API's (a stopped box reads it too), and the session
+ * stream serves `schema=v2` for every daemon (it converts the v1 frames of a daemon that
+ * does not list `session.log.v2`).
+ *
+ * THE PAGE LOADER reads `GET /v1/projects/:p/sessions/:s/log?thread=&before_seq=&limit=`
+ * (`@kortix/api-contract/session-log` `SessionLogPageSchema`). `SessionLogPage` is that
+ * schema's type, written out because this package has no zod; `contract-drift.test.ts` holds
+ * the two equal at typecheck. `SessionLogPage` and `SessionLogPageQuery` are public (the types of
+ * `getSessionLogPage`); the loader is internal. A 404 (the session has no stored log, or no such
+ * thread) reads as no page.
+ */
+import { backendApi } from '../http/api-client';
+import { isSessionLogPage } from './guard';
+import type { SessionLogSessionRecord, SessionLogThreadHead } from './store';
+import type { SessionLogMessage } from './types';
+
+/** One page of one thread: the session record, every thread head, and the thread's messages by `seq`. */
+export interface SessionLogPage {
+  /** The session record without `threads`; a field the daemon has not journaled yet is absent. */
+  session: Partial<SessionLogSessionRecord>;
+  generation: number;
+  threads: SessionLogThreadHead[];
+  /** The paged thread: the one asked for, else the root thread; null when no thread is stored. */
+  thread_id: string | null;
+  /** That thread's newest messages before `before_seq`, ascending `seq`; tombstones excluded. */
+  messages: SessionLogMessage[];
+  /** Older messages exist: ask again with `before_seq` = the first message's `seq`. */
+  has_more: boolean;
+}
+
+export interface SessionLogPageQuery {
+  /** Default: the root thread. */
+  thread?: string;
+  before_seq?: number;
+  limit?: number;
+}
+
+/** Fetches one page. The answer is validated by the caller, so it is `unknown` here. */
+export type LoadSessionLogPage = (
+  projectId: string,
+  sessionId: string,
+  query: SessionLogPageQuery,
+  signal?: AbortSignal,
+) => Promise<unknown>;
+
+/** The route's answer as is; `fetchFirstSessionLogPage` validates it. Throws on a non-2xx. */
+export const loadSessionLogPage: LoadSessionLogPage | null = async (projectId, sessionId, query, signal) => {
+  const search = new URLSearchParams();
+  if (query.thread !== undefined) search.set('thread', query.thread);
+  if (query.before_seq !== undefined) search.set('before_seq', String(query.before_seq));
+  if (query.limit !== undefined) search.set('limit', String(query.limit));
+  const qs = search.toString();
+  const response = await backendApi.get<unknown>(
+    `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/log${qs ? `?${qs}` : ''}`,
+    { showErrors: false, signal },
+  );
+  if (!response.success) throw response.error ?? new Error('Session log request failed');
+  return response.data;
+};
+
+/** The first window, the same size as the v1 mirror's (`MIRROR_HYDRATE_LIMIT`). */
+export const SESSION_LOG_FIRST_PAGE_LIMIT = 40;
+
+/** An older page: the reader scrolls on purpose, so fewer round trips win (the v1 older page is 100 too). */
+export const SESSION_LOG_OLDER_PAGE_LIMIT = 100;
+
+export type SessionLogDialect = 'v1' | 'v2';
+
+/** `useSessionLogSync`'s answer: a dialect, or `'missing'` (v2, and the last read answered no page: the API holds no log for the session yet, or the read failed; a copy painted from the device stays). */
+export type SessionLogSyncState = SessionLogDialect | 'missing';
+
+/** The code of the API's 404 for a session with no stored log yet. An API without the route answers 404 with no code. */
+const SESSION_LOG_MISSING_CODE = 'session_log_missing';
+
+/** {@link readSessionLog}'s answer, and how long a failed read asks a client to wait. */
+export interface SessionLogRead {
+  answer: SessionLogPage | 'missing' | null;
+  /** A failed read's `Retry-After` (503 `session_log_converting` sends 60 s), in ms; null without one. */
+  retryAfterMs: number | null;
+}
+
+/** The `Retry-After` seconds of a failed read's response, in ms; null when absent or not a number. */
+function retryAfterMs(error: unknown): number | null {
+  const header = (error as { response?: { headers?: { get?: (name: string) => string | null } } } | null)?.response?.headers?.get?.('retry-after');
+  const seconds = header == null || header === '' ? Number.NaN : Number(header);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null;
+}
+
+/** {@link readSessionLogAnswer}, with the failed read's `Retry-After`. Never throws. */
+export async function readSessionLog(
+  load: LoadSessionLogPage,
+  projectId: string,
+  sessionId: string,
+  query: SessionLogPageQuery,
+  signal?: AbortSignal,
+): Promise<SessionLogRead> {
+  try {
+    const page = await load(projectId, sessionId, query, signal);
+    return { answer: isSessionLogPage(page) ? page : null, retryAfterMs: null };
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === SESSION_LOG_MISSING_CODE) return { answer: 'missing', retryAfterMs: null };
+    return { answer: null, retryAfterMs: retryAfterMs(error) };
+  }
+}
+
+/**
+ * One page, validated. `'missing'`: the API serves the session log and this session has none
+ * yet (a new session). Null on any other failure (a 404 without that code, a 5xx, an invalid
+ * page, the network); never throws. A client reads no v1 copy for either.
+ */
+export async function readSessionLogAnswer(
+  load: LoadSessionLogPage,
+  projectId: string,
+  sessionId: string,
+  query: SessionLogPageQuery,
+  signal?: AbortSignal,
+): Promise<SessionLogPage | 'missing' | null> {
+  return (await readSessionLog(load, projectId, sessionId, query, signal)).answer;
+}
+
+/** One page, validated. Null on any failure; never throws. */
+export async function fetchSessionLogPage(
+  load: LoadSessionLogPage,
+  projectId: string,
+  sessionId: string,
+  query: SessionLogPageQuery,
+  signal?: AbortSignal,
+): Promise<SessionLogPage | null> {
+  const answer = await readSessionLogAnswer(load, projectId, sessionId, query, signal);
+  return answer === 'missing' ? null : answer;
+}
+
+/** The newest page of the root thread, or `'missing'`, as {@link readSessionLogAnswer} answers. */
+export function readFirstSessionLogAnswer(
+  load: LoadSessionLogPage,
+  projectId: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<SessionLogPage | 'missing' | null> {
+  return readSessionLogAnswer(load, projectId, sessionId, { limit: SESSION_LOG_FIRST_PAGE_LIMIT }, signal);
+}
+
+/** The newest page of the root thread, validated. Null on any failure; never throws. */
+export async function fetchFirstSessionLogPage(
+  load: LoadSessionLogPage,
+  projectId: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<SessionLogPage | null> {
+  const answer = await readFirstSessionLogAnswer(load, projectId, sessionId, signal);
+  return answer === 'missing' ? null : answer;
+}

@@ -1,0 +1,536 @@
+/**
+ * Shared enums/regexes/catalogs used by BOTH the imperative validator
+ * (`./index.ts`) and the JSON Schema generator (`./json-schema.ts`) — pulled
+ * out into their own dependency-free module so neither of those two needs to
+ * import the other (a `index.ts` ⇄ `json-schema.ts` cycle broke bun's
+ * bundler: circular top-level `const` access threw "Cannot access before
+ * initialization"). `index.ts` re-exports everything here for backward
+ * compatibility with existing consumers of `@kortix/manifest-schema`. Its one
+ * import, the channel descriptor, has no imports of its own.
+ */
+import { CHANNEL_PLATFORM_IDS, channelConnectorSlug } from '@kortix/shared/channel-descriptors';
+
+/** The slug reserved for the platform-shared default sandbox template. */
+export const RESERVED_SANDBOX_SLUG = 'default';
+
+/** Regex matching every user-defined slug (triggers, sandboxes, apps, connectors). */
+export const SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,127}$/;
+
+/** Regex matching a space slug (a `spaces.<slug>` key, an agent's `space`, a binding's `space`). Tighter than SLUG_RE so every space slug is also a valid room name: the space's room is the project room with that name. */
+export const SPACE_SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+
+/** The tab types of a space. The room tab is implicit: always first, never listed. */
+export const SPACE_TAB_TYPES = ['goals', 'apps', 'artifacts', 'files', 'board', 'app', 'artifact', 'link'] as const;
+
+/** What a space header shows, in order. Absent = every item. */
+export const SPACE_HEADER_ITEMS = ['agents', 'members', 'needs_you', 'new_session', 'ask_my_kortix'] as const;
+
+/** Regex matching every legal env-var name. */
+export const ENV_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
+
+/**
+ * Env-var names the runtime owns, which a manifest may therefore not set.
+ *
+ * WHY THIS LIVES IN THE MANIFEST SCHEMA
+ *
+ * The API refuses these when it builds a deployment's environment
+ * (`resolveAppRuntimeEnvironment` → `assertDestination`). For a long time the
+ * manifest validator did not, so `kortix validate` passed on a manifest that
+ * could never deploy, and the author found out from a failed deploy instead of
+ * from the tool whose entire job is to tell them first.
+ *
+ * That is not a hypothetical: a `kortix.yaml` setting `KORTIX_API_KEY`
+ * validated clean and failed at deploy, and the App that eventually shipped
+ * without those variables did not error at all — the feature depending on them
+ * simply rendered nothing.
+ *
+ * So the rule lives here, in the contract package both sides already depend
+ * on, and `apps/api` imports it rather than restating it.
+ */
+export const RESERVED_ENV_NAME_PREFIXES = ['KORTIX_', 'OPENCODE_'] as const;
+
+/** Process-level names the sandbox sets itself; overriding them breaks boot. */
+export const RESERVED_ENV_NAMES: ReadonlySet<string> = new Set([
+  'PORT',
+  'PATH',
+  'HOME',
+  'PWD',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'HOSTNAME',
+  'TERM',
+  'TMPDIR',
+  'NODE_ENV',
+  'NODE_OPTIONS',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+]);
+
+/**
+ * Secrets the platform holds but must never hand to a runtime, because an
+ * agent reachable by prompt injection would then be holding them too.
+ */
+export const NEVER_DELIVERED_ENV_NAMES: ReadonlySet<string> = new Set([
+  'SLACK_SIGNING_SECRET',
+  'SLACK_BOT_TOKEN',
+]);
+
+/** Is this name one the runtime owns? Used by both `validate` and deploy. */
+export function isReservedEnvName(name: string): boolean {
+  return (
+    RESERVED_ENV_NAMES.has(name) ||
+    NEVER_DELIVERED_ENV_NAMES.has(name) ||
+    RESERVED_ENV_NAME_PREFIXES.some((prefix) => name.startsWith(prefix))
+  );
+}
+
+/** Why a name is refused, phrased for the person who wrote the manifest. */
+export function reservedEnvNameReason(name: string): string | null {
+  const prefix = RESERVED_ENV_NAME_PREFIXES.find((candidate) => name.startsWith(candidate));
+  if (prefix) {
+    return `is reserved: the \`${prefix}\` prefix belongs to the platform. Rename it (for example \`MYAPP_${name.slice(prefix.length)}\`) and read it under the new name.`;
+  }
+  if (NEVER_DELIVERED_ENV_NAMES.has(name)) {
+    return 'is reserved: the platform never delivers this secret to a runtime.';
+  }
+  if (RESERVED_ENV_NAMES.has(name)) {
+    return 'is reserved: the runtime sets this itself, and overriding it breaks the sandbox.';
+  }
+  return null;
+}
+
+/** `change_request`: a merged change request of the project fires it (`filter.base` names the branch). */
+export const TRIGGER_TYPES = ['cron', 'webhook', 'event', 'app', 'change_request'] as const;
+
+/** What a `type: monitor` entry answers since the monitor box was removed. */
+export const MONITOR_REMOVED_MESSAGE =
+  'monitor triggers were removed. Run the watcher in an App (a process that POSTs to $KORTIX_APP_EVENTS_URL) and fire with a `type: app` trigger, or poll with a cron trigger whose `target` is the App.';
+
+/** Cron/webhook-only keys: hard-rejected on a `type: event` or `type: app` trigger. */
+export const EVENT_FORBIDDEN_KEYS = [
+  'cron', 'schedule', 'run_at', 'runAt', 'timezone', 'secret_env', 'secretEnv',
+] as const;
+
+/** Floor for a cron trigger's `max_lateness` (the misfire bound, KRTX-1743). */
+export const TRIGGER_MIN_MAX_LATENESS_SECONDS = 60;
+/**
+ * A trigger starts at most this many runs in any 60 minutes when its
+ * `max_runs_per_hour` is unset (KRTX-1721). Twice the busiest production
+ * trigger's hour in October 2026; the 60 s cron floor allows exactly this.
+ */
+export const DEFAULT_TRIGGER_MAX_RUNS_PER_HOUR = 60;
+
+/**
+ * Duration literal accepted by `interval` / `expect_event_within`: a positive
+ * integer plus one unit suffix (`30s`, `5m`, `24h`, `7d`). Deliberately not a
+ * bare number — "60" reads as either seconds or minutes depending on the
+ * reader, and the manifest is a human-review surface.
+ */
+export const DURATION_RE = /^([1-9][0-9]*)(s|m|h|d)$/;
+
+const DURATION_UNIT_SECONDS: Readonly<Record<string, number>> = {
+  s: 1,
+  m: 60,
+  h: 3600,
+  d: 86400,
+};
+
+/** Parse a {@link DURATION_RE} literal to whole seconds. Null when malformed. */
+export function parseDurationSeconds(raw: string): number | null {
+  const match = DURATION_RE.exec(raw.trim());
+  if (!match) return null;
+  return Number(match[1]) * DURATION_UNIT_SECONDS[match[2]!]!;
+}
+
+/**
+ * Inverse of {@link parseDurationSeconds}, in the largest unit that divides
+ * evenly (`60` → `"1m"`, `86400` → `"1d"`). Canonical, so a spec that
+ * round-trips through the CRUD write path emits one stable form — the same
+ * normalization `run_at` already gets (parsed, then re-emitted as ISO-8601).
+ */
+export function formatDurationSeconds(seconds: number): string {
+  if (!Number.isInteger(seconds) || seconds <= 0) return `${seconds}s`;
+  if (seconds % 86400 === 0) return `${seconds / 86400}d`;
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${seconds}s`;
+}
+// Providers a kortix.yaml may declare. `channel` is included because the
+// platform itself writes a `connectors:` entry with `provider: channel` into the
+// manifest when a Slack/email channel is connected (see connector/channel-manifest.ts), so
+// the gate must accept what the backend produces. MUST stay in sync with the
+// runtime parser's PROVIDERS in apps/api/src/projects/connectors.ts — enforced
+// by apps/api/src/__tests__/unit-connectors-parse.test.ts. `computer` is
+// deliberately absent: it is synth-only and never written to a manifest.
+export const CONNECTOR_PROVIDERS = [
+  'pipedream',
+  'composio',
+  'mcp',
+  'openapi',
+  'postman',
+  'graphql',
+  'http',
+  'channel',
+] as const;
+export type ConnectorProvider = (typeof CONNECTOR_PROVIDERS)[number];
+export const CONNECTOR_AUTH_TYPES = [
+  'bearer',
+  'basic',
+  'custom',
+  'api_key',
+  'oauth1',
+  'hmac',
+  'aws_sigv4',
+  'mtls',
+  'none',
+] as const;
+/** The exclusive owner model for connections under one connector. */
+export const CONNECTOR_AUTHORIZATION_STRATEGIES = ['project', 'user'] as const;
+/** Platforms a `channel` connector can target: the channel descriptor's ids (`@kortix/shared/channel-descriptors`). */
+export const CHANNEL_PLATFORMS = CHANNEL_PLATFORM_IDS;
+/**
+ * Platform-owned slugs and the only provider allowed to use each, so a user
+ * app can't shadow the built-in catalog (the bug that made `slack thread` 404;
+ * see KORTIX-206). Every `kortix_<platform>` of CHANNEL_PLATFORMS is here, in
+ * that order: the key order is the published JSON schema's order.
+ */
+export const RESERVED_SLUG_PROVIDERS: Readonly<Record<string, string>> = {
+  ...Object.fromEntries(CHANNEL_PLATFORMS.map((platform) => [channelConnectorSlug(platform), 'channel'])),
+  computer: 'computer',
+};
+export const CONNECTOR_POLICY_ACTIONS = ['always_run', 'require_approval', 'block'] as const;
+
+export const SANDBOX_CPU_BOUNDS = { min: 1, max: 32 } as const;
+export const SANDBOX_MEMORY_BOUNDS = { min: 1, max: 128 } as const;
+export const SANDBOX_DISK_BOUNDS = { min: 1, max: 500 } as const;
+
+/**
+ * The permissions an agent's `kortix_permissions` grant may list — the
+ * project-scoped surface (`kortix_cli` is the deprecated manifest alias).
+ * MUST stay in sync with apps/api/src/iam/actions.ts PROJECT_ACTIONS —
+ * every project-scoped action, including the manager-tier leaves
+ * (`project.delete`, `project.members.manage`, `project.gateway.keys.manage`):
+ * these are still reachable via a project's `manager` role, so an agent can be
+ * granted them too.
+ *
+ * Account-scoped admin actions (member.*, billing.*, token.*, project.create, …)
+ * are excluded here — but omission from this list is NOT the mechanism
+ * that keeps an agent off them. The actual enforcement is that every
+ * agent-session token is project-scoped (`account_tokens.project_id`):
+ * apps/api's IAM v2 engine (`iam/engine-v2.ts`'s `computeTokenScope`) refuses
+ * ANY account-scope action outright for a project-bound token — BEFORE the
+ * agent's `kortix_permissions` grant is even loaded or consulted. This list is a
+ * curation/UX surface (what the CLI/dashboard editor OFFER as grantable, and
+ * what `validateGrantList` flags as a bad `kortix_permissions` entry), not the
+ * security boundary itself — grant-omission alone would not stop a
+ * hypothetical non-project-scoped token from calling an account action.
+ *
+ * The channel.* resource actions (channel.send, …) and the
+ * project.gateway.routing.edit / project.session.exec / project.schedule.* /
+ * project.webhook.* leaves were removed from the catalog (IAM enforcement
+ * audit, 2026-07): none of them were ever asserted on any route, so granting
+ * or omitting them was a silent no-op.
+ */
+// MUST stay in sync with apps/api projects/agents.ts GRANTABLE_KORTIX_PERMISSIONS (=
+// Object.values(PROJECT_ACTIONS)). The unit-agents-parse drift-guard test
+// fails loudly if these diverge (this package can't import apps/api).
+export const GRANTABLE_KORTIX_PERMISSIONS: readonly string[] = [
+  'project.read',
+  'project.write',
+  'project.delete',
+  'project.session.read',
+  'project.session.start',
+  'project.session.stop',
+  'project.session.bindings.write',
+  'project.members.read',
+  'project.members.manage',
+  'project.trigger.read',
+  'project.trigger.create',
+  'project.trigger.update',
+  'project.trigger.delete',
+  'project.trigger.fire',
+  'project.gateway.logs.read',
+  'project.gateway.spend.read',
+  'project.usage.read',
+  'project.gateway.budget.set',
+  'project.gateway.keys.manage',
+  // IAM v1 per-capability leaves.
+  'project.agent.read',
+  'project.agent.write',
+  'project.skill.read',
+  'project.skill.write',
+  'project.command.read',
+  'project.command.write',
+  'project.file.read',
+  'project.file.write',
+  'project.settings.write',
+  'project.sandbox.write',
+  'project.model.read',
+  'project.model.write',
+  'project.gitops.read',
+  'project.gitops.push',
+  'project.gitops.merge',
+  'project.gitops.ref.any',
+  'project.gitops.ref.delete',
+  'project.secret.read',
+  'project.secret.write',
+  'project.connector.read',
+  'project.connector.connections.manage',
+  'project.connector.write',
+  'project.app.read',
+  'project.app.write',
+  'project.app.deploy',
+  'project.app.admin',
+  'project.review.read',
+  'project.review.submit',
+  'project.review.act',
+  // Rooms: read = list rooms and read messages; write = post, join, leave.
+  'project.room.read',
+  'project.room.write',
+  // Artifacts: read = gallery and viewer; write = publish and edit; manage =
+  // anyone's sharing; public = public links.
+  'project.artifact.read',
+  'project.artifact.comment',
+  'project.artifact.write',
+  'project.artifact.manage',
+  'project.artifact.public',
+  // Minting a project credential. Grantable so a manifest CAN hand it to an
+  // agent explicitly, but note the two credential routes refuse an
+  // agent-session token outright (projects/routes/secret-delivery.ts) — an agent that could
+  // mint a fresh, grant-less project token would escape its own ceiling. The
+  // leaf exists so a CUSTOM ROLE can withhold it from humans.
+  'project.credentials.issue',
+];
+
+/**
+ * Actions removed from the enforcement catalog (IAM dead-catalog cleanup,
+ * 2026-07) but that older project manifests may still list under
+ * `kortix_permissions`. None of them were ever asserted on any route, so granting or
+ * omitting them was always a no-op — but a manifest merge/ship must not start
+ * hard-failing for projects that happen to still mention one. Kept out of
+ * `GRANTABLE_KORTIX_PERMISSIONS` (they must never appear in the role editor
+ * or be recommended for new manifests) and instead surfaced as a
+ * deprecation warning by `validateGrantList`.
+ */
+/**
+ * `kortix_permissions` entries that are still ACCEPTED but are the old name for
+ * one or more leaves. Spec §2.4 collapsed `project.cr.*` into the gitops leaves
+ * because they were the same capability named twice; `project.customize.*` was
+ * one leaf for five unrelated topics and split into one leaf per topic. A
+ * manifest that still lists one keeps validating and is rewritten to the leaves
+ * here when the grant is resolved.
+ *
+ * This is the single source: apps/api's grant canonicalizer imports it rather
+ * than keeping a second copy, and the CLI's `validate --scopes` annotates from
+ * it. Two hand-written copies of a key table is how they drift.
+ */
+export const DEPRECATED_KORTIX_PERMISSION_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  'project.cr.open': ['project.gitops.push'],
+  'project.cr.merge': ['project.gitops.merge'],
+  'project.customize.read': ['project.model.read'],
+  'project.customize.write': [
+    'project.settings.write',
+    'project.sandbox.write',
+    'project.model.read',
+    'project.model.write',
+    'project.agent.write',
+  ],
+};
+
+export const LEGACY_TOLERATED_KORTIX_PERMISSIONS: readonly string[] = [
+  'project.session.exec',
+  'project.gateway.routing.edit',
+  'project.schedule.read',
+  'project.schedule.write',
+  'project.webhook.read',
+  'project.webhook.write',
+  'channel.read',
+  'channel.connect',
+  'channel.send',
+  'channel.disconnect',
+];
+
+/**
+ * Legacy singular `[sandbox]` image-definition keys — the shape used before
+ * images moved under `[[sandbox.templates]]`. Shared by the imperative
+ * validator (`./index.ts` `rejectLegacySandbox`, which hard-errors on any of
+ * these set directly on `[sandbox]`) and the JSON Schema (`./json-schema.ts`
+ * `sandboxSchema`, which forbids them via `additionalProperties`-style
+ * per-key `false`) so the two can't drift on which keys are legacy.
+ */
+export const LEGACY_SANDBOX_KEYS = [
+  'image',
+  'dockerfile',
+  'slug',
+  'cpu',
+  'memory',
+  'disk',
+  'entrypoint',
+  'context',
+  'context_dir',
+  'gpu',
+] as const;
+
+export const V2_RUNTIME_VALUES = ['opencode', 'pi'] as const;
+export const AGENT_MODES_V2 = ['primary', 'subagent', 'all'] as const;
+export const WORKSPACE_MODES_V2 = ['runtime', 'read', 'branch'] as const;
+export const PERMISSION_ACTIONS_V2 = ['ask', 'allow', 'deny'] as const;
+/** Keys that only ever take a bare action (no glob-map form) — mirrors upstream. */
+export const PERMISSION_ACTION_ONLY_KEYS_V2 = [
+  'todowrite',
+  'question',
+  'webfetch',
+  'websearch',
+  'doom_loop',
+] as const;
+export const AGENT_THEME_COLORS_V2 = [
+  'primary',
+  'secondary',
+  'accent',
+  'success',
+  'warning',
+  'error',
+  'info',
+] as const;
+export const HEX_COLOR_RE_V2 = /^#[0-9a-fA-F]{6}$/;
+
+/** A pi package source (`harnesses.pi.packages`): an exact npm pin, or a repo path starting with `./` that never climbs out with `..`. */
+export const PI_PACKAGE_NPM_RE = /^npm:(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*@\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+export const PI_PACKAGE_PATH_RE = /^\.\/(?!.*(^|\/)\.\.(\/|$))[^\s:]+$/;
+/** An npm package name without a version (`pi-web-access`, `@scope/name`): what an agent's `exclude` lists. */
+export const PI_PACKAGE_NAME_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+
+// ─── Tools ──────────────────────────────────────────────────────────────────
+
+/** A tool name: what the model calls. Snake case, as every model API accepts. */
+export const TOOL_NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
+/**
+ * Tools the harnesses implement themselves (OpenCode's and pi's native tool
+ * ids). A project tool cannot take one of these names, nor a `pty_` name
+ * (the shell plugin's). An agent's `tools` access may name them.
+ */
+export const HARNESS_TOOL_NAMES = [
+  'bash',
+  'read',
+  'write',
+  'edit',
+  'apply_patch',
+  'glob',
+  'grep',
+  'list',
+  'task',
+  'question',
+  'todowrite',
+  'webfetch',
+  'websearch',
+  'skill',
+  'lsp',
+  // pi: the subagent tool (`task` is its alias) and the codemode tool.
+  'agent',
+  'codemode',
+  // OpenCode internals: the unknown-tool fallback, code mode, plan mode.
+  'invalid',
+  'execute',
+  'plan_exit',
+] as const;
+/**
+ * The Kortix tools (apps/kortix-sandbox-agent-server `src/services/tools/kortix/`).
+ * Every session loads them; an agent's `tools` grant names them like any
+ * other tool. A project replaces one with its own module under the same name
+ * in `tools:`.
+ *
+ * Connector access is the `kortix connectors` CLI, never a built-in tool. The
+ * MCP-era `kortix-connectors_call` / `kortix-connectors_describe` meta-tools
+ * were re-added once (#9902) and removed again; a test pins them out.
+ */
+export const KORTIX_TOOL_NAMES = ['web_search', 'image_search', 'image_gen', 'scrape_webpage', 'show'] as const;
+/** Kortix tools a v2 `tools:` map loaded without naming them. Only the legacy converter reads this. */
+export const DEFAULT_ON_KORTIX_TOOLS = ['image_gen'] as const;
+/** True for a `DEFAULT_ON_KORTIX_TOOLS` name. */
+export function isDefaultOnKortixTool(name: string): boolean {
+  return (DEFAULT_ON_KORTIX_TOOLS as readonly string[]).includes(name);
+}
+/**
+ * Kortix tools that no longer exist. Manifests written while #9902 was live
+ * still name the connector meta-tools (the v2 starter, v3 agent excludes);
+ * `memory` was a Kortix tool until 2026-10-30. Naming one is a warning, not
+ * an error: no session can load it, so the name has no effect. A project that
+ * registers its own module under the name (`tools.memory`, the ejected copy)
+ * keeps it as a project tool, and its grants stay valid.
+ */
+export const RETIRED_KORTIX_TOOLS: readonly string[] = ['kortix-connectors_call', 'kortix-connectors_describe', 'memory'];
+
+/** What to do instead of a retired Kortix tool: the validator's warning names it. */
+export const RETIRED_KORTIX_TOOL_HINTS: Readonly<Record<string, string>> = {
+  'kortix-connectors_call': 'Agents reach connectors with the `kortix connectors` CLI.',
+  'kortix-connectors_describe': 'Agents reach connectors with the `kortix connectors` CLI.',
+  memory:
+    'Agents read and write `memory/` with the file tools (the kortix-memory skill), and My Kortix remembers each person with `kortix_memory`. To keep the old tool, register a copy under `tools.memory`.',
+};
+
+/** A v2 `tools:` value that kept a Kortix tool: `kortix:<name>`. The current format rejects it. */
+export const KORTIX_TOOL_PREFIX = 'kortix:';
+
+/** The name a `kortix:<name>` value refers to, or null for any other value. */
+export function kortixToolRef(value: unknown): string | null {
+  return typeof value === 'string' && value.startsWith(KORTIX_TOOL_PREFIX) ? value.slice(KORTIX_TOOL_PREFIX.length) : null;
+}
+
+/**
+ * The Kortix tools a v2 project's sessions got (the legacy converter turns the
+ * rest into each agent's `exclude`). With no `tools` key (`undefined`):
+ * all of them, so a project that never lists them keeps them. With a `tools`
+ * key, even an empty one: the ones it lists, as `kortix:<name>` or as a
+ * module that replaces the tool, plus each `DEFAULT_ON_KORTIX_TOOLS` name it
+ * does not name.
+ */
+export function selectedKortixTools(tools: unknown): string[] {
+  if (tools === undefined) return [...KORTIX_TOOL_NAMES];
+  const listed = tools && typeof tools === 'object' && !Array.isArray(tools) ? tools : {};
+  return KORTIX_TOOL_NAMES.filter((name) => Object.hasOwn(listed, name) || isDefaultOnKortixTool(name));
+}
+
+// ─── Registries ─────────────────────────────────────────────────────────────
+
+/** A skill, command or extension name (the Agent Skills name rule). */
+export const REGISTRY_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+export const REGISTRY_NAME_MAX = 64;
+/**
+ * The Kortix skills (`KORTIX_MANAGED_SKILL_NAMES` in @kortix/starter: the
+ * `kortix-cli` front door plus templates/managed/skills). Every v3 project has
+ * them without a `skills` entry; an agent grants them by name.
+ */
+export const KORTIX_SKILL_NAMES = [
+  'kortix-cli',
+  'kortix-apps',
+  'kortix-artifacts',
+  'kortix-channel-memory',
+  'kortix-computer',
+  'kortix-connectors',
+  'kortix-design',
+  'kortix-drives',
+  'kortix-genui',
+  'kortix-goals',
+  'kortix-harness-refinement',
+  'kortix-marketplace',
+  'kortix-memory',
+  'kortix-onboarding',
+  'kortix-rooms',
+  'kortix-slack',
+  'kortix-system',
+  'kortix-teams',
+  'kortix-ui',
+  'kortix-user-memory',
+] as const;
+/** The prefix only Kortix skills use. */
+export const KORTIX_SKILL_PREFIX = 'kortix-';
+/** `agents.<name>.codemode`: pi's codemode tool. `on` (default) keeps every tool declared; `only` declares codemode alone. */
+export const CODEMODE_VALUES = ['on', 'only', 'off'] as const;
+/** The harnesses an extension can implement. */
+export const EXTENSION_HARNESSES = ['opencode', 'pi'] as const;
+/**
+ * OpenCode's built-in agents that v3 disables unless the manifest declares the name.
+ * @deprecated OpenCode only. OpenCode is sunset (2026-10-23): no new code. See apps/kortix-sandbox-agent-server/src/harness/README.md "OpenCode sunset".
+ */
+export const OPENCODE_BUILTIN_AGENTS_V3 = ['build', 'plan', 'general', 'explore'] as const;

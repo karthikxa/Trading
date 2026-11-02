@@ -1,0 +1,904 @@
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { useSessionWorkingStore } from '../browser/stores/session-working-store';
+import { configureKortix } from '../core/http/config';
+import { INBOX_OBSERVATION_MAX_MS } from '../core/session/working';
+import { openSessionBundle, resetSessionOpenBundles } from '../core/session/open-bundle';
+import type { SessionPrompt } from '../core/rest/projects-client/sessions';
+import {
+  applyOptimisticPrompt,
+  applyInboxObservation,
+  EDITED_PROMPT_OVERLAY_MS,
+  inboxDrained,
+  optimisticSessionPrompt,
+  reconcileOptimisticPrompts,
+  removeOptimisticPrompt,
+  settleOptimisticPrompt,
+  SESSION_PROMPTS_IDLE_POLL_MS,
+  SESSION_PROMPTS_POLL_MS,
+  noteInboxObservation,
+  overlayEditedPrompt,
+  readSessionPromptsInbox,
+  releaseEditedPromptOverlay,
+  releaseHeldPrompts,
+  releaseRemovedPromptTombstone,
+  removeFailureKeepsRow,
+  REMOVED_PROMPT_TOMBSTONE_MS,
+  sessionPromptsPollMs,
+  startSessionWithPrompt,
+  tombstoneRemovedPrompt,
+  withEditedPromptOverlays,
+  withEditedPromptText,
+  withInterruptedPrompt,
+  withoutRemovedPrompts,
+} from './use-session-prompts';
+
+/**
+ * The polling cadence is a CORRECTNESS decision, not a performance one.
+ *
+ * A prompt can ENTER this list without the tab doing anything: the reaper
+ * redelivers one whose turn never ran, and parking a box requeues its in-flight
+ * prompt as `held`. Both land on a session whose list is, at that moment, empty
+ * — and the `held` design depends on the user seeing the row so they can
+ * release it. A cadence of `false` at zero rows means the tab never learns, and
+ * only a full page load recovers.
+ */
+describe('sessionPromptsPollMs', () => {
+  test('polls fast while prompts are pending — their state changes on its own', () => {
+    expect(sessionPromptsPollMs(1)).toBe(SESSION_PROMPTS_POLL_MS);
+    expect(sessionPromptsPollMs(7)).toBe(SESSION_PROMPTS_POLL_MS);
+  });
+
+  test('an EMPTY list still polls, slowly — a prompt can come back on its own', () => {
+    expect(sessionPromptsPollMs(0)).toBe(SESSION_PROMPTS_IDLE_POLL_MS);
+    expect(SESSION_PROMPTS_IDLE_POLL_MS).toBeGreaterThan(SESSION_PROMPTS_POLL_MS);
+  });
+
+  test('an explicit cadence overrides the busy one, never the idle one', () => {
+    // Hosts tune the busy cadence for their own UI. The idle floor is not
+    // theirs to remove: it is what makes a re-entering prompt visible.
+    expect(sessionPromptsPollMs(2, 500)).toBe(500);
+    expect(sessionPromptsPollMs(0, 500)).toBe(SESSION_PROMPTS_IDLE_POLL_MS);
+  });
+
+  /**
+   * The cadence is picked from the PREVIOUS result, and that is what opened the
+   * hole this covers.
+   *
+   * `notePromptAccepted` records a believed pending row the instant
+   * `POST .../prompts` returns, because `GET .../turn` cannot see the send yet
+   * and the composer must not swap Stop back to Send underneath it. That belief
+   * is an OBSERVATION like any other, so `projectWorking` expires it at
+   * `INBOX_OBSERVATION_MAX_MS` (10s) — and only a list read can refresh it.
+   *
+   * MEASURED on the local stack 2026-08-21: a first read landed before the row
+   * existed, answered zero, and locked the cadence to `SESSION_PROMPTS_IDLE_POLL_MS`
+   * (15s). Nothing then refreshed the belief inside its 10s life, and the
+   * projection dropped to `idle` at 23:44:18.284 with `inbox=1@10004` while the
+   * user's prompt was still pending — a guaranteed 5s hole between the two
+   * constants, in which the composer offers Send for a prompt already queued.
+   *
+   * The list length alone cannot close it, because at that moment the list is
+   * honestly empty. What the tab BELIEVES is pending has to count too.
+   */
+  test('a believed pending row polls fast even when the fetched list is empty', () => {
+    expect(sessionPromptsPollMs(0, undefined, 1)).toBe(SESSION_PROMPTS_POLL_MS);
+  });
+
+  test('the cadence that refreshes the belief must outlive nothing — it must beat the bound', () => {
+    // The invariant behind the test above, stated so a future change to either
+    // constant cannot silently reopen the hole.
+    expect(sessionPromptsPollMs(0, undefined, 1)).toBeLessThan(INBOX_OBSERVATION_MAX_MS);
+    expect(sessionPromptsPollMs(1)).toBeLessThan(INBOX_OBSERVATION_MAX_MS);
+  });
+
+  test('no belief and no rows still means the idle floor', () => {
+    expect(sessionPromptsPollMs(0, undefined, 0)).toBe(SESSION_PROMPTS_IDLE_POLL_MS);
+  });
+});
+
+/**
+ * The inbox is a WORKING signal, not just a list to render.
+ *
+ * A prompt is durably accepted long before it is a turn — the row still has to
+ * be drained and the box may still have to resume. `GET .../turn` answers "no
+ * turns" for all of it, honestly, and the composer used to believe that and
+ * swap Stop back to Send while the user's prompt sat in the queue. Every read
+ * of the list therefore feeds `projectWorking` too.
+ */
+describe('noteInboxObservation', () => {
+  const prompt = (over: Partial<SessionPrompt> = {}): SessionPrompt => ({
+    prompt_id: 'p1',
+    client_message_id: 'q_1',
+    message_id: 'msg_01',
+    state: 'queued',
+    reason: null,
+    text: 'hi',
+    attempts: 0,
+    last_error: null,
+    created_at: '2026-08-18T10:00:00.000Z',
+    available_at: '2026-08-18T10:00:00.000Z',
+    ...over,
+  });
+
+  test('records how many rows the server still intends to run, and when it looked', () => {
+    useSessionWorkingStore.getState().reset();
+    noteInboxObservation('sess_1', [prompt(), prompt({ prompt_id: 'p2', state: 'delivering' })], 500);
+
+    expect(useSessionWorkingStore.getState().inbox.sess_1).toEqual({ pending: 2, atMs: 500 });
+  });
+
+  test('a held queue records zero — Stop must put the composer back', () => {
+    useSessionWorkingStore.getState().reset();
+    noteInboxObservation('sess_1', [prompt({ state: 'waiting', reason: 'held' })], 500);
+
+    expect(useSessionWorkingStore.getState().inbox.sess_1).toEqual({ pending: 0, atMs: 500 });
+  });
+
+  test('an older empty stream snapshot cannot erase a newer confirmed queue row', () => {
+    useSessionWorkingStore.getState().reset();
+    const queued = prompt({ prompt_id: 'p2', client_message_id: 'q_2' });
+
+    expect(applyInboxObservation('sess_1', undefined, [queued], 500)).toEqual([queued]);
+    expect(applyInboxObservation('sess_1', [queued], [], 400)).toEqual([queued]);
+    expect(useSessionWorkingStore.getState().inbox.sess_1).toEqual({ pending: 1, atMs: 500 });
+  });
+
+  test('a newer empty snapshot removes a queue row after delivery', () => {
+    useSessionWorkingStore.getState().reset();
+    const queued = prompt({ prompt_id: 'p2', client_message_id: 'q_2' });
+
+    applyInboxObservation('sess_1', undefined, [queued], 500);
+
+    expect(applyInboxObservation('sess_1', [queued], [], 600)).toEqual([]);
+    // The reading also carries WHAT it saw happen: a row this tab had watched
+    // waiting is gone, which is the server handing it to the runtime. Without
+    // that stamp the two honest-but-stale readings below it (an empty list, a
+    // `/turn` read taken before the hand-off) agree on `idle` and the session
+    // goes INACTIVE with the prompt in flight.
+    expect(useSessionWorkingStore.getState().inbox.sess_1).toEqual({
+      pending: 0,
+      atMs: 600,
+      drainedAtMs: 600,
+    });
+  });
+
+  /**
+   * The cross-clock race PR #6957's review reproduced, closed at the boundary:
+   * every snapshot the SERVER produced ranks on the server's own clock, so a
+   * read that STARTED before a POST — however late it settles, whatever the
+   * client clock says — can never erase the row that POST confirmed.
+   */
+  test('a queue read started before the POST cannot erase it after it settles', () => {
+    useSessionWorkingStore.getState().reset();
+    const confirmed = prompt({ prompt_id: 'srv_1', client_message_id: 'q_9' });
+
+    // POST .../prompts settled at server instant 5_000; the row is durable.
+    useSessionWorkingStore.getState().notePromptAccepted('sess_1', 200, 5_000);
+
+    // The slow read was ISSUED at server instant 4_000 (before the write) and
+    // settles only now, with a browser stamp newer than everything above.
+    expect(applyInboxObservation('sess_1', [confirmed], [], 900, 4_000)).toEqual([confirmed]);
+    expect(useSessionWorkingStore.getState().inbox.sess_1?.pending).toBe(1);
+  });
+
+  test('a server ten minutes ahead does not get its snapshots rejected or latched', () => {
+    useSessionWorkingStore.getState().reset();
+    const skew = 10 * 60_000;
+    const queued = prompt({ prompt_id: 'p3', client_message_id: 'q_3' });
+
+    // A bundle observed on the API clock (10 min ahead of this tab)…
+    applyInboxObservation('sess_1', undefined, [queued], 1_000, 61_000 + skew);
+    // …must not outrank the DIRECT read issued right after it: the direct
+    // read's server stamp is newer on the one clock that may decide.
+    expect(applyInboxObservation('sess_1', [queued], [], 1_500, 62_000 + skew)).toEqual([]);
+    expect(useSessionWorkingStore.getState().inbox.sess_1).toEqual({
+      pending: 0,
+      atMs: 1_500,
+      serverAtMs: 62_000 + skew,
+      drainedAtMs: 1_500,
+    });
+  });
+});
+
+/**
+ * The first prompt of a brand-new session, as ONE durable POST — the SDK
+ * function every "new session" producer calls instead of stashing the text in
+ * sessionStorage for a replay effect to send 19-25s later (the measured boot),
+ * during which a closed tab lost the message silently.
+ */
+describe('startSessionWithPrompt', () => {
+  test('POSTs the prompt with a minted wire id and files the receipt around the round-trip', async () => {
+    useSessionWorkingStore.getState().reset();
+    const calls: any[] = [];
+    const result = await startSessionWithPrompt(
+      'proj-1',
+      'sess-1',
+      { parts: [{ type: 'text', text: 'go' }], overrides: { agent: 'default' } },
+      {
+        create: async (projectId, sessionId, input) => {
+          // The receipt is taken BEFORE the POST: from here a `/turn` read is
+          // barred from answering idle until the row is durable or refused.
+          expect(useSessionWorkingStore.getState().receipts['sess-1']).not.toBeNull();
+          calls.push([projectId, sessionId, input]);
+          return { prompt_id: 'p1', state: 'queued', message_id: input.messageId, deduped: false };
+        },
+      },
+    );
+
+    expect(result.state).toBe('queued');
+    expect(calls).toHaveLength(1);
+    const [projectId, sessionId, input] = calls[0];
+    expect(projectId).toBe('proj-1');
+    expect(sessionId).toBe('sess-1');
+    expect(input.messageId).toMatch(/^msg_[0-9a-f]{12}[A-Za-z0-9]{14}$/);
+    expect(input.clientMessageId.length).toBeGreaterThan(8);
+    // This producer can never read a transcript, so it must say so.
+    expect(input.remintOnDelivery).toBe(true);
+    expect(input.parts).toEqual([{ type: 'text', text: 'go' }]);
+    expect(input.overrides).toEqual({ agent: 'default' });
+    // Accepted: the server has the row, and the projection may answer for it.
+    const receipt = useSessionWorkingStore.getState().receipts['sess-1'];
+    expect(receipt?.acceptedAtMs ?? null).not.toBeNull();
+  });
+
+  test('a held first prompt keeps its Send time as clientSentAtMs, not the POST time', async () => {
+    // The server orders racing rows by `clientSentAtMs`. A first prompt whose
+    // POST waited on its uploads must still sort before a message the user
+    // sent after it; the POST-time clock would put it behind that message.
+    useSessionWorkingStore.getState().reset();
+    const inputs: any[] = [];
+    const create = async (_p: string, _s: string, input: any) => {
+      inputs.push(input);
+      return { prompt_id: 'p1', state: 'queued' as const, message_id: input.messageId, deduped: false };
+    };
+    await startSessionWithPrompt(
+      'proj-1',
+      'sess-4',
+      { parts: [{ type: 'text', text: 'go' }], clientSentAtMs: 1_000 },
+      { create, nowMs: () => 9_000 },
+    );
+    await startSessionWithPrompt(
+      'proj-1',
+      'sess-5',
+      { parts: [{ type: 'text', text: 'go' }] },
+      { create, nowMs: () => 9_000 },
+    );
+
+    expect(inputs.map((input) => input.clientSentAtMs)).toEqual([1_000, 9_000]);
+  });
+
+  test('a refused row drops the receipt and throws instead of posing as sent', async () => {
+    useSessionWorkingStore.getState().reset();
+    await expect(
+      startSessionWithPrompt(
+        'proj-1',
+        'sess-2',
+        { parts: [{ type: 'text', text: 'go' }] },
+        {
+          create: async (_p, _s, input) => ({
+            prompt_id: 'p1',
+            state: 'failed',
+            message_id: input.messageId,
+            deduped: true,
+          }),
+        },
+      ),
+    ).rejects.toThrow(/refused/i);
+    expect(useSessionWorkingStore.getState().receipts['sess-2']).toBeFalsy();
+  });
+
+  test('a network failure also drops the receipt', async () => {
+    useSessionWorkingStore.getState().reset();
+    await expect(
+      startSessionWithPrompt(
+        'proj-1',
+        'sess-3',
+        { parts: [{ type: 'text', text: 'go' }] },
+        {
+          create: async () => {
+            throw new Error('boom');
+          },
+        },
+      ),
+    ).rejects.toThrow('boom');
+    expect(useSessionWorkingStore.getState().receipts['sess-3']).toBeFalsy();
+  });
+});
+
+/**
+ * Enter must paint the queue row IMMEDIATELY. The row is durable only once
+ * `POST .../prompts` returns, but the user pressed Enter now: the strip shows
+ * an optimistic row (`prompt_id` = `optimistic:<clientMessageId>`, state
+ * `queued`) in the same frame, and the server's row replaces it on the
+ * response — or it disappears on failure so a refused send never lingers.
+ */
+describe('optimistic queue rows', () => {
+  const input = {
+    clientMessageId: 'c1',
+    messageId: 'msg_0168552a2001AAAAAAAAAAAAAA',
+    parts: [{ type: 'text' as const, text: 'hello there' }, { type: 'file' as const, url: 'x', mime: 'image/png', filename: 'a.png' }],
+  };
+
+  test("optimisticSessionPrompt renders the text of the parts, in the strip's shape", () => {
+    const row = optimisticSessionPrompt(input, 1_000);
+    expect(row.prompt_id).toBe('optimistic:c1');
+    expect(row.client_message_id).toBe('c1');
+    expect(row.message_id).toBe(input.messageId);
+    expect(row.state).toBe('queued');
+    expect(row.text).toBe('hello there');
+    expect(row.attempts).toBe(0);
+    expect(row.created_at).toBe(new Date(1_000).toISOString());
+  });
+
+  test('the optimistic row carries the delivery mode and the placement it implies', () => {
+    const steer = optimisticSessionPrompt({ ...input, delivery: 'steer' }, 1_000);
+    expect(steer.delivery).toBe('steer');
+    expect(steer.placement).toBe('composer');
+    const queue = optimisticSessionPrompt({ ...input, delivery: 'queue' }, 1_000);
+    expect(queue.placement).toBe('composer');
+    const interrupt = optimisticSessionPrompt({ ...input, delivery: 'interrupt' }, 1_000);
+    expect(interrupt.placement).toBe('transcript');
+    // An explicit placement wins; no delivery leaves both as the caller sent them.
+    expect(
+      optimisticSessionPrompt({ ...input, delivery: 'steer', placement: 'transcript' }, 1_000)
+        .placement,
+    ).toBe('transcript');
+    const plain = optimisticSessionPrompt(input, 1_000);
+    expect(plain.delivery).toBeUndefined();
+    expect(plain.placement).toBeUndefined();
+  });
+
+  test('withInterruptedPrompt turns one row into Quick Queue', () => {
+    const rows: SessionPrompt[] = [
+      { ...optimisticSessionPrompt({ ...input, delivery: 'queue' }, 1_000), prompt_id: 'p1' },
+      { ...optimisticSessionPrompt({ ...input, clientMessageId: 'c2' }, 1_000), prompt_id: 'p2', placement: 'composer' },
+    ];
+    const next = withInterruptedPrompt(rows, 'p1');
+    expect(next[0]).toMatchObject({ prompt_id: 'p1', placement: 'transcript', delivery: 'interrupt' });
+    expect(next[1]).toBe(rows[1]);
+  });
+
+  test('placement and full content survive optimistic acceptance', () => {
+    const text = 'const result = await run();\n'.repeat(120);
+    const inputWithPlacement = {
+      ...input,
+      placement: 'transcript' as const,
+      parts: [{ type: 'text' as const, text }],
+    };
+    const rows = applyOptimisticPrompt([], inputWithPlacement, 1_000);
+    const settled = settleOptimisticPrompt(rows, 'c1', {
+      prompt_id: 'p-real', state: 'waiting', message_id: input.messageId, deduped: false,
+    });
+    expect(settled[0].placement).toBe('transcript');
+    expect(settled[0].full_text).toBe(text.trim());
+  });
+
+  test('applyOptimisticPrompt appends once and is idempotent for the same submission', () => {
+    const a = applyOptimisticPrompt([], input, 1_000);
+    const b = applyOptimisticPrompt(a, input, 2_000);
+    expect(a).toHaveLength(1);
+    expect(b).toHaveLength(1);
+    expect(b[0].prompt_id).toBe('optimistic:c1');
+  });
+
+  test('settleOptimisticPrompt swaps the optimistic row for the server row by client id', () => {
+    const rows = applyOptimisticPrompt([], input, 1_000);
+    const settled = settleOptimisticPrompt(rows, 'c1', {
+      prompt_id: 'p-real',
+      state: 'delivering',
+      message_id: input.messageId,
+      deduped: false,
+    });
+    expect(settled).toHaveLength(1);
+    expect(settled[0].prompt_id).toBe('p-real');
+    expect(settled[0].state).toBe('delivering');
+    expect(settled[0].text).toBe('hello there');
+  });
+
+  test('a failed submission removes the optimistic row', () => {
+    const rows = applyOptimisticPrompt([], input, 1_000);
+    expect(removeOptimisticPrompt(rows, 'c1')).toEqual([]);
+  });
+
+  test('a real row that already carries the client id wins over a stale optimistic one', () => {
+    // The poll can land the server's row before the mutation settles.
+    const rows = applyOptimisticPrompt([], input, 1_000);
+    const merged = reconcileOptimisticPrompts(rows, [
+      { prompt_id: 'p-real', client_message_id: 'c1', message_id: input.messageId, state: 'queued', reason: null, text: 'hello there', attempts: 0, last_error: null, created_at: 'x', available_at: 'x' },
+    ]);
+    expect(merged.map((r) => r.prompt_id)).toEqual(['p-real']);
+  });
+
+  test('reconcile keeps optimistic rows the server has not listed yet (POST still in flight)', () => {
+    const rows = applyOptimisticPrompt([], input, 1_000);
+    const merged = reconcileOptimisticPrompts(rows, []);
+    expect(merged.map((r) => r.prompt_id)).toEqual(['optimistic:c1']);
+  });
+});
+
+/**
+ * The inbox is PROJECT-scoped, and not every session has a project.
+ *
+ * A sub-session — the "Agent · general: …" panel `SubSessionModal` opens over
+ * the transcript — is a local OpenCode child. It is rendered by `SessionChat`
+ * with a `sessionId` and NOTHING else: no project id, no project session id.
+ * The `enabled` flag on the query covers react-query's own scheduling, but it
+ * is not the only way into the request: `QueryObserver.refetch()` goes
+ * straight to `query.fetch()` with no `enabled` check, and `session-chat.tsx`
+ * calls `promptInbox.refetch()` the moment a new user bubble lands — which is
+ * exactly what a streaming sub-agent produces.
+ *
+ * The two `undefined`s then went into `listSessionPrompts`'s template literal
+ * and came out as text: `GET /projects/undefined/sessions/undefined/prompts`
+ * → 400 `Invalid session id` → a red toast beside a sub-agent that was
+ * rendering perfectly. The read itself has to refuse, so no path can build
+ * that URL.
+ */
+describe('readSessionPromptsInbox', () => {
+  const stubFetch = () => {
+    const urls: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (url: unknown) => {
+      urls.push(String(url));
+      return Response.json({ prompts: [] });
+    }) as unknown as typeof fetch;
+    return { urls, restore: () => void (globalThis.fetch = original) };
+  };
+
+  test('a session with no project issues NO request', async () => {
+    const stub = stubFetch();
+    try {
+      expect(await readSessionPromptsInbox(undefined, undefined, undefined)).toEqual([]);
+      expect(await readSessionPromptsInbox(undefined, 'sess-1', undefined)).toEqual([]);
+      expect(await readSessionPromptsInbox('proj-1', undefined, undefined)).toEqual([]);
+      expect(stub.urls).toEqual([]);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test('a session with no project keeps the rows already on screen', async () => {
+    const stub = stubFetch();
+    const cached = applyOptimisticPrompt(
+      [],
+      { clientMessageId: 'c1', messageId: 'msg_01', parts: [{ type: 'text', text: 'hi' }] },
+      1_000,
+    );
+    try {
+      expect(await readSessionPromptsInbox(undefined, undefined, cached)).toEqual(cached);
+      expect(stub.urls).toEqual([]);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test('a project session still reads its own inbox', async () => {
+    configureKortix({ backendUrl: 'http://api.test/v1', getToken: async () => 'tok' });
+    const stub = stubFetch();
+    try {
+      expect(await readSessionPromptsInbox('proj-1', 'sess-1', undefined)).toEqual([]);
+      expect(stub.urls).toEqual(['http://api.test/v1/projects/proj-1/sessions/sess-1/prompts']);
+    } finally {
+      stub.restore();
+      configureKortix({ backendUrl: '', getToken: async () => null });
+    }
+  });
+});
+
+const row = (over: Partial<SessionPrompt> & { prompt_id: string }): SessionPrompt => ({
+  client_message_id: `c-${over.prompt_id}`,
+  message_id: `msg-${over.prompt_id}`,
+  state: 'queued',
+  reason: null,
+  text: 'hi',
+  attempts: 0,
+  last_error: null,
+  created_at: '2026-09-16T00:00:00.000Z',
+  available_at: '2026-09-16T00:00:00.000Z',
+  ...over,
+});
+
+/**
+ * Resume has to answer on the CLICK.
+ *
+ * The queue list's "Queue paused · Resume" line is drawn from `reason: 'held'`
+ * rows. `hold(false)` used to change nothing locally: the line stayed up until
+ * a follow-up GET landed, and `applyInboxObservation` can legitimately discard
+ * that GET — so Resume read as a button that did nothing.
+ */
+describe('releaseHeldPrompts', () => {
+  test('clears the hold reason and nothing else', () => {
+    const held = row({ prompt_id: 'a', state: 'waiting', reason: 'held' });
+    expect(releaseHeldPrompts([held])).toEqual([{ ...held, reason: null }]);
+  });
+
+  test('leaves rows the hold does not own untouched', () => {
+    const waiting = row({ prompt_id: 'a', state: 'waiting', reason: 'turn_active' });
+    const failed = row({ prompt_id: 'b', state: 'failed', last_error: 'boom' });
+    expect(releaseHeldPrompts([waiting, failed])).toEqual([waiting, failed]);
+  });
+});
+
+/**
+ * A removal must stay removed.
+ *
+ * `DELETE .../prompts/:id` returns no server stamp, so a GET issued BEFORE the
+ * delete can land AFTER it with a strictly newer `observed_at` and list the row
+ * again — correctly, by the ordering rule. Only a client tombstone orders a
+ * removal against the 1s poll. With take-back (Up) that is not cosmetic: the
+ * row's text is already back in the composer, and a resurrected row would send
+ * the same message twice.
+ */
+describe('removed-prompt tombstones', () => {
+  test('a tombstoned row is filtered out of every later list for that session', () => {
+    tombstoneRemovedPrompt('sess-t1', 'a', 1_000);
+    const rows = [row({ prompt_id: 'a' }), row({ prompt_id: 'b' })];
+    expect(withoutRemovedPrompts('sess-t1', rows, 1_500).map((r) => r.prompt_id)).toEqual(['b']);
+  });
+
+  test('the tombstone is scoped to its own session', () => {
+    tombstoneRemovedPrompt('sess-t2', 'a', 1_000);
+    const rows = [row({ prompt_id: 'a' })];
+    expect(withoutRemovedPrompts('sess-other', rows, 1_500)).toEqual(rows);
+  });
+
+  test('the tombstone expires — it orders one race, it is not a blocklist', () => {
+    tombstoneRemovedPrompt('sess-t3', 'a', 1_000);
+    const rows = [row({ prompt_id: 'a' })];
+    expect(withoutRemovedPrompts('sess-t3', rows, 1_000 + REMOVED_PROMPT_TOMBSTONE_MS + 1)).toEqual(
+      rows,
+    );
+  });
+
+  test('a released tombstone lets the row back in', () => {
+    tombstoneRemovedPrompt('sess-t4', 'a', 1_000);
+    releaseRemovedPromptTombstone('sess-t4', 'a');
+    const rows = [row({ prompt_id: 'a' })];
+    expect(withoutRemovedPrompts('sess-t4', rows, 1_500)).toEqual(rows);
+  });
+
+  test('only a 404 means the row is gone; every other failure left it in place', () => {
+    // 409: a step is already answering it — it is still listed, as delivering.
+    // A network failure never reached the server at all.
+    expect(removeFailureKeepsRow({ status: 404 })).toBe(false);
+    expect(removeFailureKeepsRow({ status: 409 })).toBe(true);
+    expect(removeFailureKeepsRow(new Error('network'))).toBe(true);
+  });
+
+  test('readSessionPromptsInbox never lists a tombstoned row', async () => {
+    configureKortix({ backendUrl: 'http://api.test/v1', getToken: async () => 'tok' });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      Response.json({ prompts: [row({ prompt_id: 'gone' }), row({ prompt_id: 'kept' })] })) as unknown as typeof fetch;
+    tombstoneRemovedPrompt('sess-t5', 'gone');
+    try {
+      const rows = await readSessionPromptsInbox('proj-1', 'sess-t5', []);
+      expect(rows.map((r) => r.prompt_id)).toEqual(['kept']);
+    } finally {
+      globalThis.fetch = original;
+      configureKortix({ backendUrl: '', getToken: async () => null });
+    }
+  });
+});
+
+/**
+ * An edit answers on the CLICK and stays answered until the server has it.
+ *
+ * `edit` writes the new words optimistically, then PATCHes. A poll that reached
+ * the server before the PATCH lists the old words, and it replaced the edit:
+ * the row showed the old words again until the read after the PATCH.
+ */
+describe('edits in flight', () => {
+  const old = (prompt_id: string) => row({ prompt_id, text: 'old', full_text: 'old' });
+
+  test('a read that lists the old words keeps the edit while its save is in flight', () => {
+    overlayEditedPrompt('sess-e1', 'a', 'NEW', 1_000);
+    const rows = [old('a'), row({ prompt_id: 'b', text: 'two', full_text: 'two' })];
+    expect(
+      withEditedPromptOverlays('sess-e1', rows, 1_500).map((r) => [r.prompt_id, r.text, r.full_text]),
+    ).toEqual([
+      ['a', 'NEW', 'NEW'],
+      ['b', 'two', 'two'],
+    ]);
+  });
+
+  test('the overlay is scoped to its own session', () => {
+    overlayEditedPrompt('sess-e2', 'a', 'NEW', 1_000);
+    expect(withEditedPromptOverlays('sess-other', [old('a')], 1_500)).toEqual([old('a')]);
+  });
+
+  test('a released overlay lets the server\'s words back: a refused save shows the old text', () => {
+    overlayEditedPrompt('sess-e3', 'a', 'NEW', 1_000);
+    releaseEditedPromptOverlay('sess-e3', 'a');
+    expect(withEditedPromptOverlays('sess-e3', [old('a')], 1_500)).toEqual([old('a')]);
+  });
+
+  test('the overlay expires, so a save that never settles cannot pin its words', () => {
+    overlayEditedPrompt('sess-e4', 'a', 'NEW', 1_000);
+    expect(
+      withEditedPromptOverlays('sess-e4', [old('a')], 1_000 + EDITED_PROMPT_OVERLAY_MS + 1),
+    ).toEqual([old('a')]);
+  });
+
+  test('readSessionPromptsInbox keeps the edit over a read that left before the save', async () => {
+    configureKortix({ backendUrl: 'http://api.test/v1', getToken: async () => 'tok' });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json({ prompts: [old('a')] })) as unknown as typeof fetch;
+    overlayEditedPrompt('sess-e5', 'a', 'NEW');
+    try {
+      const rows = await readSessionPromptsInbox('proj-1', 'sess-e5', []);
+      expect(rows.map((r) => [r.prompt_id, r.text, r.full_text])).toEqual([['a', 'NEW', 'NEW']]);
+    } finally {
+      releaseEditedPromptOverlay('sess-e5', 'a');
+      globalThis.fetch = original;
+      configureKortix({ backendUrl: '', getToken: async () => null });
+    }
+  });
+});
+
+// ── The session-open bundle seam ────────────────────────────────────────────
+
+describe('readSessionPromptsInbox and the open bundle', () => {
+  beforeEach(() => {
+    // An earlier case deliberately misconfigures the client to prove the
+    // unconfigured path; re-arm here rather than depend on file order.
+    configureKortix({ backendUrl: 'http://api.test/v1', getToken: async () => 'tok' });
+  });
+
+  function mockFetch(body: (url: string) => unknown) {
+    const urls: string[] = [];
+    globalThis.fetch = mock(async (url: unknown) => {
+      urls.push(String(url));
+      return new Response(JSON.stringify(body(String(url))), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    return urls;
+  }
+
+  function bundle(queue: unknown) {
+    return {
+      observed_at: '2026-08-26T12:00:00.000Z',
+      session: { session_id: 'S1' },
+      turn: { known: true, turns: [] },
+      queue,
+      transcript: { known: true, requested: false },
+      config: { known: true },
+      models: { known: false, reason: 'read_failed' },
+    };
+  }
+
+  test('answers from the open bundle without touching /prompts', async () => {
+    resetSessionOpenBundles();
+    const row = { prompt_id: 'p1', state: 'queued', text: 'hi' };
+    const urls = mockFetch(() => bundle({ known: true, prompts: [row], held: false }));
+    openSessionBundle('P1', 'S1');
+    const prompts = await readSessionPromptsInbox('P1', 'S1', undefined);
+    expect(urls.filter((u) => u.endsWith('/prompts'))).toHaveLength(0);
+    expect(prompts).toEqual([row] as never);
+  });
+
+  test('a read that already holds rows never answers from the bundle — it asks', async () => {
+    // THE STALE-BUNDLE WINDOW (measured 2026-09-08, on video). The bundle is
+    // claimable for OPEN_BUNDLE_SHARE_MS after it lands, and every read inside
+    // that window — the 1s poll AND the repair refetch a new user bubble
+    // fires — re-claimed it and got the same pre-delivery row back. Meanwhile
+    // the drain re-minted the prompt and the runtime echoed it under the new
+    // id: the transcript showed the message under M while the "fresh" list
+    // still named W, and the prompt was on screen twice until the window
+    // expired. The bundle collapses the OPEN burst — reads issued before this
+    // tab holds any rows. A read that already has rows is a poll, and a poll
+    // asks the server.
+    resetSessionOpenBundles();
+    const stale = { prompt_id: 'p1', state: 'queued', text: 'hi', message_id: 'msg_W' };
+    const urls = mockFetch((url) =>
+      url.includes('/snapshot')
+        ? bundle({ known: true, prompts: [stale], held: false })
+        : { prompts: [], observed_at: '2026-08-26T12:00:01.000Z' },
+    );
+    openSessionBundle('P1', 'S1');
+    const prompts = await readSessionPromptsInbox('P1', 'S1', [stale as never]);
+    expect(urls.filter((u) => u.endsWith('/prompts'))).toHaveLength(1);
+    expect(prompts).toEqual([]);
+  });
+
+  test('the bundled rows still feed the working projection', async () => {
+    resetSessionOpenBundles();
+    useSessionWorkingStore.getState().clearSession('S1');
+    mockFetch(() =>
+      bundle({ known: true, prompts: [{ prompt_id: 'p1', state: 'queued' }], held: false }),
+    );
+    openSessionBundle('P1', 'S1');
+    await readSessionPromptsInbox('P1', 'S1', undefined);
+    // The inbox observation is what keeps the composer showing Stop while a
+    // prompt is durable but not yet a turn. Serving the list from the bundle
+    // must not skip it.
+    expect(useSessionWorkingStore.getState().inbox.S1?.pending).toBe(1);
+  });
+
+  test('the bundle stamps AGE from this tab’s clock and ORDER from the server’s', async () => {
+    resetSessionOpenBundles();
+    useSessionWorkingStore.getState().clearSession('S1');
+    // A server clock ten minutes BEHIND this tab. Stamping age from
+    // `observed_at` made this observation expire on arrival
+    // (INBOX_OBSERVATION_MAX_MS is 10s), flipping the composer to Send with
+    // the prompt still queued.
+    const observedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    mockFetch(() => ({
+      ...bundle({ known: true, prompts: [{ prompt_id: 'p1', state: 'queued' }], held: false }),
+      observed_at: observedAt,
+    }));
+    openSessionBundle('P1', 'S1');
+    const before = Date.now();
+    await readSessionPromptsInbox('P1', 'S1', undefined);
+    const entry = useSessionWorkingStore.getState().inbox.S1;
+    expect(entry?.pending).toBe(1);
+    // Age: browser clock at receive time — fresh, not 10 minutes old.
+    expect(entry!.atMs).toBeGreaterThanOrEqual(before);
+    // Order: the server's own stamp, kept for ranking against other server reads.
+    expect(entry?.serverAtMs).toBe(Date.parse(observedAt));
+  });
+
+  test('a direct read carries the endpoint’s server stamp into the projection', async () => {
+    resetSessionOpenBundles();
+    useSessionWorkingStore.getState().clearSession('S2');
+    const observedAt = '2026-08-26T12:34:56.000Z';
+    mockFetch(() => ({ prompts: [{ prompt_id: 'p1', state: 'queued' }], observed_at: observedAt }));
+    const before = Date.now();
+    await readSessionPromptsInbox('P1', 'S2', undefined);
+    const entry = useSessionWorkingStore.getState().inbox.S2;
+    expect(entry?.pending).toBe(1);
+    expect(entry!.atMs).toBeGreaterThanOrEqual(before);
+    expect(entry?.serverAtMs).toBe(Date.parse(observedAt));
+  });
+
+  test('falls back to /prompts when the bundle could not read the inbox', async () => {
+    resetSessionOpenBundles();
+    const urls = mockFetch((url) =>
+      url.includes('/snapshot')
+        ? bundle({ known: false, reason: 'inbox read failed' })
+        : { prompts: [{ prompt_id: 'p9', state: 'queued' }] },
+    );
+    openSessionBundle('P1', 'S1');
+    const prompts = await readSessionPromptsInbox('P1', 'S1', undefined);
+    expect(urls.some((u) => u.endsWith('/prompts'))).toBe(true);
+    expect(prompts[0]?.prompt_id).toBe('p9');
+  });
+});
+
+/**
+ * WHICH readings mean "the server took a prompt off the queue".
+ *
+ * The count alone cannot say. A row that drains and a row the user just put on
+ * hold both take the live count to zero, and they are opposites: one means a
+ * turn is opening, the other means the user asked for nothing to run. So the
+ * signal is the ROW, not the number — and a held or failed row is still listed,
+ * which is what makes them distinguishable at all.
+ */
+describe('inboxDrained', () => {
+  const prompt = (over: Partial<SessionPrompt> = {}): SessionPrompt => ({
+    prompt_id: 'p1',
+    client_message_id: 'q_1',
+    message_id: 'msg_01',
+    state: 'queued',
+    reason: null,
+    text: 'hi',
+    attempts: 0,
+    last_error: null,
+    created_at: '2026-08-18T10:00:00.000Z',
+    available_at: '2026-08-18T10:00:00.000Z',
+    ...over,
+  });
+
+  test('a queued row that is simply gone is a drain', () => {
+    expect(inboxDrained([prompt()], [])).toBe(true);
+  });
+
+  test('a delivering row that is gone is a drain too', () => {
+    // `delivering` is already at OpenCode, queued behind the turn in front of
+    // it. Its disappearance is the ledger confirming a turn consumed it.
+    expect(inboxDrained([prompt({ state: 'delivering' })], [])).toBe(true);
+  });
+
+  test('a HELD row is still listed, so nothing drained', () => {
+    // Stop parks the row (`waiting`/`held`) rather than removing it. Reading
+    // that as a drain would put the composer back on Stop with nothing
+    // running — exactly what `countLiveInboxPrompts` excludes it to prevent.
+    const held = prompt({ state: 'waiting', reason: 'held' });
+    expect(inboxDrained([prompt()], [held])).toBe(false);
+  });
+
+  test('a row that only FAILED has not drained', () => {
+    expect(inboxDrained([prompt()], [prompt({ state: 'failed' })])).toBe(false);
+  });
+
+  test("this tab's own optimistic row being replaced is not a drain", () => {
+    // The echo arrives under the SERVER's prompt id, so the optimistic row
+    // "disappears" on every successful send. That is a rename, not a hand-off.
+    const optimistic = optimisticSessionPrompt(
+      { clientMessageId: 'q_9', messageId: 'msg_09', parts: [{ type: 'text', text: 'go' }] },
+      1_000,
+    );
+    expect(inboxDrained([optimistic], [prompt({ prompt_id: 'srv_9', client_message_id: 'q_9' })])).toBe(
+      false,
+    );
+  });
+
+  test('nothing to compare against is never a drain', () => {
+    expect(inboxDrained(undefined, [])).toBe(false);
+    expect(inboxDrained([], [])).toBe(false);
+  });
+
+  test('a row that is still there has not drained', () => {
+    expect(inboxDrained([prompt()], [prompt()])).toBe(false);
+  });
+});
+
+describe('the drain stamp survives the readings that follow it', () => {
+  const prompt = (over: Partial<SessionPrompt> = {}): SessionPrompt => ({
+    prompt_id: 'p1',
+    client_message_id: 'q_1',
+    message_id: 'msg_01',
+    state: 'queued',
+    reason: null,
+    text: 'hi',
+    attempts: 0,
+    last_error: null,
+    created_at: '2026-08-18T10:00:00.000Z',
+    available_at: '2026-08-18T10:00:00.000Z',
+    ...over,
+  });
+
+  test('a later empty reading inherits it — the queue has not changed its mind', () => {
+    // The list polls every second while the projection believes something is
+    // pending. Without carry-forward the stamp would be erased by the very next
+    // poll, one second into a wait for a `/turn` read that takes a round trip.
+    useSessionWorkingStore.getState().reset();
+    applyInboxObservation('sess_1', undefined, [prompt()], 500);
+    applyInboxObservation('sess_1', [prompt()], [], 600);
+    applyInboxObservation('sess_1', [], [], 700);
+
+    expect(useSessionWorkingStore.getState().inbox.sess_1).toEqual({
+      pending: 0,
+      atMs: 700,
+      drainedAtMs: 600,
+    });
+  });
+
+  test('a new pending row drops it — this is a fact about an empty queue', () => {
+    useSessionWorkingStore.getState().reset();
+    applyInboxObservation('sess_1', undefined, [prompt()], 500);
+    applyInboxObservation('sess_1', [prompt()], [], 600);
+    applyInboxObservation('sess_1', [], [prompt({ prompt_id: 'p2' })], 700);
+
+    expect(useSessionWorkingStore.getState().inbox.sess_1).toEqual({ pending: 1, atMs: 700 });
+  });
+});
+
+describe('withEditedPromptText', () => {
+  const row = (id: string, text: string) =>
+    ({ prompt_id: id, text, state: 'queued', reason: null }) as SessionPrompt;
+
+  test('replaces the text of the edited row only, in place', () => {
+    const before = [row('a', 'one'), row('b', 'two'), row('c', 'three')];
+    const after = withEditedPromptText(before, 'b', 'TWO');
+    expect(after.map((prompt) => [prompt.prompt_id, prompt.text])).toEqual([
+      ['a', 'one'],
+      ['b', 'TWO'],
+      ['c', 'three'],
+    ]);
+    expect(before[1].text).toBe('two');
+  });
+
+  test('replaces the full text too: a queue draws `full_text`, so the old words would show until the read after the PATCH', () => {
+    const before = [{ ...row('a', 'one'), full_text: 'one, in full' }];
+    const [after] = withEditedPromptText(before, 'a', 'ONE, in full');
+    expect(after).toMatchObject({ text: 'ONE, in full', full_text: 'ONE, in full' });
+    expect(before[0].full_text).toBe('one, in full');
+  });
+
+  test('a row that is gone stays gone', () => {
+    expect(withEditedPromptText([row('a', 'one')], 'zz', 'x')).toEqual([row('a', 'one')]);
+  });
+});

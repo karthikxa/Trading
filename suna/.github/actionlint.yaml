@@ -1,0 +1,7 @@
+# actionlint config — https://github.com/rhysd/actionlint/blob/main/docs/config.md
+# Blacksmith runner labels: the kill-switch target. Workflows default to
+# GitHub-hosted labels through `${{ vars.CI_RUNNER_* || '<label>' }}`; a
+# `CI_RUNNER_<tier>` variable may name a Blacksmith label instead.
+self-hosted-runner:
+  labels:
+    - blacksmith-*

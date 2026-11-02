@@ -1,0 +1,234 @@
+---
+title: "How we triage reported phishing emails"
+description: The phishing-triage agent we run on Kortix — every 15 minutes it pulls newly reported emails from our phishing-report inbox, inspects headers, links, and attachments for phishing indicators, and posts a risk verdict with a recommended action to our security channel. It only recommends; a human decides whether to block a sender or warn staff.
+date: "2026-06-06"
+author: team
+tags:
+  - Security
+  - Case Study
+  - Enterprise
+template: phishing-triage
+---
+
+Security awareness training tells every employee to forward anything suspicious
+to a phishing-report inbox, and they do — which means that inbox fills up
+faster than one person can open each message, view the raw headers, hover over
+every link, and decide whether it's real. The obvious spam never gets that far;
+the gateway already caught it. What lands in the report inbox is the ambiguous
+case, the one that needs an actual look, and during a real campaign it arrives
+in a burst.
+
+We run a phishing-triage agent on Kortix that checks that inbox every 15
+minutes, analyzes each reported email, and posts a verdict and a recommended
+action to our security Slack channel. It reads mail and it recommends; it never
+blocks a sender, deletes a message, or touches anything else in Gmail.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Every 15 minutes</Fact>
+  <Fact label="Connected systems">Gmail · Slack</Fact>
+  <Fact label="Mode">Read-only on Gmail · one Slack alert per report</Fact>
+</KeyFacts>
+
+## The problem
+
+A secure email gateway filters out the obvious junk, so what a human forwards
+to the phishing-report inbox is already the hard tier: a plausible-looking
+invoice, a lookalike login page, a reply-to that doesn't match the display
+name. Judging it well means checking SPF/DKIM/DMARC results, tracing where a
+shortened link actually resolves, and noticing an attachment that's a macro
+document dressed up as a PDF — several checks, every time, before anyone can
+say whether it's real.
+
+The common approaches don't hold up under volume. A person checks the inbox
+when they get to it, so a real campaign sits unflagged for hours. A static
+blocklist of known-bad domains misses this morning's freshly registered
+lookalike. A rule that auto-quarantines anything reported is fast but wrong
+often enough that people stop trusting it — and a false block on a legitimate
+sender is its own incident.
+
+## What we built
+
+On Kortix, a cron fires every 15 minutes and spawns a fresh agent session with
+read-only access to the phishing-report Gmail inbox. It pulls every message
+reported since the last check, examines the sender's authentication results,
+the reply-to and return-path against the display name, where every link
+actually resolves, and any attachments, then classifies the risk and drafts a
+verdict — block this sender, warn everyone who may have gotten the same email,
+or no action needed — and posts it to the security Slack channel. It changes
+nothing in Gmail itself.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the phishing-indicators skill and the
+15-minute trigger, and opens a change request for you to review. Prefer clicks?
+Choose **Use this template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a phishing-triage agent in this project.
+
+1. Create the agent agents/phishing-triage.md. Its job is to triage emails that staff report as phishing. It may use the Gmail and Slack connectors. It reads Gmail and never changes it.
+
+2. Create the skill skills/phishing-indicators/SKILL.md with these rules:
+   - Read the forwarded original, not the report wrapper. Check its SPF, DKIM and DMARC results, and compare Reply-To and Return-Path with the From domain and the display name.
+   - Resolve every link to its real destination. Flag lookalike domains, URL shorteners, raw IP links and pages that ask for a login or an MFA code.
+   - Check the real file type of each attachment, not its extension. Flag macro-enabled documents, scripts, disk images and archives with a password in the email body.
+   - Classify each report as critical, high, medium, low or benign, and name the indicators behind the tier. Never raise a tier on tone alone.
+   - Post one verdict per report to #security with the tier, the indicators, a link to the thread and one recommended action: block this sender, warn staff, or no action needed.
+   - Never block a sender, delete or quarantine a message, or change anything in Gmail. A person on security takes every action.
+
+3. Add a cron trigger phishing-report-check to kortix.yaml. It runs the phishing-triage agent every 15 minutes with the prompt "Load the phishing-indicators skill and triage every new email in label:phishing-report."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect the mailbox that receives
+phishing reports, and Slack. Credentials are brokered server-side and never
+enter the agent's machine.
+
+<ToolList>
+  <ToolNeed name="Gmail" domain="gmail.com" tag="Required" alternatives={[['Microsoft Outlook', 'outlook.com']]}>
+    Reads each reported email, its headers, links and attachments.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com'], ['PagerDuty', 'pagerduty.com']]}>
+    Posts each verdict and recommended action to the security channel.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **phishing-triage**
+agent and send this prompt. Check each verdict against the reported email
+before you let the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Triage every new email in the Gmail search label:phishing-report.
+
+1. For each report, open the forwarded original. Check SPF, DKIM and DMARC, and compare Reply-To, Return-Path and the display name with the sender address.
+2. Resolve every link to its real destination, and check the real file type of each attachment.
+3. Classify the risk as critical, high, medium, low or benign, and list the indicators behind it.
+4. Post one verdict per report to #security with the tier, the indicators, a link to the thread and one recommended action: block this sender, warn staff, or no action needed.
+5. Do not block, delete, quarantine or move anything.`}
+/>
+
+</Step>
+<Step title="Let the 15-minute schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every 15 minutes, each run in a new session on its own cloud computer. To
+change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: phishing-report-check
+    name: Phishing report check
+    on:
+      cron: "0 */15 * * * *"
+    run:
+      agent: phishing-triage
+      prompt: Load the phishing-indicators skill and triage every new email in label:phishing-report.`}
+/>
+
+</Step>
+<Step title="Recommend, never remediate">
+
+The agent reads Gmail and posts to Slack. It never blocks a sender, deletes or
+quarantines a message, or changes a mailbox setting. Each verdict names one
+action, and a person on security decides whether to take it.
+
+</Step>
+<Step title="Read the verdicts">
+
+Each reported email gets one verdict in the channel. This is what a run looks
+like in the session:
+
+<ExampleRun
+  title="Phishing report check · 10:15"
+  message="Load the phishing-indicators skill and triage every new email in label:phishing-report."
+  worked="Worked for 1m 48s"
+  tools={[
+    'gmail · search messages',
+    'gmail · get message × 3',
+    'gmail · get attachment',
+    'slack · post message × 3 → #security',
+  ]}
+  note="Illustrative example. Your verdicts depend on what staff report."
+>
+  Triaged **3** new reports. **1** is critical: a fake IT login page on a
+  lookalike domain, with DMARC failing. The recommended action is to block the
+  sender and warn staff. The other **2** are benign marketing emails, and no
+  action is needed.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A 15-minute **cron** spawns a fresh session with a read-only **connector**
+  into the phishing-report Gmail inbox. The indicator rulebook lives as a
+  **skill**. The agent classifies and recommends; it never blocks, deletes, or
+  remediates.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Group repeat campaigns"
+  code="When two or more reports in one day share a sender domain or a link, post one combined alert to #security that lists every report in the group."
+/>
+
+<CopyBlock
+  title="Remember lookalike domains"
+  code="Keep a list in memory of every lookalike domain you flag, and mark a new report critical when it uses one of them."
+/>
+
+<CopyBlock
+  title="Weekly report digest"
+  code="Every Friday at 16:00, post a summary to #security of the week's reports by risk tier, with the three most common indicators."
+/>
+
+## Guardrails
+
+The agent reads live employee reports of suspected attacks, so its access is
+scoped and strictly one-directional:
+
+- **Isolation.** Every run happens in its own isolated sandbox. The session is granted access only to the phishing-report inbox and the security channel; nothing else
+  is written back out.
+- **Scoped secrets.** The Gmail credential is encrypted in the Secrets Manager
+  and injected into the sandbox at runtime, scoped to the agents you grant them to or the
+  logs.
+- **Recommend-only.** The agent analyzes, classifies, and recommends. It never
+  blocks a sender, deletes or quarantines mail, or takes any other remediation
+  action — every action it names is for a human to carry out.
+- **Everything is code.** The indicator rulebook, the risk tiers, and the
+  per-system permissions are files in the repo, versioned and changed through
+  a reviewed **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="15 min" label="Worst-case delay before a reported email gets a verdict" />
+  <Stat value="Read-only" label="Nothing blocked, deleted, or changed in Gmail automatically" />
+  <Stat value="3 signals" label="Headers, links, and attachments checked on every report" />
+</StatGrid>
+
+Reports that used to wait for someone to have a free moment now get a verdict
+within 15 minutes, with the specific indicators laid out and a recommended
+action attached. The agent never touches a sender or a mailbox; the security
+team still makes every call, just with the analysis already done.

@@ -1,0 +1,227 @@
+---
+title: "How we run async standups in Slack"
+description: A daily agent that collects each person's Linear and GitHub activity, prompts anyone with nothing recorded, and posts a concise team standup to Slack. Read-only across every tool.
+date: "2026-01-28"
+author: team
+tags:
+  - Operations
+  - Case Study
+  - Team
+template: standup-summary
+---
+
+A standup is supposed to answer one question: what did everyone do, and what's
+next. In practice it costs a meeting, or a thread where half the team pastes a
+summary and the other half forgets. The information already exists in Linear and
+GitHub; someone just has to gather it, format it, and chase the people who didn't
+post.
+
+We run a daily agent on Kortix that does the gathering. It reads each person's
+Linear and GitHub activity, nudges anyone with nothing recorded, and posts a
+concise standup to a Slack channel. This is how we run our own standups, and the
+same setup works for any team.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">A daily cron, one post per weekday</Fact>
+  <Fact label="Connected systems">Linear · GitHub · Slack</Fact>
+  <Fact label="Mode">Read-only across the tools, no writes</Fact>
+</KeyFacts>
+
+## The problem
+
+A live standup takes a slot on everyone's calendar to relay information that's
+already recorded somewhere. An async thread saves the meeting but shifts the work
+onto people: each person has to remember to write, summarize their own day, and
+post it, and the ones who don't leave gaps.
+
+The common workarounds are partial. A recurring bot that asks "what did you do
+yesterday?" still depends on everyone answering. A dashboard shows activity but
+doesn't summarize it or tell you who's quiet. Neither reads the tools where the
+work actually happened, so the summary is only as complete as the people filling
+it in.
+
+## What we built
+
+On Kortix, a cron fires once each weekday morning and spawns an agent. It reads
+each team member's recent Linear issues and GitHub activity, builds a short
+per-person summary, checks who has nothing recorded, and posts the standup to a
+Slack channel. Anyone with a quiet day gets a light prompt so they can add
+context the tools can't see. The agent only reads; it never writes to Linear or
+GitHub.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the leaderboard skill and the weekly trigger, and opens a change request for you to review. Prefer
+clicks? Choose **Use this template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a weekly shipping brief agent in this project.
+
+1. Create the agent agents/leaderboard.md. Its job is to post a weekly shipping brief to Slack and open the async standup thread. It may use the GH_TOKEN secret and the Slack channel.
+
+2. Create the skill skills/weekly-leaderboard/SKILL.md with these rules:
+   - Cover the last 7 days, or the time since the last brief in #eng, so nothing counts twice.
+   - Count merged pull requests per person across owner/repo with gh. Leave out bots and agents, and count them on a separate line.
+   - Compare each count to last week in memory/weekly-digests.md, and track streaks of weeks with at least one merged pull request.
+   - Post one brief to #eng: a one-line takeaway, what shipped, the ranked leaderboard, streaks and decisions from Slack.
+   - Reply in the brief's thread with the standup prompt (what shipped, top priority, blockers) and mention @here.
+   - Add this week to memory/weekly-digests.md and keep the last 8 weeks.
+
+3. Add a cron trigger weekly-leaderboard to kortix.yaml. It runs the leaderboard agent every Monday at 09:00 with the prompt "Load the weekly-leaderboard skill and post this week's shipping brief and standup thread to #eng."
+
+4. Tell me which of these connectors and secrets are not set up yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Add a GitHub token as a project secret, and connect Slack as a channel so the
+agent can post the brief and the standup thread. The token is encrypted and
+injected into the session at runtime, scoped to this agent.
+
+<ToolList>
+  <ToolNeed name="GitHub" domain="github.com" tag="Required" alternatives={[['Linear', 'linear.app'], ['Jira', 'atlassian.com']]}>
+    Counts merged PRs per person across the target repos.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com']]}>
+    Posts the weekly brief and opens the standup thread.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **leaderboard** agent and
+send this prompt. Check the counts against GitHub before you let the schedule
+take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Post this week's shipping brief to #eng.
+
+1. Count merged pull requests per person in owner/repo over the last 7 days. Leave out bots and agents, and count them on one separate line.
+2. Compare each count to last week in memory/weekly-digests.md, and work out each streak.
+3. Post one brief to #eng: a one-line takeaway, what shipped, the ranked leaderboard, streaks and any decisions from Slack.
+4. Reply in that thread with the async standup prompt and mention @here.
+5. Add this week to memory/weekly-digests.md.`}
+/>
+
+</Step>
+<Step title="Let the weekly schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every Monday at 09:00. It reads last week's entry in memory before it
+counts, so deltas and streaks carry from week to week. To change the time, edit
+the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: weekly-leaderboard
+    name: Weekly leaderboard
+    on:
+      cron: "0 0 9 * * 1"
+    run:
+      agent: leaderboard
+      prompt: Load the weekly-leaderboard skill and post this week's shipping brief and standup thread to #eng.`}
+/>
+
+</Step>
+<Step title="Count only what GitHub shows">
+
+Every count, delta and streak traces to gh pr list output. Bot and agent pull
+requests are listed apart, and a pull request a person drove counts for that
+person even when an agent helped write it. The agent posts one brief per run
+and pastes no tokens or customer data.
+
+</Step>
+<Step title="Read the weekly brief">
+
+Each run ends with one brief in #eng and a standup thread under it. This is what a run looks like
+in the session:
+
+<ExampleRun
+  title="Weekly leaderboard · Mon 09:00"
+  message="Load the weekly-leaderboard skill and post this week's shipping brief and standup thread to #eng."
+  worked="Worked for 3m 26s"
+  tools={[
+    'github · gh pr list (merged)',
+    'github · list commits',
+    'slack · read history → #eng',
+    'slack · send blocks → #eng',
+    'slack · reply in thread',
+    'memory · update weekly-digests.md',
+  ]}
+  note="Illustrative example. Your counts depend on your repos."
+>
+  **42** pull requests merged by **9** people this week, plus **11** from bots.
+  The top shipper merged **8**, and **3** people extended a streak past four
+  weeks. The standup thread is open in #eng.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A **cron trigger** spawns a session each morning with read-only **connectors**
+  into Linear and GitHub. The roster and format live as **skills** and
+  **memory**. The agent summarizes, prompts the gaps, and posts to Slack, its
+  only write.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Summarize the standup replies"
+  code="Every Tuesday at 10:00, read the replies in this week's standup thread and post a five-line summary of priorities and blockers to #eng."
+/>
+
+<CopyBlock
+  title="Name the slow reviews"
+  code="Add a line to the brief that lists pull requests that waited more than 2 days for a first review this week."
+/>
+
+<CopyBlock
+  title="Show names, not logins"
+  code="Here is our list of GitHub logins and names. Add it to the skill's identity map so the leaderboard shows names."
+/>
+
+## Guardrails
+
+The agent reads everyone's activity across two tools and posts to a shared
+channel, so the access is scoped and contained:
+
+- **Isolation.** Every run happens in its own isolated sandbox. The session reads
+  the day's activity, builds the summary, and only the Slack post is written back out.
+- **Scoped secrets.** The Linear, GitHub, and Slack credentials are encrypted in
+  the Secrets Manager and injected into the sandbox at runtime, scoped to the agents you grant them to.
+- **Read-only across the tools.** The Linear and GitHub connectors are scoped to
+  read. The agent's only write is the standup post; it changes nothing in the
+  source tools.
+- **Everything is code.** The roster, the format, and the per-tool permissions
+  are files in the repo, versioned and changed through a reviewed **change
+  request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="No meeting" label="The standup is a post, not a slot on the calendar" />
+  <Stat value="Read-only" label="No writes to Linear or GitHub, only the Slack post" />
+  <Stat value="3 systems" label="Linear, GitHub, and Slack in one daily agent" />
+</StatGrid>
+
+The standup now arrives each morning as a Slack post built from the work people
+already recorded, with quiet days flagged instead of skipped. No one spends a
+meeting relaying status, and no one has to write their own summary for the
+activity the tools already have.

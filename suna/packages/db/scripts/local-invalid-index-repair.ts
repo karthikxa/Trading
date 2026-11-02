@@ -1,0 +1,45 @@
+import { withClient, withTransaction } from '../src/with-client';
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+/**
+ * Remove unusable indexes left by failed CREATE INDEX CONCURRENTLY attempts.
+ * A pending migration can then rebuild each index instead of accepting the
+ * invalid relation through IF NOT EXISTS.
+ */
+export async function dropLocalInvalidIndexes(databaseUrl: string): Promise<string[]> {
+  return withClient(databaseUrl, async (client) => {
+    // The view lists builds in every database of the cluster. Only a build in
+    // THIS database can be one of the indexes dropped below; the local cluster
+    // also builds indexes in the db-suites lane's per-file databases.
+    const activeBuilds = await client.query<{ count: number }>(
+      'select count(*)::int as count from pg_stat_progress_create_index where datname = current_database()',
+    );
+    if ((activeBuilds.rows[0]?.count ?? 0) > 0) {
+      throw new Error('Cannot repair local invalid indexes while an index build is active.');
+    }
+
+    const invalid = await client.query<{ schema_name: string; index_name: string }>(`
+      select n.nspname as schema_name, c.relname as index_name
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        join pg_index i on i.indexrelid = c.oid
+       where n.nspname = 'kortix'
+         and not i.indisvalid
+       order by c.relname
+    `);
+    if (invalid.rows.length === 0) return [];
+
+    return withTransaction(client, async () => {
+      await client.query("set local lock_timeout = '5s'");
+      for (const row of invalid.rows) {
+        await client.query(
+          `drop index if exists ${quoteIdentifier(row.schema_name)}.${quoteIdentifier(row.index_name)}`,
+        );
+      }
+      return invalid.rows.map((row) => `${row.schema_name}.${row.index_name}`);
+    });
+  });
+}

@@ -1,0 +1,405 @@
+/**
+ * Tab store — persists open tabs and navigation history across app restarts.
+ *
+ * Supports two tab types:
+ * - Session tabs (chat sessions identified by session ID)
+ * - Page tabs (Review, Browser, a project's page, …: `PAGE_TABS`)
+ */
+
+import { create, type StoreApi } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// ---------------------------------------------------------------------------
+// Page tab definitions
+// ---------------------------------------------------------------------------
+
+export interface PageTab {
+  id: string;       // e.g. "page:files"
+  label: string;    // e.g. "Files"
+}
+
+/**
+ * All known page tabs. A page with no entry point is deleted, not kept here
+ * (COR-156). Entry points: Review and Apps (drawer), Browser (a preview card or tool
+ * link), Files (the drawer's `files` route), and project Settings / Schedules
+ * / Secrets / Members (sub-pages).
+ */
+export const PAGE_TABS: Record<string, PageTab> = {
+  'page:browser':           { id: 'page:browser',           label: 'Browser' },
+  'page:apps':              { id: 'page:apps',              label: 'Apps' },
+  'page:secrets-nav':       { id: 'page:secrets-nav',       label: 'Secrets' },
+  'page:schedules':         { id: 'page:schedules',         label: 'Schedules' },
+  'page:review':            { id: 'page:review',            label: 'Review' },
+  'page:files-nav':         { id: 'page:files-nav',         label: 'Files' },
+  'page:settings':          { id: 'page:settings',          label: 'Settings' },
+  'page:members':           { id: 'page:members',           label: 'Members' },
+};
+
+// ---------------------------------------------------------------------------
+// Store
+// ---------------------------------------------------------------------------
+
+/** The per-scope (per-project) slice of tab state. */
+interface TabScopeSnapshot {
+  activeSessionId: string | null;
+  activePageId: string | null;
+  openTabIds: string[];
+  openPageIds: string[];
+  openTabOrder: string[];
+  sessionHistory: string[];
+  historyIndex: number;
+  tabStateById: Record<string, Record<string, unknown>>;
+}
+
+const emptyScope = (): TabScopeSnapshot => ({
+  activeSessionId: null,
+  activePageId: null,
+  openTabIds: [],
+  openPageIds: [],
+  openTabOrder: [],
+  sessionHistory: [],
+  historyIndex: -1,
+  tabStateById: {},
+});
+
+interface TabState {
+  /** Currently active session/tab ID (null = dashboard or page tab) */
+  activeSessionId: string | null;
+  /** Currently active page tab ID (null = session or dashboard) */
+  activePageId: string | null;
+  /** List of open tab IDs (session IDs) */
+  openTabIds: string[];
+  /** List of open page tab IDs */
+  openPageIds: string[];
+  /** Combined open tabs (sessions + pages) ordered by when they were opened */
+  openTabOrder: string[];
+  /** Navigation history (session IDs, page IDs, and __dashboard__) */
+  sessionHistory: string[];
+  /** Current position in history */
+  historyIndex: number;
+  /** Per-tab ephemeral UI state (scroll positions, view state, etc.) */
+  tabStateById: Record<string, Record<string, unknown>>;
+  /** Which scope (project id, or 'home') the flat fields above belong to. */
+  scopeKey: string | null;
+  /** Saved tab state for every other scope, keyed by project id / 'home'. */
+  scopes: Record<string, TabScopeSnapshot>;
+
+  navigateToSession: (sessionId: string | null) => void;
+  navigateToPage: (pageId: string) => void;
+  closeTab: (tabId: string) => void;
+  closeAllTabs: () => void;
+  goBack: () => void;
+  goForward: () => void;
+  setTabState: (tabId: string, patch: Record<string, unknown>) => void;
+  clearTabState: (tabId: string) => void;
+  /**
+   * Open a project's tab scope on its home: snapshots the current flat state
+   * under the old scope key and hydrates the flat state from the new scope
+   * (empty for a never-visited project). Open tabs and history are remembered
+   * PER PROJECT; the active page or thread is not. Opening a project, again
+   * or after a restart, always shows project home.
+   */
+  setScope: (key: string) => void;
+  /** Sign-out: drop every scope, tab, history entry, and tab state. */
+  reset: () => void;
+}
+
+/**
+ * Activate the history entry at `newIndex`: restore its dashboard, page, or
+ * session, reopening the tab if it was closed. goBack and goForward own only
+ * the boundary guard and the index arithmetic; this owns the entry branches.
+ */
+const activateHistoryEntry = (
+  set: StoreApi<TabState>['setState'],
+  get: StoreApi<TabState>['getState'],
+  newIndex: number,
+) => {
+  const entry = get().sessionHistory[newIndex];
+
+  if (entry === '__dashboard__') {
+    set({
+      historyIndex: newIndex,
+      activeSessionId: null,
+      activePageId: null,
+    });
+    return;
+  }
+
+  if (entry?.startsWith('page:')) {
+    const { openPageIds, openTabOrder } = get();
+    const nextOpenPageIds = openPageIds.includes(entry)
+      ? openPageIds
+      : [...openPageIds, entry];
+    const nextOpenTabOrder = openTabOrder.includes(entry)
+      ? openTabOrder
+      : [...openTabOrder, entry];
+    set({
+      historyIndex: newIndex,
+      activeSessionId: null,
+      activePageId: entry,
+      openPageIds: nextOpenPageIds,
+      openTabOrder: nextOpenTabOrder,
+    });
+    return;
+  }
+
+  if (!entry) return;
+
+  const { openTabIds, openTabOrder } = get();
+  const nextOpenTabIds = openTabIds.includes(entry)
+    ? openTabIds
+    : [...openTabIds, entry];
+  const nextOpenTabOrder = openTabOrder.includes(entry)
+    ? openTabOrder
+    : [...openTabOrder, entry];
+
+  set({
+    historyIndex: newIndex,
+    activeSessionId: entry,
+    activePageId: null,
+    openTabIds: nextOpenTabIds,
+    openTabOrder: nextOpenTabOrder,
+  });
+};
+
+export const useTabStore = create<TabState>()(
+  persist(
+    (set, get, api) => ({
+      activeSessionId: null,
+      activePageId: null,
+      openTabIds: [],
+      openPageIds: [],
+      openTabOrder: [],
+      sessionHistory: [],
+      historyIndex: -1,
+      tabStateById: {},
+      scopeKey: null,
+      scopes: {},
+
+      setScope: (key) => {
+        const s = get();
+        const home = { activeSessionId: null, activePageId: null };
+
+        // Reopening the same project: only drop the active page or thread.
+        if (s.scopeKey === key) {
+          set(home);
+          return;
+        }
+
+        // Migration / first run: no scope owned the flat state yet — adopt it
+        // as this scope's state so pre-scoping tabs aren't lost.
+        if (!s.scopeKey) {
+          set({ scopeKey: key, ...home });
+          return;
+        }
+
+        // Snapshot the outgoing scope, hydrate the incoming one.
+        const scopes: Record<string, TabScopeSnapshot> = {
+          ...s.scopes,
+          [s.scopeKey]: {
+            activeSessionId: null,
+            activePageId: null,
+            openTabIds: s.openTabIds,
+            openPageIds: s.openPageIds,
+            openTabOrder: s.openTabOrder,
+            sessionHistory: s.sessionHistory,
+            historyIndex: s.historyIndex,
+            tabStateById: s.tabStateById,
+          },
+        };
+        const next = scopes[key] ?? emptyScope();
+        set({
+          scopeKey: key,
+          scopes,
+          openTabIds: next.openTabIds,
+          openPageIds: next.openPageIds,
+          openTabOrder: next.openTabOrder,
+          sessionHistory: next.sessionHistory,
+          historyIndex: next.historyIndex,
+          tabStateById: next.tabStateById,
+          ...home,
+        });
+      },
+
+      navigateToSession: (sessionId) => {
+        set((state) => {
+          const entry = sessionId ?? '__dashboard__';
+          const currentEntry =
+            state.historyIndex >= 0 ? state.sessionHistory[state.historyIndex] : undefined;
+
+          const nextHistory = currentEntry === entry
+            ? state.sessionHistory
+            : [...state.sessionHistory.slice(0, state.historyIndex + 1), entry];
+          const nextIndex = currentEntry === entry
+            ? state.historyIndex
+            : nextHistory.length - 1;
+
+          if (!sessionId) {
+            return {
+              activeSessionId: null,
+              activePageId: null,
+              sessionHistory: nextHistory,
+              historyIndex: nextIndex,
+            };
+          }
+
+          const newOpenTabIds = state.openTabIds.includes(sessionId)
+            ? state.openTabIds
+            : [...state.openTabIds, sessionId];
+          const newOpenTabOrder = state.openTabOrder.includes(sessionId)
+            ? state.openTabOrder
+            : [...state.openTabOrder, sessionId];
+
+          return {
+            activeSessionId: sessionId,
+            activePageId: null,
+            openTabIds: newOpenTabIds,
+            openTabOrder: newOpenTabOrder,
+            sessionHistory: nextHistory,
+            historyIndex: nextIndex,
+          };
+        });
+      },
+
+      navigateToPage: (pageId) => {
+        set((state) => {
+          const newOpenPageIds = state.openPageIds.includes(pageId)
+            ? state.openPageIds
+            : [...state.openPageIds, pageId];
+          const newOpenTabOrder = state.openTabOrder.includes(pageId)
+            ? state.openTabOrder
+            : [...state.openTabOrder, pageId];
+
+          const currentEntry =
+            state.historyIndex >= 0 ? state.sessionHistory[state.historyIndex] : undefined;
+          const nextHistory = currentEntry === pageId
+            ? state.sessionHistory
+            : [...state.sessionHistory.slice(0, state.historyIndex + 1), pageId];
+          const nextIndex = currentEntry === pageId
+            ? state.historyIndex
+            : nextHistory.length - 1;
+
+          return {
+            activeSessionId: null,
+            activePageId: pageId,
+            openPageIds: newOpenPageIds,
+            openTabOrder: newOpenTabOrder,
+            sessionHistory: nextHistory,
+            historyIndex: nextIndex,
+          };
+        });
+      },
+
+      closeTab: (tabId) => {
+        set((state) => {
+          const nextOpenTabOrder = state.openTabOrder.filter((id) => id !== tabId);
+          const { [tabId]: _removed, ...nextTabStateById } = state.tabStateById;
+          // Page tab
+          if (tabId.startsWith('page:')) {
+            return {
+              openPageIds: state.openPageIds.filter((id) => id !== tabId),
+              activePageId: state.activePageId === tabId ? null : state.activePageId,
+              openTabOrder: nextOpenTabOrder,
+              tabStateById: nextTabStateById,
+            };
+          }
+          // Session tab
+          return {
+            openTabIds: state.openTabIds.filter((id) => id !== tabId),
+            activeSessionId:
+              state.activeSessionId === tabId ? null : state.activeSessionId,
+            openTabOrder: nextOpenTabOrder,
+            tabStateById: nextTabStateById,
+          };
+        });
+      },
+
+      closeAllTabs: () => {
+        set({
+          openTabIds: [],
+          openPageIds: [],
+          activeSessionId: null,
+          activePageId: null,
+          openTabOrder: [],
+          tabStateById: {},
+        });
+      },
+
+      goBack: () => {
+        const { historyIndex } = get();
+        if (historyIndex <= 0) return;
+        activateHistoryEntry(set, get, historyIndex - 1);
+      },
+
+      goForward: () => {
+        const { historyIndex, sessionHistory } = get();
+        if (historyIndex >= sessionHistory.length - 1) return;
+        activateHistoryEntry(set, get, historyIndex + 1);
+      },
+
+      setTabState: (tabId, patch) => {
+        set((state) => ({
+          tabStateById: {
+            ...state.tabStateById,
+            [tabId]: {
+              ...(state.tabStateById[tabId] || {}),
+              ...patch,
+            },
+          },
+        }));
+      },
+
+      clearTabState: (tabId) => {
+        set((state) => {
+          const { [tabId]: _removed, ...rest } = state.tabStateById;
+          return { tabStateById: rest };
+        });
+      },
+
+      reset: () => {
+        set(api.getInitialState());
+      },
+    }),
+    {
+      name: 'kortix-tab-state',
+      storage: createJSONStorage(() => AsyncStorage),
+      // The active page or thread is not persisted: a restart opens project
+      // home. ProjectScreen's route stack owns where back goes.
+      partialize: (state) => ({
+        openTabIds: state.openTabIds,
+        openPageIds: state.openPageIds,
+        openTabOrder: state.openTabOrder,
+        sessionHistory: state.sessionHistory,
+        historyIndex: state.historyIndex,
+        tabStateById: state.tabStateById,
+        scopeKey: state.scopeKey,
+        scopes: state.scopes,
+      }),
+      // Guard rehydration against corrupted AsyncStorage data.
+      // If any persisted field is missing or the wrong type, reset it to a safe default
+      // to prevent ".filter is not a function" / "Cannot read properties of undefined" crashes.
+      onRehydrateStorage: () => (state) => {
+        if (!state) return;
+        state.openTabIds = Array.isArray(state.openTabIds) ? state.openTabIds : [];
+        state.openPageIds = Array.isArray(state.openPageIds) ? state.openPageIds : [];
+        state.openTabOrder = Array.isArray(state.openTabOrder) ? state.openTabOrder : [];
+        state.sessionHistory = Array.isArray(state.sessionHistory) ? state.sessionHistory : [];
+        state.historyIndex = typeof state.historyIndex === 'number' ? state.historyIndex : -1;
+        state.tabStateById = state.tabStateById && typeof state.tabStateById === 'object'
+          ? state.tabStateById
+          : {};
+        // Storage written by older builds still holds the last active page or
+        // thread. Drop it so a restart opens project home.
+        state.activeSessionId = null;
+        state.activePageId = null;
+        if (state.scopeKey != null && typeof state.scopeKey !== 'string') {
+          state.scopeKey = null;
+        }
+        state.scopes = state.scopes && typeof state.scopes === 'object' && !Array.isArray(state.scopes)
+          ? state.scopes
+          : {};
+      },
+    },
+  ),
+);

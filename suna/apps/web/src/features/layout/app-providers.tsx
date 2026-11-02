@@ -1,0 +1,142 @@
+'use client';
+
+import { SidebarInset, SidebarProvider } from '@kortix/ui/sidebar';
+import { SIDEBAR_MAX_WIDTH_PX } from '@kortix/ui/sidebar-width';
+import { GlobalUpgradeModal } from '@/features/billing/global-upgrade-modal';
+import { ConnectorConnectionGateDialog } from '@/features/connectors/connector-connection-gate-dialog';
+import { isBillingEnabled } from '@/lib/config';
+import { sweepRetiredDeviceCaches } from '@/lib/device-caches';
+import { pruneAllRegisteredCaches } from '@kortix/ui/internal/lib/storage/managed-storage';
+import { useOnboardingModeStore } from '@kortix/ui/internal/stores/onboarding-mode-store';
+import { SubscriptionStoreSync } from '@kortix/ui/internal/stores/subscription-store';
+import React from 'react';
+
+/**
+ * Left sidebar slot — lives inside SidebarProvider so it can read the
+ * onboarding morph state.
+ *
+ * Width is NOT driven by the `open` state here — `SidebarLeft` uses
+ * `collapsible="icon"`, so the collapsed state still shows a 3.25rem icon
+ * rail. Letting the inner `<Sidebar>` manage its own width means the main
+ * content's rounded left edge sits flush with the rail (not the viewport)
+ * in both states.
+ *
+ * `SidebarLeft` is imported eagerly (not lazy/Suspense) so there's no
+ * skeleton→real swap on initial load — that swap was the "weird flicker"
+ * on load, since the skeleton pulse and the real sidebar's own entrance
+ * both fired in the first few frames.
+ *
+ * The only time we clamp this slot ourselves is during the onboarding
+ * hide-sidebar morph: we animate max-width to 0 so the sidebar slides out
+ * entirely. A `booted` flag suppresses that transition on first paint so
+ * the initial render never flashes an animation.
+ */
+function SidebarLeftSlot({ sidebarContent }: { sidebarContent?: React.ReactNode }) {
+  const obActive = useOnboardingModeStore((s) => s.active);
+  const obMorphing = useOnboardingModeStore((s) => s.morphing);
+  const hideSidebar = obActive && !obMorphing;
+
+  // Suppress transitions on the very first paint so nothing animates on
+  // initial load. Flip on the next frame so the onboarding morph still
+  // animates when it fires later.
+  const [booted, setBooted] = React.useState(false);
+  React.useEffect(() => {
+    const id = requestAnimationFrame(() => setBooted(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  return (
+    <div
+      data-slot="sidebar-left-slot"
+      className={
+        booted
+          ? 'overflow-hidden transition-[max-width,opacity] duration-500 ease-out'
+          : 'overflow-hidden'
+      }
+      style={{
+        // Normal mode: the sidebar's absolute width ceiling, so this slot
+        // never constrains it. It used to be a flat 320px, which silently
+        // capped the resizable panel the moment a user dragged past that —
+        // the panel kept rendering at its real width while the in-flow gap
+        // stopped growing, so the content pane overlapped it. A constant, not
+        // `var(--sidebar-width)`: this box transitions its max-width for the
+        // onboarding morph, and tracking the live variable would make that
+        // transition lag every frame of a rail drag.
+        // Onboarding-hide: clamp to 0 so the sidebar slides out with an
+        // animation — CSS needs a concrete start value to transition from.
+        maxWidth: hideSidebar ? 0 : SIDEBAR_MAX_WIDTH_PX,
+        opacity: hideSidebar ? 0 : 1,
+      }}
+    >
+      {sidebarContent}
+    </div>
+  );
+}
+
+// `GlobalUserSettingsModal` (the store-driven modal that
+// `showGlobalUserSettingsModal` used to conditionally mount, wrapping the
+// deleted legacy user-settings modal) was removed in Task 10. Both call
+// sites already passed `showGlobalUserSettingsModal={false}` and nothing
+// ever called `useUserSettingsModalStore.getState().openUserSettings(...)`,
+// so it never rendered — dead since before this task. `useUserSettingsModalStore`
+// itself stays: `features/accounts/settings/billing-tab.tsx` still reads its
+// `highlight` field.
+
+// Account-level settings (Overview, Billing, Transactions, Members, etc.)
+// now live at /accounts/[id]. The legacy modal mount + GlobalAccountSettingsModal
+// were removed; `openAccountSettings(...)` callers navigate to the page directly
+// via the store helper.
+
+interface AppProvidersProps {
+  children: React.ReactNode;
+  showSidebar?: boolean;
+  defaultSidebarOpen?: boolean;
+  sidebarContent?: React.ReactNode;
+  sidebarSiblings?: React.ReactNode;
+  /** Vestigial — see the comment above `AppProviders` on `GlobalUserSettingsModal`'s
+   *  removal (Task 10). Kept only so its two current call sites don't need
+   *  editing; it renders nothing. */
+  showGlobalUserSettingsModal?: boolean;
+}
+
+export function AppProviders({
+  children,
+  showSidebar = true,
+  defaultSidebarOpen,
+  sidebarContent,
+  sidebarSiblings,
+  showGlobalUserSettingsModal = false,
+}: AppProvidersProps) {
+  // The default model is hydrated server-side now (useModelDefaults inside the
+  // session hook seeds it from the account/agent defaults the gateway resolves),
+  // so the old per-sandbox /kortix/preferences/model round-trip is gone.
+
+  // One-time sweep on app load: reclaim storage left over from older builds,
+  // after the first paint. Ongoing growth is bounded by each cache's
+  // prune-on-write; this heals existing bloat, including the retired session
+  // caches (`device-caches.ts`).
+  React.useEffect(() => {
+    pruneAllRegisteredCaches();
+    sweepRetiredDeviceCaches();
+  }, []);
+
+  const content = (
+    <SubscriptionStoreSync>
+      {children}
+      {isBillingEnabled() && <GlobalUpgradeModal />}
+      <ConnectorConnectionGateDialog />
+    </SubscriptionStoreSync>
+  );
+
+  if (!showSidebar) return content;
+
+  return (
+    <SidebarProvider defaultOpen={defaultSidebarOpen}>
+      <SidebarLeftSlot sidebarContent={sidebarContent} />
+      <SidebarInset>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{content}</div>
+      </SidebarInset>
+      {sidebarSiblings}
+    </SidebarProvider>
+  );
+}

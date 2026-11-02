@@ -1,0 +1,665 @@
+const SLACK_API_BASE = 'https://slack.com/api';
+
+interface SlackApiResult {
+  ok: boolean;
+  error?: string;
+  ts?: string;
+  [key: string]: unknown;
+}
+
+// Slack errors (ok:false) that are transient and worth retrying. A permanent
+// error (channel_not_found, not_in_channel, invalid_blocks, …) is returned
+// immediately so the caller can fall back instead of hammering a doomed call.
+const TRANSIENT_SLACK_ERRORS = new Set([
+  'ratelimited',
+  'service_unavailable',
+  'internal_error',
+  'fatal_error',
+  'request_timeout',
+]);
+
+/**
+ * Slack's read methods drop a JSON body. A call site that forgot `form: true`
+ * failed silently twice: users.info (2026-08-19) and conversations.info
+ * (until 2026-10-02). The method name decides now, not each caller.
+ */
+const FORM_ONLY_METHOD = /\.(info|list|history|replies)$/;
+
+/** Whether a call goes form-encoded: a read method always, any other when asked. */
+export function slackSendsForm(method: string, form?: boolean): boolean {
+  return form === true || FORM_ONLY_METHOD.test(method);
+}
+
+async function slackApiCall(
+  token: string,
+  method: string,
+  body: Record<string, unknown>,
+  opts: { retries?: number; idempotent?: boolean; form?: boolean } = {},
+): Promise<SlackApiResult> {
+  // `form` sends application/x-www-form-urlencoded instead of JSON.
+  //
+  // NOT a style preference. Slack's older read methods do not parse a JSON body
+  // at all: the params are silently dropped and the call is answered as though
+  // they were never sent. users.info answers `user_not_found` — for a user id
+  // that Slack itself had just returned from users.list, and that Slack renders
+  // correctly as <@ID> in a message. Measured on dev 2026-08-19 from
+  // /ecs/kortix-dev: `[slack-api] users.info failed { error: "user_not_found" }`.
+  //
+  // That failure mode is silent and looks like bad data rather than a bad
+  // request, which is exactly how it cost an evening: the caller concluded the
+  // bot did not exist.
+  // `idempotent` (default true) controls whether ambiguous failures are retried.
+  // A 429 is ALWAYS safe to retry — Slack guarantees the request wasn't processed
+  // — but a 5xx / timeout / network error on a non-idempotent WRITE
+  // (chat.postMessage, chat.startStream) may have already landed, so retrying it
+  // would duplicate the message. chat.update / reactions.* are idempotent and
+  // retry freely.
+  const form = slackSendsForm(method, opts.form);
+  const idempotent = opts.idempotent !== false;
+  const maxAttempts = Math.max(1, (opts.retries ?? 1) + 1);
+  let last: SlackApiResult = { ok: false, error: 'unknown' };
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(`${SLACK_API_BASE}/${method}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': form
+            ? 'application/x-www-form-urlencoded; charset=utf-8'
+            : 'application/json; charset=utf-8',
+          authorization: `Bearer ${token}`,
+        },
+        body: form
+          ? new URLSearchParams(
+              Object.entries(body)
+                .filter(([, v]) => v !== undefined && v !== null)
+                .map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)]),
+            ).toString()
+          : JSON.stringify(body),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.status === 429) {
+        // Rate-limited → not processed → always safe to retry (honor Retry-After).
+        const retryAfter = Number(res.headers.get('retry-after')) || attempt;
+        last = { ok: false, error: 'ratelimited' };
+        if (attempt < maxAttempts) {
+          await Bun.sleep(Math.min(retryAfter, 5) * 1000);
+          continue;
+        }
+        return last;
+      }
+      if (res.status >= 500) {
+        last = { ok: false, error: `http_${res.status}` };
+        // May have been processed server-side — only retry idempotent calls.
+        if (idempotent && attempt < maxAttempts) {
+          await Bun.sleep(attempt * 400);
+          continue;
+        }
+        return last;
+      }
+      const data = (await res.json()) as SlackApiResult;
+      if (!data.ok && attempt < maxAttempts) {
+        const err = data.error ?? '';
+        // 'ratelimited' is always safe; other transient errors only for idempotent.
+        if (err === 'ratelimited' || (idempotent && TRANSIENT_SLACK_ERRORS.has(err))) {
+          await Bun.sleep(attempt * 400);
+          continue;
+        }
+      }
+      return data;
+    } catch (err) {
+      // A timeout may mean the write succeeded slowly; a network error may not
+      // have been sent. Either way, only retry idempotent calls.
+      last = { ok: false, error: (err as Error)?.name === 'TimeoutError' ? 'timeout' : 'network_error' };
+      if (idempotent && attempt < maxAttempts) {
+        await Bun.sleep(attempt * 400);
+        continue;
+      }
+      return last;
+    }
+  }
+  return last;
+}
+
+/** files.info: the file and the conversations it is shared in. */
+export async function getFileInfo(token: string, fileId: string): Promise<SlackApiResult> {
+  return slackApiCall(token, 'files.info', { file: fileId });
+}
+
+/**
+ * The Kortix agent a message comes from, shown as its author in Slack
+ * (`chat:write.customize`). Only a message's creating call takes it; a later
+ * `chat.update` keeps it. Kortix's own notices carry none and read "Kortix".
+ */
+export interface SlackPersona {
+  username: string;
+}
+
+/**
+ * A creating call with a persona. An install without `chat:write.customize`
+ * (an older own app) answers `missing_scope`; the refused post created
+ * nothing, so it is sent once more as plain "Kortix" rather than lost.
+ */
+async function createWithPersona(
+  token: string,
+  method: string,
+  args: Record<string, unknown>,
+  persona: SlackPersona | null | undefined,
+): Promise<SlackApiResult> {
+  if (!persona) return slackApiCall(token, method, args, { idempotent: false });
+  const r = await slackApiCall(token, method, { ...args, username: persona.username }, { idempotent: false });
+  if (!r.ok && r.error === 'missing_scope') return slackApiCall(token, method, args, { idempotent: false });
+  return r;
+}
+
+/** This token's bot id (`auth.test`), or null when Slack does not answer with one. */
+export async function authTestBotId(token: string): Promise<string | null> {
+  try {
+    const r = await slackApiCall(token, 'auth.test', {});
+    return r.ok && typeof r.bot_id === 'string' ? r.bot_id : null;
+  } catch {
+    return null;
+  }
+}
+
+// Posts a plain message. Returns the message ts (needed to delete it later).
+export async function postMessage(
+  token: string,
+  channel: string,
+  text: string,
+  threadTs?: string,
+  persona?: SlackPersona | null,
+): Promise<string | null> {
+  try {
+    // A write — never retried on an ambiguous 5xx/timeout into a duplicate.
+    const r = await createWithPersona(
+      token,
+      'chat.postMessage',
+      { channel, text, ...(threadTs ? { thread_ts: threadTs } : {}) },
+      persona,
+    );
+    if (!r.ok) {
+      console.warn('[slack-api] chat.postMessage failed', { error: r.error });
+      return null;
+    }
+    return typeof r.ts === 'string' ? r.ts : null;
+  } catch (err) {
+    console.warn('[slack-api] chat.postMessage error', err);
+    return null;
+  }
+}
+
+// Opens (or returns) the bot's DM channel with a user so we can message them
+// directly — a real DM notifies and persists, unlike an ephemeral. Returns the
+// IM channel id, or null on failure.
+export async function openDmChannel(token: string, userId: string): Promise<string | null> {
+  try {
+    const r = await slackApiCall(token, 'conversations.open', { users: userId });
+    if (!r.ok) {
+      console.warn('[slack-api] conversations.open failed', { error: r.error });
+      return null;
+    }
+    const ch = r.channel as { id?: string } | undefined;
+    return ch?.id ?? null;
+  } catch (err) {
+    console.warn('[slack-api] conversations.open error', err);
+    return null;
+  }
+}
+
+// Posts a Block Kit message and returns its ts (needed to edit it later).
+export async function postBlocks(
+  token: string,
+  channel: string,
+  text: string,
+  blocks: unknown[],
+  threadTs?: string,
+  persona?: SlackPersona | null,
+): Promise<string | null> {
+  try {
+    // A write — never retried on an ambiguous 5xx/timeout into a duplicate.
+    const r = await createWithPersona(
+      token,
+      'chat.postMessage',
+      { channel, text, blocks, ...(threadTs ? { thread_ts: threadTs } : {}) },
+      persona,
+    );
+    if (!r.ok) {
+      console.warn('[slack-api] postBlocks failed', { error: r.error });
+      return null;
+    }
+    return typeof r.ts === 'string' ? r.ts : null;
+  } catch (err) {
+    console.warn('[slack-api] postBlocks error', err);
+    return null;
+  }
+}
+
+// Post a message visible ONLY to `user`, in-channel (and in-thread when
+// `threadTs` is set). Used for the identity/access nudges so they appear right
+// where the user @-mentioned Kortix instead of in a separate DM. Returns whether
+// it landed. Note: an ephemeral cannot be edited by ts later — to update it after
+// a button click, respond via the interaction's response_url.
+export async function postEphemeral(
+  token: string,
+  channel: string,
+  user: string,
+  text: string,
+  blocks?: unknown[],
+  threadTs?: string,
+): Promise<boolean> {
+  try {
+    const r = await slackApiCall(
+      token,
+      'chat.postEphemeral',
+      {
+        channel,
+        user,
+        text,
+        ...(blocks ? { blocks } : {}),
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+      },
+      { idempotent: false },
+    );
+    if (!r.ok) {
+      console.warn('[slack-api] chat.postEphemeral failed', { error: r.error });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[slack-api] chat.postEphemeral error', err);
+    return false;
+  }
+}
+
+export async function updateMessage(
+  token: string,
+  channel: string,
+  ts: string,
+  text: string,
+): Promise<void> {
+  try {
+    const r = await slackApiCall(token, 'chat.update', { channel, ts, text, blocks: [] });
+    if (!r.ok) console.warn('[slack-api] chat.update failed', { error: r.error });
+  } catch (err) {
+    console.warn('[slack-api] chat.update error', err);
+  }
+}
+
+// Returns whether the update landed, so the finalizer can fall back to a plain
+// post when a block render is rejected (e.g. invalid_blocks) instead of silently
+// losing the answer.
+export async function updateBlocks(
+  token: string,
+  channel: string,
+  ts: string,
+  text: string,
+  blocks: unknown[],
+): Promise<boolean> {
+  try {
+    const r = await slackApiCall(token, 'chat.update', { channel, ts, text, blocks });
+    if (!r.ok) console.warn('[slack-api] chat.update (blocks) failed', { error: r.error });
+    return r.ok;
+  } catch (err) {
+    console.warn('[slack-api] chat.update (blocks) error', err);
+    return false;
+  }
+}
+
+export async function deleteMessage(token: string, channel: string, ts: string): Promise<void> {
+  try {
+    const r = await slackApiCall(token, 'chat.delete', { channel, ts });
+    if (!r.ok && r.error !== 'message_not_found') {
+      console.warn('[slack-api] chat.delete failed', { error: r.error });
+    }
+  } catch (err) {
+    console.warn('[slack-api] chat.delete error', err);
+  }
+}
+
+// chat.startStream requires the bot to be a member of the channel — posting
+// via chat:write.public is not enough. Join is idempotent (already-a-member
+// is `ok: true`). Returns false for private channels / DMs where join isn't
+// applicable; callers should treat that as non-fatal.
+export async function joinChannel(token: string, channel: string): Promise<boolean> {
+  try {
+    const r = await slackApiCall(token, 'conversations.join', { channel });
+    if (r.ok) return true;
+    // method_not_supported_for_channel_type → DM or private; nothing to join.
+    // already_in_channel → still a member, treat as success.
+    if (r.error === 'already_in_channel') return true;
+    if (r.error !== 'method_not_supported_for_channel_type') {
+      console.warn('[slack-api] conversations.join failed', { error: r.error, channel });
+    }
+    return false;
+  } catch (err) {
+    console.warn('[slack-api] conversations.join error', err);
+    return false;
+  }
+}
+
+export async function addReaction(
+  token: string,
+  channel: string,
+  timestamp: string,
+  name: string,
+): Promise<void> {
+  try {
+    // Cosmetic (the ⏳/✅ marker) — don't retry; a dropped reaction is harmless and
+    // retrying only stacks latency onto the awaited finalize path.
+    const r = await slackApiCall(token, 'reactions.add', { channel, timestamp, name }, { retries: 0 });
+    if (!r.ok && r.error !== 'already_reacted') {
+      console.warn('[slack-api] reactions.add failed', { error: r.error });
+    }
+  } catch (err) {
+    console.warn('[slack-api] reactions.add error', err);
+  }
+}
+
+export async function removeReaction(
+  token: string,
+  channel: string,
+  timestamp: string,
+  name: string,
+): Promise<void> {
+  try {
+    // Cosmetic (clears the ⏳) — don't retry; keeps the finalize path from
+    // stacking retry latency, and a missed clear is low-harm.
+    const r = await slackApiCall(token, 'reactions.remove', { channel, timestamp, name }, { retries: 0 });
+    if (!r.ok && r.error !== 'no_reaction') {
+      console.warn('[slack-api] reactions.remove failed', { error: r.error });
+    }
+  } catch (err) {
+    console.warn('[slack-api] reactions.remove error', err);
+  }
+}
+
+// ─── Streaming (chat.startStream / appendStream / stopStream) ────────────────
+// Renders a live plan block in a channel thread. task_update chunks are the
+// plan checkpoints; markdown_text is the final answer body.
+type StreamTaskStatus = 'pending' | 'in_progress' | 'complete' | 'error';
+
+export interface StreamTaskChunk {
+  type: 'task_update';
+  id: string;
+  title: string;
+  status: StreamTaskStatus;
+  // Optional inline rich text. Slack accepts these as plain strings on the
+  // streaming chunk and auto-wraps them into rich_text blocks server-side.
+  // `details` renders as the subtitle line under the task title (visible while
+  // in_progress); `output` renders as the bullet line shown after completion.
+  // Note: re-sending these for the same task_id APPENDS rather than replaces
+  // — only set them once per task_id.
+  details?: string;
+  output?: string;
+  // Citation footer rendered under the task card. Plain-string `details`
+  // and `output` accept `<url|text>` mrkdwn for inline links; `sources` is
+  // the dedicated, structured citation list.
+  sources?: Array<{ type: 'url'; url: string; text: string }>;
+}
+
+interface StreamTextChunk {
+  type: 'markdown_text';
+  text: string;
+}
+
+// Updates the plan's title line. Also doubles as the keepalive heartbeat:
+// Slack auto-completes a stream after a few minutes without appends (painting
+// "Something went wrong" + an error badge on the in-progress task), so we
+// re-append the same title periodically to reset its inactivity timer without
+// changing what the user sees.
+export interface StreamPlanUpdateChunk {
+  type: 'plan_update';
+  title: string;
+}
+
+// Full Block Kit closing chunk — use for rich answers (headers, sections,
+// images, context actions). Slack validates these against the standard
+// Block Kit schema. Only valid as a closing chunk on chat.stopStream.
+interface StreamBlocksChunk {
+  type: 'blocks';
+  blocks: unknown[];
+}
+
+// A stream chunk — a plan checkpoint, a plan title update, a piece of answer
+// text, or a full Block Kit blocks payload. The answer must ride as
+// `markdown_text` OR `blocks` — chat.stopStream rejects top-level text
+// alongside `chunks`.
+export type StreamChunk = StreamTaskChunk | StreamTextChunk | StreamPlanUpdateChunk | StreamBlocksChunk;
+
+export async function startStream(
+  token: string,
+  channel: string,
+  threadTs: string,
+  recipientUserId: string,
+  recipientTeamId: string,
+  chunks: StreamChunk[],
+  persona?: SlackPersona | null,
+): Promise<string | null> {
+  try {
+    // Creates a message — an ambiguous retry would orphan the first.
+    const r = await createWithPersona(
+      token,
+      'chat.startStream',
+      {
+        channel,
+        thread_ts: threadTs,
+        recipient_user_id: recipientUserId,
+        recipient_team_id: recipientTeamId,
+        task_display_mode: 'plan',
+        chunks,
+      },
+      persona,
+    );
+    if (!r.ok) {
+      console.warn('[slack-api] chat.startStream failed', { error: r.error });
+      return null;
+    }
+    return typeof r.ts === 'string' ? r.ts : null;
+  } catch (err) {
+    console.warn('[slack-api] chat.startStream error', err);
+    return null;
+  }
+}
+
+// Finalize a stream. The closing chunks carry the last checkpoint state and the
+// answer as a `markdown_text` chunk.
+export async function stopStream(
+  token: string,
+  channel: string,
+  ts: string,
+  chunks: StreamChunk[],
+): Promise<void> {
+  try {
+    // A bare stop (no chunks) is valid — used for the silent close when the
+    // turn ended with nothing left to say.
+    const r = await slackApiCall(token, 'chat.stopStream', {
+      channel,
+      ts,
+      ...(chunks.length > 0 ? { chunks } : {}),
+    });
+    // A watchdog stop can race the agent's own stop — ignore "already stopped".
+    if (!r.ok && r.error !== 'message_not_streaming' && r.error !== 'cant_update_message') {
+      console.warn('[slack-api] chat.stopStream failed', { error: r.error });
+    }
+  } catch (err) {
+    console.warn('[slack-api] chat.stopStream error', err);
+  }
+}
+
+// Publish a Block Kit view to a user's App Home tab. View shape:
+//   { type: 'home', blocks: [...Block Kit blocks] }
+export async function publishHomeView(
+  token: string,
+  userId: string,
+  view: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    const r = await slackApiCall(token, 'views.publish', { user_id: userId, view });
+    if (!r.ok) {
+      console.warn('[slack-api] views.publish failed', { error: r.error, user_id: userId });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[slack-api] views.publish error', err);
+    return false;
+  }
+}
+
+/**
+ * Open a modal. Slack's only way to collect typed input from a button press.
+ *
+ * `trigger_id` is single-use and expires in ~3 seconds, so this must be the
+ * first thing the handler does — anything awaited before it (a DB read, an
+ * authorization check) can spend the budget and the modal silently never
+ * opens. The caller is responsible for that ordering.
+ */
+export async function openModal(
+  token: string,
+  triggerId: string,
+  view: Record<string, unknown>,
+): Promise<boolean> {
+  try {
+    const r = await slackApiCall(token, 'views.open', { trigger_id: triggerId, view });
+    if (!r.ok) {
+      // `expired_trigger_id` is the one worth recognising: it means the handler
+      // did work before opening, not that the view was malformed.
+      console.warn('[slack-api] views.open failed', { error: r.error });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn('[slack-api] views.open error', err);
+    return false;
+  }
+}
+
+// Resolve a bot by the name a human would type, e.g. "Incident reporter".
+//
+// The slash command is registered with should_escape:false, so Slack sends the
+// LITERAL text "@Incident reporter" — never <@U…>. Telling an operator to type
+// the thing Slack will not encode is how `link-bot @TheBot` shipped as usage
+// that could not work.
+//
+// Bots only: this feeds link-bot, and returning a human here would hand that
+// person's identity to whoever ran the command. An ambiguous match returns null
+// rather than guessing — two apps with the same display name is a bad reason to
+// bind the wrong one.
+//
+// One page of 1000 covers any workspace this is plausible in; beyond that the
+// operator can paste the member ID, which always works.
+export async function findBotUserIdByName(token: string, name: string): Promise<string | null> {
+  const want = name.trim().replace(/^@/, '').toLowerCase();
+  if (!want) return null;
+  try {
+    const r = await slackApiCall(token, 'users.list', { limit: 1000 }, { form: true });
+    if (!r.ok) {
+      console.warn('[slack-api] users.list failed', { error: r.error });
+      return null;
+    }
+    const members = (r.members ?? []) as Array<{
+      id?: string; name?: string; deleted?: boolean;
+      is_bot?: boolean; is_app_user?: boolean;
+      profile?: { display_name?: string; real_name?: string };
+    }>;
+    const hits = members.filter((m) => {
+      if (m.deleted || !m.id) return false;
+      if (!m.is_bot && !m.is_app_user) return false;
+      return [m.name, m.profile?.display_name, m.profile?.real_name]
+        .some((n) => (n ?? '').trim().toLowerCase() === want);
+    });
+    return hits.length === 1 ? hits[0]!.id! : null;
+  } catch (err) {
+    console.warn('[slack-api] users.list error', err);
+    return null;
+  }
+}
+
+// Is this Slack principal an app/bot rather than a person?
+//
+// `link-bot` writes the (workspace, slack_user) -> kortix_user row that
+// resolveSlackActor treats as authoritative, so binding a HUMAN's id would make
+// that person's later Slack actions run as whoever linked them. Human and bot
+// ids are indistinguishable by shape (both U…/W…), so only Slack can answer.
+//
+// Returns null on ANY uncertainty — missing scope, transport error, unknown user
+// — and the caller refuses. Guessing "probably a bot" here is the impersonation.
+export async function isBotUser(token: string, userId: string): Promise<boolean | null> {
+  try {
+    const r = await slackApiCall(token, 'users.info', { user: userId }, { form: true });
+    if (!r.ok) {
+      console.warn('[slack-api] users.info failed', { error: r.error });
+      return null;
+    }
+    const u = r.user as { is_bot?: boolean; is_app_user?: boolean } | undefined;
+    if (!u) return null;
+    return Boolean(u.is_bot || u.is_app_user);
+  } catch (err) {
+    console.warn('[slack-api] users.info error', err);
+    return null;
+  }
+}
+
+/**
+ * A Slack user's display name (`display_name`, else `real_name`, else the
+ * handle), for showing a person which Slack account they are about to link.
+ * Null on any failure; the caller then shows the id alone.
+ */
+export async function getSlackUserDisplayName(token: string, userId: string): Promise<string | null> {
+  try {
+    const r = await slackApiCall(token, 'users.info', { user: userId }, { form: true });
+    if (!r.ok) return null;
+    const u = r.user as
+      | { name?: string; profile?: { display_name?: string; real_name?: string } }
+      | undefined;
+    const name = u?.profile?.display_name?.trim() || u?.profile?.real_name?.trim() || u?.name?.trim();
+    return name || null;
+  } catch {
+    return null;
+  }
+}
+
+export type SlackConversationType = 'channel' | 'private_channel' | 'im' | 'mpim';
+
+/** What a person recognizes a Slack conversation by. */
+export interface SlackConversationLabel {
+  /**
+   * A channel's name without `#`, the other person's name for a direct
+   * message, or the members' handles for a group DM. Null when Slack did not
+   * say.
+   */
+  name: string | null;
+  type: SlackConversationType | null;
+  /** Deleted, or out of the bot's reach (`channel_not_found`). */
+  unavailable: boolean;
+}
+
+/**
+ * Name a conversation for a person. `conversations.info` must go form-encoded:
+ * sent as JSON, Slack drops the `channel` parameter and answers
+ * `channel_not_found`, which left every binding unnamed until 2026-10-02.
+ */
+export async function describeSlackConversation(token: string, channel: string): Promise<SlackConversationLabel> {
+  const unknown: SlackConversationLabel = { name: null, type: null, unavailable: false };
+  try {
+    const r = await slackApiCall(token, 'conversations.info', { channel }, { form: true });
+    if (!r.ok) return r.error === 'channel_not_found' ? { ...unknown, unavailable: true } : unknown;
+    const info = r.channel as
+      | { name?: string; user?: string; is_im?: boolean; is_mpim?: boolean; is_private?: boolean }
+      | undefined;
+    if (!info) return unknown;
+    if (info.is_im) {
+      const name = info.user ? await getSlackUserDisplayName(token, info.user) : null;
+      return { name, type: 'im', unavailable: false };
+    }
+    if (info.is_mpim) {
+      // `mpdm-sam--alex--kim-1`: the members' handles, which Slack shows as the
+      // conversation's name, without its prefix and counter.
+      const handles = info.name?.replace(/^mpdm-/, '').replace(/-\d+$/, '').split('--').filter(Boolean) ?? [];
+      return { name: handles.length > 0 ? handles.join(', ') : null, type: 'mpim', unavailable: false };
+    }
+    return { name: info.name ?? null, type: info.is_private ? 'private_channel' : 'channel', unavailable: false };
+  } catch {
+    return unknown;
+  }
+}

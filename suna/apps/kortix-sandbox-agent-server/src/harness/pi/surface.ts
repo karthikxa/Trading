@@ -1,0 +1,329 @@
+/**
+ * pi's raw runtime surface (the runtime wire), served IN-PROCESS behind the
+ * host's catch-all transport (`routes/proxy/runtime-proxy.ts` →
+ * `HarnessProxyService`).
+ *
+ * Clients point at `<backend>/p/<externalId>/8000` and call `/session`,
+ * `/session/:id/message`, `/session/:id/prompt_async`, `/session/:id/abort`,
+ * `/permission/:id/reply` and friends. The API delivers every turn with
+ * `prompt_async` and proves it landed with `GET /session/:id/message/:messageID`.
+ * This module answers those routes from the runtime's own state; nothing is
+ * forwarded.
+ *
+ * Auth is the host's: the daemon verifies the signed user context before this
+ * catch-all runs, so the surface never sees an unauthenticated request.
+ */
+import { MESSAGE_READ_CODE } from '@kortix/api-contract/runtime-relay'
+import { kortixEventBus } from '@/services/event-bus/kortix-event-bus'
+import { stripInlineAttachmentBytes } from '../shared/inline-attachments'
+import type { HarnessForwardInput, HarnessForwardResult } from '../contract/proxy'
+import { isGitRepo, vcsDiff } from '@/lib/git/vcs-diff'
+import { CommandNotEnabled, PromptRejected, parsePromptBody, type PiRuntime } from './runtime'
+
+const json = (status: number, body: unknown, headers: Record<string, string> = {}): HarnessForwardResult => ({
+  status,
+  statusText: status === 200 ? 'OK' : status === 204 ? 'No Content' : '',
+  headers: new Headers({ 'content-type': 'application/json; charset=utf-8', ...headers }),
+  body: status === 204 ? null : JSON.stringify(body),
+})
+
+const notFound = (path: string) => json(404, { error: `no pi handler for ${path}` })
+
+function decodeSegment(value: string): string | null {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return null
+  }
+}
+
+async function readJsonBody(body: HarnessForwardInput['body']): Promise<unknown> {
+  const text = body ? await new Response(body).text() : ''
+  if (!text.trim()) return {}
+  return JSON.parse(text) as unknown
+}
+
+/** `/kortix/part/<session>/<message>/<part>` for attachment bytes taken out of a list. */
+function partRef(sessionId: string) {
+  return (messageId: string, partId: string) =>
+    `/kortix/part/${encodeURIComponent(sessionId)}/${encodeURIComponent(messageId)}/${encodeURIComponent(partId)}`
+}
+
+/** The `/global/event` stream: one `data:` line per `{id, type, properties}` frame. */
+function eventStream(): HarnessForwardResult {
+  const bus = kortixEventBus()
+  const encoder = new TextEncoder()
+  let unsubscribe: (() => void) | null = null
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let closed = false
+      const write = (payload: string) => {
+        if (closed) return
+        try {
+          controller.enqueue(encoder.encode(payload))
+        } catch {
+          closed = true
+        }
+      }
+      write(`data: ${JSON.stringify({ type: 'server.connected', properties: {} })}\n\n`)
+      const subscription = bus.subscribe((event) => {
+        if (event.type.startsWith('kortix.')) return
+        /*
+          THE ENVELOPE NEEDS ITS OWN ID, AND STREAMED TEXT DEPENDS ON IT.
+
+          The runtime wire carries a top-level `id` on every event, and the SDK
+          store uses it as the idempotency key for `message.part.delta`
+          (`applyPartDelta`'s `eventID`). Its rule, verbatim: "a delta with no
+          id gets no protection here". The store cannot dedupe on delta CONTENT
+          — text that legitimately repeats, like "..." streamed one character
+          at a time, would false-positive — so identity is the only key it has.
+
+          This frame shipped as `{type, properties}`, so every pi delta arrived
+          unprotected. A redelivery then APPENDED the same text again: a
+          reconnect that stacks a second live connection, or a second mounted
+          subscriber, replays a tail of the stream, and the assistant's reply
+          rendered twice inside one message — the second copy streaming in
+          after the first had finished.
+
+          `seq` is dense and monotonic within an epoch, and a redelivery of one
+          event carries the same seq, which is exactly what a dedupe key must
+          do. The epoch is prefixed because seq restarts at 0 when the daemon
+          does, and an id that repeats across a restart is a key that silently
+          drops a legitimate delta.
+        */
+        write(
+          `data: ${JSON.stringify({
+            id: `${bus.epoch}:${event.seq}`,
+            type: event.type,
+            properties: event.payload,
+          })}\n\n`,
+        )
+      })
+      unsubscribe = subscription.unsubscribe
+    },
+    cancel() {
+      unsubscribe?.()
+      unsubscribe = null
+    },
+  })
+  return {
+    status: 200,
+    statusText: 'OK',
+    headers: new Headers({ 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }),
+    body: stream,
+  }
+}
+
+export interface PiSurface {
+  handle(input: HarnessForwardInput): Promise<HarnessForwardResult>
+}
+
+export function createPiSurface(runtime: () => PiRuntime | null): PiSurface {
+  return {
+    async handle(input) {
+      const rt = runtime()
+      if (!rt) return json(503, { error: 'pi runtime is not started' })
+      const method = input.method.toUpperCase()
+      const path = input.path.replace(/\/+$/, '') || '/'
+      const search = new URLSearchParams(input.search)
+      const root = rt.rootId
+
+      // ── streams ──────────────────────────────────────────────────────────
+      if (method === 'GET' && path === '/global/event') return eventStream()
+
+      // ── session ──────────────────────────────────────────────────────────
+      if (path === '/session' && method === 'GET') return json(200, [rt.sessionObject(), ...rt.childSessions()])
+      if (path === '/session' && method === 'POST') return json(200, rt.sessionObject())
+      if (path === '/session/status' && method === 'GET') {
+        const statuses = (rt.stateDoc().statuses as { value: Record<string, { type: string }> }).value
+        return json(200, Object.fromEntries(Object.entries(statuses).filter(([, status]) => status.type !== 'idle')))
+      }
+
+      const session = /^\/session\/([^/]+)(?:\/(.*))?$/.exec(path)
+      if (session) {
+        const sessionId = decodeSegment(session[1]!)
+        if (sessionId === null) return json(400, { error: 'path contains malformed percent-encoding' })
+        // A child session (a subagent) is readable here; it is driven only by its parent's task tool.
+        const child = sessionId === root ? null : rt.childSession(sessionId)
+        if (sessionId !== root && !child) return json(404, { error: 'unknown session' })
+        const transcript = child?.transcript ?? rt.transcript
+        const sub = session[2] ?? ''
+
+        if (sub === '' && method === 'GET') return json(200, child?.object ?? rt.sessionObject())
+        const message = /^message(?:\/([^/]+)(?:\/part\/([^/]+))?)?$/.exec(sub)
+        if (message && method === 'GET') {
+          const messageId = message[1] ? decodeSegment(message[1]) : null
+          if ((message[1] && messageId === null) || (message[2] && decodeSegment(message[2]) === null)) {
+            return json(400, { error: 'path contains malformed percent-encoding' })
+          }
+          if (!messageId) {
+            const limitRaw = Number(search.get('limit') ?? 0)
+            const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? limitRaw : Math.max(transcript.count, 1)
+            // ONE PROTOCOL, TWO SPELLINGS. The SDK's page loader sends
+            // `before`; an API build from before 2026-10-30 sends `cursor`.
+            // Reading only `before` made every such read re-read the newest
+            // page — see the header note on `x-next-cursor`.
+            const before = (search.get('before') ?? search.get('cursor'))?.trim() || null
+            const page = transcript.page({ limit, before })
+            const stripped = stripInlineAttachmentBytes(page.messages, partRef(sessionId))
+            /*
+              THE ABSENT CURSOR IS A CLAIM, SO IT MUST BE EARNED.
+
+              Every pager in the fleet reads "no `x-next-cursor`" as "this page
+              reached the session's first message". `readTranscriptPages` turns
+              that into `headComplete`, the capture turns THAT into
+              `complete`, and a complete read licenses the writer's
+              "DELETE what disappeared" branch. pi never sent the header, so a
+              flagged session longer than one page mirrored its newest window,
+              declared itself whole, and deleted every older row it had.
+
+              `page()` already knows: `hasMore`. The cursor is the window's
+              OLDEST id, because `page({before})` is an exclusive upper bound
+              on the id order — the transcript page cursor contract.
+            */
+            const older = page.hasMore ? String(page.messages[0]?.info.id ?? '') : ''
+            return json(200, stripped.value, older ? { 'x-next-cursor': older } : {})
+          }
+          if (!message[2]) {
+            const found = transcript.messageById(messageId)
+            if (!found) return json(404, { error: 'unknown message' })
+            return json(200, stripInlineAttachmentBytes(found, partRef(sessionId)).value)
+          }
+        }
+        if (child) {
+          return json(501, { code: 'feature_not_supported', error: 'a pi subagent session is read-only; its parent task drives it' })
+        }
+        if (sub === '' && method === 'PATCH') {
+          // The session ruleset: "Allow all for this session" and its reset (see `PermissionBroker.setSessionRules`).
+          let body: { permission?: unknown }
+          try {
+            body = (await readJsonBody(input.body)) as { permission?: unknown }
+          } catch {
+            return json(400, { error: 'invalid json body' })
+          }
+          if (body?.permission !== undefined) {
+            if (!Array.isArray(body.permission)) return json(400, { error: 'permission must be a list of rules' })
+            rt.setSessionPermission(body.permission)
+          }
+          return json(200, rt.sessionObject())
+        }
+
+        if ((sub === 'prompt_async' || sub === 'message' || sub === 'command') && method === 'POST') {
+          let prompt
+          try {
+            const body = await readJsonBody(input.body)
+            prompt = sub === 'command' ? rt.commandPrompt(body) : parsePromptBody(body)
+          } catch (err) {
+            if (err instanceof CommandNotEnabled) return json(403, { error: 'command_not_enabled', command: err.command, agent: err.agent })
+            return json(400, { error: err instanceof Error ? err.message : String(err) })
+          }
+          let admitted: ReturnType<PiRuntime['admit']>
+          try {
+            admitted = rt.admit(prompt)
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            return json(err instanceof PromptRejected ? (message.includes('already admitted') ? 200 : 503) : 500, {
+              ...(message.includes('already admitted') ? { deduplicated: true } : { error: message }),
+            })
+          }
+          if (sub === 'prompt_async') {
+            // Accepted; execution continues on the serial queue and every byte
+            // of output arrives over the event stream — the `prompt_async` contract.
+            void admitted.done.catch(() => {})
+            return json(204, null)
+          }
+          await admitted.done
+          const reply = rt.transcript.all().filter((m) => m.info.role === 'assistant' && m.info.parentID === admitted.messageId).at(-1)
+          return json(200, reply ?? { info: { id: admitted.messageId, role: 'user', sessionID: root }, parts: [] })
+        }
+
+        if (sub === 'abort' && method === 'POST') {
+          await rt.abort()
+          return json(200, true)
+        }
+        if ((sub === 'revert' || sub === 'unrevert') && method === 'POST') {
+          return json(501, { code: 'feature_not_supported', error: 'session rewind is not supported by the pi harness' })
+        }
+        if (sub === 'summarize' && method === 'POST') {
+          try {
+            rt.compact()
+          } catch (err) {
+            return json(503, { error: err instanceof Error ? err.message : String(err) })
+          }
+          return json(200, true)
+        }
+
+        if (message) {
+          const messageId = message[1] ? decodeSegment(message[1]) : null
+          if (message[1] && messageId === null) return json(400, { error: 'path contains malformed percent-encoding' })
+          if (method === 'DELETE') {
+            // A whole message no model call has read is retracted; a part of one is not.
+            if (messageId && !message[2]) {
+              const outcome = rt.retract(messageId)
+              if (outcome === 'retracted') return json(200, true)
+              if (outcome === null) return json(404, { error: 'unknown message' })
+            }
+            if (messageId && !rt.transcript.messageById(messageId)) return json(404, { error: 'unknown message' })
+            return json(409, { code: MESSAGE_READ_CODE, error: 'a model call read this message' })
+          }
+          if (method === 'PATCH') return json(501, { code: 'feature_not_supported', error: 'part edits are not supported by the pi harness' })
+        }
+        return notFound(path)
+      }
+
+      // ── catalog reads ────────────────────────────────────────────────────
+      if (method === 'GET') {
+        if (path === '/permission') return json(200, rt.permissions.list())
+        if (path === '/question') return json(200, rt.questions.list())
+        if (path === '/command') return json(200, rt.commandList())
+        if (path === '/path') {
+          return json(200, { home: process.env.HOME ?? '/home/kortix', state: '', config: '', worktree: rt.workspace, directory: rt.workspace })
+        }
+        if (path === '/project/current') {
+          // `vcs: 'git'` is what turns the Changes tab on.
+          return json(200, { id: rt.workspace, worktree: rt.workspace, ...((await isGitRepo(rt.workspace)) ? { vcs: 'git' } : {}), time: { created: rt.createdAt } })
+        }
+        if (path === '/vcs/diff') {
+          try {
+            return json(200, await vcsDiff(rt.workspace, search.get('mode') ?? 'branch', rt.defaultBranch))
+          } catch (err) {
+            return json(500, { error: err instanceof Error ? err.message : String(err) })
+          }
+        }
+      }
+
+      // ── interaction replies ──────────────────────────────────────────────
+      const permission = /^\/permission\/([^/]+)\/reply$/.exec(path)
+      if (permission && method === 'POST') {
+        const id = decodeSegment(permission[1]!)
+        if (id === null) return json(400, { error: 'path contains malformed percent-encoding' })
+        let body: { reply?: unknown }
+        try {
+          body = (await readJsonBody(input.body)) as { reply?: unknown }
+        } catch {
+          return json(400, { error: 'invalid json body' })
+        }
+        if (body.reply !== 'once' && body.reply !== 'always' && body.reply !== 'reject') {
+          return json(400, { error: 'reply must be once, always, or reject' })
+        }
+        return rt.permissions.reply(id, body.reply) ? json(200, true) : json(404, { error: 'permission request not found' })
+      }
+      const question = /^\/question\/([^/]+)\/(reply|reject)$/.exec(path)
+      if (question && method === 'POST') {
+        const id = decodeSegment(question[1]!)
+        if (id === null) return json(400, { error: 'path contains malformed percent-encoding' })
+        if (question[2] === 'reject') return rt.questions.reject(id) ? json(200, true) : json(404, { error: 'question request not found' })
+        let body: { answers?: unknown }
+        try {
+          body = (await readJsonBody(input.body)) as { answers?: unknown }
+        } catch {
+          return json(400, { error: 'invalid json body' })
+        }
+        if (!Array.isArray(body.answers)) return json(400, { error: 'answers must be an array' })
+        return rt.questions.reply(id, body.answers as string[][]) ? json(200, true) : json(404, { error: 'question request not found' })
+      }
+
+      return notFound(path)
+    },
+  }
+}

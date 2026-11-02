@@ -1,0 +1,787 @@
+/**
+ * `connectors` list parsing for the project manifest (`kortix.yaml`).
+ *
+ * A connector is one named external system the connector gateway can call — Pipedream,
+ * MCP, OpenAPI, Postman, GraphQL, or raw HTTP. The manifest holds the *definition*
+ * (provider, endpoint/spec, auth method + which project-secret to use) and,
+ * for the policy layer, each connector's `policies:` list. The
+ * secret *value* and Pipedream OAuth live in the platform, never in git.
+ * Connectors are project-wide visible — the only access gate is which AGENTS
+ * may call it (`agents.<name>.connectors`, declared on the agent, in git).
+ *
+ * Example (kortix.yaml):
+ *
+ *   connectors:
+ *     - slug: stripe
+ *       name: Stripe API
+ *       provider: openapi
+ *       spec: "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json"
+ *       auth:
+ *         type: bearer
+ *         secret: STRIPE_API_KEY     # project-secret NAME; value set in dashboard
+ *       headers:                     # static headers on every call (never secrets)
+ *         Accept: application/json
+ *         Stripe-Version: "2024-06-20"
+ *       policies:                    # connector-scoped; built last
+ *         - match: "*.delete*"
+ *           action: block
+ *     - slug: gmail-work
+ *       provider: pipedream
+ *       app: gmail
+ *       account: work                # 1-click connected in the dashboard
+ *
+ * Parser mirrors `projects/agents.ts` + `projects/triggers.ts`: never throws on
+ * a bad entry, collects them in `errors` so the UI can render them next to the
+ * good ones. CRUD round-trips this same file.
+ */
+import { createHash } from 'node:crypto';
+import { type ChannelPlatformId, channelConnectorSlug } from '@kortix/shared/channel-descriptors';
+import {
+  CHANNEL_PLATFORMS,
+  CONNECTOR_AUTHORIZATION_STRATEGIES,
+  CONNECTOR_PROVIDERS,
+  RESERVED_SLUG_PROVIDERS,
+  SLUG_RE,
+  type ConnectorProvider as ManifestConnectorProvider,
+  MAX_POLICY_SETS_PER_CONNECTOR,
+  MAX_RULES_PER_POLICY_SET,
+  POLICY_SETS_UNSUPPORTED_PROVIDERS,
+  parseConnectorHeaders,
+  policySetNameError,
+  type PolicyArgCondition,
+  areValidConditions,
+} from '@kortix/manifest-schema';
+import { normalizeConditions } from '../connectors/policy';
+import { isValidSecretName } from './secrets';
+import { MANIFEST_FILENAME, type ParsedManifest } from './triggers';
+
+export type ConnectorProvider = ManifestConnectorProvider | 'computer';
+const PROVIDERS: readonly ConnectorProvider[] = [
+  ...CONNECTOR_PROVIDERS,
+  'computer',
+];
+export type ConnectorAuthorizationStrategy = (typeof CONNECTOR_AUTHORIZATION_STRATEGIES)[number];
+
+/**
+ * Platform-owned slugs and the ONLY provider allowed to use each. These are
+ * install-driven, first-class connectors — the Slack channel and the Agent
+ * Computer Tunnel — so a user app must never take the slug and shadow the
+ * built-in catalog (the bug that made `slack thread` 404 with action_not_found,
+ * fixed for Slack in #3670). Enforced in the parser (reject the wrong provider)
+ * AND at CRUD via RESERVED_CONNECTOR_SLUGS, which also blocks the public `slack`
+ * NAME so a Pipedream Slack can't be added (the picker already hides it).
+ *
+ *  - `kortix_slack` → channel only (the Slack channel materializes under it; see
+ *    connector/channels.ts SLACK_CHANNEL_CONNECTOR_SLUG).
+ *  - `computer`     → computer only (the project's computer connector).
+ * Computer connectors are created by pairing a machine, never by manifest
+ * parsing: a paired machine is an account, not repository configuration.
+ * See KORTIX-206. The pairs themselves are
+ * canonically defined in `@kortix/manifest-schema` (imported above) — this
+ * `export` just preserves this module's existing public surface, since
+ * connector/manifest-crud.ts imports `RESERVED_SLUG_PROVIDERS` from here.
+ */
+export { RESERVED_SLUG_PROVIDERS };
+/** The reserved slug the built-in Slack channel materializes under. */
+export const SLACK_RESERVED_SLUG = channelConnectorSlug('slack');
+export const RESERVED_CONNECTOR_SLUGS = new Set<string>([
+  'slack',
+  'email',
+  ...Object.keys(RESERVED_SLUG_PROVIDERS),
+]);
+
+/** Chat platforms a `channel` connector can target. */
+export type ChannelPlatform = ChannelPlatformId;
+
+type ConnectorAuthType =
+  | 'bearer'
+  | 'basic'
+  | 'custom'
+  | 'api_key'
+  | 'oauth1'
+  | 'hmac'
+  | 'aws_sigv4'
+  | 'mtls'
+  | 'none';
+const AUTH_TYPES: readonly ConnectorAuthType[] = [
+  'bearer',
+  'basic',
+  'custom',
+  'api_key',
+  'oauth1',
+  'hmac',
+  'aws_sigv4',
+  'mtls',
+  'none',
+];
+
+interface ConnectorAuthSpec {
+  /** How the credential is attached to outbound calls. */
+  type: ConnectorAuthType;
+  /** For `custom` and `api_key`: credential placement. */
+  in: 'header' | 'query' | 'cookie';
+  /** For `custom`: the header/param name (e.g. `Authorization`, `X-API-Key`). */
+  name: string | null;
+  /** Optional value prefix (e.g. `Bearer`). */
+  prefix: string | null;
+  /** Name of the project secret holding the credential. Value set in the dashboard. */
+  secret: string | null;
+}
+
+/** Tool-call policy action — mirrors connector's `approve | require_approval | block`. */
+export type ConnectorPolicyAction = 'always_run' | 'require_approval' | 'block';
+const POLICY_ACTIONS: readonly ConnectorPolicyAction[] = [
+  'always_run',
+  'require_approval',
+  'block',
+];
+
+export interface ConnectorPolicySpec {
+  /** Glob over this connector's tool paths: `*`, `charges.*`, `charges.create`. */
+  match: string;
+  action: ConnectorPolicyAction;
+  /** Optional ARGUMENT conditions — ALL must hold for the rule to apply. Same
+   *  grammar and semantics as the project-scoped form (see
+   *  ProjectPolicySpec.conditions in ./policies.ts). */
+  conditions?: PolicyArgCondition[] | null;
+}
+
+export interface ConnectorSpec {
+  /** URL-safe slug — unique per project. Also the tool namespace. */
+  slug: string;
+  /** e.g. `kortix.yaml#connectors.<slug>` (or the project's actual manifest filename) for UI / error reporting. */
+  path: string;
+  /** Human label; defaults to slug. */
+  name: string;
+  /** When false the materializer / gateway skip this entry. */
+  enabled: boolean;
+  provider: ConnectorProvider;
+  /** Credential storage mode. `shared` is the only mode — `per_user` (each
+   *  member brings their own) was removed 2026-07-05. A manifest that still says
+   *  `credential = "per_user"` is tolerated (legacy, warning-only) but always
+   *  resolves to `shared` here — it can never round-trip back into git. */
+  credentialMode: 'shared';
+  /** Which authorization owner can supply credentials for this connector. */
+  authorizationStrategy: ConnectorAuthorizationStrategy;
+  /** Sensitive connector (email/files/secrets-bearing): reads gate too — every
+   *  action defaults to require_approval unless an explicit policy opens it. */
+  sensitive: boolean;
+  // ── provider-specific ──
+  /** pipedream: app slug; composio: toolkit slug (`gmail`, `slack`). */
+  app: string | null;
+  /** pipedream: named connected-account binding. */
+  account: string | null;
+  /** mcp: server endpoint. */
+  url: string | null;
+  /** mcp: transport. */
+  transport: 'http' | 'sse' | null;
+  /** graphql: HTTP endpoint. */
+  endpoint: string | null;
+  /** http: base URL for declared routes. */
+  baseUrl: string | null;
+  /** channel: chat platform (slack | …) — selects the fixed action catalog + API base. */
+  platform: ChannelPlatform | null;
+  /** openapi/postman/graphql/http: a URL or repo-relative file path. Optional for graphql. */
+  spec: string | null;
+  // ── shared ──
+  auth: ConnectorAuthSpec;
+  /**
+   * Arbitrary static request headers, sent on EVERY outbound call this
+   * connector makes (openapi / http / postman / graphql / mcp) — the
+   * "headers table" you'd fill in in Postman: `Accept: application/json`,
+   * `X-Tenant-Id: acme`, a custom `User-Agent`, …
+   *
+   * Ordered map of header name → value; `{}` when none are declared.
+   *
+   * NOT SECRETS: these values live in the manifest, in git, in plaintext —
+   * exactly like `baseUrl`. The credential belongs in `auth` + the platform
+   * credential store, and the auth header ALWAYS wins over a static header
+   * with the same name (connector/execute.ts `applyConnectorHeaders`), so a
+   * static header can never spoof or clobber it.
+   */
+  headers: Record<string, string>;
+  /** Omitted auth is auto-detected for direct providers; explicit none opts out. */
+  authAuto?: boolean;
+  policies: ConnectorPolicySpec[];
+  /** Named rule sets an agent can be given (`policy_sets:`), in authoring
+   *  order. Absent or empty = none. A set's rules run before `policies` for
+   *  an agent that `agents.<name>.policy_sets` assigns it to. */
+  policySets?: ConnectorPolicySetSpec[];
+}
+
+export interface ConnectorPolicySetSpec {
+  name: string;
+  description: string | null;
+  policies: ConnectorPolicySpec[];
+}
+
+interface ConnectorParseError {
+  slug: string;
+  path: string;
+  error: string;
+}
+
+export interface LoadedConnectors {
+  specs: ConnectorSpec[];
+  errors: ConnectorParseError[];
+}
+
+const NO_AUTH: ConnectorAuthSpec = {
+  type: 'none',
+  in: 'header',
+  name: null,
+  prefix: null,
+  secret: null,
+};
+
+/**
+ * Pull the `connectors` list out of a parsed manifest. Never throws.
+ */
+export function extractConnectors(manifest: ParsedManifest): LoadedConnectors {
+  const filename = manifest.path || MANIFEST_FILENAME;
+  const raw = manifest.raw.connectors;
+  if (raw === undefined || raw === null) {
+    return { specs: [], errors: [] };
+  }
+  if (!Array.isArray(raw)) {
+    return {
+      specs: [],
+      errors: [
+        {
+          slug: '(top-level)',
+          path: filename,
+          error: '`connectors` must be a list — write it as a YAML `connectors:` list, not a map or scalar.',
+        },
+      ],
+    };
+  }
+
+  const specs: ConnectorSpec[] = [];
+  const errors: ConnectorParseError[] = [];
+  const seenSlugs = new Set<string>();
+
+  raw.forEach((entry, index) => {
+    // With `imports:`, attribute the connector to the file that declares it.
+    const slug = (entry as { slug?: unknown } | null)?.slug;
+    const declaredIn =
+      (typeof slug === 'string' ? manifest.imports?.origins.connectors[slug] : undefined) ??
+      filename;
+    const result = parseConnectorEntry(entry, index, declaredIn);
+    if (!result.ok) {
+      errors.push(result.error);
+      return;
+    }
+    if (seenSlugs.has(result.spec.slug)) {
+      errors.push({
+        slug: result.spec.slug,
+        path: result.spec.path,
+        error: `Duplicate connector slug "${result.spec.slug}" — slugs must be unique within a project`,
+      });
+      return;
+    }
+    seenSlugs.add(result.spec.slug);
+    specs.push(result.spec);
+  });
+
+  specs.sort((a, b) => a.slug.localeCompare(b.slug));
+  errors.sort((a, b) => a.slug.localeCompare(b.slug));
+  return { specs, errors };
+}
+
+/**
+ * Stable hash over everything that should trigger a catalog re-sync when it
+ * changes (so the materializer can skip unchanged connectors). `slug`/`name`
+ * are excluded — renaming doesn't change what the connector resolves to.
+ * Policies are excluded too — they gate calls, not the catalog.
+ */
+export function manifestHashForConnector(spec: ConnectorSpec): string {
+  const canonical = JSON.stringify({
+    provider: spec.provider,
+    credentialMode: spec.credentialMode,
+    authorizationStrategy: spec.authorizationStrategy,
+    app: spec.app,
+    account: spec.account,
+    url: spec.url,
+    transport: spec.transport,
+    endpoint: spec.endpoint,
+    baseUrl: spec.baseUrl,
+    platform: spec.platform,
+    // Retired field, kept as null so every stored hash stays valid and no
+    // connector re-fetches its catalog because of this change.
+    tunnelIds: null,
+    spec: spec.spec,
+    auth: spec.auth,
+    authAuto: spec.authAuto ?? false,
+    // Static headers change what every outbound request looks like, and they
+    // are persisted in the connector's materialized `config` — which is only
+    // rewritten when this hash changes. Leaving them out would let a header
+    // edit commit to kortix.yaml and never reach the gateway.
+    headers: spec.headers,
+  });
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+interface ParseOk {
+  ok: true;
+  spec: ConnectorSpec;
+}
+interface ParseErr {
+  ok: false;
+  error: ConnectorParseError;
+}
+
+function parseConnectorEntry(
+  entry: unknown,
+  index: number,
+  filename: string = MANIFEST_FILENAME,
+): ParseOk | ParseErr {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return err('(invalid)', `[[connectors]] entry #${index + 1} is not a table`, filename);
+  }
+  const row = entry as Record<string, unknown>;
+
+  const slug = typeof row.slug === 'string' ? row.slug.trim() : '';
+  if (!slug)
+    return err(
+      `(index-${index})`,
+      `[[connectors]] entry #${index + 1} is missing a slug`,
+      filename,
+    );
+  if (!SLUG_RE.test(slug)) {
+    return err(
+      slug,
+      `Invalid slug "${slug}" — lowercase letters, digits, dashes, underscores only`,
+      filename,
+    );
+  }
+
+  const provider = typeof row.provider === 'string' ? row.provider.trim().toLowerCase() : '';
+  if (!PROVIDERS.includes(provider as ConnectorProvider)) {
+    return err(
+      slug,
+      `provider must be one of ${PROVIDERS.join(', ')} (got "${provider || 'unset'}")`,
+      filename,
+    );
+  }
+
+  // Reserved platform-owned slugs: only the matching built-in provider may use
+  // them, so a user app can never shadow the built-in catalog (the bug that made
+  // `slack thread` resolve to a Pipedream Slack and 404 with action_not_found).
+  // The public `slack` NAME stays parseable here (so existing manifests don't
+  // break) but is blocked at the CRUD layer and hidden from the list once the
+  // channel exists.
+  const reservedProvider = RESERVED_SLUG_PROVIDERS[slug];
+  if (reservedProvider && provider !== reservedProvider) {
+    return err(
+      slug,
+      `"${slug}" is reserved for the built-in ${reservedProvider} connector (provider="${reservedProvider}")`,
+      filename,
+    );
+  }
+
+  if (row.name !== undefined && (typeof row.name !== 'string' || !row.name.trim())) {
+    return err(slug, 'name must be a non-empty string when provided', filename);
+  }
+  const name = typeof row.name === 'string' ? row.name.trim() : slug;
+  const enabled = coerceBool(row.enabled, true);
+  const sensitive = coerceBool(row.sensitive, false);
+
+  // Credential mode — `shared` is the only mode. `per_user` is tolerated as a
+  // legacy value (existing manifests that still say `credential = "per_user"`
+  // parse fine, same as the manifest-schema validator's warning) but always
+  // resolves to `shared` — it's never round-tripped back into git.
+  const credRaw = typeof row.credential === 'string' ? row.credential.trim().toLowerCase() : '';
+  if (credRaw && credRaw !== 'shared' && credRaw !== 'per_user') {
+    return err(
+      slug,
+      'credential must be "shared" ("per_user" is tolerated as a legacy value, resolving to "shared")',
+      filename,
+    );
+  }
+  const credentialMode = 'shared' as const;
+  const strategyRaw =
+    typeof row.authorization_strategy === 'string'
+      ? row.authorization_strategy.trim().toLowerCase()
+      : '';
+  if (
+    strategyRaw &&
+    !(CONNECTOR_AUTHORIZATION_STRATEGIES as readonly string[]).includes(strategyRaw)
+  ) {
+    return err(slug, 'authorization_strategy must be "project" or "user"', filename);
+  }
+  const authorizationStrategy: ConnectorAuthorizationStrategy =
+    (strategyRaw as ConnectorAuthorizationStrategy) || 'project';
+
+  // Defaults; provider blocks fill them in.
+  const base: Omit<ConnectorSpec, 'auth' | 'headers' | 'policies'> = {
+    slug,
+    path: `${filename}#connectors.${slug}`,
+    name,
+    enabled,
+    provider: provider as ConnectorProvider,
+    credentialMode,
+    authorizationStrategy,
+    sensitive,
+    app: null,
+    account: null,
+    url: null,
+    transport: null,
+    endpoint: null,
+    baseUrl: null,
+    platform: null,
+    spec: null,
+  };
+
+  const providerParsed = parseProviderFields(
+    slug,
+    provider as ConnectorProvider,
+    row,
+    base,
+    filename,
+  );
+  if (!providerParsed.ok) return providerParsed;
+
+  const authParsed = parseAuth(slug, provider as ConnectorProvider, row.auth, filename);
+  if (!authParsed.ok) return authParsed;
+
+  const headersParsed = parseHeaders(slug, provider as ConnectorProvider, row.headers, filename);
+  if (!headersParsed.ok) return headersParsed;
+
+  const policiesParsed = parsePolicies(slug, row.policies, filename);
+  if (!policiesParsed.ok) return policiesParsed;
+
+  const setsParsed = parsePolicySets(slug, provider as ConnectorProvider, row.policy_sets, filename);
+  if (!setsParsed.ok) return setsParsed;
+
+  return {
+    ok: true,
+    spec: {
+      ...providerParsed.value,
+      auth: authParsed.value,
+      headers: headersParsed.value,
+      authAuto:
+        (row.auth === undefined || row.auth === null) &&
+        provider !== 'pipedream' &&
+        provider !== 'composio' &&
+        provider !== 'channel' &&
+        provider !== 'computer',
+      policies: policiesParsed.value,
+      ...(setsParsed.value.length > 0 ? { policySets: setsParsed.value } : {}),
+    },
+  };
+}
+
+function parseProviderFields(
+  slug: string,
+  provider: ConnectorProvider,
+  row: Record<string, unknown>,
+  base: Omit<ConnectorSpec, 'auth' | 'headers' | 'policies'>,
+  filename: string = MANIFEST_FILENAME,
+): { ok: true; value: Omit<ConnectorSpec, 'auth' | 'headers' | 'policies'> } | ParseErr {
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
+  if (provider === 'pipedream' || provider === 'composio') {
+    const app = str(row.app);
+    if (!app)
+      return err(slug, `provider="${provider}" requires \`app\` (the ${provider} app slug)`, filename);
+    // account defaults to the slug — names the connected-account binding.
+    const account = str(row.account) ?? slug;
+    return { ok: true, value: { ...base, app, account } };
+  }
+
+  if (provider === 'mcp') {
+    const url = str(row.url);
+    if (!url) return err(slug, 'provider="mcp" requires `url` (the MCP server endpoint)', filename);
+    const t = typeof row.transport === 'string' ? row.transport.trim().toLowerCase() : 'http';
+    if (t !== 'http' && t !== 'sse') {
+      return err(slug, `transport must be "http" or "sse" (got "${t}")`, filename);
+    }
+    return { ok: true, value: { ...base, url, transport: t } };
+  }
+
+  if (provider === 'openapi' || provider === 'postman') {
+    const spec = str(row.spec);
+    if (!spec)
+      return err(
+        slug,
+        `provider="${provider}" requires \`spec\` (a URL or repo-relative file path)`,
+        filename,
+      );
+    return { ok: true, value: { ...base, spec } };
+  }
+
+  if (provider === 'channel') {
+    const platform = (str(row.platform) ?? '').toLowerCase();
+    if (!CHANNEL_PLATFORMS.includes(platform as ChannelPlatform)) {
+      return err(
+        slug,
+        `provider="channel" requires platform one of ${CHANNEL_PLATFORMS.join(', ')} (got "${platform || 'unset'}")`,
+        filename,
+      );
+    }
+    return {
+      ok: true,
+      value: { ...base, platform: platform as ChannelPlatform },
+    };
+  }
+
+  if (provider === 'computer') {
+    // Pairing creates the computer connector; each paired machine is an
+    // account on it. Machines must not enter repository configuration.
+    return err(
+      slug,
+      'provider="computer" is created by pairing a computer — it cannot be declared in kortix.yaml',
+      filename,
+    );
+  }
+
+  if (provider === 'graphql') {
+    const endpoint = str(row.endpoint);
+    if (!endpoint) return err(slug, 'provider="graphql" requires `endpoint`', filename);
+    // spec (SDL) is optional — omit to introspect at sync.
+    return { ok: true, value: { ...base, endpoint, spec: str(row.spec) } };
+  }
+
+  // http
+  const baseUrl = str(row.base_url) ?? str(row.baseUrl);
+  if (!baseUrl) return err(slug, 'provider="http" requires `base_url`', filename);
+  return { ok: true, value: { ...base, baseUrl, spec: str(row.spec) } };
+}
+
+function parseAuth(
+  slug: string,
+  provider: ConnectorProvider,
+  raw: unknown,
+  filename: string = MANIFEST_FILENAME,
+): { ok: true; value: ConnectorAuthSpec } | ParseErr {
+  // The caller records whether omission means auto-detect. Platform providers
+  // still use none because their install owns authentication.
+  if (raw === undefined || raw === null) return { ok: true, value: { ...NO_AUTH } };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return err(slug, '[connectors.auth] must be a table', filename);
+  }
+  const row = raw as Record<string, unknown>;
+
+  const type = typeof row.type === 'string' ? row.type.trim().toLowerCase() : 'none';
+  if (!AUTH_TYPES.includes(type as ConnectorAuthType)) {
+    return err(
+      slug,
+      `[connectors.auth].type must be one of ${AUTH_TYPES.join(', ')} (got "${type}")`,
+      filename,
+    );
+  }
+  if ((provider === 'pipedream' || provider === 'composio') && type !== 'none') {
+    return err(
+      slug,
+      `provider="${provider}" authenticates via its connected account — omit [connectors.auth]`,
+      filename,
+    );
+  }
+  if (provider === 'channel' && type !== 'none') {
+    return err(
+      slug,
+      'provider="channel" authenticates via its platform install token — omit [connectors.auth]',
+      filename,
+    );
+  }
+  if (
+    type === 'oauth1' &&
+    provider !== 'openapi' &&
+    provider !== 'postman' &&
+    provider !== 'http'
+  ) {
+    return err(
+      slug,
+      '[connectors.auth] type="oauth1" is only supported for openapi/postman/http connectors',
+      filename,
+    );
+  }
+
+  if (type === 'none') return { ok: true, value: { ...NO_AUTH } };
+
+  const inRaw = typeof row.in === 'string' ? row.in.trim().toLowerCase() : 'header';
+  if (inRaw !== 'header' && inRaw !== 'query' && inRaw !== 'cookie') {
+    return err(slug, '[connectors.auth].in must be "header", "query", or "cookie"', filename);
+  }
+  const name = typeof row.name === 'string' && row.name.trim() ? row.name.trim() : null;
+  if ((type === 'custom' || type === 'api_key') && !name) {
+    return err(slug, `[connectors.auth] type="${type}" requires \`name\``, filename);
+  }
+  const prefix = typeof row.prefix === 'string' && row.prefix.trim() ? row.prefix.trim() : null;
+
+  // `secret` is optional — credentials live in the platform (connection_credentials),
+  // not as a named project secret. If present it's validated for back-compat.
+  const secret = typeof row.secret === 'string' && row.secret.trim() ? row.secret.trim() : null;
+  if (secret && !isValidSecretName(secret)) {
+    return err(
+      slug,
+      `[connectors.auth].secret "${secret}" must look like a project-secret name (^[A-Z_][A-Z0-9_]{0,63}$)`,
+      filename,
+    );
+  }
+
+  return {
+    ok: true,
+    value: { type: type as ConnectorAuthType, in: inRaw, name, prefix, secret },
+  };
+}
+
+/**
+ * `headers:` — arbitrary static request headers sent on every outbound call
+ * (the Postman-style headers table). Ordered map of name → value.
+ *
+ *   connectors:
+ *     - slug: acme
+ *       provider: http
+ *       base_url: https://api.acme.com
+ *       headers:
+ *         Accept: application/json
+ *         X-Tenant-Id: acme
+ *
+ * The rules (RFC 7230 token names, no CR/LF in values, caps, no
+ * transport-owned names) live in `@kortix/manifest-schema` so the CR-merge
+ * gate, this parser and the connector can never drift. Values are NOT secrets —
+ * they sit in git in plaintext; the credential goes in `auth`.
+ */
+function parseHeaders(
+  slug: string,
+  provider: ConnectorProvider,
+  raw: unknown,
+  filename: string = MANIFEST_FILENAME,
+): { ok: true; value: Record<string, string> } | ParseErr {
+  if (raw === undefined || raw === null) return { ok: true, value: {} };
+  // Platform-called providers never build the raw HTTP request themselves, so
+  // a header table there would be silently dropped — reject it loudly instead
+  // (mirrors how `auth` is rejected for the same two providers).
+  if (provider === 'pipedream' || provider === 'composio') {
+    return err(
+      slug,
+      `provider="${provider}" calls run through ${provider} — \`headers\` is not supported`,
+      filename,
+    );
+  }
+  if (provider === 'channel') {
+    return err(
+      slug,
+      'provider="channel" calls run through the platform API — `headers` is not supported',
+      filename,
+    );
+  }
+  const parsed = parseConnectorHeaders(raw);
+  if (!parsed.ok) return err(slug, `[connectors.headers] ${parsed.error}`, filename);
+  return { ok: true, value: parsed.value };
+}
+
+/**
+ * `policy_sets:` — set name → `{ description?, policies? }`. A bad set fails
+ * the whole connector, like a bad base rule: a connector whose rules cannot be
+ * read is not materialized, never materialized with fewer rules.
+ */
+function parsePolicySets(
+  slug: string,
+  provider: ConnectorProvider,
+  raw: unknown,
+  filename: string = MANIFEST_FILENAME,
+): { ok: true; value: ConnectorPolicySetSpec[] } | ParseErr {
+  if (raw === undefined || raw === null) return { ok: true, value: [] };
+  if ((POLICY_SETS_UNSUPPORTED_PROVIDERS as readonly string[]).includes(provider)) {
+    return err(slug, `${provider} connectors cannot carry policy_sets`, filename);
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return err(slug, 'policy_sets must be a map of set name → { description, policies }', filename);
+  }
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > MAX_POLICY_SETS_PER_CONNECTOR) {
+    return err(slug, `policy_sets: at most ${MAX_POLICY_SETS_PER_CONNECTOR} sets per connector`, filename);
+  }
+  const out: ConnectorPolicySetSpec[] = [];
+  for (const [name, value] of entries) {
+    const nameError = policySetNameError(name);
+    if (nameError) return err(slug, `policy_sets.${name}: ${nameError}`, filename);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return err(slug, `policy_sets.${name} must be a table`, filename);
+    }
+    const set = value as Record<string, unknown>;
+    if (set.description !== undefined && set.description !== null && typeof set.description !== 'string') {
+      return err(slug, `policy_sets.${name}.description must be a string`, filename);
+    }
+    const policies = parsePolicies(slug, set.policies, filename, `policy_sets.${name}.policies`);
+    if (!policies.ok) return policies;
+    if (policies.value.length > MAX_RULES_PER_POLICY_SET) {
+      return err(slug, `policy_sets.${name}: at most ${MAX_RULES_PER_POLICY_SET} rules per set`, filename);
+    }
+    const description = typeof set.description === 'string' && set.description.trim() ? set.description.trim() : null;
+    out.push({ name, description, policies: policies.value });
+  }
+  return { ok: true, value: out };
+}
+
+function parsePolicies(
+  slug: string,
+  raw: unknown,
+  filename: string = MANIFEST_FILENAME,
+  label = '[[connectors.policies]]',
+): { ok: true; value: ConnectorPolicySpec[] } | ParseErr {
+  if (raw === undefined || raw === null) return { ok: true, value: [] };
+  if (!Array.isArray(raw)) {
+    return err(slug, `${label} must be an array of tables`, filename);
+  }
+  const out: ConnectorPolicySpec[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const p = raw[i];
+    if (!p || typeof p !== 'object' || Array.isArray(p)) {
+      return err(slug, `${label} entry #${i + 1} is not a table`, filename);
+    }
+    const prow = p as Record<string, unknown>;
+    const match = typeof prow.match === 'string' && prow.match.trim() ? prow.match.trim() : '';
+    if (!match)
+      return err(slug, `${label} entry #${i + 1} is missing \`match\``, filename);
+    const action = typeof prow.action === 'string' ? prow.action.trim().toLowerCase() : '';
+    if (!POLICY_ACTIONS.includes(action as ConnectorPolicyAction)) {
+      return err(
+        slug,
+        `${label} \`action\` must be one of ${POLICY_ACTIONS.join(', ')} (got "${action || 'unset'}")`,
+        filename,
+      );
+    }
+    // Malformed conditions are a hard parse error, never a dropped field —
+    // silently ignoring them would widen the rule to an unconditional allow.
+    if (prow.conditions !== undefined && prow.conditions !== null) {
+      if (!areValidConditions(prow.conditions)) {
+        return err(
+          slug,
+          `${label} entry #${i + 1} has invalid \`conditions\``,
+          filename,
+        );
+      }
+      out.push({
+        match,
+        action: action as ConnectorPolicyAction,
+        conditions: normalizeConditions(prow.conditions),
+      });
+      continue;
+    }
+    out.push({ match, action: action as ConnectorPolicyAction });
+  }
+  return { ok: true, value: out };
+}
+
+function coerceBool(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if (v === 'true' || v === '1' || v === 'yes' || v === 'on') return true;
+    if (v === 'false' || v === '0' || v === 'no' || v === 'off') return false;
+  }
+  return fallback;
+}
+
+function err(slug: string, message: string, filename: string = MANIFEST_FILENAME): ParseErr {
+  return {
+    ok: false,
+    error: { slug, path: `${filename}#connectors.${slug}`, error: message },
+  };
+}

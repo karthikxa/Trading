@@ -1,0 +1,482 @@
+import { afterAll, beforeEach, expect, mock, test } from 'bun:test';
+import type { ProjectSessionRow } from '../projects/lib/serializers';
+
+// Guarantee: a Slack-started session inherits the bound channel's agent + model
+// overrides (set via `/kortix agents` / `/kortix models`). Before this, every
+// Slack session was hardcoded to agent 'default' with no model.
+
+let dbResults: unknown[][] = [];
+// What createOrJoinThreadSession hands finalizeTurn — captured so we can assert
+// the deleted-agent path renders the inline picker and other failures render
+// honest text.
+let lastFinalize: { title?: string; error?: string; answer?: string; blocks?: unknown[] } | null = null;
+// The scoped agent catalog the recovery picker is built from (git-backed in
+// prod; injected here so the test never touches a repo mirror).
+let scopedAgents: Array<{ name: string; description: string | null }> = [];
+function fakeSessionRow(sessionId: string): ProjectSessionRow {
+  const now = new Date('2026-01-01T00:00:00Z');
+  return {
+    sessionId,
+    accountId: 'acc-1',
+    projectId: 'proj-1',
+    branchName: 'session/test',
+    baseRef: 'main',
+    sandboxProvider: 'daytona',
+    sandboxId: null,
+    sandboxUrl: null,
+    runtimeSessionId: null,
+    agentName: 'default',
+    status: 'queued',
+    error: null,
+    createdBy: 'user-1',
+    visibility: 'project',
+    origin: 'user',
+    originRef: null,
+    parentSessionId: null,
+    initiatorType: null,
+    initiatorId: null,
+    spaceId: null,
+    groupId: null,
+    secretsAllowlist: null,
+    requiredConnectors: null,
+    connectorBindingsInheritUnbound: false,
+    connectorBindingsConfigured: false,
+    labels: [],
+    metadata: {},
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function makeChain(): any {
+  const chain: any = {};
+  for (const m of ['from', 'innerJoin', 'where', 'limit', 'set', 'values', 'onConflictDoUpdate', 'onConflictDoNothing', 'returning']) {
+    chain[m] = () => chain;
+  }
+  chain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve(dbResults.shift() ?? []));
+  return chain;
+}
+// Every table a delete targeted, so a released claim can be asserted.
+const deletedFrom: unknown[] = [];
+mock.module('../shared/db', () => ({
+  db: {
+    select: () => makeChain(),
+    insert: () => makeChain(),
+    update: () => makeChain(),
+    delete: (table: unknown) => {
+      deletedFrom.push(table);
+      return makeChain();
+    },
+  },
+  hasDatabase: () => true,
+}));
+const realSessionLifecycle = await import('../projects/session-lifecycle');
+mock.module('../projects/session-lifecycle', () => ({
+  ...realSessionLifecycle,
+  deliverThroughQueue: async () => 'delivered',
+  createSession: async (input: { body: Record<string, unknown> }) => {
+    lastBody = input.body;
+    return { status: 'created', sessionId: 'new-sess', row: fakeSessionRow('new-sess') };
+  },
+  resolveProjectAutomationActor: async () => 'user-1',
+}));
+
+// Capture the body createProjectSession is called with.
+let lastBody: Record<string, unknown> | null = null;
+
+// The channel's selection — what we assert flows into the session body.
+let selection: unknown = null;
+mock.module('../channels/slack/selection', () => ({
+  currentChannelSelection: async () => selection,
+  // session.ts only uses currentChannelSelection; the rest are here so the
+  // module shape stays complete for any other importer in the graph.
+  setChannelAgent: async () => ({ ok: true }),
+  setChannelConversationPolicy: async () => true,
+  setChannelModel: async () => true,
+  listProjectAgents: async () => [],
+  RECOMMENDED_MODELS: [
+    { id: 'anthropic/claude-opus-4-8', label: 'Claude Opus 4.8', hint: 'Most capable' },
+  ],
+  isValidModelId: (id: string) => id.includes('/'),
+  modelLabel: (id: string) => id,
+}));
+
+// Session selection is the subject here; model availability is pinned in
+// unit-channel-model-access and must not depend on provider credentials.
+mock.module('../channels/model-access', () => ({
+  projectChannelModelScope: async () => null,
+  planChannelSessionStart: async ({ chosenModel }: { chosenModel?: string | null }) => ({ model: chosenModel ?? null }),
+  planChannelFollowUp: async () => null,
+  listChannelModels: async () => ({ models: [], defaultModel: null }),
+  checkChannelModel: async () => ({ ok: true }),
+  describeKeys: () => '',
+  channelKeySelection: async () => null,
+  channelModelScope: () => null,
+}));
+
+const realIam = await import('../iam');
+mock.module('../iam', () => ({
+  ...realIam,
+  authorize: async () => ({ allowed: true }),
+  assertAuthorized: async () => {},
+  filterAccessibleObjects: async (
+    _actor: unknown,
+    _projectId: string,
+    _resourceType: string,
+    resourceIds: readonly string[],
+  ) => [...resourceIds],
+  unscopedResourceIds: async (_projectId: string, _resourceType: string, resourceIds: readonly string[]) => [...resourceIds],
+}));
+
+mock.module('../channels/slack/turn', () => ({
+  claimFinalize: async () => true,
+  openPlanMessage: async () => true,
+  repaintLivePlan: async () => {},
+  // `mock.module` REPLACES the module, so every export the session-start path
+  // reaches through it has to be listed. Session start repaints the live plan
+  // to show Stop as soon as the turn knows its session (slack/stop.ts).
+  showStopOnLivePlan: async () => {},
+  loadTurn: async () => null,
+  startTurn: async () => ({ sessionId: '', channel: 'C1', token: 'xoxb', ts: '', steps: [] }),
+  saveTurn: async () => {},
+  deleteTurn: async () => {},
+  finalizeTurn: async (_handle: unknown, opts: typeof lastFinalize) => {
+    lastFinalize = opts;
+  },
+  buildSlackTurnEnv: () => ({}),
+  relayTurnAnswer: async () => {},
+  relayTurnEnd: async () => {},
+  relayTurnStep: async () => {},
+  rowToHandle: () => ({ sessionId: '', channel: 'C1', token: 'xoxb', ts: '', steps: [] }),
+}));
+const realInstallStore = await import('../channels/install-store');
+mock.module('../channels/install-store', () => ({
+  ...realInstallStore,
+  loadSlackBotIdForProject: async () => null,
+  ensureSlackBotId: async () => null,
+  SLACK_BOT_TOKEN: 'SLACK_BOT_TOKEN',
+  SLACK_SIGNING_SECRET: 'SLACK_SIGNING_SECRET',
+  SLACK_TEAM_ID: 'SLACK_TEAM_ID',
+  SLACK_BOT_USER_ID: 'SLACK_BOT_USER_ID',
+  SLACK_TEAM_NAME: 'SLACK_TEAM_NAME',
+  TELEGRAM_BOT_TOKEN: 'TELEGRAM_BOT_TOKEN',
+  TELEGRAM_WEBHOOK_SECRET: 'TELEGRAM_WEBHOOK_SECRET',
+  deleteSlackInstall: async () => {},
+  listProjectsForWorkspace: async () => ['proj-1'],
+  loadSlackInstall: async () => null,
+  loadSlackBotUserIdForProject: async () => 'B1',
+  loadSlackSigningSecretForProject: async () => null,
+  loadSlackTeamNameForProject: async () => null,
+  loadSlackTokenForProject: async () => 'xoxb-test',
+  loadTeamsInstall: async () => null,
+  loadTelegramWebhookSecretForProject: async () => null,
+  saveSlackInstall: async () => ({ workspaceId: 'T1', workspaceName: 'Test', botUserId: 'B1', installedAt: new Date().toISOString() }),
+  saveSlackOauthInstall: async () => ({ workspaceId: 'T1', workspaceName: 'Test', botUserId: 'B1', installedAt: new Date().toISOString() }),
+}));
+mock.module('../channels/slack-api', () => ({
+  addReaction: async () => {},
+  appendStream: async () => {},
+  deleteMessage: async () => {},
+  describeSlackConversation: async () => ({ name: 'general', type: 'channel', unavailable: false }),
+  getSlackUserDisplayName: async () => null,
+  isBotUser: async () => true,
+  findBotUserIdByName: async () => null,
+  joinChannel: async () => true,
+  openDmChannel: async () => 'D1',
+  postBlocks: async () => 'ts',
+  postEphemeral: async () => true,
+  postMessage: async () => 'ts',
+  publishHomeView: async () => {},
+  removeReaction: async () => {},
+  startStream: async () => 'ts',
+  stopStream: async () => {},
+  updateBlocks: async () => {},
+  updateMessage: async () => {},
+}));
+
+// Keep the REAL buildAgentUnavailablePickerBlocks (so we assert the actual
+// picker blocks), but fake loadScopedChannelAgents so the recovery path never
+// reads a git mirror. Imported before the mock so the real exports survive.
+const realAgentPicker = await import('../channels/slack/agent-picker');
+mock.module('../channels/slack/agent-picker', () => ({
+  ...realAgentPicker,
+  loadScopedChannelAgents: async () => scopedAgents,
+}));
+
+const { spawnAgentTurn } = await import('../channels/slack/dispatch');
+const { config } = await import('../config');
+const { resetSlackSessionLifecycleForTest, setSlackSessionLifecycleForTest } = await import('../channels/slack/session');
+const originalRequireIdentity = config.SLACK_REQUIRE_USER_IDENTITY;
+
+const project = { projectId: 'proj-1', accountId: 'acc-1', defaultBranch: 'main', repoUrl: 'r', name: 'P', manifestPath: 'kortix.yaml' };
+const envelope = { team_id: 'T1', event: undefined } as any;
+const event = { type: 'app_mention', channel: 'C1', ts: '100.1', user: 'U1', thread_ts: '90.0', text: 'hi' } as any;
+
+afterAll(() => {
+  config.SLACK_REQUIRE_USER_IDENTITY = originalRequireIdentity;
+  resetSlackSessionLifecycleForTest();
+  mock.restore();
+});
+
+// Brand-new thread, claim won → createProjectSession runs exactly once.
+function newThreadFifo() {
+  dbResults = [
+    [project], // spawnAgentTurn project lookup
+    [], // chat_threads lookup → brand-new thread
+    [project], // projects lookup
+    [{ eventId: 'claim' }], // claimThreadCreate → WON
+    [], // re-check chat_threads → none
+    [], // chat_threads insert
+  ];
+}
+
+beforeEach(() => {
+  config.SLACK_REQUIRE_USER_IDENTITY = false;
+  lastBody = null;
+  selection = null;
+  lastFinalize = null;
+  scopedAgents = [];
+  setSlackSessionLifecycleForTest({
+    deliverFollowUp: async () => 'delivered',
+    createSession: async (input: { body: Record<string, unknown> }) => {
+      lastBody = input.body;
+      return { status: 'created', sessionId: 'new-sess', row: fakeSessionRow('new-sess') };
+    },
+    resolveProjectAutomationActor: async () => 'user-1',
+  });
+});
+
+test('channel agent + model override flow into the session body', async () => {
+  selection = { projectId: 'proj-1', agentName: 'reviewer', opencodeModel: 'anthropic/claude-opus-4-8' };
+  newThreadFifo();
+  await spawnAgentTurn('proj-1', envelope, event);
+  expect(lastBody?.agent_name).toBe('reviewer');
+  expect(lastBody?.opencode_model).toBe('anthropic/claude-opus-4-8');
+});
+
+// The lifecycle keeps an idempotency key forever. Under the thread's key, the
+// thread's first create_session command answered every later create in it: a
+// failed first start (dead-lettered) failed the re-send the agent picker asks
+// for with the same error, every time. One key per message; Slack's double
+// delivery of one mention (app_mention + message) shares the message ts.
+test('the create key is per message, not per thread', async () => {
+  const keys: unknown[] = [];
+  setSlackSessionLifecycleForTest({
+    deliverFollowUp: async () => 'delivered',
+    createSession: async (input: { idempotencyKey?: string | null }) => {
+      keys.push(input.idempotencyKey);
+      return { status: 'created', sessionId: 'new-sess', row: fakeSessionRow('new-sess') };
+    },
+    resolveProjectAutomationActor: async () => 'user-1',
+  });
+  newThreadFifo();
+  await spawnAgentTurn('proj-1', envelope, event);
+  newThreadFifo();
+  await spawnAgentTurn('proj-1', envelope, { ...event, ts: '100.2' });
+  newThreadFifo();
+  await spawnAgentTurn('proj-1', envelope, { ...event, type: 'message' });
+
+  expect(keys).toEqual(['slack:create:T1:90.0:100.1', 'slack:create:T1:90.0:100.2', 'slack:create:T1:90.0:100.1']);
+});
+
+test('no overrides → agent "default" and NO opencode_model key', async () => {
+  selection = { projectId: 'proj-1', agentName: null, opencodeModel: null };
+  newThreadFifo();
+  await spawnAgentTurn('proj-1', envelope, event);
+  expect(lastBody?.agent_name).toBe('default');
+  expect('opencode_model' in (lastBody ?? {})).toBe(false);
+});
+
+test('unbound channel (null selection) → agent "default", no model', async () => {
+  selection = null;
+  newThreadFifo();
+  await spawnAgentTurn('proj-1', envelope, event);
+  expect(lastBody?.agent_name).toBe('default');
+  expect('opencode_model' in (lastBody ?? {})).toBe(false);
+});
+
+// Regression guard: previously Slack ALWAYS sent the literal 'default' as
+// agent_name, so sessions.ts's `body.agent_name ?? projectDefaultAgent`
+// fallback never fired — a project's configured default_agent was silently
+// ignored by every Slack session, diverging from what the settings page
+// showed as "Project default (agentX)". No channel override should now
+// resolve to the project's configured default, not the bare sentinel.
+test('no channel override, but project has a configured default_agent → that agent is used', async () => {
+  selection = { projectId: 'proj-1', agentName: null, opencodeModel: null };
+  dbResults = [
+    [{ ...project, metadata: { default_agent: 'shipper' } }], // spawnAgentTurn project lookup
+    [], // chat_threads lookup → brand-new thread
+    [{ ...project, metadata: { default_agent: 'shipper' } }], // createOrJoinThreadSession project lookup
+    [{ eventId: 'claim' }], // claimThreadCreate → WON
+    [], // re-check chat_threads → none
+    [], // chat_threads insert
+  ];
+  await spawnAgentTurn('proj-1', envelope, event);
+  expect(lastBody?.agent_name).toBe('shipper');
+});
+
+// The reported bug: the channel's agent was deleted, so createSession rejects it
+// as 400 AGENT_NOT_DECLARED. The whole point of the fix is that this no longer
+// collapses into the dead-end "try again" copy — it renders an inline picker of
+// the project's live agents so the user re-points the channel in one click.
+test('deleted channel agent (AGENT_NOT_DECLARED) → in-thread agent picker, not the generic error', async () => {
+  selection = { projectId: 'proj-1', agentName: 'ghost', opencodeModel: null };
+  scopedAgents = [
+    { name: 'reviewer', description: null },
+    { name: 'shipper', description: 'Ships things.' },
+  ];
+  setSlackSessionLifecycleForTest({
+    deliverFollowUp: async () => 'delivered',
+    createSession: async () => ({
+      status: 'failed',
+      retryable: false,
+      error: { status: 400, body: { error: 'Agent "ghost" is not declared in this project', code: 'AGENT_NOT_DECLARED' } },
+    }),
+    resolveProjectAutomationActor: async () => 'user-1',
+  });
+  newThreadFifo();
+  await spawnAgentTurn('proj-1', envelope, event);
+
+  expect(lastFinalize).not.toBeNull();
+  expect(lastFinalize?.title).toBe("Couldn't start — pick an agent");
+  const json = JSON.stringify(lastFinalize?.blocks ?? []);
+  expect(json).toContain('ghost'); // names the dead agent
+  expect(json).toContain('set_agent_reviewer'); // offers the live agents…
+  expect(json).toContain('set_agent_shipper'); // …wired to the existing handler
+  // Crucially NOT the old dead-end copy.
+  expect(lastFinalize?.error ?? '').not.toContain('Give it a moment and send your message again');
+});
+
+test('follow-ups to one session identify the originating thread for each reply', async () => {
+  const { renderFollowUpPrompt } = await import('../channels/slack/session');
+  const first = renderFollowUpPrompt(envelope, { ...event, channel: 'CONE', thread_ts: '100.1' });
+  const second = renderFollowUpPrompt(envelope, { ...event, channel: 'CTWO', thread_ts: '200.2' });
+  expect(first).toContain('slack send --channel CONE --thread 100.1');
+  expect(second).toContain('slack send --channel CTWO --thread 200.2');
+  expect(second).not.toContain('CONE');
+});
+
+// A Slack event names nobody, so the prompt showed `U0…` / `C0…` where a Teams
+// prompt shows a person's name. Labels sit beside the ids; the reply command
+// keeps the ids.
+test('a labelled follow-up names the sender and the channel and keeps the ids for the reply', async () => {
+  const { renderFollowUpPrompt } = await import('../channels/slack/session');
+  const prompt = renderFollowUpPrompt(
+    envelope,
+    { ...event, user: 'U0TEST1', channel: 'C0TEST1', thread_ts: '300.3', text: '<@U0BOT> status?' },
+    { channel: '#general', user: 'Sam Rivera', text: '<@U0BOT|Kortix> status?' },
+  );
+  expect(prompt).toContain('New message from Sam Rivera (U0TEST1) in Slack channel #general (C0TEST1), thread 300.3:');
+  expect(prompt).toContain('slack send --channel C0TEST1 --thread 300.3');
+  expect(prompt).toContain('<@U0BOT|Kortix> status?');
+});
+
+test('an unlabelled follow-up keeps the bare ids', async () => {
+  const { renderFollowUpPrompt } = await import('../channels/slack/session');
+  const prompt = renderFollowUpPrompt(envelope, { ...event, user: 'U0TEST1', channel: 'C0TEST1', thread_ts: '300.3' });
+  expect(prompt).toContain('New message from U0TEST1 in Slack channel C0TEST1, thread 300.3:');
+});
+
+// A Teams follow-up whose image no model in reach can read says so in the
+// prompt (teams/session.ts, 2026-09-19: the agent hunted for ImageMagick and
+// tesseract instead). A Slack follow-up said nothing.
+const imageEvent = {
+  ...event,
+  files: [{ id: 'F0TEST1', name: 'chart.png', mimetype: 'image/png', filetype: 'png', size: 2048, url_private_download: 'https://files.slack.com/files-pri/T0TEST1-F0TEST1/download/chart.png' }],
+};
+
+test('a follow-up image no model can read carries the no-vision note', async () => {
+  const { renderFollowUpPrompt, slackFollowUpModel } = await import('../channels/slack/session');
+  const plan = await slackFollowUpModel({
+    project: { projectId: 'proj-1', accountId: 'acct-1', metadata: {} },
+    userId: 'user-1',
+    sessionId: 'sess-1',
+    event: imageEvent,
+    session: { createdBy: 'user-1', metadata: {}, agentName: null },
+  });
+  expect(plan).toEqual({ model: null, imagesUnavailable: true });
+  const prompt = renderFollowUpPrompt(envelope, imageEvent, undefined, plan.imagesUnavailable);
+  expect(prompt).toContain('no image-capable model is available in this project');
+});
+
+test('a follow-up with no image carries no no-vision note', async () => {
+  const { renderFollowUpPrompt, slackFollowUpModel } = await import('../channels/slack/session');
+  const plan = await slackFollowUpModel({
+    project: { projectId: 'proj-1', accountId: 'acct-1', metadata: {} },
+    userId: 'user-1',
+    sessionId: 'sess-1',
+    event,
+    session: { createdBy: 'user-1', metadata: {}, agentName: null },
+  });
+  expect(plan.imagesUnavailable).toBe(false);
+  expect(renderFollowUpPrompt(envelope, event, undefined, plan.imagesUnavailable)).not.toContain('image-capable');
+});
+
+// A non-agent failure still renders honest, specific copy (not the picker).
+// The thread-create claim lives 5 minutes. A failed start kept it, so the
+// re-send the picker asks for ("Pick a current agent, then send your message
+// again") lost the claim, waited 8 s for a session nobody was creating, and
+// was dropped without a word.
+test('a failed start releases the thread-create claim', async () => {
+  const { chatEventDedup } = await import('@kortix/db');
+  selection = { projectId: 'proj-1', agentName: 'ghost', opencodeModel: null };
+  setSlackSessionLifecycleForTest({
+    deliverFollowUp: async () => 'delivered',
+    createSession: async () => ({
+      status: 'failed',
+      retryable: false,
+      error: { status: 400, body: { error: 'Agent "ghost" is not declared in this project', code: 'AGENT_NOT_DECLARED' } },
+    }),
+    resolveProjectAutomationActor: async () => 'user-1',
+  });
+  newThreadFifo();
+  deletedFrom.length = 0;
+  await spawnAgentTurn('proj-1', envelope, event);
+
+  expect(deletedFrom).toContain(chatEventDedup);
+});
+
+test('out-of-credits (402) → credit copy, no picker blocks', async () => {
+  selection = { projectId: 'proj-1', agentName: null, opencodeModel: null };
+  setSlackSessionLifecycleForTest({
+    deliverFollowUp: async () => 'delivered',
+    createSession: async () => ({
+      status: 'failed',
+      retryable: false,
+      error: { status: 402, body: { error: 'Insufficient credits' } },
+    }),
+    resolveProjectAutomationActor: async () => 'user-1',
+  });
+  newThreadFifo();
+  await spawnAgentTurn('proj-1', envelope, event);
+
+  expect(lastFinalize?.error?.toLowerCase()).toContain('out of credits');
+  expect(lastFinalize?.blocks).toBeUndefined();
+});
+
+// Untagged channel-thread replies never reach the session. When the bot is
+// tagged again, the prompt tells the agent to read the thread first.
+test('a channel follow-up tells the agent to read the thread first', async () => {
+  const { renderFollowUpPrompt } = await import('../channels/slack/session');
+  const prompt = renderFollowUpPrompt(envelope, { ...event, channel_type: 'channel' });
+  expect(prompt).toContain('slack thread --channel C1 --ts 90.0');
+});
+
+test('a DM follow-up has no read-the-thread instruction', async () => {
+  const { renderFollowUpPrompt } = await import('../channels/slack/session');
+  const prompt = renderFollowUpPrompt(envelope, { ...event, channel_type: 'im' });
+  expect(prompt).not.toContain('slack thread --channel');
+});
+
+test('a first-turn mention inside a thread tells the agent to read the thread; a top-level mention does not', async () => {
+  const { renderAgentPrompt } = await import('../channels/slack/session');
+  const inThread = renderAgentPrompt(envelope, { ...event, channel_type: 'channel' }, false);
+  expect(inThread).toContain('slack thread --channel C1 --ts 90.0');
+  const topLevel = renderAgentPrompt(envelope, { ...event, channel_type: 'channel', thread_ts: undefined }, false);
+  expect(topLevel).not.toContain('slack thread --channel');
+});
+
+test('turn instructions tell the agent that only a mention reaches it in a channel thread', async () => {
+  const { TURN_INSTRUCTIONS } = await import('../channels/slack/session');
+  expect(TURN_INSTRUCTIONS).toContain('@mention you');
+});

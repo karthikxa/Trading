@@ -1,0 +1,586 @@
+/**
+ * ReviewDetailSheet — one review item, with the verdicts its kind offers.
+ *
+ * One sheet: the item's title, a Details group of aligned label · value rows
+ * (`reviewDetailRows`), then one body per kind:
+ * - change: what changed, the agent's checks, then its Files — one row per
+ *   changed file with its +/− counts, no diff drawn. A file row pushes that
+ *   file's diff inside the sheet (`ReviewFileDiff`, virtualized; Back returns),
+ *   and "Open on web" opens the change request on kortix.com (Jay, 2026-09-27:
+ *   the whole diff in the sheet stalled the device).
+ * - approval: each connector call with its arguments. Arguments the viewer may
+ *   not see are named as hidden, never shown as empty.
+ * - decision: the question and its options. Choosing one answers.
+ * - output: the agent's note, a text preview, a link to the live preview.
+ * - batch: the finished items, one sign-off.
+ *
+ * A change offers Merge and Request changes, side by side, in the footer; its
+ * Close is the sheet's last row instead (Jay, 2026-09-21 / 2026-09-27). While its merge preview reports conflicts, Merge reads
+ * "Resolve conflicts" (Jay, 2026-09-27): it closes the sheet, opens the
+ * session that opened the change — never a new one — and sends it the
+ * resolve prompt (`change-request-recovery.ts`). A change opened by hand with
+ * no session (`origin_session_id` null) has no session to open: the button
+ * shows disabled. An agent's change always records its session. A verdict that cannot be undone (merge a change, run or
+ * deny a connector call) confirms in an `AlertDialog` that opens only after the sheet
+ * has closed — never two overlays at once (design.md). "Request changes" asks
+ * for its text in the sheet. `planReviewVerdict` picks the call.
+ *
+ * The verdict row is the sheet's pinned footer (`BottomSheetFooter`), so Merge
+ * stays on screen over a long change. The scroll content pads by its height.
+ *
+ * Each verdict shows only for a viewer who holds the leaves its route asserts
+ * (KRTX-1720, `reviewVerdictAllowed` in `@kortix/sdk`, the rule the web inbox
+ * reads too), from one `useCans` probe: Merge needs project.write +
+ * project.gitops.merge; Request changes, Close, a decision's answer and every
+ * native verdict need project.write + project.review.act. A built-in member
+ * gets none of them, and an unresolved probe offers none. A connector call
+ * shows Approve and Deny to the viewer the API lets decide it (a project
+ * manager or the session's launcher; `canResolve`). Anyone else reads who
+ * decides it, under the Waiting segment (KRTX-1724). Resolve conflicts
+ * takes Merge's place, so only a viewer who may merge gets it; a reviewer who
+ * may not hands the conflicts back with Request changes.
+ */
+import * as React from 'react';
+import { View, useWindowDimensions } from 'react-native';
+import {
+  BottomSheetModal,
+  BottomSheetFooter,
+  BottomSheetScrollView,
+  type BottomSheetFooterProps,
+} from '@gorhom/bottom-sheet';
+import {
+  REVIEW_CONTROL_ACTIONS,
+  reviewItemTarget,
+  reviewVerdictAllowed,
+  type ReviewItem,
+  type ReviewVerdict,
+} from '@kortix/sdk';
+import { useTranslation } from 'react-i18next';
+import { useCans } from '@kortix/sdk/react';
+import { useColorScheme } from 'nativewind';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { SheetTextInput } from '@/components/kortix/SheetInput';
+import { SettingsGroup, SettingsRow } from '@/components/kortix/settings-list';
+import { KortixBottomSheetModal, useCloseThen, useSheetBackground, type SheetRef } from '@/components/kortix/sheet';
+import { SheetBackButton } from '@/components/kortix/sheet-push';
+import { useToast } from '@/components/kortix/toast-provider';
+import { ReviewFileDiff } from '@/components/review/ReviewFileDiff';
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Button } from '@/components/ui/button';
+import { Text } from '@/components/ui/text';
+import { haptics } from '@/lib/haptics';
+import { Icon } from '@/components/ui/icon';
+import { ChatsTeardropIcon, GlobeIcon, XCircleIcon } from '@/lib/icons';
+import { useChangeRequestDiff, useChangeRequestMergePreview } from '@/lib/projects/hooks';
+import type { ChangeRequestDiff } from '@/lib/projects/projects-client';
+import { hasMergeConflicts, resolveConflictsPrompt } from '@/lib/review/change-request-recovery';
+import { changeRequestWebUrl, reviewDetailRows, splitFilePath } from '@/lib/review/review-detail';
+import { ReviewBody } from '@/components/review/ReviewItemBody';
+import {
+  reviewKindLabel,
+  reviewVerdictLabel,
+  reviewVerdictToast,
+  verdictNeedsConfirm,
+  verdictNeedsFeedback,
+} from '@/lib/review/review-meta';
+import { planReviewVerdict, reviewVerdictsFor } from '@/lib/review/review-verdict';
+import { useReviewVerdict } from '@/lib/review/use-review';
+import { openLink } from '@/lib/utils/open-link';
+import { useSessionPromptRequestStore } from '@/stores/session-prompt-request-store';
+import { approvalWaitingWhoKey, approvalWaitsOnOthers } from '@/lib/session/connector-handoff';
+
+interface ReviewDetailSheetProps {
+  projectId: string;
+  item: ReviewItem | null;
+  /** The sheet finished closing. */
+  onDismiss?: () => void;
+  /**
+   * Opens the thread the item came from. Omit it where that thread is already
+   * on screen (the thread's own change request cards): the row then hides.
+   */
+  onOpenSession?: (sessionId: string) => void;
+}
+
+interface PendingVerdict {
+  item: ReviewItem;
+  verdict: ReviewVerdict;
+}
+
+/** `Button size="lg"` is 44pt. 12pt above the pinned verdict row. */
+const PILL = 44;
+const FOOTER_TOP = 12;
+
+/** The sheet's content clears this much bottom so the footer never covers it. */
+const verdictFooterHeight = (showFooter: boolean, count: number, bottomPadding: number) =>
+  showFooter ? FOOTER_TOP + (count > 2 ? count * (PILL + 12) - 12 : PILL) + bottomPadding : 0;
+
+/** The pinned verdict row: two verdicts share one row, 50/50, the primary on
+ * the right (Request changes · Merge); three stack, primary first. */
+function VerdictFooter({
+  footerProps,
+  item,
+  verdicts,
+  background,
+  bottomPadding,
+  onVerdict,
+  conflicted,
+  originSessionId,
+  resolveConflicts,
+}: {
+  footerProps: BottomSheetFooterProps;
+  item: ReviewItem;
+  verdicts: ReviewVerdict[];
+  background: string;
+  bottomPadding: number;
+  onVerdict: (verdict: ReviewVerdict) => void;
+  conflicted: boolean;
+  originSessionId: string | null | undefined;
+  resolveConflicts: () => void;
+}) {
+  return (
+    <BottomSheetFooter {...footerProps}>
+      <View
+        className={verdicts.length > 2 ? 'gap-3 px-4' : 'flex-row-reverse gap-3 px-4'}
+        style={{ backgroundColor: background, paddingTop: FOOTER_TOP, paddingBottom: bottomPadding }}>
+        {verdicts.map((verdict, index) => {
+          // A conflicted change cannot merge: its primary resolves instead.
+          const resolves = conflicted && verdict === 'approve';
+          return (
+            <Button
+              key={verdict}
+              variant={verdict === 'dismiss' ? 'ghost' : index === 0 ? 'default' : 'secondary'}
+              size="lg"
+              className={verdicts.length > 2 ? 'rounded-full' : 'flex-1 rounded-full'}
+              disabled={resolves && !originSessionId}
+              onPress={() => (resolves ? resolveConflicts() : onVerdict(verdict))}>
+              <Text numberOfLines={1}>
+                {resolves ? 'Resolve conflicts' : reviewVerdictLabel(item.kind, verdict)}
+              </Text>
+            </Button>
+          );
+        })}
+      </View>
+    </BottomSheetFooter>
+  );
+}
+
+/** The verdict's confirm dialog: it opens from `onDismiss`, after the sheet
+ * has closed, and Cancel sends nothing. */
+function ConfirmVerdictDialog({
+  confirming,
+  onSend,
+  onOpenChange,
+}: {
+  confirming: PendingVerdict | null;
+  onSend: (target: ReviewItem, verdict: ReviewVerdict) => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  return (
+    <AlertDialog open={!!confirming} onOpenChange={onOpenChange}>
+      <AlertDialogContent className="rounded-3xl">
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {confirming ? reviewVerdictLabel(confirming.item.kind, confirming.verdict) : ''}
+          </AlertDialogTitle>
+          <AlertDialogDescription>{confirming?.item.title ?? ''}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel asChild>
+            <Button variant="secondary" size="lg" className="rounded-full">
+              <Text>Cancel</Text>
+            </Button>
+          </AlertDialogCancel>
+          <Button
+            variant={confirming?.verdict === 'approve' ? 'default' : 'destructive'}
+            size="lg"
+            className="rounded-full"
+            onPress={() => confirming && onSend(confirming.item, confirming.verdict)}>
+            <Text>{confirming ? reviewVerdictLabel(confirming.item.kind, confirming.verdict) : ''}</Text>
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+/** The aligned label · value rows: agent, risk, or a change's number, branch,
+ * size and merge state. */
+function DetailRows({ rows }: { rows: ReturnType<typeof reviewDetailRows> }) {
+  if (rows.length === 0) return null;
+  return (
+    <SettingsGroup title="Details">
+      {rows.map((row) => (
+        <SettingsRow
+          key={row.label}
+          label={row.label}
+          value={row.value}
+          // A warning (conflicts) colours its value, not the label.
+          valueDestructive={row.warn}
+          right={null}
+          dense
+        />
+      ))}
+    </SettingsGroup>
+  );
+}
+
+/** The "what should change?" composer a Request changes verdict opens in
+ * place of the footer. */
+function RequestChangesComposer({
+  feedback,
+  onFeedback,
+  onCancel,
+  onSend,
+}: {
+  feedback: string;
+  onFeedback: (text: string) => void;
+  onCancel: () => void;
+  onSend: (text: string) => void;
+}) {
+  return (
+    <View className="gap-3">
+      <SheetTextInput
+        value={feedback}
+        onChangeText={onFeedback}
+        placeholder="What should change?"
+        accessibilityLabel="Requested changes"
+        autoFocus
+        multiline
+      />
+      <View className="flex-row gap-3">
+        <Button variant="secondary" size="lg" className="flex-1 rounded-full" onPress={onCancel}>
+          <Text>Cancel</Text>
+        </Button>
+        <Button size="lg" className="flex-1 rounded-full" disabled={!feedback.trim()} onPress={() => onSend(feedback.trim())}>
+          <Text>Send</Text>
+        </Button>
+      </View>
+    </View>
+  );
+}
+
+export const ReviewDetailSheet = React.forwardRef<
+SheetRef, ReviewDetailSheetProps>(
+  ({ projectId, item, onDismiss, onOpenSession }, ref) => {
+    const modalRef = React.useRef<BottomSheetModal>(null);
+    const { height } = useWindowDimensions();
+    const insets = useSafeAreaInsets();
+    const { colorScheme } = useColorScheme();
+    const isDark = colorScheme === 'dark';
+    const background = useSheetBackground();
+    const toast = useToast();
+    const { t } = useTranslation();
+    const cans = useCans({ projectId }, REVIEW_CONTROL_ACTIONS);
+    const verdictMutation = useReviewVerdict(projectId, {
+      onSuccess: (input) => {
+        haptics.success();
+        toast.success(reviewVerdictToast(input.kind, input.verdict, input.number));
+      },
+      onError: (error) => {
+        haptics.warning();
+        toast.error((error as Error)?.message ?? 'The review action failed');
+      },
+    });
+
+    const [feedback, setFeedback] = React.useState('');
+    // The file whose diff is pushed over the details (a change's Files row).
+    const [openFile, setOpenFile] = React.useState<string | null>(null);
+    const [askingFeedback, setAskingFeedback] = React.useState(false);
+    // The verdict waiting for its confirm dialog, deferred past the close:
+    // the dialog opens from `onDismiss`, after the sheet has closed. The
+    // shared close-then slot (a ref, not state: `dismiss()` runs in the same
+    // tick as the tap, and gorhom's close animation calls the `onDismiss` it
+    // captured then — one that would still read the old, empty state. That
+    // stale read dropped every Merge: the confirm never opened and no request
+    // went out (Jay, 2026-09-27).
+    const { deferAfterClose, takeAfterClose } = useCloseThen<PendingVerdict>();
+    const [confirming, setConfirming] = React.useState<PendingVerdict | null>(null);
+
+    // True from `present()` until `onDismiss`. `dismiss()` on a sheet that
+    // has already closed is not a no-op in gorhom 5: the modal's `unmount()`
+    // reset its status to INITIAL, so a second `dismiss()` marks it
+    // DISMISSING and registers an unmount with the provider for a sheet that
+    // is not there. The Merge confirm used to do exactly that (the sheet had
+    // closed before the dialog opened), and the next row tap often opened
+    // nothing (Jay, 2026-09-27). Every close goes through `closeSheet`.
+    const presentedRef = React.useRef(false);
+    const closeSheet = React.useCallback(() => {
+      if (!presentedRef.current) return;
+      modalRef.current?.dismiss();
+    }, []);
+    React.useImperativeHandle(ref, () => ({
+      open: () => {
+        presentedRef.current = true;
+        modalRef.current?.present();
+      },
+      close: closeSheet,
+    }));
+
+    // Optimistic (Jay, 2026-09-27): the sheet and the confirm close at the tap,
+    // and the item moves to Done at once (`useReviewItems` reads the pending
+    // verdict). A merge still takes seconds on the server; a failure puts the
+    // item back and toasts the server's sentence.
+    const send = React.useCallback(
+      (target: ReviewItem, verdict: ReviewVerdict, text?: string) => {
+        const plan = planReviewVerdict(target.id, verdict, text);
+        if (!plan) return;
+        haptics.tap();
+        setConfirming(null);
+        closeSheet();
+        verdictMutation.mutate({
+          itemId: target.id,
+          verdict,
+          plan,
+          kind: target.kind,
+          number: target.kind === 'change' ? target.detail.number : undefined,
+        });
+      },
+      [verdictMutation, closeSheet],
+    );
+
+    const handleVerdict = React.useCallback(
+      (verdict: ReviewVerdict) => {
+        if (!item) return;
+        haptics.tap();
+        if (verdictNeedsFeedback(verdict)) {
+          setAskingFeedback(true);
+          return;
+        }
+        if (verdictNeedsConfirm(item.kind, verdict)) {
+          deferAfterClose({ item, verdict });
+          closeSheet();
+          return;
+        }
+        send(item, verdict);
+      },
+      [item, send, closeSheet, deferAfterClose],
+    );
+
+    const handleDismiss = React.useCallback(() => {
+      presentedRef.current = false;
+      setFeedback('');
+      setAskingFeedback(false);
+      setOpenFile(null);
+      const queued = takeAfterClose();
+      if (queued) setConfirming(queued);
+      onDismiss?.();
+    }, [takeAfterClose, onDismiss]);
+
+    const actionable = item?.status === 'needs_you';
+    // A connector call this viewer may not decide: the sheet says who does.
+    const waitingCall =
+      item?.kind === 'approval' && reviewItemTarget(item.id).type === 'connector_call'
+        ? item.detail.actions[0]
+        : undefined;
+    const waitsOnOthers =
+      !!item &&
+      !!waitingCall &&
+      approvalWaitsOnOthers({ status: item.status, canResolve: waitingCall.canResolve });
+    // A change's diff (its Files, +/− and each file's lines) and, while it is
+    // open, its merge preview (conflicts) — both one request each, cached.
+    const crId = item?.kind === 'change' ? (item.detail.crId ?? null) : null;
+    const diffQuery = useChangeRequestDiff(projectId, crId);
+    const previewQuery = useChangeRequestMergePreview(projectId, crId, actionable);
+    const detailRows = React.useMemo(
+      () => (item ? reviewDetailRows(item, { diff: diffQuery.data, preview: previewQuery.data }) : []),
+      [item, diffQuery.data, previewQuery.data],
+    );
+
+    const pushFile = React.useCallback((path: string) => {
+      haptics.tap();
+      setOpenFile(path);
+      // A file's diff reads at full height, as in the session actions sheet.
+      modalRef.current?.snapToPosition('100%');
+    }, []);
+    const popFile = React.useCallback(() => {
+      haptics.tap();
+      setOpenFile(null);
+      modalRef.current?.snapToIndex(0);
+    }, []);
+    // A decision answers from its option rows; its footer holds Dismiss alone.
+    // Only the verdicts this viewer may give (KRTX-1720).
+    const allows = (verdict: ReviewVerdict) => !!item && reviewVerdictAllowed(item, verdict, cans);
+    const verdicts = React.useMemo<ReviewVerdict[]>(() => {
+      if (!item) return [];
+      const offered: ReviewVerdict[] = item.kind === 'decision' ? ['dismiss'] : reviewVerdictsFor(item.kind);
+      return offered.filter((verdict) => reviewVerdictAllowed(item, verdict, cans));
+    }, [item, cans]);
+    const showFooter = !!item && actionable && verdicts.length > 0 && !askingFeedback && !openFile;
+
+    // ── Resolve conflicts (in place of Merge while the preview reports any) ──
+    const conflicted = item?.kind === 'change' && hasMergeConflicts(item.status, previewQuery.data);
+    const originSessionId = item?.sessionId ?? null;
+    const resolveConflicts = React.useCallback(() => {
+      if (!item || item.kind !== 'change' || !originSessionId) return;
+      haptics.tap();
+      // The session that opened the change: it takes the request when it
+      // mounts (keyed by the project session id) and sends it, or queues it
+      // while its agent works. Inside that session (its change request
+      // cards pass no `onOpenSession`) the open thread takes it at once.
+      useSessionPromptRequestStore.getState().requestSend(
+        originSessionId,
+        resolveConflictsPrompt({
+          number: item.detail.number ?? 0,
+          conflictCount: previewQuery.data?.conflicts.length ?? 0,
+        }),
+      );
+      closeSheet();
+      onOpenSession?.(originSessionId);
+    }, [item, originSessionId, previewQuery.data, onOpenSession, closeSheet]);
+    const footerPadding = Math.max(insets.bottom, 16) + 8;
+    const footerHeight = verdictFooterHeight(showFooter, verdicts.length, footerPadding);
+
+    const renderFooter = React.useCallback(
+      (props: BottomSheetFooterProps) =>
+        showFooter && item ? (
+          <VerdictFooter
+            footerProps={props}
+            item={item}
+            verdicts={verdicts}
+            background={background}
+            bottomPadding={footerPadding}
+            onVerdict={handleVerdict}
+            conflicted={conflicted}
+            originSessionId={originSessionId}
+            resolveConflicts={resolveConflicts}
+          />
+        ) : null,
+      [showFooter, item, verdicts, background, footerPadding, handleVerdict, conflicted, originSessionId, resolveConflicts],
+    );
+
+    return (
+      <>
+        <KortixBottomSheetModal
+          ref={modalRef}
+          title={openFile ? splitFilePath(openFile).name : item ? reviewKindLabel(item.kind) : undefined}
+          titleLeading={openFile ? <SheetBackButton onPress={popFile} /> : undefined}
+          enableDynamicSizing
+          maxDynamicContentSize={Math.floor(height * 0.9)}
+          enablePanDownToClose
+          onDismiss={handleDismiss}
+          footerComponent={renderFooter}
+          keyboardBehavior="interactive"
+          keyboardBlurBehavior="restore">
+          {openFile ? (
+            <ReviewFileDiff
+              patch={diffQuery.data?.patch}
+              path={openFile}
+              isLoading={diffQuery.isLoading}
+              isError={diffQuery.isError}
+              isDark={isDark}
+              bottomInset={footerPadding}
+            />
+          ) : (
+          <BottomSheetScrollView
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{
+              paddingHorizontal: 16,
+              paddingTop: 4,
+              // Clears the pinned verdict row, or the home indicator without one.
+              paddingBottom: footerHeight || footerPadding,
+              gap: 16,
+            }}>
+            {item ? (
+              <>
+                {/* The sheet's title row names the kind; this is the item. */}
+                <Text variant="large" className="px-2">
+                  {item.title}
+                </Text>
+                {waitsOnOthers ? (
+                  <Text variant="muted" className="px-2">
+                    {t(approvalWaitingWhoKey(waitingCall?.resolvers))}
+                  </Text>
+                ) : null}
+
+                <DetailRows rows={detailRows} />
+
+                <ReviewBody
+                  projectId={projectId}
+                  item={item}
+                  onAnswer={send}
+                  actionable={actionable && allows('answer')}
+                  diff={diffQuery.data}
+                  diffLoading={diffQuery.isLoading}
+                  diffFailed={diffQuery.isError}
+                  onRetryDiff={() => void diffQuery.refetch()}
+                  onOpenFile={pushFile}
+                  isDark={isDark}
+                />
+
+                {/* Where else the item lives: its session, and (a change) the web. */}
+                {(item.sessionId && onOpenSession) || item.kind === 'change' ? (
+                  <SettingsGroup>
+                    {item.sessionId && onOpenSession ? (
+                      <SettingsRow
+                        icon={ChatsTeardropIcon}
+                        label="Open session"
+                        onPress={() => {
+                          const sessionId = item.sessionId!;
+                          closeSheet();
+                          onOpenSession(sessionId);
+                        }}
+                      />
+                    ) : null}
+                    {item.kind === 'change' ? (
+                      <SettingsRow
+                        icon={GlobeIcon}
+                        label="Open on web"
+                        external
+                        onPress={() => void openLink(changeRequestWebUrl(projectId, item)).catch(() => {})}
+                      />
+                    ) : null}
+                  </SettingsGroup>
+                ) : null}
+
+                {actionable && askingFeedback ? (
+                  <RequestChangesComposer
+                    feedback={feedback}
+                    onFeedback={setFeedback}
+                    onCancel={() => setAskingFeedback(false)}
+                    onSend={(text) => send(item, 'changes', text)}
+                  />
+                ) : null}
+
+                {/* Last in the sheet, alone and destructive (Jay, 2026-09-27):
+                    close the change request without merging. The `dismiss`
+                    verdict — it confirms after the sheet closes, then closes
+                    the change request (`planReviewVerdict` → `close`). */}
+                {item.kind === 'change' && actionable && allows('dismiss') && !askingFeedback ? (
+                  <SettingsGroup>
+                    <SettingsRow
+                      icon={XCircleIcon}
+                      label="Close change request"
+                      destructive
+                      right={null}
+                      onPress={() => handleVerdict('dismiss')}
+                    />
+                  </SettingsGroup>
+                ) : null}
+              </>
+            ) : null}
+          </BottomSheetScrollView>
+          )}
+        </KortixBottomSheetModal>
+
+        <ConfirmVerdictDialog
+          confirming={confirming}
+          onSend={send}
+          onOpenChange={(open) => {
+            if (!open) setConfirming(null);
+          }}
+        />
+      </>
+    );
+  },
+);
+ReviewDetailSheet.displayName = 'ReviewDetailSheet';

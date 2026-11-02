@@ -1,0 +1,286 @@
+import type {
+  AuthedPrincipal,
+  GatewayTrace,
+  ModelRouteInput,
+  UsageEvent,
+} from '@kortix/llm-gateway';
+import { GatewayResolutionError } from '@kortix/llm-gateway';
+import { Hono } from 'hono';
+import { z } from '@hono/zod-openapi';
+import { logger } from '../lib/logger';
+import { admitGatewayRequest, billingVerdict, resolutionErrorBody } from './admit';
+import { checkBudget } from './budgets';
+import {
+  authenticatePrincipal,
+  authorizeRequest,
+  persistGatewayTrace,
+  recordGatewayUsage,
+} from './hooks';
+import { matchesInternalToken, weakInternalTokenWarnings } from './internal-auth';
+import { gatewayModelCatalog } from './models/catalog-models';
+import { unavailableCatalog } from './models/picker-catalog';
+import { servableProjectCatalog } from './models/servable-catalog';
+import { codexConversationHeaders, resolveCandidates } from './resolution/resolve-candidates';
+import { MAX_ACCOUNT_SECRET_REST_SECONDS, coolDownAccountSecret } from '../secrets/account-resource';
+import { refreshRefusedCodexAccountLogin } from './credentials/codex';
+import { claudeCredentialsForGateway, markClaudeAccountRefused } from '../claude-subscription/accounts';
+import { refreshRefusedOpencodeLogin } from './credentials/opencode-console';
+import { codexDescriptor } from './resolution/descriptors';
+import { resolveGatewayRoute } from './routing';
+
+// HTTP control plane for the OUT-OF-PROCESS gateway pod. Every handler is a thin
+// wrapper over the shared in-process hooks in ./hooks — the standalone service
+// and the in-API mount run identical logic; only the transport (HTTP vs direct
+// call) differs.
+/** Sent by the gateway (KORTIX_INTERNAL_EDGE_KEY) through the api-router Worker. */
+const INTERNAL_EDGE_HEADER = 'x-kortix-internal-edge-key';
+
+export function createInternalGatewayRoutes() {
+  const app = new Hono();
+  const { GATEWAY_INTERNAL_TOKEN: internalToken, KORTIX_INTERNAL_EDGE_KEY: edgeKey } = process.env;
+
+  for (const warning of weakInternalTokenWarnings(internalToken)) {
+    logger.error(`[gateway-internal-auth] ${warning}`);
+  }
+
+  app.use('*', async (c, next) => {
+    // The api-router Worker's /internal gate, enforced again here: the backend
+    // origins are public hostnames too and never pass through that Worker, and
+    // Hono matches the DECODED path (`/%69nternal/...`) a raw prefix check misses.
+    if (edgeKey && !matchesInternalToken(`Bearer ${c.req.header(INTERNAL_EDGE_HEADER) ?? ''}`, edgeKey)) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    if (!internalToken) return c.json({ error: 'internal gateway disabled' }, 503);
+    if (!matchesInternalToken(c.req.header('authorization'), internalToken)) {
+      return c.json({ error: 'unauthorized' }, 401);
+    }
+    return next();
+  });
+
+  app.post('/authenticate', async (c) => {
+    const { token } = await c.req.json();
+    if (typeof token !== 'string' || !token) return c.json({ principal: null });
+    return c.json({ principal: await authenticatePrincipal(token) });
+  });
+
+  // Combined authentication + budget gate. Billing runs after model resolution.
+  app.post('/authorize', async (c) => {
+    const { token, deferBilling } = await c.req.json();
+    if (typeof token !== 'string' || !token) {
+      return c.json({
+        ok: false,
+        status: 401,
+        errorCode: 'invalid_token',
+        message: 'Invalid token',
+      });
+    }
+    return c.json(await authorizeRequest(token, { deferBilling: deferBilling === true }));
+  });
+
+  app.post('/resolve-upstream', async (c) => {
+    const { principal, model } = await c.req.json();
+    try {
+      const candidates = await resolveCandidates(
+        principal as AuthedPrincipal,
+        typeof model === 'string' ? model : '',
+      );
+      return c.json({ candidates });
+    } catch (err) {
+      // resolveCandidates throws a GatewayResolutionError (instead of returning
+      // []) when it can pin down WHY there's no upstream — provider_not_connected
+      // ("Connect Codex to use this model."), plan_upgrade_required, expired
+      // Codex OAuth, model_disabled_on_deployment, model_not_found. These are
+      // EXPECTED, user-facing resolution outcomes the gateway pipeline is
+      // designed to catch and surface as a clean 400 with an actionable
+      // suggestion (see packages/llm-gateway/src/pipeline/handler.ts's dispatch
+      // loop, which treats a thrown GatewayResolutionError as "no candidates,
+      // with a reason"). Letting it propagate here would (a) turn an expected
+      // 4xx into a 500 to the gateway pod, (b) get captured to Sentry/Better
+      // Stack Errors as an unhandled exception (the "Connect Codex" spike,
+      // incident 991624588), and (c) be retried 3x by the api-client. Instead,
+      // return the typed error in a 200 body so the api-client can re-throw it
+      // as a GatewayResolutionError and the in-process hook contract holds.
+      if (err instanceof GatewayResolutionError) {
+        logger.warn(`[gateway-internal] resolution failed for "${model}": ${err.code} — ${err.message}`);
+        return c.json({
+          candidates: [],
+          resolutionError: resolutionErrorBody(err),
+        });
+      }
+      throw err;
+    }
+  });
+
+  // Any principal: a gateway API key has no session (KRTX-2417). The rest is
+  // keyed by the account and the secret alone.
+  app.post('/pool-rate-limit', async (c) => {
+    const parsed = z.object({
+      principal: z.object({ accountId: z.string().uuid() }),
+      secretId: z.string().uuid(), seconds: z.number().int().min(1).max(MAX_ACCOUNT_SECRET_REST_SECONDS),
+    }).safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: 'Invalid pool rate limit' }, 400);
+    await coolDownAccountSecret(parsed.data.secretId, parsed.data.principal.accountId, parsed.data.seconds);
+    return c.json({ ok: true });
+  });
+
+  // Claude Code's model calls (the gateway's claude-code passthrough): the
+  // Claude accounts this principal may use, best first, or why none.
+  app.post('/claude-credentials', async (c) => {
+    const parsed = z.object({
+      principal: z.object({
+        accountId: z.string().uuid(), projectId: z.string().uuid().optional(), userId: z.string().uuid(),
+        sessionId: z.string().nullish(), keyId: z.string().optional(), personalUserId: z.string().uuid().nullish(),
+      }),
+      model: z.string().max(200).nullish(),
+    }).safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: 'Invalid Claude credential request' }, 400);
+    return c.json(await claudeCredentialsForGateway(parsed.data.principal, parsed.data.model ?? null));
+  });
+
+  // Anthropic refused a Claude account's token (401). Only the digest crosses.
+  app.post('/claude-refused', async (c) => {
+    const parsed = z.object({
+      principal: z.object({ accountId: z.string().uuid() }),
+      secretId: z.string().uuid(),
+      failedKeySha256: z.string().regex(/^[0-9a-f]{64}$/),
+    }).safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: 'Invalid Claude refusal' }, 400);
+    const marked = await markClaudeAccountRefused(parsed.data.principal.accountId, parsed.data.secretId, parsed.data.failedKeySha256);
+    return c.json({ ok: true, marked });
+  });
+
+  // The provider refused a ChatGPT or OpenCode login (401): a fresh token to retry with,
+  // or null. Only the token and its headers change; the gateway keeps the rest
+  // of the descriptor it holds.
+  app.post('/refresh-credential', async (c) => {
+    const parsed = z.object({
+      principal: z.object({
+        accountId: z.string().uuid(), projectId: z.string().uuid(), userId: z.string().uuid(),
+        sessionId: z.string().nullish(), keyId: z.string().optional(),
+      }),
+      secretId: z.string().uuid(),
+      failedKeySha256: z.string().regex(/^[0-9a-f]{64}$/),
+    }).safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: 'Invalid credential refresh' }, 400);
+    const { principal, secretId, failedKeySha256 } = parsed.data;
+    // An OpenCode Console login keeps its descriptor's base URL; only the token
+    // and the workspace header change.
+    const opencode = await refreshRefusedOpencodeLogin({
+      projectId: principal.projectId, accountId: principal.accountId, userId: principal.userId,
+      sessionId: principal.sessionId ?? null, secretId, failedKeySha256,
+    });
+    if (opencode) return c.json({ descriptor: { apiKey: opencode.access } });
+    const credential = await refreshRefusedCodexAccountLogin({
+      projectId: principal.projectId, accountId: principal.accountId, userId: principal.userId,
+      sessionId: principal.sessionId ?? null, secretId, failedKeySha256,
+    });
+    if (!credential) return c.json({ descriptor: null });
+    const { apiKey, headers } = codexDescriptor(credential, '');
+    // The refreshed headers replace the descriptor's: keep the conversation's cache.
+    return c.json({ descriptor: { apiKey, headers: { ...headers, ...codexConversationHeaders({ ...principal, sessionId: principal.sessionId ?? undefined }) } } });
+  });
+
+  // One round trip for /authorize, /resolve-route, /resolve-upstream and
+  // /billing. The separate routes stay for older gateways and fallbacks.
+  app.post('/admit', async (c) => {
+    const { token, input } = await c.req.json();
+    return c.json(await admitGatewayRequest(token, input));
+  });
+
+  app.post('/resolve-route', async (c) => {
+    const { principal, input } = await c.req.json();
+    try {
+      const route = await resolveGatewayRoute(principal as AuthedPrincipal, input as ModelRouteInput);
+      return c.json({ route });
+    } catch (err) {
+      // An image route refuses with a typed reason (image_model_unavailable,
+      // not_an_image_model): a 200 body, as /resolve-upstream answers it.
+      if (err instanceof GatewayResolutionError) {
+        return c.json({ route: null, resolutionError: resolutionErrorBody(err) });
+      }
+      throw err;
+    }
+  });
+
+  app.post('/budget-check', async (c) => {
+    const { principal } = await c.req.json();
+    return c.json(await checkBudget(principal as AuthedPrincipal));
+  });
+
+  app.post('/models', async (c) => {
+    const { principal, managedOnly, scope } = await c.req.json();
+    const p = principal as AuthedPrincipal;
+    // `scope:'picker'` backs the standalone gateway's `GET /models?scope=picker`:
+    // the project's SERVABLE set (managed the account may use + connected BYOK
+    // + routing-named ids, ~80KB) — what the web picker shows and what a
+    // sandbox registers on its `kortix` provider at boot. Same composition as
+    // `GET /projects/:id/model-picker` (servableProjectCatalog).
+    if (scope === 'picker' && p.projectId) {
+      const catalog = await servableProjectCatalog({
+        projectId: p.projectId,
+        accountId: p.accountId,
+        principalUserId: p.userId,
+        personalUserId: p.personalUserId === undefined ? p.userId : p.personalUserId,
+      });
+      return c.json({ models: catalog.models });
+    }
+    // `managedOnly` backs the standalone gateway's `GET /models?scope=managed`
+    // — the compact managed lineup a sandbox fetches on boot. Dropping the
+    // projectId is what selects MANAGED_ONLY. An account without the
+    // managed-models entitlement gets an empty set.
+    if (managedOnly === true || scope === 'picker') return c.json({
+      models: gatewayModelCatalog(managedOnly === true ? undefined : p.projectId, {
+        freeManagedOnly: !!p.freeModelsOnly,
+      }),
+    });
+    // The full catalog is discovery, not proof of a connected credential.
+    // Keep plan-blocked managed entries discoverable, with an explicit reason.
+    const full = gatewayModelCatalog(p.projectId);
+    const unavailable = unavailableCatalog(full, gatewayModelCatalog(undefined, {
+      freeManagedOnly: !!p.freeModelsOnly,
+    }));
+    return c.json({ models: Object.fromEntries(Object.entries(full).map(([id, model]) => [
+      id, { ...model, availability: unavailable[id]?.availability ?? 'available' },
+    ])) });
+  });
+
+  app.post('/billing', async (c) => {
+    const { accountId } = await c.req.json();
+    return c.json(await billingVerdict(accountId as string));
+  });
+
+  app.post('/usage', async (c) => {
+    const { event } = await c.req.json();
+    // `requestId` is the settlement's idempotency key (one usage row, one
+    // debit, one refund per request). Without it a retry would bill twice.
+    if (
+      !event ||
+      typeof event !== 'object' ||
+      typeof event.accountId !== 'string' ||
+      typeof event.requestId !== 'string' ||
+      !event.requestId
+    ) {
+      return c.json({ ok: false, error: 'event.accountId and event.requestId are required' }, 400);
+    }
+    await recordGatewayUsage(event as UsageEvent);
+    return c.json({ ok: true });
+  });
+
+  app.post('/trace', async (c) => {
+    const { trace } = await c.req.json();
+    if (!trace || typeof trace.requestId !== 'string') return c.json({ ok: false }, 400);
+    // Best-effort telemetry the gateway already posts fire-and-forget. Never
+    // await it: this write fans out an audit_events row on the 2-backend audit
+    // pool, and under the per-session sequence-lock convoy it waits tens of
+    // seconds for a backend, which became this route's p95 (prod 2026-09-28).
+    // A failed write is logged, never surfaced.
+    void persistGatewayTrace(trace as GatewayTrace).catch((err) => {
+      logger.warn(`[gateway] persistGatewayTrace failed for ${trace.requestId}`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    return c.json({ ok: true });
+  });
+
+  return app;
+}

@@ -1,0 +1,353 @@
+/**
+ * API error classes.
+ *
+ * Every failed backend request is an `ApiError`. `AuthError` (no token),
+ * `BillingError` (HTTP 402) and `RequestTooLargeError` (HTTP 431) are
+ * subclasses, so `err instanceof ApiError` covers them all and `.status` /
+ * `.code` read the same way on each. A 402 body carries a machine `code`
+ * (e.g. `app_account_unfunded`) and fields such as `billing_state` and
+ * `balance`; `BillingError.code` is that code and `BillingError.detail` the
+ * body.
+ */
+
+// ============================================================================
+// Error Classes
+// ============================================================================
+
+/** Constructor fields for {@link ApiError} — everything beyond `message`. */
+export interface ApiErrorFields {
+  status?: number;
+  code?: string;
+  /** Parsed error body (when the response carried JSON). */
+  details?: any;
+  /** Alias of `details` kept for legacy `.data` sniffers. */
+  data?: any;
+  /** The body's `detail` field (FastAPI-style), when present. */
+  detail?: any;
+  response?: Response;
+  /** Full request URL — set on timeouts so it's clear what timed out. */
+  url?: string;
+  /** Request path relative to the backend base — set on timeouts. */
+  endpoint?: string;
+  /** The timeout budget (ms) that elapsed — set on timeouts. */
+  timeout?: number;
+  /** Override `name` (e.g. 'AbortError') while keeping the class. */
+  name?: string;
+  stack?: string;
+}
+
+/**
+ * The REST error `backendApi` produces for any failed request. A real class —
+ * server-side wrappers and non-React hosts can `err instanceof ApiError` and
+ * branch on `.status`/`.code` instead of duck-typing `name === 'ApiError'`
+ * (which still works: `name` is preserved for legacy sniffers).
+ *
+ * `message` is defined as an ENUMERABLE own property on purpose: the previous
+ * ad-hoc `Object.assign(Object.create(Error.prototype), …)` objects had it
+ * enumerable, so spreads and JSON logging of these errors included it.
+ */
+export class ApiError extends Error {
+  status?: number;
+  code?: string;
+  details?: any;
+  data?: any;
+  detail?: any;
+  response?: Response;
+  url?: string;
+  endpoint?: string;
+  timeout?: number;
+
+  constructor(message: string, fields: ApiErrorFields = {}) {
+    super(message);
+    this.name = 'ApiError';
+    const { name, stack, ...rest } = fields;
+    Object.assign(this, rest);
+    if (name) this.name = name;
+    if (stack) this.stack = stack;
+    // `message` is redefined as an enumerable own property on purpose (see the
+    // class doc), but the RAW argument is stored — so a non-string `message`
+    // (e.g. a backend JSON body like `{ "message": { ... } }` that
+    // `makeRequest` failed to coerce) would land here as an object/number and
+    // later crash any consumer doing `err.message.includes(...)` with
+    // `TypeError: t.message.includes is not a function`. Coerce to a string so
+    // `ApiError.message` is ALWAYS a string, matching every consumer's
+    // assumption and the `Error` contract.
+    const messageStr =
+      typeof message === 'string' ? message : message == null ? '' : String(message);
+    Object.defineProperty(this, 'message', {
+      value: messageStr,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * "No token available" — `getToken` returned null, so the request was never
+ * sent (see `api-client.ts`). `code` is always `'NO_SESSION'`.
+ */
+export class AuthError extends ApiError {
+  constructor(message = 'Not authenticated') {
+    super(message, { code: 'NO_SESSION' });
+    this.name = 'AuthError';
+  }
+}
+
+/**
+ * Generic billing error for HTTP 402 responses.
+ * This is the only billing error class the backend actually triggers.
+ */
+export class BillingError extends ApiError {
+  declare status: number;
+  declare detail: { message: string; [key: string]: any };
+
+  constructor(
+    status: number,
+    detail: { message: string; [key: string]: any },
+    message?: string,
+    /** The source error's fields (`code`, `details`, `response`, …). */
+    fields: Omit<ApiErrorFields, 'status' | 'detail'> = {},
+  ) {
+    super(message || detail.message || `Billing Error: ${status}`, { ...fields, status, detail });
+    this.name = 'BillingError';
+  }
+}
+
+/**
+ * HTTP 431 - Request Header Fields Too Large.
+ * Typically when uploading many files at once.
+ */
+export class RequestTooLargeError extends ApiError {
+  declare status: number;
+  declare detail: {
+    message: string;
+    suggestion: string;
+  };
+
+  constructor(
+    status: number = 431,
+    detail?: { message?: string; suggestion?: string },
+    message?: string,
+  ) {
+    const defaultMessage = 'Request headers are too large';
+    const defaultSuggestion = 'Try uploading files one at a time, or reduce the number of files in a single request.';
+
+    super(message || detail?.message || defaultMessage, {
+      status,
+      detail: {
+        message: detail?.message || defaultMessage,
+        suggestion: detail?.suggestion || defaultSuggestion,
+      },
+    });
+    this.name = 'RequestTooLargeError';
+  }
+}
+
+// ============================================================================
+// Retired endpoints
+// ============================================================================
+
+/**
+ * The `code` of the error a retired SDK function fails with. The API deleted
+ * the route, so the function no longer sends a request that can only 404.
+ */
+export const ENDPOINT_RETIRED_CODE = 'ENDPOINT_RETIRED';
+
+/**
+ * The error for a retired SDK function. Its exported name stays until the next
+ * major so no import breaks; calling it fails at once, without a request.
+ */
+export function retiredEndpointError(name: string, instead?: string): ApiError {
+  const hint = instead ? ` ${instead}` : '';
+  return new ApiError(
+    `${name}() is retired: the Kortix API no longer serves this endpoint.${hint}`,
+    { code: ENDPOINT_RETIRED_CODE },
+  );
+}
+
+// ============================================================================
+// Feature-flag gate
+// ============================================================================
+
+/**
+ * The machine-readable `code` every flag-gated route rejects with. Mirrors
+ * `FEATURE_DISABLED_CODE` in `apps/api/src/feature-flags/gate.ts`. Clients
+ * branch on this, never on the prose in `error`.
+ */
+export const FEATURE_DISABLED_CODE = 'feature_disabled' as const;
+
+/**
+ * An {@link ApiError} produced by the server's one feature-flag gate: HTTP 403
+ * with `{ error, code: 'feature_disabled', feature }`. `feature` is the flag
+ * key, so a host can name the feature and point at Customize → Feature flags.
+ */
+export interface FeatureDisabledError extends ApiError {
+  status: 403;
+  code: typeof FEATURE_DISABLED_CODE;
+  feature: string;
+}
+
+/** Read the gate body off whichever field `makeRequest` populated. */
+function featureDisabledBody(error: unknown): Record<string, unknown> | null {
+  if (!(error instanceof ApiError)) return null;
+  if (error.status !== 403 || error.code !== FEATURE_DISABLED_CODE) return null;
+  const body = (error as { details?: unknown }).details ?? (error as { data?: unknown }).data;
+  return body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+}
+
+/**
+ * True when `error` is the server's 403 feature-flag gate. Narrows to
+ * {@link FeatureDisabledError} so `.feature` is typed at the call site.
+ *
+ * Note the `feature` key is read from the response BODY and hoisted onto the
+ * error, because `ApiError` only lifts `status`/`code`/`details` itself.
+ */
+export function isFeatureDisabledError(error: unknown): error is FeatureDisabledError {
+  const body = featureDisabledBody(error);
+  if (!body) return false;
+  if (typeof body.feature === 'string' && !(error as FeatureDisabledError).feature) {
+    (error as { feature?: string }).feature = body.feature;
+  }
+  return true;
+}
+
+/** The gated flag's key, or `null` when `error` is not a feature-flag gate. */
+export function featureDisabledKey(error: unknown): string | null {
+  const body = featureDisabledBody(error);
+  if (!body) return null;
+  const fromError = (error as { feature?: unknown }).feature;
+  if (typeof fromError === 'string') return fromError;
+  return typeof body.feature === 'string' ? body.feature : null;
+}
+
+// ============================================================================
+// Repository disconnected
+// ============================================================================
+
+/**
+ * The `code` the API answers (HTTP 409) when the GitHub App can no longer
+ * reach a project's repository: the App was uninstalled or suspended on the
+ * GitHub owner, or the repository was deleted, renamed, or removed from the
+ * App. The error message names the cause and the fix. Mirrors
+ * `REPOSITORY_DISCONNECTED_CODE` in `apps/api/src/shared/repository-health.ts`.
+ */
+export const REPOSITORY_DISCONNECTED_CODE = 'repository_disconnected' as const;
+
+/** Why a repository is disconnected. A GitHub owner fixes each one on GitHub. */
+export type RepositoryDisconnectedReason = 'app_uninstalled' | 'app_suspended' | 'repo_not_accessible';
+
+const REPOSITORY_DISCONNECTED_REASONS: ReadonlySet<string> = new Set<RepositoryDisconnectedReason>([
+  'app_uninstalled',
+  'app_suspended',
+  'repo_not_accessible',
+]);
+
+/**
+ * True when `error` carries the `repository_disconnected` code: an
+ * {@link ApiError}, a `SessionStartError`, or any error a host built from the
+ * same body. Read by `code`, never by message.
+ */
+export function isRepositoryDisconnectedError(error: unknown): boolean {
+  return !!error && typeof error === 'object' && (error as { code?: unknown }).code === REPOSITORY_DISCONNECTED_CODE;
+}
+
+/**
+ * The disconnect reason stored on a project's git connection
+ * (`ProjectDetail.git_connection`: `status: 'error'` and `last_error_code`),
+ * or `null` when the connection is healthy or failed for another reason.
+ * `last_error_message` on the same connection is the sentence to show.
+ */
+export function repositoryDisconnectedReason(
+  connection: { status?: string | null; last_error_code?: string | null } | null | undefined,
+): RepositoryDisconnectedReason | null {
+  if (connection?.status !== 'error') return null;
+  const code = connection.last_error_code;
+  return code && REPOSITORY_DISCONNECTED_REASONS.has(code) ? (code as RepositoryDisconnectedReason) : null;
+}
+
+// ============================================================================
+// Error Parsing
+// ============================================================================
+
+/**
+ * Parse a raw API error into a BillingError if it's a 402.
+ * Returns the original error otherwise.
+ */
+export function parseBillingError(error: any): Error {
+  const status = error.response?.status || error.status;
+  if (status !== 402) return error;
+
+  const errorData = error.response?.data || error.data || error.detail || {};
+  const detail = errorData?.detail || errorData;
+  return new BillingError(
+    status,
+    {
+      message: detail?.message || error.message || 'Billing error',
+      ...detail,
+    },
+    undefined,
+    {
+      code: error.code,
+      details: error.details,
+      data: error.data,
+      response: error.response,
+      url: error.url,
+      endpoint: error.endpoint,
+    },
+  );
+}
+
+/**
+ * Check if an error is a billing error that should prompt upgrade.
+ */
+export function isBillingError(error: any): boolean {
+  return error instanceof BillingError;
+}
+
+/**
+ * Did the server (or the missing token) refuse this caller's credential?
+ * Decides on `status` (401, 403) or `AuthError`, never on message text: an id or
+ * URL that contains "401" is not an auth failure. Duck-typed on `status` so an
+ * error from a second copy of this class (dual package) still counts.
+ */
+export function isAuthFailure(error: unknown): boolean {
+  if (error instanceof AuthError) return true;
+  const status = (error as { status?: unknown } | null | undefined)?.status;
+  return status === 401 || status === 403;
+}
+
+// ============================================================================
+// UI Formatting
+// ============================================================================
+
+export interface BillingErrorUI {
+  alertTitle: string;
+  alertSubtitle: string;
+}
+
+/**
+ * Format a billing error for display in the pricing modal.
+ */
+export function formatBillingErrorForUI(error: any): BillingErrorUI | null {
+  if (!(error instanceof BillingError)) return null;
+
+  const message = error.detail?.message?.toLowerCase() || '';
+  const isCreditsExhausted =
+    message.includes('credit') ||
+    message.includes('balance') ||
+    message.includes('insufficient');
+
+  if (isCreditsExhausted) {
+    return {
+      alertTitle: 'You ran out of credits',
+      alertSubtitle: 'Upgrade your plan to get more credits and continue using the AI assistant.',
+    };
+  }
+
+  return {
+    alertTitle: 'Billing check failed',
+    alertSubtitle: error.detail?.message || 'Please upgrade to continue.',
+  };
+}

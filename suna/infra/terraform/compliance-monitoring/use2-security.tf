@@ -1,0 +1,615 @@
+# us-east-2 runs the dev stack (environments/dev-us-east-2). Keep its edge,
+# alerting, and backup-failure controls equivalent to the eu-west-2 controls.
+
+data "aws_lbs" "use2" {
+  provider = aws.use2
+}
+
+locals {
+  use2_albs = {
+    for arn in data.aws_lbs.use2.arns : arn => {
+      name      = split("/", arn)[2]
+      dimension = replace(arn, "/^.*:loadbalancer\\//", "")
+    }
+  }
+  # environments/dev-web-us-east-2 associates its own ALB with this WAF.
+  use2_compliance_waf_albs = {
+    for arn, alb in local.use2_albs : arn => alb
+    if alb.name != "kortix-dev-use2-web-alb"
+  }
+  # SQS queues monitored below. Module capture_store (modules/capture-store/
+  # main.tf) composes both names from its caller's `name`; the dev-us-east-2
+  # root passes kortix-dev-use2-capture-store. The value is the alarm stem.
+  use2_sqs_queues = {
+    "kortix-dev-use2-capture-store-manifests"     = "manifests"
+    "kortix-dev-use2-capture-store-manifests-dlq" = "manifests-dlq"
+  }
+}
+
+# ── Regional alert delivery ──────────────────────────────────────────────────
+
+data "aws_iam_policy_document" "use2_alerts_kms" {
+  # checkov:skip=CKV_AWS_109:The account-root statement is the KMS key control plane. Service principals receive data-key operations only.
+  # checkov:skip=CKV_AWS_111:The account root must administer this KMS key. Publishing services are restricted by SourceAccount; SNS delivery decrypt cannot be scoped because delivery calls present no caller context.
+  # checkov:skip=CKV_AWS_356:KMS key policies require Resource "*" because the key ARN does not exist during policy evaluation.
+  statement {
+    sid       = "EnableAccountAdministration"
+    actions   = ["kms:*"]
+    resources = ["*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${local.account_id}:root"]
+    }
+  }
+
+  statement {
+    sid = "AllowComplianceAlertServices"
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+    ]
+    resources = ["*"]
+    principals {
+      type = "Service"
+      identifiers = [
+        "cloudwatch.amazonaws.com",
+        "events.amazonaws.com",
+      ]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [local.account_id]
+    }
+  }
+
+  # SNS decrypts each message just before delivering it to a subscription,
+  # so the encrypted topic cannot reach its Lambda or email subscribers
+  # unless the key policy allows the SNS service principal (see "Allow
+  # access for Key User (SNS Service Principal)" in the Amazon SNS KMS
+  # documentation).
+  statement {
+    sid       = "AllowSNSDeliveryDecryption"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
+    resources = ["*"]
+    principals {
+      type        = "Service"
+      identifiers = ["sns.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_kms_key" "use2_alerts" {
+  provider                = aws.use2
+  description             = "Encrypts us-east-2 compliance alert notifications"
+  enable_key_rotation     = true
+  deletion_window_in_days = 30
+  policy                  = data.aws_iam_policy_document.use2_alerts_kms.json
+  tags = {
+    ManagedBy  = "terraform"
+    Stack      = "compliance-monitoring"
+    Compliance = "soc2"
+  }
+}
+
+resource "aws_kms_alias" "use2_alerts" {
+  provider      = aws.use2
+  name          = "alias/kortix-compliance-alerts"
+  target_key_id = aws_kms_key.use2_alerts.key_id
+}
+
+resource "aws_sns_topic" "use2_alerts" {
+  provider          = aws.use2
+  name              = "kortix-compliance-alerts"
+  kms_master_key_id = aws_kms_key.use2_alerts.arn
+  tags = {
+    ManagedBy  = "terraform"
+    Stack      = "compliance-monitoring"
+    Compliance = "soc2"
+  }
+}
+
+data "aws_iam_policy_document" "use2_alerts" {
+  statement {
+    sid       = "AllowDrataSubscriptionInspection"
+    actions   = ["SNS:GetTopicAttributes", "SNS:ListSubscriptionsByTopic"]
+    resources = [aws_sns_topic.use2_alerts.arn]
+    principals {
+      type        = "AWS"
+      identifiers = [local.drata_autopilot_role_arn]
+    }
+  }
+
+  statement {
+    sid = "TopicOwnerAdministration"
+    actions = [
+      "SNS:AddPermission",
+      "SNS:DeleteTopic",
+      "SNS:GetTopicAttributes",
+      "SNS:ListSubscriptionsByTopic",
+      "SNS:Publish",
+      "SNS:RemovePermission",
+      "SNS:SetTopicAttributes",
+      "SNS:Subscribe",
+    ]
+    resources = [aws_sns_topic.use2_alerts.arn]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${local.account_id}:root"]
+    }
+  }
+
+  statement {
+    sid       = "AllowEventBridgeComplianceAlerts"
+    actions   = ["SNS:Publish"]
+    resources = [aws_sns_topic.use2_alerts.arn]
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:events:us-east-2:${local.account_id}:rule/kortix-*failures"]
+    }
+  }
+
+  statement {
+    sid       = "AllowCloudWatchAlarmPublish"
+    actions   = ["SNS:Publish"]
+    resources = [aws_sns_topic.use2_alerts.arn]
+    principals {
+      type        = "Service"
+      identifiers = ["cloudwatch.amazonaws.com"]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:cloudwatch:us-east-2:${local.account_id}:alarm:*"]
+    }
+  }
+}
+
+resource "aws_sns_topic_policy" "use2_alerts" {
+  provider = aws.use2
+  arn      = aws_sns_topic.use2_alerts.arn
+  policy   = data.aws_iam_policy_document.use2_alerts.json
+}
+
+# Drata DCF-86 also requires every ALB alarm action topic to hold at least one
+# subscription, and us-east-2's topic had none (the us-west-2 and eu-west-2
+# topics carry confirmed email subscriptions managed outside Terraform). An
+# email endpoint stays PendingConfirmation until a human confirms the SNS
+# email, so confirmation remains a human step after apply.
+resource "aws_sns_topic_subscription" "use2_alerts_email" {
+  provider  = aws.use2
+  topic_arn = aws_sns_topic.use2_alerts.arn
+  protocol  = "email"
+  endpoint  = "marko@kortix.com"
+}
+
+# ── WAF and ALB monitoring ────────────────────────────────────────────────────
+
+resource "aws_wafv2_web_acl" "use2" {
+  provider    = aws.use2
+  name        = "kortix-alb-waf"
+  description = "Regional WAF for Kortix production ALBs"
+  scope       = "REGIONAL"
+
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "AWS-Common"
+    priority = 1
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+
+        dynamic "rule_action_override" {
+          for_each = toset([
+            "CrossSiteScripting_BODY",
+            "EC2MetaDataSSRF_BODY",
+            "GenericLFI_BODY",
+            "GenericRFI_BODY",
+            "SizeRestrictions_BODY",
+            # Setup-link tokens (/v1/setup-links/{secret,connectors}/ksl_…) are
+            # encrypted envelopes that grow with the requested fields and pass
+            # 1024 bytes of path; Block returned a CORS-less 403 to the intake
+            # page. The ALB still caps the request line.
+            "SizeRestrictions_URIPATH",
+          ])
+          content {
+            name = rule_action_override.value
+            action_to_use {
+              count {}
+            }
+          }
+        }
+
+        # OAuth 2.0 public clients use loopback redirect URIs. Exclude only this
+        # protocol-defined query value from the common managed rule group. The
+        # API still validates the complete registered redirect URI.
+        scope_down_statement {
+          not_statement {
+            statement {
+              and_statement {
+                statement {
+                  byte_match_statement {
+                    field_to_match {
+                      method {}
+                    }
+                    positional_constraint = "EXACTLY"
+                    search_string         = "GET"
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
+                }
+
+                statement {
+                  byte_match_statement {
+                    field_to_match {
+                      uri_path {}
+                    }
+                    positional_constraint = "EXACTLY"
+                    search_string         = "/v1/oauth/authorize"
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
+                }
+
+                statement {
+                  regex_match_statement {
+                    field_to_match {
+                      single_query_argument {
+                        name = "redirect_uri"
+                      }
+                    }
+                    regex_string = "^http://(localhost|127\\.0\\.0\\.1)"
+                    text_transformation {
+                      priority = 0
+                      type     = "URL_DECODE"
+                    }
+                    text_transformation {
+                      priority = 1
+                      type     = "LOWERCASE"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "common"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWS-KnownBadInputs"
+    priority = 2
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesKnownBadInputsRuleSet"
+        vendor_name = "AWS"
+
+        dynamic "rule_action_override" {
+          for_each = toset([
+            "JavaDeserializationRCE_BODY",
+            "Log4JRCE_BODY",
+            "ReactJSRCE_BODY",
+          ])
+          content {
+            name = rule_action_override.value
+            action_to_use {
+              count {}
+            }
+          }
+        }
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "badinputs"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWS-IpReputation"
+    priority = 3
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesAmazonIpReputationList"
+        vendor_name = "AWS"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "iprep"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "kortix-alb-waf"
+    sampled_requests_enabled   = true
+  }
+
+  tags = local.tags
+}
+
+resource "aws_wafv2_web_acl_association" "use2" {
+  provider     = aws.use2
+  for_each     = local.use2_compliance_waf_albs
+  resource_arn = each.key
+  web_acl_arn  = aws_wafv2_web_acl.use2.arn
+}
+
+data "aws_iam_policy_document" "use2_logs_kms" {
+  # checkov:skip=CKV_AWS_109:The account-root statement is the KMS key control plane. CloudWatch Logs receives cryptographic operations only.
+  # checkov:skip=CKV_AWS_111:The account root must administer this KMS key. Log access is restricted by encryption context.
+  # checkov:skip=CKV_AWS_356:KMS key policies require Resource "*" because the key ARN does not exist during policy evaluation.
+  statement {
+    sid       = "EnableAccountAdministration"
+    actions   = ["kms:*"]
+    resources = ["*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${local.account_id}:root"]
+    }
+  }
+
+  statement {
+    sid = "AllowCloudWatchLogs"
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:GenerateDataKey",
+      "kms:ReEncryptFrom",
+      "kms:ReEncryptTo",
+    ]
+    resources = ["*"]
+    principals {
+      type        = "Service"
+      identifiers = ["logs.us-east-2.amazonaws.com"]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "kms:EncryptionContext:aws:logs:arn"
+      values   = ["arn:aws:logs:us-east-2:${local.account_id}:log-group:*"]
+    }
+  }
+}
+
+resource "aws_kms_key" "use2_logs" {
+  provider                = aws.use2
+  description             = "Encrypts us-east-2 compliance logs"
+  enable_key_rotation     = true
+  deletion_window_in_days = 30
+  policy                  = data.aws_iam_policy_document.use2_logs_kms.json
+  tags = {
+    ManagedBy  = "terraform"
+    Stack      = "compliance-monitoring"
+    Compliance = "soc2"
+  }
+}
+
+resource "aws_kms_alias" "use2_logs" {
+  provider      = aws.use2
+  name          = "alias/kortix-compliance-logs"
+  target_key_id = aws_kms_key.use2_logs.key_id
+}
+
+resource "aws_cloudwatch_log_group" "use2_waf" {
+  provider          = aws.use2
+  name              = "aws-waf-logs-kortix-alb-waf"
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.use2_logs.arn
+  tags              = local.tags
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "use2" {
+  provider                = aws.use2
+  resource_arn            = aws_wafv2_web_acl.use2.arn
+  log_destination_configs = [aws_cloudwatch_log_group.use2_waf.arn]
+}
+
+# DCF-406: every VPC carries a flow log. The dev VPC had none until 2026-10-12
+# (environments/dev-us-east-2 creates it; the delivery role lives in
+# security-baseline/main.tf and monitoring.tf reads it).
+data "aws_vpc" "use2_dev" {
+  provider = aws.use2
+  tags     = { Name = "kortix-dev-use2-vpc" }
+}
+
+resource "aws_cloudwatch_log_group" "use2_flow_logs" {
+  provider          = aws.use2
+  name              = "/vpc/flowlogs"
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.use2_logs.arn
+  tags              = local.tags
+}
+
+resource "aws_flow_log" "use2_dev" {
+  provider             = aws.use2
+  iam_role_arn         = data.aws_iam_role.flow_logs.arn
+  log_destination      = aws_cloudwatch_log_group.use2_flow_logs.arn
+  log_destination_type = "cloud-watch-logs"
+  traffic_type         = "ALL"
+  vpc_id               = data.aws_vpc.use2_dev.id
+  tags                 = local.tags
+}
+
+# Drata test 233 (CIS 5.4): the default security group allows no traffic.
+# Nothing attaches it; every ECS service carries its own group.
+resource "aws_default_security_group" "use2_dev" {
+  provider = aws.use2
+  vpc_id   = data.aws_vpc.use2_dev.id
+
+  ingress = []
+  egress  = []
+
+  tags = {
+    ManagedBy  = "terraform"
+    Stack      = "compliance-monitoring"
+    Compliance = "soc2"
+    Name       = "kortix-dev-use2-default"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "use2_target_response_time" {
+  provider            = aws.use2
+  for_each            = local.use2_albs
+  alarm_name          = "kortix-alb-${each.value.name}-target-response-time"
+  alarm_description   = "SOC2 DCF-86: ALB target response time is elevated"
+  namespace           = "AWS/ApplicationELB"
+  metric_name         = "TargetResponseTime"
+  dimensions          = { LoadBalancer = each.value.dimension }
+  statistic           = "Average"
+  period              = 300
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  threshold           = 30
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.use2_alerts.arn]
+  tags                = local.alarm_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "use2_elb_5xx" {
+  provider            = aws.use2
+  for_each            = local.use2_albs
+  alarm_name          = "kortix-alb-${each.value.name}-elb-5xx"
+  alarm_description   = "SOC2 DCF-86: ALB server errors detected"
+  namespace           = "AWS/ApplicationELB"
+  metric_name         = "HTTPCode_ELB_5XX_Count"
+  dimensions          = { LoadBalancer = each.value.dimension }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  threshold           = 5
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.use2_alerts.arn]
+  tags                = local.alarm_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "use2_unhealthy_hosts" {
+  provider            = aws.use2
+  for_each            = local.use2_albs
+  alarm_name          = "kortix-alb-${each.value.name}-unhealthy-hosts"
+  alarm_description   = "SOC2 DCF-86: ALB has unhealthy targets"
+  namespace           = "AWS/ApplicationELB"
+  metric_name         = "UnHealthyHostCount"
+  dimensions          = { LoadBalancer = each.value.dimension }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.use2_alerts.arn]
+  tags                = local.alarm_tags
+
+  # The alb_alarm_reconciler Lambda (functions/alb_alarm_reconciler.py) owns the
+  # dimensions of this alarm: it writes {TargetGroup, LoadBalancer}, because
+  # UnHealthyHostCount has no LoadBalancer-only series. Terraform manages the
+  # alarm but must not reset the dimensions to the LoadBalancer-only set, which
+  # reads no data and so never fires (treat_missing_data = notBreaching).
+  lifecycle {
+    ignore_changes = [dimensions]
+  }
+}
+
+# ── SQS manifest queue monitoring (Drata test 115) ───────────────────────────
+#
+# Drata test 115 (DCF-86) fails every SQS queue without a CloudWatch alarm on
+# ApproximateAgeOfOldestMessage that notifies a subscribed SNS topic. The AWS
+# provider has no SQS discovery data source to mirror data.aws_lbs, so this
+# root repeats the dev manifest queue names literally (local.use2_sqs_queues,
+# composed by module capture_store for the environments/dev-us-east-2
+# caller); scripts/test_sqs_message_age_alarms.py keeps the three trees in
+# agreement.
+resource "aws_cloudwatch_metric_alarm" "use2_sqs_oldest_message_age" {
+  provider            = aws.use2
+  for_each            = local.use2_sqs_queues
+  alarm_name          = "kortix-sqs-${each.value}-oldest-message-age"
+  alarm_description   = "SOC2 DCF-86: SQS manifest queue message age is elevated"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  dimensions          = { QueueName = each.key }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  threshold           = 900
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.use2_alerts.arn]
+  tags                = local.alarm_tags
+
+  # Manifest events normally ingest in seconds (the capture-events-reader
+  # long-polls the queue continuously in apps/api/src/workers/capture-worker.ts),
+  # so this fires on a sustained stall: the oldest message waits 15 minutes
+  # for three consecutive 5-minute periods before alerting, above any deploy
+  # blip; Maximum cannot average a spike away. An empty queue publishes no
+  # series, so treat_missing_data = notBreaching keeps it green. Nothing in
+  # apps/api consumes the DLQ: it is a parking lot, so its oldest message age
+  # grows monotonically once a dead message arrives — firing and staying red
+  # is the intended signal for failed captures.
+}
+
+# ── Backup failure monitoring ─────────────────────────────────────────────────
+
+resource "aws_cloudwatch_event_rule" "use2_backup_failures" {
+  provider      = aws.use2
+  name          = "kortix-backup-job-failures"
+  description   = "Alert on failed, aborted, or expired AWS Backup jobs"
+  event_pattern = local.backup_failure_pattern
+  tags          = merge(local.tags, { Control = "DCF-99" })
+}
+
+resource "aws_cloudwatch_event_rule" "use2_snapshot_failures" {
+  provider      = aws.use2
+  name          = "kortix-ebs-snapshot-failures"
+  description   = "Alert on failed EBS snapshot operations"
+  event_pattern = local.snapshot_failure_pattern
+  tags          = merge(local.tags, { Control = "DCF-99" })
+}
+
+resource "aws_cloudwatch_event_target" "use2_backup_failures" {
+  provider  = aws.use2
+  rule      = aws_cloudwatch_event_rule.use2_backup_failures.name
+  target_id = "compliance-sns"
+  arn       = aws_sns_topic.use2_alerts.arn
+}
+
+resource "aws_cloudwatch_event_target" "use2_snapshot_failures" {
+  provider  = aws.use2
+  rule      = aws_cloudwatch_event_rule.use2_snapshot_failures.name
+  target_id = "compliance-sns"
+  arn       = aws_sns_topic.use2_alerts.arn
+}

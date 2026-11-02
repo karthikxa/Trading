@@ -1,0 +1,230 @@
+---
+title: "How we turn meetings into notes and action items"
+description: The meeting agent we run on Kortix — connected to Google Calendar, the call transcript, and Linear. After each call it writes structured notes and files action items as tickets assigned to the right people.
+date: "2026-04-01"
+author: team
+tags:
+  - Productivity
+  - Case Study
+  - Team
+template: meeting-notes
+---
+
+Most of what a meeting decides is lost within a day. The notes get taken by
+whoever remembers to, the action items live in someone's head, and the follow-up
+happens only if a person turns the conversation into tasks afterward — which is
+the step that gets skipped when the next meeting starts.
+
+We handle this by putting an agent on the calendar. After each call it writes
+structured notes and files the action items as tickets, assigned to the people
+who own them. This writes up how we run that on Kortix — the connections, the
+steps, and the guardrails.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Connected systems">Google Calendar · Transcript · Linear</Fact>
+  <Fact label="Trigger">Meeting ends</Fact>
+  <Fact label="Mode">Trigger-driven · assignee-routed</Fact>
+</KeyFacts>
+
+## The problem
+
+Turning a conversation into notes and tasks is real work, and it lands on
+whoever's least busy at the end of the call — which on a small team is nobody.
+Decisions get made, owners get named out loud, and then the meeting ends and none
+of it is written down. A week later the thing everyone agreed on hasn't started
+because it was never a task.
+
+Recording the call solves the record but not the follow-up: nobody rewatches an
+hour of video to find the three things they agreed to do. The gap is between the
+transcript and the tickets, and closing it by hand is exactly the chore that
+falls off.
+
+## What we built
+
+Our calendar in **Google Calendar** is connected to an agent running on Kortix.
+When a call ends, it spawns its own isolated session — a cloud sandbox — with
+scoped access to what note-taking needs: the event, the transcript, and Linear.
+It writes structured notes, pulls out the action items, and files each one as a
+ticket assigned to the person who owns it.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the meeting recap skill and the 15-minute trigger, and
+opens a change request for you to review. Prefer clicks? Choose **Use this
+template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a meeting notes agent in this project.
+
+1. Create the agent agents/meeting-notes.md. Its job is to turn each finished meeting's transcript into structured notes and Linear tickets. It may use the Google Calendar, Google Drive and Linear connectors.
+
+2. Create the skill skills/meeting-recap/SKILL.md with these rules:
+   - Work only on meetings that ended since the last check and have a transcript attached. Skip an event with no transcript.
+   - Write the notes in three parts: decisions, discussion, and next steps phrased as "[Owner] will [do X] by [when]". Attach them to the meeting record.
+   - Assign each action item to the owner named in the transcript, or to the area owner in the ownership map in memory.
+   - When no owner is clear, file the ticket unassigned with the ambiguity in its description. Never guess.
+   - Only create tickets. Never close, reassign or edit a ticket that existed before the meeting, and never post to chat.
+
+3. Add a cron trigger meeting-ended-check to kortix.yaml. It runs the meeting-notes agent every 15 minutes with the prompt "Load the meeting-recap skill and write notes and tickets for every meeting that ended since the last check."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your calendar, the drive that
+holds your transcripts and your ticket tracker. Credentials are brokered
+server-side and never enter the agent's machine.
+
+<ToolList>
+  <ToolNeed name="Google Calendar" domain="calendar.google.com" tag="Required" alternatives={[['Microsoft Outlook', 'outlook.com']]}>
+    Finds finished meetings and their attendees.
+  </ToolNeed>
+  <ToolNeed name="Google Drive" domain="drive.google.com" tag="Required" alternatives={[['Google Meet', 'meet.google.com'], ['Zoom', 'zoom.us']]}>
+    Reads the meeting transcript.
+  </ToolNeed>
+  <ToolNeed name="Linear" domain="linear.app" tag="Required" alternatives={[['Jira', 'atlassian.com'], ['Asana', 'asana.com'], ['GitHub', 'github.com']]}>
+    Files a ticket for each action item.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **meeting-notes** agent
+and send this prompt. Read the notes and check each ticket's assignee before you
+let the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Write up the meetings that ended since the last check.
+
+1. Find Google Calendar events that ended in the last 15 minutes and have a transcript attached.
+2. Read each event and its full transcript from Google Drive.
+3. Write notes with decisions, discussion and next steps, and attach them to the meeting record.
+4. File one Linear ticket in the Team team for each action item, assigned to its owner.
+5. When an owner is not clear, file the ticket unassigned and say why. Do not touch any ticket that existed before the meeting.`}
+/>
+
+</Step>
+<Step title="Let the 15-minute schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every 15 minutes, each run in a new session on its own cloud computer.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: meeting-ended-check
+    name: Meeting-ended check
+    on:
+      cron: "0 */15 * * * *"
+    run:
+      agent: meeting-notes
+      prompt: Load the meeting-recap skill and write notes and tickets for every meeting that ended since the last check.`}
+/>
+
+</Step>
+<Step title="File unclear action items unassigned">
+
+The agent assigns a ticket only when the transcript names the owner or the
+ownership map in memory covers the topic. Every other action item becomes an
+unassigned ticket with the ambiguity in its description, for a person to
+triage. The agent only creates tickets. It never closes, reassigns or edits
+existing work.
+
+</Step>
+<Step title="Read the notes and tickets">
+
+Each meeting ends with notes on the meeting record and tickets in Linear.
+This is what a run looks like in the session:
+
+<ExampleRun
+  title="Meeting-ended check · 11:15"
+  message="Load the meeting-recap skill and write notes and tickets for every meeting that ended since the last check."
+  worked="Worked for 1m 52s"
+  tools={[
+    'google calendar · list events',
+    'google drive · read transcript',
+    'google calendar · update event',
+    'linear · create issue × 5',
+  ]}
+  note="Illustrative example. Your counts depend on your meetings."
+>
+  Wrote notes for **1** meeting with **2** decisions. Filed **5** tickets in
+  Linear: **4** assigned to the owners named in the call, and **1** unassigned
+  because nobody took the pricing page copy.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  Connect the calendar via a **trigger** on meeting end, give the agent scoped
+  **connectors** into the transcript, the notes, and Linear, encode our notes
+  conventions as **skills** and **memory**, and route each action item to the
+  person who owns it.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Pre-meeting brief"
+  code="Fifteen minutes before each recurring meeting, add the open tickets from its last session to the event description."
+/>
+
+<CopyBlock
+  title="Weekly decisions log"
+  code="Every Friday, collect the decisions from this week's meeting notes into one Google Doc in Drive, grouped by meeting."
+/>
+
+<CopyBlock
+  title="Point to related work"
+  code="When an action item matches an open Linear ticket, link that ticket in the new ticket's description instead of repeating its context."
+/>
+
+## Guardrails
+
+Giving an agent the ability to file tickets and assign work is a trust question.
+The relevant controls on Kortix:
+
+- **Isolation.** Each meeting runs in its own isolated sandbox. The session can
+  read the transcript and context it needs, and only the notes and tickets it
+  produces are written back out.
+- **Scoped secrets.** The Calendar and Linear credentials are encrypted in the
+  secrets manager and injected into the sandbox at runtime, scoped to the agents you grant them to.
+- **Human approval gate.** An action item the agent can't confidently assign is
+  flagged for a person instead of routed to a guess.
+- **Everything is code.** The agent's persona, skills, and permissions are files
+  in the repo — versioned and changed through a reviewed **change request**, not a
+  dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every call" label="Notes written and action items filed" />
+  <Stat value="Assigned" label="Tickets routed to the person who owns them" />
+  <Stat value="3 systems" label="The calendar, the transcript, and Linear in one agent" />
+</StatGrid>
+
+The follow-up that used to depend on someone remembering now arrives as notes and
+tickets minutes after the call ends. The team reads a clean summary and finds
+their tasks already in Linear, instead of reconstructing the meeting from memory a
+week later.
+
+The setup relies on four pieces: sandbox isolation per meeting, a secrets manager
+to broker the Calendar and Linear tokens, a flag for anything the agent can't
+confidently assign, and memory that carries context forward across meetings.

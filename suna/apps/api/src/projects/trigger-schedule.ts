@@ -1,0 +1,198 @@
+import { createHash } from 'node:crypto';
+import { CRON_MIN_INTERVAL_SECONDS, type TriggerFilter, cronIntervalError } from '@kortix/manifest-schema';
+import { Cron } from 'croner';
+
+export interface TriggerScheduleSpec {
+  slug: string;
+  /** `monitor` never schedules — `nextTriggerScheduleSlot` returns null for it,
+   *  so the cron sweep's `trigger_type = 'cron'` claim can never see one. */
+  type: 'cron' | 'webhook' | 'event' | 'app' | 'change_request';
+  enabled: boolean;
+  cron: string | null;
+  runAt: string | null;
+  timezone: string;
+  agent: string;
+  model: string | null;
+  promptTemplate: string;
+  sessionMode: string;
+  pinnedSessionId: string | null;
+  sessionKey: string | null;
+  filter: TriggerFilter | null;
+  /** type=event only — see GitTriggerSpec. Absent for every other type. */
+  event?: { connector: string; account?: string | null; source?: string | null; type: string; config: Record<string, unknown> } | null;
+  /** type=app only — see GitTriggerSpec.app. */
+  app?: string | null;
+  /** See GitTriggerSpec.target. */
+  target?: { app: string; path: string; method: 'POST' | 'GET'; payload?: Record<string, unknown> } | null;
+  /** type=cron only — see GitTriggerSpec.everySeconds. */
+  everySeconds?: number;
+  /** Session reminder only — see GitTriggerSpec.reminder. */
+  reminder?: { everySeconds: number | null } | null;
+  /** type=cron only — see GitTriggerSpec.maxLatenessSeconds. */
+  maxLatenessSeconds?: number;
+  /** Any type — see GitTriggerSpec.maxRunsPerHour / maxRunsPerDay. */
+  maxRunsPerHour?: number;
+  maxRunsPerDay?: number;
+  /** See GitTriggerSpec.overlap. */
+  overlap?: 'skip' | 'allow';
+}
+
+export function validateTriggerTimezone(timezone: string): string | null {
+  if (!timezone.trim()) return 'timezone must not be empty';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone });
+    return null;
+  } catch {
+    return `timezone must be a valid IANA name like "UTC" or "America/Los_Angeles" (got "${timezone}")`;
+  }
+}
+
+export function validateTriggerCron(cron: string, timezone: string): string | null {
+  const timezoneError = validateTriggerTimezone(timezone);
+  if (timezoneError) return timezoneError;
+  try {
+    new Cron(cron, { paused: true, timezone });
+    return null;
+  } catch (error) {
+    return `invalid cron expression "${cron}": ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+function withSourceIfSet<T extends { source?: string | null }>({ source, ...rest }: T) {
+  return source ? { ...rest, source } : rest;
+}
+
+export function triggerScheduleRevision(spec: TriggerScheduleSpec): string {
+  const filter = spec.filter
+    ? Object.fromEntries(
+        Object.entries(spec.filter).sort(([left], [right]) => left.localeCompare(right)),
+      )
+    : null;
+  const scheduleConfig = {
+    type: spec.type,
+    enabled: spec.enabled,
+    cron: spec.cron,
+    runAt: spec.runAt,
+    timezone: spec.timezone,
+    agent: spec.agent,
+    model: spec.model,
+    promptTemplate: spec.promptTemplate,
+    sessionMode: spec.sessionMode,
+    pinnedSessionId: spec.pinnedSessionId,
+    sessionKey: spec.sessionKey,
+    filter,
+    // Same rule again: event fields join the hash only for an event trigger.
+    // `source` joins the event only when set, so earlier event revisions stay put.
+    ...(spec.type === 'event' ? { event: spec.event ? withSourceIfSet(spec.event) : null } : {}),
+    ...(spec.type === 'app' ? { app: spec.app ?? null } : {}),
+    // Joins only when set, like the fields below: a spec without a target keeps its revision.
+    ...(spec.target ? { target: spec.target } : {}),
+    ...(spec.everySeconds ? { everySeconds: spec.everySeconds } : {}),
+    // Same rule as the monitor fields: absent for every manifest trigger.
+    ...(spec.reminder ? { reminderEverySeconds: spec.reminder.everySeconds } : {}),
+    // Joins only when set: the claim reads it from the stored spec, which is
+    // rewritten only on a revision change. Unset keeps every revision put.
+    ...(spec.maxLatenessSeconds ? { maxLatenessSeconds: spec.maxLatenessSeconds } : {}),
+    // Run caps (KRTX-1721): the same rule. Cron, event and monitor fires read
+    // them from the stored spec.
+    ...(spec.maxRunsPerHour ? { maxRunsPerHour: spec.maxRunsPerHour } : {}),
+    ...(spec.overlap ? { overlap: spec.overlap } : {}),
+    ...(spec.maxRunsPerDay ? { maxRunsPerDay: spec.maxRunsPerDay } : {}),
+  };
+  return createHash('sha256').update(JSON.stringify(scheduleConfig)).digest('hex');
+}
+
+/**
+ * Default spread for identical cron expressions across projects, in ms.
+ *
+ * A cron expression is shared by every project that copied the same manifest,
+ * so an unjittered fleet fires as ONE burst. `0 0 3 * * *` in the project
+ * starter put 756 projects on the same millisecond and exhausted the sandbox
+ * provider every night (2026-08-26: 779 provisions at 03:00, 654 failed, 346
+ * of them `capacity` — while every other hour of that day was 100% healthy at
+ * 6–28 provisions). Set `KORTIX_TRIGGER_SCHEDULE_JITTER_WINDOW_MS=0` to
+ * restore exact-to-the-second firing.
+ */
+export function triggerScheduleJitterWindowMs(): number {
+  const raw = Number(process.env.KORTIX_TRIGGER_SCHEDULE_JITTER_WINDOW_MS);
+  if (Number.isFinite(raw) && raw >= 0) return Math.floor(raw);
+  return 1_800_000; // 30 minutes
+}
+
+/**
+ * Deterministic offset in `[0, windowMs)` for one trigger.
+ *
+ * Deterministic on purpose: the catalog writes `next_fire_at` and the claim
+ * sweep RECOMPUTES it from the same spec. A random offset would make those two
+ * disagree and either double-fire or skip a slot. Same key ⇒ same offset,
+ * forever, on every API instance.
+ */
+export function triggerScheduleJitterMs(key: string, windowMs: number): number {
+  if (windowMs <= 0) return 0;
+  return createHash('sha256').update(key).digest().readUInt32BE(0) % windowMs;
+}
+
+/**
+ * The jitter actually applied to one cron, capped at a quarter of its own
+ * period. Without the cap a 30-minute spread would mangle a five-minute cron;
+ * with it, a five-minute cron spreads by at most 75s and a daily cron gets the
+ * full window.
+ */
+function cronJitterMs(cron: Cron, after: Date, key: string, windowMs: number): number {
+  if (windowMs <= 0) return 0;
+  const first = cron.nextRun(after);
+  if (!first) return 0;
+  const second = cron.nextRun(first);
+  if (!second) return 0;
+  const periodMs = second.getTime() - first.getTime();
+  const cappedWindow = Math.min(windowMs, Math.floor(periodMs / 4));
+  return triggerScheduleJitterMs(key, cappedWindow);
+}
+
+export function nextTriggerScheduleSlot(
+  spec: Pick<TriggerScheduleSpec, 'type' | 'enabled' | 'cron' | 'runAt' | 'timezone' | 'reminder' | 'everySeconds'>,
+  after: Date,
+  options: { includePastOneOff?: boolean; jitterKey?: string; jitterWindowMs?: number } = {},
+): Date | null {
+  if (spec.type !== 'cron' || !spec.enabled) return null;
+  if (spec.runAt) {
+    const runAtMs = Date.parse(spec.runAt);
+    if (Number.isNaN(runAtMs)) return null;
+    if (runAtMs > after.getTime()) return new Date(runAtMs);
+    return options.includePastOneOff ? new Date(runAtMs) : null;
+  }
+  // An `every` period (a schedule's, or a reminder's) runs from the claim, so a missed slot never bunches up.
+  const everySeconds = spec.everySeconds ?? spec.reminder?.everySeconds;
+  if (everySeconds) return new Date(after.getTime() + everySeconds * 1000);
+  if (!spec.cron) return null;
+  const error = validateTriggerCron(spec.cron, spec.timezone);
+  if (error) throw new Error(error);
+  const cron = new Cron(spec.cron, { paused: true, timezone: spec.timezone });
+  // KRTX-1721: writes refuse a cron that fires more than once a minute. A
+  // stored one (written before the floor) runs at most once a minute.
+  if (cronIntervalError(spec.cron, spec.timezone)) {
+    return cron.nextRun(new Date(after.getTime() + CRON_MIN_INTERVAL_SECONDS * 1000 - 1));
+  }
+  if (!options.jitterKey) return cron.nextRun(after);
+  const jitterMs = cronJitterMs(
+    cron,
+    after,
+    options.jitterKey,
+    options.jitterWindowMs ?? triggerScheduleJitterWindowMs(),
+  );
+  if (jitterMs <= 0) return cron.nextRun(after);
+  // Search from `after - jitter` so the jittered result is still strictly after
+  // `after` — otherwise a slot whose base already passed would be skipped.
+  const base = cron.nextRun(new Date(after.getTime() - jitterMs));
+  return base ? new Date(base.getTime() + jitterMs) : null;
+}
+
+export function initialTriggerScheduleSlot(
+  spec: Pick<TriggerScheduleSpec, 'type' | 'enabled' | 'cron' | 'runAt' | 'timezone'>,
+  now: Date,
+  options: { jitterKey?: string; jitterWindowMs?: number } = {},
+): Date | null {
+  return nextTriggerScheduleSlot(spec, now, { ...options, includePastOneOff: true });
+}

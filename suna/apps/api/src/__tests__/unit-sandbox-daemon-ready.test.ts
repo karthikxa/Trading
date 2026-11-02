@@ -1,0 +1,125 @@
+import { describe, expect, test } from 'bun:test';
+
+import { waitForDaemonRuntimeReady } from '../projects/lib/sandbox-daemon-ready';
+
+type HealthBody = { opencode?: string; status?: string; harness?: { id: string; state: string } };
+
+// A fake fetch that walks a fixed sequence of /kortix/health responses. 'fail'
+// models an unreachable probe (non-2xx); the last entry repeats once exhausted.
+function fakeHealthFetch(
+  sequence: Array<HealthBody | 'fail'>,
+  calls: Array<{ url: string; headers: unknown }> = [],
+): typeof fetch {
+  let i = 0;
+  return (async (url: unknown, init?: { headers?: unknown }) => {
+    calls.push({ url: String(url), headers: init?.headers });
+    const step = sequence[Math.min(i, sequence.length - 1)];
+    i += 1;
+    if (step === 'fail') return new Response('unreachable', { status: 503 });
+    return new Response(JSON.stringify(step), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as unknown as typeof fetch;
+}
+
+// Virtual clock so polling advances without real timers.
+function fakeClock() {
+  let t = 0;
+  return {
+    now: () => t,
+    sleep: async (ms: number) => {
+      t += ms;
+    },
+  };
+}
+
+describe('waitForDaemonRuntimeReady', () => {
+  test('resolves true once opencode reports ok (the post-restart window clears)', async () => {
+    const clock = fakeClock();
+    const ready = await waitForDaemonRuntimeReady({
+      previewUrl: 'http://127.0.0.1:1/',
+      providerHeaders: {},
+      deps: {
+        fetchImpl: fakeHealthFetch([
+          { opencode: 'starting' },
+          { opencode: 'starting' },
+          { opencode: 'ok', status: 'ok' },
+        ]),
+        sleep: clock.sleep,
+        now: clock.now,
+      },
+    });
+    expect(ready).toBe(true);
+  });
+
+  test('reads the harness block before the flat pre-W3 field (a pi box)', async () => {
+    const clock = fakeClock();
+    const ready = await waitForDaemonRuntimeReady({
+      previewUrl: 'http://127.0.0.1:1/',
+      budgetMs: 1_000,
+      deps: {
+        fetchImpl: fakeHealthFetch([
+          // The flat field says ok; the harness block says the process is still starting.
+          { opencode: 'ok', harness: { id: 'pi', state: 'starting' } },
+          { harness: { id: 'pi', state: 'ok' } },
+        ]),
+        sleep: clock.sleep,
+        now: clock.now,
+      },
+    });
+    expect(ready).toBe(true);
+    expect(clock.now()).toBe(300);
+  });
+
+  test('keeps polling through a transient unreachable probe, then succeeds', async () => {
+    const clock = fakeClock();
+    const calls: Array<{ url: string; headers: unknown }> = [];
+    const ready = await waitForDaemonRuntimeReady({
+      previewUrl: 'http://127.0.0.1:1/',
+      providerHeaders: { 'x-provider-traffic-token': 'tok' },
+      deps: {
+        fetchImpl: fakeHealthFetch(['fail', { opencode: 'starting' }, { opencode: 'ok' }], calls),
+        sleep: clock.sleep,
+        now: clock.now,
+      },
+    });
+    expect(ready).toBe(true);
+    // Every probe carries the provider headers: a provider edge that needs its
+    // traffic token answers every probe without it as unreachable.
+    expect(calls).toHaveLength(3);
+    for (const call of calls) {
+      expect(call.url).toBe('http://127.0.0.1:1/kortix/health');
+      expect(call.headers).toEqual({ 'x-provider-traffic-token': 'tok' });
+    }
+  });
+
+  test('short-circuits false on a boot error — waiting cannot fix repo/init failures', async () => {
+    const clock = fakeClock();
+    const ready = await waitForDaemonRuntimeReady({
+      previewUrl: 'http://127.0.0.1:1/',
+      providerHeaders: {},
+      deps: {
+        fetchImpl: fakeHealthFetch([{ opencode: 'down', status: 'error' }]),
+        sleep: clock.sleep,
+        now: clock.now,
+      },
+    });
+    expect(ready).toBe(false);
+  });
+
+  test('gives up false when the budget is exhausted (cold boot overruns)', async () => {
+    const clock = fakeClock();
+    const ready = await waitForDaemonRuntimeReady({
+      previewUrl: 'http://127.0.0.1:1/',
+      providerHeaders: {},
+      budgetMs: 1_000,
+      deps: {
+        fetchImpl: fakeHealthFetch([{ opencode: 'starting' }]),
+        sleep: clock.sleep,
+        now: clock.now,
+      },
+    });
+    expect(ready).toBe(false);
+  });
+});

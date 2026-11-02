@@ -1,0 +1,275 @@
+import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { ApiError } from '@kortix/sdk';
+import { isRetryableError, messageFor } from '@kortix/ui/workspace/new/use-create-workspace';
+import { uiSourcePath } from '@/test-utils/read-source';
+
+const pageSource = readFileSync(join(import.meta.dir, 'new-workspace-page.tsx'), 'utf8');
+const hookSource = readFileSync(uiSourcePath('workspace/new/use-create-workspace.ts'), 'utf8');
+
+/**
+ * Comments stripped, same convention as `new-workspace-page.test.ts` and
+ * `advanced-fields.test.ts`. Both files' doc comments already discuss retry,
+ * 502/503, and `messageFor` in prose — a raw `source.toContain(...)` /
+ * `not.toContain(...)` check would risk matching (or missing) the comment
+ * rather than the actual code.
+ */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+const page = stripComments(pageSource);
+const hook = stripComments(hookSource);
+
+/**
+ * The page renders two `role="alert"` regions — the post-submit error block
+ * (the retry affordance lives here) and the upfront plan-cap block (KRTX-2495,
+ * gated on `capState && status === 'idle'`). These guards must anchor on the
+ * RETRY region specifically, so resolve it by its own gate instead of "the
+ * first alert in the file", which the cap block would otherwise satisfy.
+ */
+function alertIndices(): number[] {
+  const indices: number[] = [];
+  let at = page.indexOf('role="alert"');
+  while (at !== -1) {
+    indices.push(at);
+    at = page.indexOf('role="alert"', at + 1);
+  }
+  return indices;
+}
+
+function errorAlertIndex(): number {
+  const found = alertIndices().find((at) => {
+    const guardStart = page.lastIndexOf('{', at);
+    return page.slice(guardStart, at).includes("status === 'error'");
+  });
+  expect(found).toBeDefined();
+  return found as number;
+}
+
+function errorAlertRegion(): string {
+  const alertStart = errorAlertIndex();
+  const containerStart = page.lastIndexOf('<div', alertStart);
+  expect(containerStart).toBeGreaterThan(0);
+  return page.slice(containerStart, page.indexOf('</form>', alertStart));
+}
+
+describe('/new failure states: pre-existing coverage (regression pin)', () => {
+  // Raw source (comments intact) on purpose for this block, matching the
+  // brief's own draft: these are simple positive pins on documented facts —
+  // e.g. `PROVISION_IN_FLIGHT_CODE`'s own doc comment names the literal
+  // `409 provision_in_flight` code it wraps — not JSX-structure checks, so a
+  // match landing in a comment is still real evidence the fact is documented
+  // where a future reader would find it. Comments are stripped further down,
+  // where new assertions need positional precision this task's own new doc
+  // comments would otherwise satisfy by accident.
+  test('a 403 names the missing permission rather than saying "failed"', () => {
+    expect(hookSource).toContain('owner or admin access');
+  });
+
+  test('a 409 in-flight is retried with backoff, not surfaced as an error', () => {
+    expect(hookSource).toContain('provision_in_flight');
+    expect(hookSource).toContain('RETRY_DELAY_MS');
+  });
+
+  test('the page renders the error region', () => {
+    expect(pageSource).toContain('role="alert"');
+  });
+
+  test('the form is re-enabled after a failure so the user can edit and resubmit', () => {
+    expect(pageSource).toContain("status === 'creating'");
+  });
+});
+
+describe('/new failure states: the retry affordance is wired to the UI', () => {
+  test('the retry control sits inside the role="alert" region and calls retry(), not create() again', () => {
+    const alertStart = errorAlertIndex();
+    expect(alertStart).toBeGreaterThan(0);
+    // The nearest enclosing element's opening tag.
+    const containerStart = page.lastIndexOf('<div', alertStart);
+    expect(containerStart).toBeGreaterThan(0);
+    const region = page.slice(containerStart, page.indexOf('</form>', alertStart));
+
+    expect(region).toContain('retry');
+    // A retry must never re-run create() directly — that path exists to
+    // mint/reuse a key from the CURRENT form state, not the failed attempt's
+    // persisted one. `retry` (use-create-workspace.ts) already closes over
+    // the last submitted state and reuses its key; calling create() again
+    // from the page would bypass that and risk composing a different
+    // payload from whatever the fields hold now.
+    expect(region).not.toContain('onClick={() => void create(state)}');
+    expect(region).not.toContain('onClick={create}');
+  });
+
+  test('the retry control is gated on canRetry so the 503 case (see below) can suppress it', () => {
+    const region = errorAlertRegion();
+
+    // Must be a real conditional on canRetry, not just the word floating
+    // nearby in a comment or unrelated prop.
+    const gated = /canRetry\s*(\?|&&)/.test(region);
+    expect(gated).toBe(true);
+  });
+
+  test('the retry control reuses the Log out treatment — no third button weight', () => {
+    // `Log out` (top-right) is the page's original secondary control:
+    // variant="ghost" size="sm" className="text-muted-foreground
+    // hover:text-foreground". The retry control must match that exact
+    // color/weight treatment rather than inventing another style (e.g. a
+    // full-contrast button).
+    const alertStart = errorAlertIndex();
+    expect(alertStart).toBeGreaterThan(0);
+    const containerStart = page.lastIndexOf('<div', alertStart);
+    const region = page.slice(containerStart, page.indexOf('</form>', alertStart));
+    // Assert it ON the retry control, not just somewhere in the file — the
+    // count below cannot tell which element carries the treatment.
+    expect(region).toContain('text-muted-foreground hover:text-foreground');
+
+    // One user of the treatment left in this file: `Try again`. `Back to
+    // projects` moved into the shared `AccountTopBar` with the rest of the top
+    // row; since #9687 it is the shared back pill (components/ui/back-pill.tsx).
+    // Log out moved into that bar's account menu.
+    const treatmentMatches = page.match(/text-muted-foreground hover:text-foreground/g) ?? [];
+    expect(treatmentMatches).toHaveLength(1);
+    const bar = readFileSync(join(import.meta.dir, '../account-top-bar.tsx'), 'utf8');
+    expect(bar).toContain('backPillClass(');
+  });
+
+  test('the retry control does not appear when status !== "error" — every alert region is status-gated', () => {
+    // The page has two alert regions, each with its own gate: the post-submit
+    // error block on `status === 'error'` and the upfront plan-cap block on
+    // `capState && status === 'idle'` (KRTX-2495). Neither may render outside
+    // its status, and no alert may exist ungated — a new alert without a
+    // status condition fails here.
+    const gates = alertIndices().map((at) => {
+      const guardStart = page.lastIndexOf('{', at);
+      // The guard runs from the condition's `{` up to the element it opens;
+      // compare on the condition text itself.
+      return page.slice(guardStart + 1, at).replace(/\s+/g, ' ').trim();
+    });
+    expect(gates).toHaveLength(2);
+    expect(gates.some((g) => g.includes("capState && status === 'idle'"))).toBe(true);
+    expect(gates.some((g) => g.includes("status === 'error'"))).toBe(true);
+  });
+});
+
+describe('/new failure states: 503 gets its own message and no retry', () => {
+  test('the hook reuses isManagedGitUnavailableError instead of writing a second detector', () => {
+    expect(hook).toContain('isManagedGitUnavailableError');
+    // Paired negative: the 503-detection string itself lives ONLY in
+    // provision-errors.ts. If this file duplicated it, the two checks
+    // could silently drift apart.
+    expect(hook).not.toContain('is not configured on this server');
+  });
+
+  // KRTX-1754: a 502/503 that carries the API's real reason shows it — the
+  // API's own middleware preserves the body across its 502→503 rewrite, and
+  // the stream route carries the reason in-band. The generic retry line is
+  // for the reason-less shapes only (see the two placeholder tests below).
+  test('messageFor gives a 502 with a server reason the reason, not the generic', () => {
+    expect(messageFor(new ApiError('Bad Gateway', { status: 502 }))).toBe('Bad Gateway');
+  });
+
+  test('messageFor keeps the generic retry hint when the 502 body was lost (a proxy replaced it)', () => {
+    expect(messageFor(new ApiError('Provision failed: HTTP 503', { status: 503 }))).toBe(
+      'Could not create the workspace. Try again.',
+    );
+  });
+
+  test('messageFor gives 503 a distinct message that never tells the user to retry', () => {
+    const msg = messageFor(
+      new ApiError('Managed git is not configured on this server', { status: 503 }),
+    );
+    expect(msg).not.toBe('Could not create the workspace. Try again.');
+    expect(msg).not.toContain('Try again');
+    expect(msg).toContain("isn't set up on this server");
+  });
+
+  test('isRetryableError is false for the managed-git-unavailable 503, true for a 502', () => {
+    expect(isRetryableError(new ApiError('Bad Gateway', { status: 502 }))).toBe(true);
+    expect(
+      isRetryableError(
+        new ApiError('Managed git is not configured on this server', { status: 503 }),
+      ),
+    ).toBe(false);
+  });
+
+  test('isRetryableError is true for an ordinary network error — an unrecognized failure defaults to retryable', () => {
+    expect(isRetryableError(new Error('network error'))).toBe(true);
+  });
+});
+
+/**
+ * Fix round 1 finding: `isRetryableError`'s first version was a negation of
+ * ONE special case (`!isManagedGitUnavailableError(error)`), which meant a
+ * 400 evaluated `true` — offering a retry that resends `lastState`
+ * completely unedited into a deterministic validation failure. It would
+ * fail identically on every click; only editing the name (through the
+ * primary submit) can help. Nothing in the suite above exercised a 400
+ * through `isRetryableError` at all — that gap is why it slipped.
+ */
+describe('isRetryableError: classification by what can actually change, not "everything except 503"', () => {
+  test('a 400 is NOT retryable — retry() would resend the exact payload that just failed validation', () => {
+    expect(isRetryableError(new ApiError('Name must be 1-64 characters', { status: 400 }))).toBe(
+      false,
+    );
+  });
+
+  test('a 403 IS retryable — role/account membership is external state that can change before a later click', () => {
+    expect(isRetryableError(new ApiError('Owner or admin role required', { status: 403 }))).toBe(
+      true,
+    );
+  });
+});
+
+describe('/new failure states: the plan cap offers the upgrade dialog (dev, 2026-09-17)', () => {
+  // "Free accounts are limited to 1 project. Upgrade to a paid plan to create
+  // more." named a way out and offered none. The hook now reports the cap as
+  // its own flag and the page answers it with the upgrade dialog.
+  test('the hook exposes limitReached, derived from the shared isProjectLimitError', () => {
+    expect(hook).toContain("limitReached = status === 'error' && isProjectLimitError(lastError)");
+    // `phase` (KRTX-1543) returns beside it: the streamed provisioning phase
+    // the handoff renders.
+    expect(hook).toContain('canRetry, limitReached, phase };');
+  });
+
+  test('messageFor keeps the server text for the cap — it already says what to do', () => {
+    expect(
+      messageFor(
+        new ApiError(
+          'Free accounts are limited to 1 project. Upgrade to a paid plan to create more.',
+          { status: 403, code: 'project_limit_reached' },
+        ),
+      ),
+    ).toBe('Free accounts are limited to 1 project. Upgrade to a paid plan to create more.');
+  });
+
+  test('the cap is not retryable, so the upgrade action never sits beside Try again', () => {
+    expect(
+      isRetryableError(
+        new ApiError('Free accounts are limited to 1 project.', {
+          status: 403,
+          code: 'project_limit_reached',
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test('the page renders the upgrade action inside the alert region, gated on limitReached and billing', () => {
+    const alertStart = page.indexOf('role="alert"');
+    const containerStart = page.lastIndexOf('<div', alertStart);
+    const region = page.slice(containerStart, page.indexOf('</form>', alertStart));
+    expect(region).toMatch(/limitReached && isBillingEnabled\(\)\s*\?/);
+    expect(region).toContain("t('actions.upgrade')");
+  });
+
+  test('the action opens the upgrade dialog for the account the create targeted', () => {
+    const alertStart = page.indexOf('role="alert"');
+    const region = page.slice(alertStart, page.indexOf('</form>', alertStart));
+    expect(region).toContain("reason: 'subscription_required'");
+    expect(region).toContain('accountId: effectiveAccountId ?? undefined');
+    // The dialog host is the one already mounted for the plan step.
+    expect(page).toContain('isBillingEnabled() && <GlobalUpgradeModal />');
+  });
+});

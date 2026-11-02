@@ -1,0 +1,468 @@
+/**
+ * Pure logic behind `components/session/turn/user-message.tsx`: parsing the
+ * visible text out of a user message, its meta line, the queued/interrupted
+ * state, and which messages an edit rewinds. Ported from apps/web
+ * `features/session/message-parsing.tsx`, `turn/user-message.tsx`,
+ * `turn/queued-prompt-bubbles.tsx`, and `session-chat.tsx`.
+ */
+
+import { isSessionAttachmentRef, type SessionLogBlock, type SessionLogMessage, type SessionPromptPart, type SessionLogTurn } from '@kortix/sdk';
+import { localUriOf } from './optimistic-parts';
+import { messageAborted } from './turn-error';
+import {
+  expandPastedContent,
+  fileTagBlocks,
+  promptFileReferenceXml,
+  referenceHeaders,
+  removeSpans,
+  replaceSpans,
+  selfClosingTags,
+  serializePromptWithPastes,
+  splitPastedContent,
+  tagBlocks,
+  type ChannelPlatform,
+  type PastedContent,
+  type TagBlock,
+} from '@kortix/shared';
+
+// ─── Web metrics ─────────────────────────────────────────────────────────────
+
+/**
+ * apps/web sets `--spacing: 0.23rem`, so one Tailwind step renders at 3.68px
+ * there, not 4px. The user message mirrors web's rendered pixels; this is the
+ * one place that conversion lives.
+ */
+export const WEB_SPACING_PX = 0.23 * 16;
+
+/** Rendered pixels of `n` web spacing steps (`px-3.5` → `webSpace(3.5)`). */
+export function webSpace(steps: number): number {
+  return steps * WEB_SPACING_PX;
+}
+
+export interface MessageAttachment {
+  key: string;
+  filename: string;
+  mime?: string;
+  src?: string;
+  /** An upload ref's workspace path. Unset on a native file part. */
+  path?: string;
+  /** An upload ref's saved copy (`kortix-attachment://…`), when the API kept one. */
+  attachment?: string;
+  /** The picked file on the device (an optimistic send, COR-185): shown until the server echo replaces the message. */
+  localUri?: string;
+  /** A `<pasted_content>` block: a text tile that opens its full text. */
+  pasted?: PastedContent;
+}
+
+// ─── Text parsing ────────────────────────────────────────────────────────────
+
+export interface ParsedFileRef {
+  path: string;
+  mime: string;
+  filename: string;
+  attachment?: string;
+}
+
+export interface ParsedSessionRef {
+  id: string;
+  title: string;
+}
+
+export interface ParsedUserMessageText {
+  /** The text the bubble shows. */
+  text: string;
+  /** Every `<reply_context>` block's quoted text, in document order. */
+  quotes: string[];
+  /** Uploaded files referenced by `<file>` tags. */
+  files: ParsedFileRef[];
+  /** `<session_ref>` mentions. */
+  sessions: ParsedSessionRef[];
+  /** `<pasted_content>` blocks, in order: drawn as "Pasted text" tiles. */
+  pasted: PastedContent[];
+}
+
+const XML_ATTR_ESCAPES: Readonly<Record<string, string>> = {
+  '&': '&amp;',
+  '"': '&quot;',
+  "'": '&#39;',
+  '<': '&lt;',
+  '>': '&gt;',
+};
+
+/** One-pass attribute escape; same table as the web composer (project-preamble.ts). */
+function escapeAttr(value: string): string {
+  return value.replace(/[&"'<>]/g, (ch) => XML_ATTR_ESCAPES[ch]!);
+}
+
+/**
+ * The `Referenced sessions` block the composer appends for session mentions.
+ * Same wire shape as the web composer (`buildSessionRefsBlock` in
+ * apps/web/src/lib/project-preamble.ts): ids and titles are attribute-escaped,
+ * so a title with a quote cannot break the tag.
+ */
+export function buildSessionRefsBlock(sessions: readonly { id: string; title: string }[]): string {
+  if (!sessions.length) return '';
+  const refs = sessions
+    .map((s) => `<session_ref id="${escapeAttr(s.id)}" title="${escapeAttr(s.title)}" />`)
+    .join('\n');
+  return `Referenced sessions (${SESSION_REFERENCE_HINT}):\n${refs}`;
+}
+
+function unescapeAttr(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+/** Pass every `<file …>…</file>` block through `replace(whole, attrs)`. */
+function replaceFileTags(text: string, replace: (whole: string, attrs: string) => string): string {
+  return replaceSpans(text, fileTagBlocks(text), (block) => replace(text.slice(block.index, block.end), block.attrs));
+}
+
+/** Remove every `<tag …/>` and then every `Referenced <noun> (…):` header line. */
+function stripReferences(text: string, tag: string, noun: string): string {
+  const withoutTags = removeSpans(text, selfClosingTags(text, tag));
+  return removeSpans(withoutTags, referenceHeaders(withoutTags, noun));
+}
+
+/** The parenthesised text of the `Referenced sessions (…):` header. */
+const SESSION_REFERENCE_HINT = 'use the session_context tool to fetch details when needed';
+
+const REPLY_CONTEXT_OPEN = '<reply_context';
+const REPLY_CONTEXT_CLOSE = '</reply_context>';
+const NEWLINE = 10;
+/** A regex `\w` without the `u` flag: `[A-Za-z0-9_]`. */
+const WORD_CHAR = /\w/;
+
+/**
+ * Every `<reply_context …>…</reply_context>` block, as web's
+ * `replyContextBlocks` (`apps/web/src/features/session/reply-context.ts`) and
+ * the regex `/<reply_context\b[^>]*>([\s\S]*?)<\/reply_context>\n?/g` found
+ * them — the same spans at the same indices — in linear time:
+ * - the open tag tolerates attributes, but the name must end there
+ *   (`<reply_contextx>` is not a block);
+ * - each block ends at the first `</reply_context>` after its open tag;
+ * - at most ONE `\n` after the close tag goes with the block, so a block on
+ *   its own line does not leave a blank line behind; a leading newline stays;
+ * - an unclosed block matches nothing and stays in the text.
+ *
+ * The regex re-scanned the rest of the message for every opener that never
+ * closed: 240k characters took ~1 s with Bun, more with Hermes, on the JS
+ * thread on every mount. `tagBlocks` cannot stand in: its `attributes: 'any'`
+ * accepts `<reply_contextx>` as an opener. Every search here starts where the
+ * previous one stopped, and the scan stops once a `>` or a closer is absent.
+ */
+function replyContextBlocks(text: string): TagBlock[] {
+  const blocks: TagBlock[] = [];
+  let from = 0;
+  for (;;) {
+    const index = text.indexOf(REPLY_CONTEXT_OPEN, from);
+    if (index === -1) return blocks;
+    const after = index + REPLY_CONTEXT_OPEN.length;
+    // `\b`: the name ends in a word character, so the next one must not be.
+    if (after < text.length && WORD_CHAR.test(text[after]!)) {
+      from = after;
+      continue;
+    }
+    const gt = text.indexOf('>', after);
+    if (gt === -1) return blocks;
+    const closeAt = text.indexOf(REPLY_CONTEXT_CLOSE, gt + 1);
+    if (closeAt === -1) return blocks;
+    let end = closeAt + REPLY_CONTEXT_CLOSE.length;
+    if (text.charCodeAt(end) === NEWLINE) end += 1;
+    blocks.push({ index, end, attrs: text.slice(after, gt), body: text.slice(gt + 1, closeAt) });
+    from = end;
+  }
+}
+
+/** Undo the one escape `serializeReplyContext` applies on the wire (web `reply-context.ts`). */
+function decodeReplyContextBody(body: string): string {
+  return body.trim().split('&lt;/reply_context&gt;').join('</reply_context>');
+}
+
+/**
+ * Every `<reply_context>` block in `text`, in order, with all of them
+ * removed from the returned text. Blank-line runs left behind by removal are
+ * collapsed and the result is trimmed. An unclosed `<reply_context>` (no
+ * matching close tag) does not match and is left in the text untouched.
+ * Mirrors web's `stripReplyContexts`, but also returns the quotes (web keeps
+ * that in `parseReplyContexts`) since mobile has one call site for both.
+ */
+export function extractReplyContexts(text: string): { text: string; quotes: string[] } {
+  const blocks = replyContextBlocks(text);
+  const quotes = blocks.map((block) => decodeReplyContextBody(block.body));
+  return { text: removeSpans(text, blocks).replace(/\n{3,}/g, '\n\n').trim(), quotes };
+}
+
+/**
+ * Strip every structured block a user message carries and keep what the user
+ * typed. Order matches web's pipeline: pastes, kortix_system, reply context,
+ * uploads, project refs, file refs, agent refs, session refs. Pastes come out
+ * first: a paste is the user's text, so a tag inside one is paste content.
+ *
+ * Every tag is found with a scanner from `@kortix/shared/tag-blocks`, never a
+ * lazy regex. The regexes re-scanned the rest of the message for each tag that
+ * never closed: a 240k-character message took ~1 s per tag kind with Bun on a
+ * laptop, more with Hermes on a phone, on every mount of the message.
+ */
+export function parseUserMessageText(raw: string): ParsedUserMessageText {
+  const { text: withoutPastes, pastes } = splitPastedContent(raw ?? '');
+  // A command template can repeat its args, and so a paste: one tile per id (web does the same).
+  const seen = new Set<string>();
+  const pasted = pastes.filter((paste) => !seen.has(paste.id) && Boolean(seen.add(paste.id)));
+  let text = withoutPastes;
+  text = removeSpans(text, tagBlocks(text, 'kortix_system', { attributes: 'any', ignoreCase: true }));
+  text = text.replace(/\n{3,}/g, '\n\n').trim();
+
+  const { text: withoutQuotes, quotes } = extractReplyContexts(text);
+  text = withoutQuotes;
+
+  const files: ParsedFileRef[] = [];
+  text = replaceFileTags(text, (whole, attrs) => {
+    const pick = (key: string): string | undefined => {
+      const m = attrs.match(new RegExp(`\\b${key}="([^"]*?)"`));
+      return m ? unescapeAttr(m[1]!) : undefined;
+    };
+    const path = pick('path');
+    const filename = pick('filename');
+    if (path === undefined && filename === undefined) return whole;
+    const attachment = pick('attachment');
+    files.push({ path: path ?? '', mime: pick('mime') ?? '', filename: filename ?? '', ...(attachment ? { attachment } : {}) });
+    return '';
+  }).trim();
+
+  text = stripReferences(text, 'project_ref', 'projects');
+  text = stripReferences(text, 'file_ref', 'files');
+  text = stripReferences(text, 'agent_ref', 'agents').trim();
+
+  const sessions: ParsedSessionRef[] = [];
+  text = text.replace(/<session_ref\s+id="([^"]*?)"\s+title="([^"]*?)"\s*\/>/g, (_, id: string, title: string) => {
+    // `buildSessionRefsBlock` (and the web composer) escape both attributes.
+    sessions.push({ id: unescapeAttr(id), title: unescapeAttr(title) });
+    return '';
+  });
+  text = removeSpans(text, referenceHeaders(text, 'sessions', SESSION_REFERENCE_HINT)).trim();
+
+  return { text, quotes, files, sessions, pasted };
+}
+
+/** A harness `file` block carries the v1 file part of a text/plain or directory mention. */
+type FileData = { filename?: string; mime?: string; url?: string };
+
+/**
+ * The prompt of a user message: its visible text (text blocks the harness did
+ * not write, joined by a line break) parsed once, and the attachment tiles in
+ * order: pastes, `<file>` uploads, then the message's files (attachment
+ * blocks, and harness `file` blocks: a text/plain or directory mention).
+ */
+export function parseUserMessageBlocks(blocks: ReadonlyArray<SessionLogBlock>) {
+    const rawText = blocks
+      .flatMap((b) => (b.type === 'text' && !b.synthetic && b.text.trim() ? [b.text] : []))
+      .join('\n');
+    const content = parseUserMessageText(rawText);
+    return { rawText, content, attachments: messageAttachments(blocks, content) };
+}
+
+/**
+ * The tiles of `content`'s pastes and `<file>` uploads, then the message's
+ * files. An image a `<file>` tag names (`source_path`, pi) draws once, through
+ * its tag, as on web (`normalizeAttachments`).
+ */
+export function messageAttachments(
+  blocks: ReadonlyArray<SessionLogBlock>,
+  content: Pick<ParsedUserMessageText, 'files' | 'pasted'>,
+): MessageAttachment[] {
+    const tagPaths = new Set(content.files.map((f) => f.path));
+    const files = blocks.flatMap((b): MessageAttachment[] => {
+      if (b.type === 'attachment') {
+        if (b.source_path && tagPaths.has(b.source_path)) return [];
+        return [{ key: b.id, filename: b.name || 'File', mime: b.mime, src: b.url, localUri: localUriOf(b.id) }];
+      }
+      if (b.type !== 'harness' || b.kind !== 'file') return [];
+      const data = (b.data ?? {}) as FileData;
+      return [{ key: b.id, filename: data.filename || 'File', mime: data.mime ?? '', src: data.url, localUri: localUriOf(b.id) }];
+    });
+    return [
+      ...content.pasted.map((paste) => ({ key: `pasted:${paste.id}`, filename: 'Pasted text', pasted: paste })),
+      ...content.files.map((f, i) => ({
+        key: `upload:${i}:${f.path}`,
+        filename: f.filename || f.path.split('/').pop() || 'File',
+        mime: f.mime,
+        src: f.path || undefined,
+        path: f.path,
+        ...(f.attachment ? { attachment: f.attachment } : {}),
+      })),
+      ...files,
+    ];
+}
+
+/**
+ * What an edited prompt sends again for the attachments the editor kept.
+ * Port of web `editResendAttachments` (`features/session/turn/user-message.tsx`).
+ *
+ * A saved copy (`kortix-attachment://`) or a native file part rides as a URL
+ * part; the API writes a saved copy into the sandbox again. An upload whose
+ * saved copy is missing is still in the sandbox, so its `<file>` ref is resent
+ * as text, joined under the trimmed `text` (refs alone when the text is blank).
+ * A tile with neither source has nothing to resend. A kept paste is written
+ * back as its `<pasted_content>` block, ahead of the text, as the composer does.
+ */
+export function editResendAttachments(
+  kept: readonly MessageAttachment[],
+  text: string,
+): {
+  fileParts: SessionPromptPart[];
+  text: string;
+} {
+  const fileParts: SessionPromptPart[] = [];
+  const refs: string[] = [];
+  const pastes: PastedContent[] = [];
+  for (const { src, path, attachment, filename, mime, pasted } of kept) {
+    if (pasted) {
+      pastes.push(pasted);
+      continue;
+    }
+    const type = mime || 'application/octet-stream';
+    const url = isSessionAttachmentRef(attachment) ? attachment : path ? undefined : src;
+    if (url) fileParts.push({ type: 'file', mime: type, url, filename });
+    else if (path) refs.push(promptFileReferenceXml({ path, mime: type, filename }));
+  }
+  const joined = refs.join('\n');
+  const body = text.trim();
+  const withRefs = joined ? (body ? `${body}\n\n${joined}` : joined) : text;
+  return { fileParts, text: serializePromptWithPastes(withRefs, pastes) };
+}
+
+/** What "Copy" writes: each paste as its text, not its XML, then the typed text. */
+export function userMessageCopyText(text: string, pasted: readonly PastedContent[]): string {
+  return pasted.length > 0 ? expandPastedContent(serializePromptWithPastes(text, [...pasted])) : text;
+}
+
+/**
+ * What a `/command` bubble shows (`body`) and what Copy/Edit use (`prompt`).
+ *
+ * `detectCommandFromText` returns the args raw, and a quote the user replied
+ * with sits in them as a `<reply_context>` block — so the body drew the raw
+ * XML under the quote the bubble already draws from `quotes`. Stripping here
+ * draws the quote once and keeps the XML out of the copied/edited text.
+ */
+export function commandMessageText(
+  name: string,
+  args: string | undefined,
+): { body: string; prompt: string } {
+  // A paste in the args is drawn as a tile (`content.pasted`), never as XML.
+  const body = extractReplyContexts(splitPastedContent(args ?? '').text).text;
+  return { body, prompt: body ? `/${name} ${body}` : `/${name}` };
+}
+
+/**
+ * Bottom margin under quote `index` of `count` in a bubble: the `mb-2` gap to
+ * whatever follows, and none under the last quote when no text follows —
+ * otherwise a quote-only bubble ends on an empty band.
+ */
+export function quoteMarginBottom(index: number, count: number, hasText: boolean): number {
+  return index < count - 1 || hasText ? webSpace(2) : 0;
+}
+
+// ─── Sent time (the long-press menu) ─────────────────────────────────────────
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** `3:42 PM`: the device's local time, 12-hour. */
+function clockTime(date: Date): string {
+  const hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours % 12 === 0 ? 12 : hours % 12}:${minutes} ${hours < 12 ? 'AM' : 'PM'}`;
+}
+
+function sameDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+/**
+ * When a message was sent, in full, for the long-press menu's first line
+ * (Jay, 2026-09-27: it replaced the "just now" under the bubble): "Today,
+ * 3:42 PM", "Yesterday, 9:05 AM", "Sep 3, 12:15 AM", "Dec 31, 2025, 12:00 PM".
+ * Empty without a time.
+ */
+export function userMessageSentLabel({ timestamp, now }: { timestamp: number | null; now: number }): string {
+  if (timestamp === null) return '';
+  const sent = new Date(timestamp);
+  const today = new Date(now);
+  const yesterday = new Date(now);
+  yesterday.setDate(today.getDate() - 1);
+  const day = sameDay(sent, today)
+    ? 'Today'
+    : sameDay(sent, yesterday)
+      ? 'Yesterday'
+      : sent.getFullYear() === today.getFullYear()
+        ? `${MONTHS[sent.getMonth()]} ${sent.getDate()}`
+        : `${MONTHS[sent.getMonth()]} ${sent.getDate()}, ${sent.getFullYear()}`;
+  return `${day}, ${clockTime(sent)}`;
+}
+
+// ─── Channel card ────────────────────────────────────────────────────────────
+
+/** The channel card's label for where a message was sent: an email's subject, else its channel or chat (web `ChannelOrigin`). */
+export function channelPlaceLabel(platform: ChannelPlatform): string {
+  return platform === 'Email' ? 'Subject' : 'Channel';
+}
+
+// ─── Queued prompt state ─────────────────────────────────────────────────────
+
+/** `interrupted`: a Stop ended the turn before a step opened under this message; it runs with the next send. */
+export type QueuedPromptState = 'queued' | 'interrupted';
+
+/** A plainly queued bubble says nothing — the dim is the state. */
+export function queuedPromptStatusLabel(state: QueuedPromptState): string | null {
+  return state === 'interrupted' ? 'Queued — runs with your next message' : null;
+}
+
+/**
+ * User messages a Stop stranded: the session is idle, the newest turn with
+ * replies ended by abort, and these turns came after it with nothing under
+ * them. Port of `interruptedTurnIds` in web `session-chat.tsx`.
+ */
+export function interruptedTurnIds(
+  turns: ReadonlyArray<Pick<SessionLogTurn, 'id' | 'assistant'>>,
+  sessionWorking: boolean,
+): Set<string> {
+  if (sessionWorking) return new Set();
+  let newestWithContent = -1;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i]!.assistant.length > 0) {
+      newestWithContent = i;
+      break;
+    }
+  }
+  if (newestWithContent < 0 || newestWithContent === turns.length - 1) return new Set();
+  const last = turns[newestWithContent]!.assistant.at(-1);
+  if (!last || !messageAborted(last)) return new Set();
+  return new Set(turns.slice(newestWithContent + 1).map((t) => t.id));
+}
+
+// ─── Edit (rewind) ───────────────────────────────────────────────────────────
+
+/**
+ * The messages an edit at `messageId` abandons: the boundary and every message
+ * after it, ordered by `created_at` with the id as the tie-break (the order
+ * the server's `MessageV2.latest()` uses). Empty when the boundary is unknown.
+ */
+export function rewindHiddenMessageIds(
+  messages: ReadonlyArray<Pick<SessionLogMessage, 'message_id' | 'created_at'>>,
+  messageId: string,
+): string[] {
+  const at = (m: Pick<SessionLogMessage, 'created_at'>) => Date.parse(m.created_at) || 0;
+  const sorted = [...messages].sort((a, b) => {
+    const ca = at(a);
+    const cb = at(b);
+    if (ca !== cb) return ca - cb;
+    return a.message_id < b.message_id ? -1 : a.message_id > b.message_id ? 1 : 0;
+  });
+  const index = sorted.findIndex((m) => m.message_id === messageId);
+  if (index < 0) return [];
+  return sorted.slice(index).map((m) => m.message_id);
+}

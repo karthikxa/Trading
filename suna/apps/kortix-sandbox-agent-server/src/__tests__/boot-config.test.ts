@@ -1,0 +1,350 @@
+/**
+ * The config release store, OUTSIDE the repository.
+ *
+ * A release is built from the archive the API serves and verified file by file
+ * against the Git blob IDs in the descriptor. The archive store is untrusted
+ * transport, so a changed byte, a missing file or an extra file is refused.
+ * Real repositories and real `git archive | gzip -n` output; nothing mocks Git.
+ */
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { spawnSync } from 'node:child_process'
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import {
+  activateBootConfig,
+  deactivateBootConfig,
+  extractConfigArchive,
+  materializeRelease,
+  pruneBootConfigs,
+  quarantineRelease,
+  readBootConfigPointer,
+  readQuarantine,
+  readReleaseManifest,
+  releaseDir,
+  verifyRelease,
+  writeReleaseManifest,
+  type ReleaseManifest,
+} from '@/services/config-provider/boot-config'
+import { buildRelease, commitAll, git, initRepo, write, type BuiltRelease } from './helpers/config-release-fixtures'
+
+const REL = '.kortix/opencode'
+let root: string
+let repo: string
+let store: string
+let overlay: string
+
+function manifestOf(release: BuiltRelease): ReleaseManifest {
+  const d = release.descriptor
+  return {
+    release_id: d.release_id!,
+    source_commit: d.source_commit!,
+    config_dir: REL,
+    config_tree_id: d.config_tree_id!,
+    archive_url: d.archive!.url,
+    archive_bytes: d.archive!.bytes,
+    files: d.files!,
+    compiled_governance: d.compiled_governance,
+    compiled_governance_etag: d.compiled_governance_etag,
+  }
+}
+
+function release(message: string, governance: string | null = null): BuiltRelease {
+  return buildRelease(repo, commitAll(repo, message), { governance })
+}
+
+async function materialize(built: BuiltRelease) {
+  return materializeRelease({ root: store, manifest: manifestOf(built), archive: built.archive, managedSkillsDir: overlay })
+}
+
+const verify = (built: BuiltRelease, dir: string) =>
+  verifyRelease({ dir, files: built.descriptor.files!, configDir: REL, managedSkillsDir: overlay })
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'kortix-release-store-'))
+  repo = join(root, 'repo')
+  store = join(root, 'store')
+  overlay = join(root, 'managed-skills')
+  initRepo(repo)
+  write(overlay, 'kortix-cli/SKILL.md', 'OVERLAY\n')
+  write(repo, `${REL}/opencode.jsonc`, '{}\n')
+  write(repo, `${REL}/agents/kortix.md`, 'PROMPT v1\n')
+  write(repo, `${REL}/skills/pdf/SKILL.md`, 'PDF\n')
+  write(repo, `${REL}/skills/pdf/scripts/run.sh`, '#!/bin/sh\necho hi\n')
+  chmodSync(join(repo, `${REL}/skills/pdf/scripts/run.sh`), 0o755)
+  write(repo, `${REL}/skills/kortix-cli/SKILL.md`, 'STALE REPO COPY\n')
+  write(repo, `${REL}/package.json`, '{"dependencies":{"@opencode-ai/plugin":"1.17.11"}}\n')
+  write(repo, 'app.ts', 'export const x = 1\n')
+})
+
+afterEach(() => {
+  spawnSync('chmod', ['-R', 'u+w', root])
+  rmSync(root, { recursive: true, force: true })
+})
+
+describe('materializeRelease', () => {
+  test('builds <root>/<release_id> from the archive with exactly the listed files', async () => {
+    const built = release('v1')
+    const { dir } = await materialize(built)
+    expect(dir).toBe(join(store, built.descriptor.release_id!))
+    expect(readFileSync(join(dir, REL, 'agents/kortix.md'), 'utf8')).toBe('PROMPT v1\n')
+    expect(readFileSync(join(dir, 'app.ts'), 'utf8')).toBe('export const x = 1\n')
+    expect(await verify(built, dir)).toBe(true)
+    expect(await readReleaseManifest(store, built.descriptor.release_id!)).toEqual(manifestOf(built))
+  })
+
+  test('it never writes the repository', async () => {
+    const built = release('v1')
+    const head = git(repo, 'rev-parse', 'HEAD')
+    await materialize(built)
+    expect(git(repo, 'status', '--porcelain')).toBe('')
+    expect(git(repo, 'rev-parse', 'HEAD')).toBe(head)
+  })
+
+  test('project files are read-only; an executable keeps its execute bit', async () => {
+    const { dir } = await materialize(release('v1'))
+    expect(() => accessSync(join(dir, REL, 'agents/kortix.md'), constants.W_OK)).toThrow()
+    expect(() => writeFileSync(join(dir, REL, 'agents/kortix.md'), 'EDIT\n')).toThrow()
+    accessSync(join(dir, REL, 'skills/pdf/scripts/run.sh'), constants.X_OK)
+  })
+
+  test('a tracked symlink is extracted as a link to its committed target', async () => {
+    symlinkSync('kortix.md', join(repo, `${REL}/agents/alias.md`))
+    const built = release('symlink')
+    const { dir } = await materialize(built)
+    expect(readlinkSync(join(dir, REL, 'agents/alias.md'))).toBe('kortix.md')
+    expect(await verify(built, dir)).toBe(true)
+  })
+})
+
+describe('extractConfigArchive refuses an archive that does not match its descriptor', () => {
+  test('a changed byte', async () => {
+    const built = release('v1')
+    const files = structuredClone(built.descriptor.files!)
+    const agent = files.find(([path]) => path === `${REL}/agents/kortix.md`)!
+    agent[2] = 'f'.repeat(40)
+    await expect(extractConfigArchive(built.archive, files, join(root, 'x'))).rejects.toThrow(/does not match its blob ID/)
+    expect(existsSync(join(root, 'x'))).toBe(false)
+  })
+
+  test('a file the descriptor does not list', async () => {
+    const built = release('v1')
+    const files = built.descriptor.files!.filter(([path]) => path !== `${REL}/opencode.jsonc`)
+    await expect(extractConfigArchive(built.archive, files, join(root, 'x'))).rejects.toThrow(/unlisted files: \.kortix\/opencode\/opencode.jsonc/)
+  })
+
+  test('a listed file the archive lacks', async () => {
+    const built = release('v1')
+    const files = [...built.descriptor.files!, ['agents/extra.md', '100644', 'e'.repeat(40)] as const] as never
+    await expect(extractConfigArchive(built.archive, files, join(root, 'x'))).rejects.toThrow(/missing agents\/extra.md/)
+  })
+
+  test('an archive from another tree, and bytes that are not gzip', async () => {
+    const first = release('v1')
+    write(repo, `${REL}/agents/kortix.md`, 'PROMPT v2\n')
+    const second = release('v2')
+    await expect(extractConfigArchive(second.archive, first.descriptor.files!, join(root, 'x'))).rejects.toThrow(/blob ID/)
+    await expect(extractConfigArchive(Buffer.from('not gzip'), first.descriptor.files!, join(root, 'x'))).rejects.toThrow(/decompress/)
+  })
+
+  test('a file list with a path inside a listed file', async () => {
+    const built = release('v1')
+    const files = [...built.descriptor.files!, [`${REL}/opencode.jsonc/x`, '100644', 'e'.repeat(40)]] as never
+    await expect(extractConfigArchive(built.archive, files, join(root, 'x'))).rejects.toThrow(/inside a listed file/)
+  })
+})
+
+describe('verifyRelease', () => {
+  test('a tampered, a deleted, or an ADDED project file fails verification', async () => {
+    const built = release('v1')
+    const { dir } = await materialize(built)
+    spawnSync('chmod', ['-R', 'u+w', dir])
+    writeFileSync(join(dir, REL, 'agents/kortix.md'), 'TAMPERED\n')
+    expect(await verify(built, dir)).toBe(false)
+    writeFileSync(join(dir, REL, 'agents/kortix.md'), 'PROMPT v1\n')
+    expect(await verify(built, dir)).toBe(true)
+    writeFileSync(join(dir, REL, 'agents/rogue.md'), 'ADDED\n')
+    expect(await verify(built, dir)).toBe(false)
+    rmSync(join(dir, REL, 'agents/rogue.md'))
+    rmSync(join(dir, REL, 'skills/pdf/SKILL.md'))
+    expect(await verify(built, dir)).toBe(false)
+  })
+
+  test('what the platform writes is not tampering', async () => {
+    const built = release('v1')
+    const { dir } = await materialize(built)
+    // The platform writes these on the STAGED directory, before the seal, so
+    // the test opens the root the same way `materializeRelease` has it open
+    // at that point. Post-seal an agent cannot create them at all — that is
+    // the case above. What is asserted here is what `verifyRelease` TOLERATES.
+    spawnSync('chmod', ['u+w', join(dir, REL)])
+    writeFileSync(join(dir, REL, 'package.json'), '{"dependencies":{"@opencode-ai/plugin":"1.18.23"}}\n')
+    writeFileSync(join(dir, REL, 'bun.lock'), 'lock\n')
+    mkdirSync(join(dir, REL, 'node_modules/zod'), { recursive: true })
+    writeFileSync(join(dir, REL, 'node_modules/zod/index.js'), '')
+    spawnSync('chmod', ['-R', 'u+w', join(dir, REL, 'skills')])
+    writeFileSync(join(dir, REL, 'skills/kortix-cli/SKILL.md'), 'NEWER OVERLAY\n')
+    expect(await verify(built, dir)).toBe(true)
+  })
+
+  /**
+   * Verified on a real Daytona box (2026-09-24, release 7a60e568, one
+   * session): the seal left the release ROOT and `skills/` at 0755, so an
+   * agent's `write` tool answered "Wrote file successfully." for
+   * `<release>/skills/<name>/SKILL.md` and for a root-level file. The next
+   * convergence then failed verification, rebuilt the release and respawned
+   * OpenCode. The user saw a success message, the file vanished, and the
+   * runtime restarted with no notification. Reproduced 4 times.
+   *
+   * A write that will be reverted must FAIL where it happens.
+   */
+  test('a sealed release refuses a NEW file in its root or in skills/', async () => {
+    const built = release('v1');
+    const { dir } = await materialize(built);
+    for (const target of ['rogue.md', 'skills/rogue/SKILL.md']) {
+      expect(() => {
+        mkdirSync(dirname(join(dir, target)), { recursive: true });
+        writeFileSync(join(dir, target), 'ADDED\n');
+      }).toThrow(/EACCES|EPERM|EROFS/);
+      expect(existsSync(join(dir, target))).toBe(false);
+    }
+    // And the release still verifies, because nothing got in.
+    expect(await verify(built, dir)).toBe(true);
+  });
+
+  test('a swapped symlink is compared by its target, never followed', async () => {
+    symlinkSync('kortix.md', join(repo, `${REL}/agents/alias.md`))
+    const built = release('symlink')
+    const { dir } = await materialize(built)
+    spawnSync('chmod', ['u+w', join(dir, REL, 'agents')])
+    rmSync(join(dir, REL, 'agents/alias.md'))
+    symlinkSync('/etc/passwd', join(dir, REL, 'agents/alias.md'))
+    expect(await verify(built, dir)).toBe(false)
+  })
+})
+
+describe('the pointer', () => {
+  test('names the release, its commit and whether it was proven', async () => {
+    const built = release('v1')
+    const { dir } = await materialize(built)
+    expect(await readBootConfigPointer(store)).toBeNull()
+    const pointer = {
+      release_id: built.descriptor.release_id!,
+      source_commit: built.descriptor.source_commit!,
+      config_dir: REL,
+      dir,
+      proven: true,
+    }
+    await activateBootConfig(store, pointer)
+    expect(await readBootConfigPointer(store)).toEqual(pointer)
+    await deactivateBootConfig(store)
+    expect(await readBootConfigPointer(store)).toBeNull()
+  })
+
+  test('a pointer outside the store, at another release, or in the old format is ignored', async () => {
+    mkdirSync(store, { recursive: true })
+    const id = 'a'.repeat(64)
+    const base = { release_id: id, source_commit: 'b'.repeat(40), config_dir: REL, proven: true }
+    for (const pointer of [
+      { ...base, dir: '/etc' },
+      { ...base, dir: join(store, 'c'.repeat(64)) },
+      { ...base, dir: join(store, '..', id) },
+      { ...base, release_id: 'not-hex', dir: join(store, 'not-hex') },
+      { ...base, config_dir: ':(top)*', dir: join(store, id) },
+      { sha: 'b'.repeat(40), relConfigDir: REL, dir: join(store, 'b'.repeat(40)) },
+    ]) {
+      writeFileSync(join(store, 'current.json'), JSON.stringify(pointer))
+      expect(await readBootConfigPointer(store)).toBeNull()
+    }
+    writeFileSync(join(store, 'current.json'), '{not json')
+    expect(await readBootConfigPointer(store)).toBeNull()
+  })
+})
+
+describe('quarantine and pruning', () => {
+  test('a quarantined release is recorded by release_id; another release_id is not blocked', async () => {
+    const bad = 'd'.repeat(64)
+    await quarantineRelease(store, bad, 'the new opencode did not start')
+    const entries = await readQuarantine(store)
+    expect(Object.keys(entries)).toEqual([bad])
+    expect(entries[bad]!.reason).toBe('the new opencode did not start')
+    expect(entries['e'.repeat(64)]).toBeUndefined()
+  })
+
+  test('pruning keeps the named releases with their manifests, the pointer and the quarantine', async () => {
+    const first = await materialize(release('v1'))
+    write(repo, `${REL}/agents/kortix.md`, 'PROMPT v2\n')
+    const secondBuilt = release('v2')
+    const second = await materialize(secondBuilt)
+    write(repo, `${REL}/agents/kortix.md`, 'PROMPT v3\n')
+    const thirdBuilt = release('v3')
+    const third = await materialize(thirdBuilt)
+    mkdirSync(join(store, 'f'.repeat(40)), { recursive: true }) // a copy from the git-based store
+    await activateBootConfig(store, {
+      release_id: thirdBuilt.descriptor.release_id!,
+      source_commit: thirdBuilt.descriptor.source_commit!,
+      config_dir: REL,
+      dir: third.dir,
+      proven: true,
+    })
+    await quarantineRelease(store, 'd'.repeat(64), 'x')
+
+    await pruneBootConfigs(store, [secondBuilt.descriptor.release_id!, thirdBuilt.descriptor.release_id!])
+
+    expect(existsSync(first.dir)).toBe(false)
+    expect(existsSync(`${first.dir}.json`)).toBe(false)
+    expect(existsSync(join(store, 'f'.repeat(40)))).toBe(false)
+    expect(existsSync(second.dir)).toBe(true)
+    expect(await readReleaseManifest(store, secondBuilt.descriptor.release_id!)).not.toBeNull()
+    expect(existsSync(third.dir)).toBe(true)
+    expect(await readBootConfigPointer(store)).not.toBeNull()
+    expect(Object.keys(await readQuarantine(store))).toEqual(['d'.repeat(64)])
+  })
+})
+describe('JSON store publication characterization', () => {
+  test('all three records publish newline JSON at mode 0644 with no staged siblings', async () => {
+    const built = release('publication')
+    const manifest = manifestOf(built)
+    const pointer = { release_id: manifest.release_id, source_commit: manifest.source_commit, config_dir: REL, dir: join(store, manifest.release_id), proven: true }
+    await writeReleaseManifest(store, manifest)
+    await activateBootConfig(store, pointer)
+    await quarantineRelease(store, manifest.release_id, 'synthetic failure')
+    const records = [
+      [`${manifest.release_id}.json`, manifest],
+      ['current.json', pointer],
+      ['quarantine.json', await readQuarantine(store)],
+    ] as const
+    for (const [name, record] of records) {
+      expect(readFileSync(join(store, name), 'utf8')).toBe(`${JSON.stringify(record)}\n`)
+      expect(statSync(join(store, name)).mode & 0o777).toBe(0o644)
+    }
+    expect(readdirSync(store).sort()).toEqual(records.map(([name]) => name).sort())
+  })
+
+  test('invalid manifest IDs stage bytes before validation, but filesystem errors win', async () => {
+    const manifest = { ...manifestOf(release('invalid')), release_id: 'invalid' }
+    await expect(writeReleaseManifest(store, manifest)).rejects.toThrow()
+    const staged = readdirSync(store)
+    expect(staged).toHaveLength(1)
+    expect(staged[0]).toMatch(/^invalid\.json\.[0-9a-f-]+\.tmp$/)
+    expect(readFileSync(join(store, staged[0] ?? ''), 'utf8')).toBe(`${JSON.stringify(manifest)}\n`)
+    const file = join(root, 'not-directory')
+    writeFileSync(file, 'occupied')
+    await expect(writeReleaseManifest(file, manifest)).rejects.toMatchObject({ code: 'EEXIST' })
+  })
+})

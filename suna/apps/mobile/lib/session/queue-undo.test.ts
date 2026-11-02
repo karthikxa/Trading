@@ -1,0 +1,83 @@
+import { describe, expect, test } from 'bun:test';
+
+import { serializePromptWithPastes } from '@kortix/shared';
+
+import { queueHeaderLabel, queueRowCaption, queueRowText, restoreQueued } from './queue-undo';
+
+const m = (id: string, sessionId = 's1') => ({ id, sessionId, text: id, timestamp: 0 });
+
+describe('restoreQueued', () => {
+  test('puts removed messages back at their original positions', () => {
+    const snapshot = [m('a'), m('b'), m('c')];
+    const current = [m('a'), m('c')];
+    expect(restoreQueued(current, snapshot, ['b']).map((x) => x.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  test('restores a cleared session', () => {
+    const snapshot = [m('a'), m('x', 's2'), m('b')];
+    const current = [m('x', 's2')];
+    expect(restoreQueued(current, snapshot, ['a', 'b']).map((x) => x.id)).toEqual(['a', 'x', 'b']);
+  });
+
+  test('keeps messages queued after the removal, at the end', () => {
+    const snapshot = [m('a'), m('b')];
+    const current = [m('a'), m('new')];
+    expect(restoreQueued(current, snapshot, ['b']).map((x) => x.id)).toEqual(['a', 'b', 'new']);
+  });
+
+  test('does not resurrect a message sent since the snapshot', () => {
+    const snapshot = [m('a'), m('b'), m('c')];
+    // `a` was sent (dequeued) after `b` was removed.
+    const current = [m('c')];
+    expect(restoreQueued(current, snapshot, ['b']).map((x) => x.id)).toEqual(['b', 'c']);
+  });
+
+  test('never duplicates a message that is already back', () => {
+    const snapshot = [m('a'), m('b')];
+    const current = [m('a'), m('b')];
+    expect(restoreQueued(current, snapshot, ['b']).map((x) => x.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('queueHeaderLabel', () => {
+  test('reads "Up next · N"', () => {
+    expect(queueHeaderLabel(1)).toBe('Up next · 1');
+    expect(queueHeaderLabel(3)).toBe('Up next · 3');
+  });
+});
+
+describe('queueRowCaption', () => {
+  test('a steered message says the agent reads it at its next step', () => {
+    expect(queueRowCaption({ delivery: 'steer' })).toBe('Read at next step');
+  });
+
+  test('a fallen-back message says why it waits', () => {
+    expect(queueRowCaption({ delivery: 'queue', steer_fallback: 'unsupported' })).toBe(
+      'Waits for this turn. This session cannot take messages mid-turn.',
+    );
+    expect(queueRowCaption({ delivery: 'queue', steer_fallback: 'not_prompter' })).toBe(
+      'Waits for this turn. Another member started it.',
+    );
+    expect(queueRowCaption({ delivery: 'queue', steer_fallback: 'turn_ended' })).toBe(
+      'Runs as its own turn. The turn ended first.',
+    );
+  });
+
+  test('a plain queued message, or one from an older server, has no caption', () => {
+    expect(queueRowCaption({ delivery: 'queue', steer_fallback: null })).toBeNull();
+    expect(queueRowCaption({})).toBeNull();
+  });
+});
+
+describe('queueRowText', () => {
+  const paste = { id: '0a1b2c3d', text: 'synthetic pasted line' };
+  test('shows the typed text without its pastes', () => {
+    expect(queueRowText(serializePromptWithPastes('my question', [paste]))).toBe('my question');
+  });
+  test('a pastes-only prompt reads "Pasted text"', () => {
+    expect(queueRowText(serializePromptWithPastes('', [paste]))).toBe('Pasted text');
+  });
+  test('plain text is unchanged', () => {
+    expect(queueRowText('hello')).toBe('hello');
+  });
+});

@@ -33,3 +33,11 @@ models/
 tradingview_*_dump_*.json
 check_toolbar.py
 scratch_tv.js
+verify_*.py
+test_*.py
+capture_sheet.py
+.next/
+OpenMausBot/
+TradingAgents/
+_archive_previous_app/
+openstock_repo/

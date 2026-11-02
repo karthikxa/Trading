@@ -1,0 +1,1384 @@
+import { withBetterStack } from '@logtail/next';
+import { withSentryConfig } from '@sentry/nextjs';
+import fs from 'fs';
+import { createMDX } from 'fumadocs-mdx/next';
+import type { NextConfig } from 'next';
+import { PHASE_PRODUCTION_BUILD } from 'next/constants';
+import createNextIntlPlugin from 'next-intl/plugin';
+import path from 'path';
+import { buildBlumeDocs, getBlumeDocsOutputPaths } from './scripts/blume-docs.mjs';
+import { BLOG_ORIGIN } from './src/config/blog-origin';
+import { locales } from './src/i18n/catalog.mjs';
+import { SHIPPED_ICON_WEIGHTS } from '@kortix/ui/lib/icon-config';
+import {
+  embedContentSecurityPolicy,
+  enforcedContentSecurityPolicy,
+  reportOnlyContentSecurityPolicy,
+} from './src/lib/security/content-security-policy';
+import { refreshContentTimestamps } from './scripts/build-content-timestamps.mjs';
+import { copyEmojibaseData, getEmojibaseDataOutputPaths } from './scripts/emojibase-data.mjs';
+import { copyViewerWasm, getViewerWasmOutputPaths } from './scripts/viewer-wasm.mjs';
+
+/** The header set a host-framed page carries instead of the global enforced
+ *  CSP: the same directives with `frame-ancestors` opened. One owner, so the
+ *  two session-page header rules cannot drift apart. */
+const embedFrameHeaders = () => [
+  {
+    key: 'Content-Security-Policy',
+    value: embedContentSecurityPolicy(),
+  },
+];
+
+// --- Content timestamps manifest -----------------------------------------
+// Public AEO surfaces (/api/ai, /llms.txt) expose a `last_modified` field per
+// content record so recency-aware answer-engine retrievers can prefer fresh
+// content. Use-cases carry an explicit `date` frontmatter value that
+// public-content.ts reads directly, but docs MDX files and
+// code-rendered marketing pages do not — their lastModified was `null`,
+// deprioritizing 42% of the public index. scripts/build-content-timestamps.mjs
+// (imported above) derives a timestamp for each from the most recent git
+// commit on the source file and writes src/lib/seo/content-timestamps.json,
+// which public-content.ts reads at runtime with a graceful fallback to
+// `undefined` when absent. Runs here (belt-and-suspenders, same pattern as
+// viewer-wasm) so any path that invokes `next build`/`next dev` directly
+// regenerates the manifest. A missing git binary, shallow clone, or write
+// failure leaves the committed manifest in place rather than blocking a build.
+refreshContentTimestamps();
+
+// --- Viewer wasm asset guarantee ------------------------------------------
+// Document viewers (PDF/DOCX/XLSX) fetch their wasm engines from `public/`
+// (see scripts/viewer-wasm.mjs for why). Normally `pnpm dev`/`pnpm build`
+// prepend `node scripts/copy-viewer-wasm.mjs` to populate them, but any path
+// that invokes `next build`/`next dev` directly bypasses that and would
+// silently 404 on these assets at runtime. Belt-and-suspenders: repeat the
+// same copy here as a side effect of loading this config, then verify the
+// outputs actually exist regardless of how the attempt went.
+let viewerWasmCopyError: unknown = null;
+try {
+  copyViewerWasm();
+} catch (err) {
+  viewerWasmCopyError = err;
+}
+const missingViewerWasmOutputs = getViewerWasmOutputPaths().filter(
+  (output) => !fs.existsSync(output),
+);
+if (missingViewerWasmOutputs.length > 0) {
+  throw new Error(
+    `[next.config.ts] scripts/viewer-wasm.mjs failed to produce required viewer wasm asset(s): ` +
+      `${missingViewerWasmOutputs.join(', ')}` +
+      (viewerWasmCopyError ? ` (${(viewerWasmCopyError as Error).message})` : '') +
+      `. Run \`node scripts/copy-viewer-wasm.mjs\` manually to diagnose.`,
+  );
+} else if (viewerWasmCopyError) {
+  // Expected in a slim prod image: `next start` ships a `public/` populated
+  // at build time but not the node_modules the wasm ships in. Only reach
+  // here when the outputs already exist, so it's safe to continue.
+  console.warn(
+    `[next.config.ts] Could not refresh viewer wasm assets (${(viewerWasmCopyError as Error).message}), ` +
+      `but all expected outputs already exist in public/ — continuing.`,
+  );
+}
+
+// --- Emoji dataset guarantee ----------------------------------------------
+// The emoji picker fetches the emojibase dataset from `public/` at first open
+// (see scripts/emojibase-data.mjs for why it is self-hosted rather than pulled
+// from a CDN). Same belt-and-suspenders as the viewer wasm above, and it
+// matters more here: frimousse has no error slot, so a missing dataset is not a
+// 404 anyone sees — it is a picker that spins forever with nothing on screen.
+let emojibaseCopyError: unknown = null;
+try {
+  copyEmojibaseData();
+} catch (err) {
+  emojibaseCopyError = err;
+}
+const missingEmojibaseOutputs = getEmojibaseDataOutputPaths().filter(
+  (output) => !fs.existsSync(output),
+);
+if (missingEmojibaseOutputs.length > 0) {
+  throw new Error(
+    `[next.config.ts] scripts/emojibase-data.mjs failed to produce required emoji dataset file(s): ` +
+      `${missingEmojibaseOutputs.join(', ')}` +
+      (emojibaseCopyError ? ` (${(emojibaseCopyError as Error).message})` : '') +
+      `. Run \`node scripts/copy-emojibase-data.mjs\` manually to diagnose.`,
+  );
+} else if (emojibaseCopyError) {
+  // Expected in a slim prod image: `next start` ships a `public/` populated at
+  // build time but not the node_modules the dataset comes from. Only reach here
+  // when the outputs already exist, so it's safe to continue.
+  console.warn(
+    `[next.config.ts] Could not refresh the emoji dataset (${(emojibaseCopyError as Error).message}), ` +
+      `but all expected outputs already exist in public/ — continuing.`,
+  );
+}
+
+// --- Blume docs build guarantee -------------------------------------------
+// /docs is a Blume (Astro) static build served out of public/. It cannot be an
+// npm script: vercel.json's buildCommand is the bare `next build`, which never
+// invokes one (see scripts/generate-fumadocs-source.mjs for the same trap).
+// So it runs here, as a side effect of loading this config, on the same
+// belt-and-suspenders pattern as the viewer wasm and emoji dataset above.
+//
+// Gated to the production build phase only. `blume build` takes tens of
+// seconds; running it on every `next dev` config reload would make local dev
+// startup pay that cost on every restart for no reason. On `next dev`, /docs
+// resolves only if `public/docs/` already exists from a prior production
+// build — there is no separate dev-mode docs server wired up here.
+//
+// This CANNOT be a bare top-level `if` keyed on `process.env.NEXT_PHASE`, the
+// pattern used elsewhere in Next's own docs: verified against this repo's
+// pinned Next 16.3.3 that `next build` never actually sets that env var
+// before the FIRST config load (only deep inside `next/dist/build/index.js`,
+// well after page compilation starts) — a phase check there always reads
+// `undefined` and the guarantee silently no-ops, shipping a build with no
+// `public/docs/`. The phase Next.js actually guarantees is the `phase`
+// argument passed to a function-form config export (see
+// node_modules/next/dist/docs/.../next-config-js/index.md, "Configuration as
+// a Function"), so the default export below is that function form and this
+// runs from inside it, gated on the real `phase` parameter.
+function ensureBlumeDocsBuilt(phase: string) {
+  // Runs for BOTH `next build` and `next dev`. /docs is served by THIS app out
+  // of public/docs/ in every environment — there is deliberately no second
+  // server. buildBlumeDocs() no-ops when public/docs/ is already newer than
+  // content/docs/ and blume.config.ts, so a warm `next dev` pays nothing; a
+  // cold one pays a single ~6s Astro build instead of serving a 404.
+  // Editing a doc while `next dev` is running does NOT hot-reload: run
+  // `pnpm docs:build` (or restart) to refresh public/docs/.
+  const isBuild = phase === PHASE_PRODUCTION_BUILD;
+  let blumeDocsError: unknown = null;
+  try {
+    buildBlumeDocs();
+  } catch (err) {
+    blumeDocsError = err;
+  }
+  const missingBlumeDocsOutputs = getBlumeDocsOutputPaths().filter(
+    (output) => !fs.existsSync(output),
+  );
+  if (missingBlumeDocsOutputs.length > 0) {
+    const message =
+      `[next.config.ts] scripts/blume-docs.mjs failed to produce the docs site: ` +
+        `${missingBlumeDocsOutputs.join(', ')}` +
+        (blumeDocsError ? ` (${(blumeDocsError as Error).message})` : '') +
+        `. Run \`npx blume build\` in apps/web to diagnose.`;
+    // Fatal for a release build; in dev only /docs is affected, so warn and let
+    // the rest of the app come up rather than blocking every other route.
+    if (isBuild) throw new Error(message);
+    console.warn(message);
+  }
+}
+
+// Unified platform version. Prefer the explicit build env (CI passes
+// NEXT_PUBLIC_KORTIX_VERSION = X.Y.Z-dev.<sha> on dev, clean X.Y.Z on prod);
+// otherwise read the root VERSION file so Vercel builds (which don't pass the
+// build-arg) still report the version. On Vercel, the `prod` branch is the only
+// clean release — any other branch (dev) is a pre-release, so suffix
+// `-dev.<sha8>` so dev.kortix.com tracks the in-progress version instead of
+// showing a bare release number. Falls back to 'dev' locally.
+function resolveKortixVersion(): string {
+  if (process.env.NEXT_PUBLIC_KORTIX_VERSION) return process.env.NEXT_PUBLIC_KORTIX_VERSION;
+  let base = 'dev';
+  try {
+    base = fs.readFileSync(path.join(__dirname, '../../VERSION'), 'utf8').trim();
+  } catch {
+    return 'dev';
+  }
+  const ref = process.env.VERCEL_GIT_COMMIT_REF;
+  if (ref && ref !== 'prod') {
+    const sha = (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 8);
+    return sha ? `${base}-dev.${sha}` : `${base}-dev`;
+  }
+  return base;
+}
+const KORTIX_VERSION = resolveKortixVersion();
+const KORTIX_COMMIT =
+  process.env.NEXT_PUBLIC_KORTIX_COMMIT || process.env.VERCEL_GIT_COMMIT_SHA || 'unknown';
+
+// --- Turbopack dev memory eviction ----------------------------------------
+// `experimental.turbopackMemoryEviction` takes exactly `false | 'auto' | 'full'`
+// (docs: /docs/app/api-reference/config/next-config-js/turbopackMemoryEviction).
+// Validate rather than cast: an unset var, an empty string (`FOO= pnpm dev`),
+// and a typo are three different mistakes, and only the first should silently
+// mean "use the default". Casting a raw env string would forward `''` or
+// `'ful'` straight into the config as a value Next never defined.
+function resolveTurbopackMemoryEviction(): false | 'auto' | 'full' {
+  const raw = process.env.KORTIX_TURBOPACK_EVICTION;
+  if (raw === undefined || raw === '') return 'auto';
+  if (raw === 'false') return false;
+  if (raw === 'auto' || raw === 'full') return raw;
+  console.warn(
+    `[next.config.ts] Ignoring KORTIX_TURBOPACK_EVICTION=${JSON.stringify(raw)} — ` +
+      `expected one of 'auto', 'full', 'false'. Falling back to 'auto'.`,
+  );
+  return 'auto';
+}
+
+// --- Turbopack dev filesystem cache ---------------------------------------
+// `experimental.turbopackFileSystemCacheForDev` is default-ON since Next 16.1.
+// It persists compiled tasks to `.next/dev/cache` and restores them lazily, so
+// a warm dev server starts fast. A restore that fails is NOT recoverable: it
+// panics outside turbo-tasks' per-task panic boundary and aborts the whole
+// dev server process.
+//
+//   thread 'tokio-rt-worker' panicked at
+//     turbopack/crates/turbo-tasks-backend/src/backend/operation/mod.rs:292:17:
+//   Restore of All for task TaskId 7979517 failed in another thread: restoring failed
+//   turbo-tasks: an internal panic occurred outside the per-task panic boundary.
+//   Aborting.
+//
+// A one-shot CI job gains nothing from the cache — it starts cold and throws
+// the directory away — and loses the entire browser shard when the abort hits,
+// because every remaining spec then fails with ERR_CONNECTION_REFUSED against a
+// dead port. So the deterministic test stack sets KORTIX_TURBOPACK_FS_CACHE=off
+// and trades a cold compile for a dev server that cannot die this way.
+// Unset (every developer machine, every real deployment) keeps upstream's
+// default. See tests/src/core/local-stack.ts.
+function resolveTurbopackFileSystemCacheForDev(): boolean {
+  const raw = process.env.KORTIX_TURBOPACK_FS_CACHE;
+  if (raw === undefined || raw === '') return true;
+  if (raw === 'off' || raw === 'false') return false;
+  if (raw === 'on' || raw === 'true') return true;
+  console.warn(
+    `[next.config.ts] Ignoring KORTIX_TURBOPACK_FS_CACHE=${JSON.stringify(raw)} — ` +
+      `expected one of 'on', 'off'. Falling back to the Next default (on).`,
+  );
+  return true;
+}
+
+// Local `pnpm preview` (scripts/dev-local.sh --build) sets KORTIX_PREVIEW_BUILD=1
+// to trade prod-build fidelity for speed: skip the `standalone` file-tracing pass
+// (next start never reads .next/standalone) and skip ESLint.
+const IS_PREVIEW_BUILD = process.env.KORTIX_PREVIEW_BUILD === '1';
+
+// --- Cross-origin dev / preview access -----------------------------------
+// The app is frequently reached through a proxy whose hostname differs from the
+// origin the browser sends: the Kortix platform proxy (p<port>-<id>.localhost:<port>),
+// a Daytona sandbox (<port>-<id>.daytonaproxy01.net), or a Cloudflare quick
+// tunnel (<id>.trycloudflare.com). Next's Server Action CSRF guard
+// (app-render/action-handler.ts) rejects requests where the browser `Origin`
+// doesn't match the `host`/`x-forwarded-host` it sees — surfacing as
+// "Invalid Server Actions request." — and the dev `/_next/*` guard
+// (block-cross-site.ts) blocks the same mismatch for internal assets.
+//
+// Allowlist the known proxy patterns so proxied requests are trusted. Two
+// matchers consume this list with different semantics, so we cover both:
+//   - serverActions.allowedOrigins matches `new URL(origin).host` (INCLUDES port)
+//   - allowedDevOrigins matches `parsedOrigin.hostname` (STRIPS port)
+// Hence both port-qualified (`*.localhost:8008`) and bare (`*.localhost`)
+// patterns are present. Never loosen in production, where this is a real CSRF
+// surface — there, only an explicit KORTIX_ALLOWED_DEV_ORIGINS opt-in applies.
+const EXTRA_ALLOWED_ORIGINS = (process.env.KORTIX_ALLOWED_DEV_ORIGINS ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const ALLOWED_PROXY_ORIGINS =
+  process.env.NODE_ENV === 'production'
+    ? EXTRA_ALLOWED_ORIGINS
+    : [
+        // Direct localhost + Kortix platform proxy (web:3000 exposed on api:8008)
+        '*.localhost',
+        '*.localhost:3000',
+        '*.localhost:8008',
+        // Daytona cloud sandbox proxy
+        '*.daytonaproxy01.net',
+        // Cloudflare quick tunnel (KORTIX_URL in scripts/dev-local.sh)
+        '*.trycloudflare.com',
+        ...EXTRA_ALLOWED_ORIGINS,
+      ];
+
+const nextConfig = (): NextConfig => ({
+  poweredByHeader: false,
+  // The frontend data layer lives in the @kortix/sdk workspace package (TS
+  // source), so Next must transpile it.
+  transpilePackages: ['@kortix/sdk', '@kortix/ui'],
+  // Standalone bundles the app for Docker via a slow monorepo-wide file-tracing
+  // pass. Vercel injects a Next adapter. Next 16.3 does not emit the whole-app
+  // NFT for adapter builds, but its standalone finalizer still requires that
+  // file. Disable standalone on Vercel, where the platform does not use it.
+  // See https://github.com/vercel/next.js/issues/96646.
+  output: IS_PREVIEW_BUILD || process.env.VERCEL ? undefined : 'standalone',
+  // Inline the resolved version so NEXT_PUBLIC_KORTIX_VERSION is available in
+  // both the server (runtime-config) and client bundles, even on Vercel.
+  env: {
+    NEXT_PUBLIC_KORTIX_VERSION: KORTIX_VERSION,
+    NEXT_PUBLIC_KORTIX_COMMIT: KORTIX_COMMIT,
+  },
+  // Hide Next.js's persistent dev badge in the corner. It only ever
+  // really matters when there's a build error / route compile issue —
+  // the error overlay still shows in those cases.
+  devIndicators: false,
+
+  // Pin tracing root to monorepo root so standalone preserves
+  // the correct `apps/web/server.js` path structure.
+  outputFileTracingRoot: path.join(__dirname, '../../'),
+
+  // Trust proxied dev/preview origins for internal `/_next/*` requests
+  // (see ALLOWED_PROXY_ORIGINS above for the rationale).
+  allowedDevOrigins: ALLOWED_PROXY_ORIGINS,
+
+  // Skip type checking during build (done in CI via `pnpm typecheck`)
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+
+  // --- Next.js 16.3 posture ------------------------------------------------
+  // Recording WHY each 16.3 knob is set or left alone, so nobody "adds the
+  // missing config" later or wonders whether we missed the release. The only
+  // knobs we set are turbopackMemoryEviction and turbopackFileSystemCacheForDev
+  // (both below) — and both only as escape hatches that default to upstream's
+  // value when their env var is unset. 16.4 adds turbopackGc (below), which we
+  // turn on: upstream defaults it off.
+  //
+  // Already default-ON in 16.3 — restating them here would be dead config that
+  // silently diverges the day upstream changes a default:
+  //   · experimental.turbopackFileSystemCacheForBuild  (default true as of 16.3)
+  //     Measured: warm `next build` compile 36.3s -> 1.9s. Only pays off where
+  //     .next/cache survives between builds — Vercel does this automatically;
+  //     GitHub Actions needs the actions/cache step added in ci.yml.
+  //   · experimental.prefetchInlining                  (default true as of 16.3)
+  //
+  // BEHAVIOUR CHANGE worth knowing even though this app dodges it:
+  //   · experimental.useTypeScriptCli (default true in 16.3) makes `next build`
+  //     shell out to the project's `tsc` instead of loading the TypeScript API.
+  //     Per its docs that checks "the complete project selected by the
+  //     configured tsconfig file ... INCLUDING TEST FILES". 16.2 only checked
+  //     the app's module graph. So on 16.3 a latent type error in a test can
+  //     fail a production build.
+  //     This app is immune ONLY because `typescript.ignoreBuildErrors: true`
+  //     above skips the type-check step entirely (including the CLI checker).
+  //     apps/white-label/lumen does NOT set it, and 16.3 duly failed its build on
+  //     a pre-existing error in tests/e2e/session-scope.test.ts. Any new app in
+  //     this monorepo inherits that same trap.
+  //     Not adopted here: TypeScript 7 (`typescript@^7`, the 10x native port)
+  //     would speed up the real gate — the separate `tsc --noEmit` — but that
+  //     is a compiler swap with its own diagnostics surface, not part of a
+  //     framework bump. Deliberately left for its own change.
+  //
+  // In use:
+  //   · next/root-params — every page lives under app/[locale] (the root
+  //     layout's segment). i18n/request.ts reads the locale with
+  //     `locale()` from next/root-params instead of headers()/cookies(), so
+  //     marketing pages prerender once per locale. The middleware rewrites
+  //     unprefixed URLs onto the segment.
+  //
+  // Deliberately NOT enabled — each is a migration, not a flag flip:
+  //   · cacheComponents + partialPrefetching (Instant Navigations). Requires
+  //     every request-time access to sit under Suspense or `use cache`.
+  //     See https://nextjs.org/docs/app/guides/migrating-to-cache-components
+  //   · reactCompiler + experimental.turbopackRustReactCompiler. The Rust port
+  //     only pays off once Babel is out of the pipeline, and we do not run
+  //     React Compiler at all today — the outstanding react-hooks/* warnings
+  //     need an audit first.
+  //   · experimental.useOffline. Network-resilience retry semantics change how
+  //     failed Server Actions surface; needs its own testing pass.
+  //   · next/error `catchError` boundaries. The clearest win left on the table:
+  //     src/app/error.tsx currently hard-reloads via window.location.reload()
+  //     because React's reset() can only reset client state, and it polls
+  //     reset() on an interval for the transient runtime-not-ready throw. 16.3's
+  //     retry() re-fetches the boundary's children INCLUDING Server Components,
+  //     which is what that code actually wants. Deliberately not done here —
+  //     rewriting the global error boundary is not an upgrade-PR change.
+  //
+  // Automatic in 16.3, nothing to configure, listed so the audit is complete:
+  //   · App Router SSR now uses native Node streams instead of web streams
+  //     (~22% more requests under load upstream). Runtime-only, no API change.
+  //   · import.meta.glob is a Turbopack capability, available without a flag.
+  //   · Immutable static assets reusable across deploys is an ADAPTER feature
+  //     (/docs/app/api-reference/adapters/immutable-static-assets). This app
+  //     uses Vercel's injected adapter and `standalone` only for Docker, so
+  //     there is no custom adapter to configure here.
+  //
+  // Turbopack configuration
+  turbopack: {
+    // Handle Node.js modules that shouldn't be bundled for browser builds
+    // Canvas is a Node.js native module that needs to be externalized (required for Konva & react-konva)
+    resolveAlias: {
+      canvas: {
+        browser: './src/lib/empty-module.ts', // Exclude canvas from browser builds
+      },
+    },
+    rules: {
+      // Phosphor ships all six weights of every icon in one defs module. Keep
+      // only SHIPPED_ICON_WEIGHTS in the browser build (~1/3 of each icon's
+      // bytes). Server/SSR builds keep every weight; the markup is identical
+      // for every shipped weight. See scripts/phosphor-weights-loader.cjs.
+      '*.es.js': {
+        condition: {
+          all: ['browser', { path: /@phosphor-icons\/react\/dist\/defs\/[^/]+\.es\.js$/ }],
+        },
+        loaders: [
+          {
+            loader: path.join(__dirname, 'scripts/phosphor-weights-loader.cjs'),
+            options: { weights: [...SHIPPED_ICON_WEIGHTS] },
+          },
+        ],
+      },
+    },
+  },
+
+  // Performance optimizations
+  experimental: {
+    // Next 16 gives a dynamic page segment a client-cache TTL of 0, so every
+    // navigation to a route under `projects/[id]/layout.tsx` (which awaits
+    // cookies(), making the whole subtree dynamic) discards the segment and
+    // repaints its `loading.tsx`. Returning to a tab you visited ten seconds
+    // ago cost a full server roundtrip and a full-page skeleton.
+    //
+    // `prefetch={true}` cannot fix this: with a `loading.js` present, prefetch
+    // only covers layout-to-boundary and the TTL stays in the `dynamic` bucket
+    // (node_modules/next/dist/docs/01-app/02-guides/prefetching.md:61).
+    //
+    // 300s is safe here because every page under `projects/[id]` is a client
+    // component — its RSC payload references a chunk and carries no rendered
+    // data. Page data comes from React Query under its own contract.
+    staleTimes: { dynamic: 300, static: 300 },
+    // Trust proxied dev/preview origins for Server Actions so the email
+    // sign-in (and every other action) isn't rejected as a CSRF mismatch
+    // (see ALLOWED_PROXY_ORIGINS above for the rationale).
+    serverActions: {
+      allowedOrigins: ALLOWED_PROXY_ORIGINS,
+    },
+    // Escape hatch for memory-constrained machines. 16.3 advertises "up to 90%
+    // less dev RAM". That number is eviction-OFF vs eviction-ON within 16.3
+    // (see the chart in /blog/next-16-3-turbopack), not 16.2 vs 16.3. It did
+    // not reproduce here in EITHER framing. Dev-server tree RSS, 24GB Mac,
+    // same 46 routes, sampled 30s after the last compile:
+    //   16.2.0                       5085 MB   (swap 17.9G used at sample)
+    //   16.3.0 eviction false        5559 MB   (swap 15.0G)  <- upstream "Before"
+    //   16.3.0 eviction 'full'       5382 MB   (swap 14.6G)
+    //   16.3.0 eviction 'auto'       7842 MB   (swap 10.7G)  <- shipped default
+    // Turning eviction OFF was not 10x worse; it was the CHEAPEST 16.3 config.
+    // Note the swap column: the run with the MOST free RAM produced the HIGHEST
+    // RSS. On a machine this size the reading tracks OS memory pressure more
+    // than the flag, so treat the deltas as indicative, not exact. The safe
+    // claim: no 16.3 config measured below 16.2, and 90% never appeared.
+    // Default stays 'auto' (upstream's). Set KORTIX_TURBOPACK_EVICTION=full
+    // when the laptop is thrashing. Disk cost is real either way:
+    // .next/dev/cache grew 3.8GB -> 14-15GB.
+    turbopackMemoryEviction: resolveTurbopackMemoryEviction(),
+    // Upstream's default (on) unless KORTIX_TURBOPACK_FS_CACHE=off. The
+    // deterministic test stack turns it off because a failed cache restore
+    // aborts the dev server and takes the whole browser shard with it — the
+    // full rationale is on resolveTurbopackFileSystemCacheForDev above.
+    turbopackFileSystemCacheForDev: resolveTurbopackFileSystemCacheForDev(),
+    // Without GC (the default, and the only mode before 16.4) the persistent
+    // cache keeps every task it ever computed. Each `git merge origin/dev`
+    // adds a new set, so a busy worktree's .next/dev/cache/turbopack reached
+    // 20GB in 2 days and 60GB in one case. GC drops unreachable work from
+    // memory and from that cache. It is a no-op when the FS cache is off, and
+    // Turbopack skips it when turbopackMemoryEviction is false.
+    turbopackGc: true,
+    // Optimize package imports for faster builds and smaller bundles
+    optimizePackageImports: [
+      '@phosphor-icons/react',
+      'recharts',
+      'date-fns',
+      '@tanstack/react-query',
+      'cmdk',
+      'next-intl',
+    ],
+  },
+
+  // Enable compression
+  compress: true,
+
+  // Optimize images
+  images: {
+    formats: ['image/avif', 'image/webp'],
+    deviceSizes: [640, 750, 828, 1080, 1200, 1920],
+    imageSizes: [16, 32, 48, 64, 96, 128, 256],
+    qualities: [75, 100],
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: 'ke4pydspzeg0nm0o.public.blob.vercel-storage.com',
+      },
+    ],
+  },
+
+  async redirects() {
+    return [
+      // The desktop shell historically launched at /dashboard, which never
+      // existed. The signed-in home is /projects (see middleware). Desktop
+      // builds that baked the old URL in, and old links, land there instead
+      // of on the 404 page (KRTX-3232).
+      {
+        source: '/dashboard',
+        destination: '/projects',
+        permanent: false,
+      },
+      // The paths people type to sign in or up (KRTX-3154). /auth asks for the
+      // email first and picks sign-in or sign-up itself.
+      {
+        source: '/:path(login|signin|sign-in|signup|sign-up|register)',
+        destination: '/auth',
+        permanent: false,
+      },
+      // The per-release changelog moved to /changelog/releases (2026-10-19);
+      // /changelog is the weekly summary now. Page 1 of the old list is
+      // /changelog itself, which stays valid.
+      {
+        source: '/changelog/page/:page',
+        destination: '/changelog/releases/page/:page',
+        permanent: true,
+      },
+      // Capability tabs moved under /customize/ (2026-09-03). The old
+      // top-level segments were shared in Slack, saved as bookmarks and baked
+      // into agent transcripts, so every one keeps resolving. `agent` became
+      // `agents`, `config` became `settings`; the rest kept their names.
+      // `review` is NOT in this list: Review left Customize on 2026-10-02 and
+      // `/projects/:id/review` is its own page again. Redirecting it here
+      // would loop with `customize/review/page.tsx`, which sends it back.
+      {
+        source: '/projects/:id/agent/:path*',
+        destination: '/projects/:id/customize/agents/:path*',
+        permanent: false,
+      },
+      {
+        source: '/projects/:id/agent',
+        destination: '/projects/:id/customize/agents',
+        permanent: false,
+      },
+      // The project-wide libraries and settings have one home, Project admin
+      // (`/projects/:id/admin/<section>`, 2026-10-27). Customize keeps Agents
+      // and Review. Every older address lands there in one hop: the
+      // top-level tabs, their `/customize/` successors, and the Project admin
+      // `?section=` form.
+      {
+        source: '/projects/:id/config',
+        destination: '/projects/:id/admin/general',
+        permanent: false,
+      },
+      {
+        source: '/projects/:id/:tab(skills|connectors|triggers|models|secrets)',
+        destination: '/projects/:id/admin/:tab',
+        permanent: false,
+      },
+      {
+        source: '/projects/:id/customize/:tab(skills|tools|extensions|drives|triggers|models|secrets)',
+        destination: '/projects/:id/admin/:tab',
+        permanent: false,
+      },
+      {
+        source: '/projects/:id/customize/connectors/:path*',
+        destination: '/projects/:id/admin/connectors/:path*',
+        permanent: false,
+      },
+      {
+        source: '/projects/:id/customize/reminders',
+        destination: '/projects/:id/admin/triggers',
+        permanent: false,
+      },
+      {
+        source: '/projects/:id/customize/repo',
+        destination: '/projects/:id/admin/repo',
+        permanent: false,
+      },
+      {
+        source: '/projects/:id/customize/settings',
+        has: [{ type: 'query', key: 'section', value: '(?<section>[a-z-]+)' }],
+        destination: '/projects/:id/admin/:section',
+        permanent: false,
+      },
+      {
+        source: '/projects/:id/customize/settings',
+        destination: '/projects/:id/admin/general',
+        permanent: false,
+      },
+      {
+        source: '/projects/:id/:prefix(customize|admin)/apps',
+        destination: '/projects/:id/apps',
+        permanent: false,
+      },
+      // Backends became Apps (2026-10-09), and a migrated
+      // App keeps its backend's id. The retired Backends pages and the
+      // Customize tab land on the Apps page, the one with an id opening that App.
+      ...['/projects/:id/backends', '/projects/:id/customize/backends'].flatMap((retired) => [
+        { source: `${retired}/:appId`, destination: '/projects/:id/apps?app=:appId', permanent: false },
+        { source: retired, destination: '/projects/:id/apps', permanent: false },
+      ]),
+      // Decks moved from the single /presentation route to the /presentations
+      // framework (index + one route per registered deck). The old paths were
+      // shared in Slack and calendar invites, so they keep working.
+      {
+        source: '/presentation',
+        destination: '/presentations/sales',
+        permanent: false,
+      },
+      {
+        source: '/presentation/platform',
+        destination: '/presentations/platform',
+        permanent: false,
+      },
+      {
+        // The docs site prefixes every absolute link with /docs (Blume `base`);
+        // its download links (Kortix Capture installers) belong to the app.
+        source: '/docs/download/:path*',
+        destination: '/download/:path*',
+        permanent: false,
+      },
+      // The canonical self-host doc is content/docs/host/index.mdx, served at
+      // /docs/host. These two aliases previously pointed at
+      // /docs/guides/self-hosting, a path that has never existed, so both
+      // 404'd. The CLI, README and external links still use the old spellings.
+      {
+        source: '/docs/self-hosting',
+        destination: '/docs/developers#self-hosting',
+        permanent: true,
+      },
+      {
+        source: '/docs/self-host',
+        destination: '/docs/developers#self-hosting',
+        permanent: true,
+      },
+      // 2026-10-27: the Guide is one page; each former Guide page lands on its section.
+      // 2026-10-28: the docs are one page (founder). Every former page
+      // moves to its section of /docs.
+      {
+        source: '/docs/quickstart',
+        destination: '/docs/developers#quickstart',
+        permanent: true,
+      },
+      {
+        source: '/docs/git',
+        destination: '/docs/developers#git',
+        permanent: true,
+      },
+      {
+        source: '/docs/project/manifest',
+        destination: '/docs/developers#kortixyaml-reference',
+        permanent: true,
+      },
+      {
+        source: '/docs/cli',
+        destination: '/docs/developers#cli',
+        permanent: true,
+      },
+      {
+        source: '/docs/api',
+        destination: '/docs/developers#rest-api',
+        permanent: true,
+      },
+      {
+        source: '/docs/apps',
+        destination: '/docs/developers#apps-reference',
+        permanent: true,
+      },
+      {
+        source: '/docs/host',
+        destination: '/docs/developers#self-hosting',
+        permanent: true,
+      },
+      {
+        source: '/docs/sdk',
+        destination: '/docs/developers#sdk',
+        permanent: true,
+      },
+      {
+        source: '/docs/sdk/auth',
+        destination: '/docs/developers#sdk-authentication',
+        permanent: true,
+      },
+      {
+        source: '/docs/sdk/sessions',
+        destination: '/docs/developers#sessions-from-code',
+        permanent: true,
+      },
+      {
+        source: '/docs/sdk/react',
+        destination: '/docs/developers#react',
+        permanent: true,
+      },
+      {
+        source: '/docs/sdk/ui',
+        destination: '/docs/developers#kortix-ui',
+        permanent: true,
+      },
+      {
+        source: '/docs/sdk/genui',
+        destination: '/docs/developers#generative-ui',
+        permanent: true,
+      },
+      {
+        source: '/docs/sdk/reference',
+        destination: '/docs/developers#sdk-reference',
+        permanent: true,
+      },
+      // /docs opens the Guide (founder, 2026-10-28). The landing page stays
+      // in the build: the docs build check and the /docs Markdown mirror
+      // read it.
+      {
+        source: '/docs',
+        destination: '/docs/guide',
+        permanent: false,
+      },
+      {
+        source: '/docs/guide/get-started',
+        destination: '/docs/guide#get-started',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/agents',
+        destination: '/docs/guide#agents',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/skills',
+        destination: '/docs/guide#skills',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/memory-and-drive',
+        destination: '/docs/guide#drive',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/connectors',
+        destination: '/docs/guide#connectors',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/automations',
+        destination: '/docs/guide#automations',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/outcomes',
+        destination: '/docs/guide#outcomes',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/computers',
+        destination: '/docs/guide#computers',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/apps',
+        destination: '/docs/guide#apps',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/channels',
+        destination: '/docs/guide#channels',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/everywhere',
+        destination: '/docs/guide#everywhere',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/models',
+        destination: '/docs/guide#models',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/teams',
+        destination: '/docs/guide#teams',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/security',
+        destination: '/docs/guide#security',
+        permanent: true,
+      },
+      {
+        source: '/docs/guide/billing',
+        destination: '/docs/guide#billing',
+        permanent: true,
+      },
+      // The 2026-10-27 Guide rewrite (founder: "less is more"): the technical
+      // pages a business reader does not need are gone. Each lands on the Guide
+      // page that now explains it; the remaining reference is under Developers.
+      {
+        source: '/docs/accounts',
+        destination: '/docs/guide#teams',
+        permanent: true,
+      },
+      {
+        source: '/docs/accounts/identity',
+        destination: '/docs/guide#security',
+        permanent: true,
+      },
+      {
+        source: '/docs/clients',
+        destination: '/docs/guide#everywhere',
+        permanent: true,
+      },
+      {
+        source: '/docs/connect/channels',
+        destination: '/docs/guide#channels',
+        permanent: true,
+      },
+      {
+        source: '/docs/connect/computers',
+        destination: '/docs/guide#computers',
+        permanent: true,
+      },
+      {
+        source: '/docs/connect/connectors',
+        destination: '/docs/guide#connectors',
+        permanent: true,
+      },
+      {
+        source: '/docs/connect/mcp',
+        destination: '/docs/guide#connectors',
+        permanent: true,
+      },
+      {
+        source: '/docs/connect/triggers',
+        destination: '/docs/guide#automations',
+        permanent: true,
+      },
+      {
+        source: '/docs/credits',
+        destination: '/docs/guide#billing',
+        permanent: true,
+      },
+      {
+        source: '/docs/project',
+        destination: '/docs',
+        permanent: true,
+      },
+      {
+        source: '/docs/project/agents',
+        destination: '/docs/guide#agents',
+        permanent: true,
+      },
+      {
+        source: '/docs/project/models',
+        destination: '/docs/guide#models',
+        permanent: true,
+      },
+      {
+        source: '/docs/project/secrets',
+        destination: '/docs/guide#security',
+        permanent: true,
+      },
+      {
+        source: '/docs/project/tools',
+        destination: '/docs/guide#agents',
+        permanent: true,
+      },
+      {
+        source: '/docs/tui',
+        destination: '/docs/guide#everywhere',
+        permanent: true,
+      },
+      {
+        source: '/docs/work/runtime',
+        destination: '/docs/guide#computers',
+        permanent: true,
+      },
+      {
+        source: '/docs/work/sessions',
+        destination: '/docs/guide#computers',
+        permanent: true,
+      },
+      // The 2026-10 docs rewrite folded 45 pages into 31. Every removed page
+      // lands on the section that now owns its content.
+      {
+        source: '/docs/ai-operating-system',
+        destination: '/docs',
+        permanent: true,
+      },
+      {
+        source: '/docs/compare',
+        destination: '/docs',
+        permanent: true,
+      },
+      {
+        source: '/docs/project/legacy-toml',
+        destination: '/docs/developers#migrate-to-v3',
+        permanent: true,
+      },
+      {
+        source: '/docs/project/permissions',
+        destination: '/docs/guide#agents',
+        permanent: true,
+      },
+      {
+        source: '/docs/work',
+        destination: '/docs/guide#computers',
+        permanent: true,
+      },
+      {
+        source: '/docs/work/notifications',
+        destination: '/docs/guide#computers',
+        permanent: true,
+      },
+      {
+        source: '/docs/work/change-requests',
+        destination: '/docs/developers#change-requests',
+        permanent: true,
+      },
+      {
+        source: '/docs/work/harnesses',
+        destination: '/docs/guide#agents',
+        permanent: true,
+      },
+      {
+        source: '/docs/connect',
+        destination: '/docs/guide#connectors',
+        permanent: true,
+      },
+      {
+        source: '/docs/connect/slack',
+        destination: '/docs/guide#channels',
+        permanent: true,
+      },
+      {
+        source: '/docs/connect/teams',
+        destination: '/docs/guide#channels',
+        permanent: true,
+      },
+      {
+        source: '/docs/connect/reminders',
+        destination: '/docs/guide#automations',
+        permanent: true,
+      },
+      {
+        source: '/docs/feature-flags',
+        destination: '/docs',
+        permanent: true,
+      },
+      {
+        source: '/docs/feature-flags/apps',
+        destination: '/docs/developers#apps-reference',
+        permanent: true,
+      },
+      {
+        source: '/docs/host/architecture',
+        destination: '/docs/developers#what-runs-where',
+        permanent: true,
+      },
+      {
+        source: '/docs/backend',
+        destination: '/docs/developers#start-sessions-for-your-users',
+        permanent: true,
+      },
+      {
+        source: '/docs/sdk/example',
+        destination: '/docs/developers#your-first-session',
+        permanent: true,
+      },
+      {
+        source: '/docs/sdk/sign-in',
+        destination: '/docs/developers#sign-in-with-kortix',
+        permanent: true,
+      },
+      {
+        source: '/docs/sdk/apps',
+        destination: '/docs/developers#build-on-apps-from-typescript',
+        permanent: true,
+      },
+      {
+        source: '/docs/sdk/connectors',
+        destination: '/docs/guide#connectors',
+        permanent: true,
+      },
+      // The help centre merged into /support, and /support was removed
+      // (2026-10-26). Every help URL lands on the contact page, except
+      // /help/credits, which has a counterpart in the docs tree.
+      {
+        source: '/help/credits',
+        destination: '/docs/guide#billing',
+        permanent: true,
+      },
+      {
+        source: '/help',
+        destination: '/contact',
+        permanent: true,
+      },
+      {
+        source: '/help/:path*',
+        destination: '/contact',
+        permanent: true,
+      },
+      // The credits guide is reference material, so it lives in the docs tree
+      // rather than as a marketing article. It was briefly at /support/credits
+      // on this branch; that URL never shipped to production, so this entry is
+      // for preview links and review references, not for search indexes.
+      {
+        source: '/support/credits',
+        destination: '/docs/guide#billing',
+        permanent: true,
+      },
+      // Marketing pages removed on 2026-10-26. They are indexed public URLs,
+      // listed in the old sitemap and llms.txt, so each one keeps resolving:
+      // /support (and its locale copies) goes to the contact page, the rest
+      // go home. The Markdown twins go to the home page's twin.
+      ...['/support'].flatMap((page) => [
+        { source: page, destination: '/contact', permanent: true },
+        { source: `${page}/:path*`, destination: '/contact', permanent: true },
+        { source: `/:locale(${locales.join('|')})${page}`, destination: '/:locale/contact', permanent: true },
+        { source: `/:locale(${locales.join('|')})${page}/:path*`, destination: '/:locale/contact', permanent: true },
+      ]),
+      ...[
+        '/agent-computer',
+        '/agents-and-skills',
+        '/automations',
+        '/channels',
+        '/company-as-code',
+        '/connectors',
+        '/solutions',
+      ].flatMap((page) => [
+        { source: page, destination: '/', permanent: true },
+        { source: `${page}/:path*`, destination: '/', permanent: true },
+        { source: `/:locale(${locales.join('|')})${page}`, destination: '/:locale', permanent: true },
+        { source: `/:locale(${locales.join('|')})${page}/:path*`, destination: '/:locale', permanent: true },
+        { source: `/markdown${page}.md`, destination: '/markdown/index.md', permanent: true },
+        { source: `/markdown${page}/:path*`, destination: '/markdown/index.md', permanent: true },
+      ]),
+      // /cli was removed on 2026-10-29; the CLI is documented in the docs
+      // tree. Exact path only: /cli/authorize is the CLI sign-in flow.
+      { source: '/cli', destination: '/docs/developers#cli', permanent: true },
+      { source: `/:locale(${locales.join('|')})/cli`, destination: '/docs/developers#cli', permanent: true },
+      { source: '/markdown/cli.md', destination: '/markdown/index.md', permanent: true },
+      // Removed pages that may live on in old links and search indexes.
+      // /credits-explained became the credits guide in the docs tree; the
+      // /compare section was retired with no direct replacement.
+      {
+        source: '/credits-explained',
+        destination: '/docs/guide#billing',
+        permanent: true,
+      },
+      {
+        source: '/compare',
+        destination: '/',
+        permanent: true,
+      },
+      {
+        source: '/compare/:path*',
+        destination: '/',
+        permanent: true,
+      },
+      // The blog is its own app now (see the /blog rewrite below) and is
+      // English-only, so the localized copies this app used to serve
+      // (/de/blog, /ja/blog/<slug>, …) and the old Markdown mirrors
+      // (/markdown/blog/<slug>.md) land on the one canonical post.
+      {
+        source: `/:locale(${locales.join('|')})/blog`,
+        destination: '/blog',
+        permanent: true,
+      },
+      {
+        source: `/:locale(${locales.join('|')})/blog/:path*`,
+        destination: '/blog/:path*',
+        permanent: true,
+      },
+      {
+        source: '/markdown/blog/:slug.md',
+        destination: '/blog/:slug.md',
+        permanent: true,
+      },
+    ];
+  },
+
+  async rewrites() {
+    // /docs is served from public/docs without the middleware (see the
+    // middleware matcher). Its Markdown representation is negotiated here
+    // instead: an explicit `Accept: text/markdown` request is rewritten to the
+    // page's Markdown route (/markdown/docs/<slug>.md, the record's
+    // markdownPath) BEFORE the static file lookup. Browsers keep HTML.
+    const acceptsMarkdown = [
+      { type: 'header' as const, key: 'accept', value: '(?:.*,)?\\s*text/markdown.*' },
+    ];
+    const beforeFiles = [
+      {
+        source: '/docs',
+        has: acceptsMarkdown,
+        destination: '/markdown/docs/index.md',
+      },
+      {
+        source: '/docs/:path*',
+        has: acceptsMarkdown,
+        destination: '/markdown/docs/:path*.md',
+      },
+    ];
+    const afterFiles = [
+      // Proxy API calls to backend to avoid CORS in local dev. The target is
+      // env-driven so an isolated `pnpm worktree` instance proxies the browser
+      // to ITS api port; unset (primary `pnpm dev`) keeps the default :8008.
+      {
+        source: '/v1/:path*',
+        destination: `${process.env.KORTIX_API_PROXY_TARGET ?? 'http://localhost:8008'}/v1/:path*`,
+      },
+      // SCIM mounts at the API ROOT (no /v1 prefix) and identity providers call
+      // it server-to-server at whatever origin the admin was shown. In
+      // same-origin deployments that shown origin is the web origin, so /scim
+      // must forward to the API too — without this, the Tenant URL a
+      // self-hosted admin pastes into Entra/Okta would 404.
+      {
+        source: '/scim/:path*',
+        destination: `${process.env.KORTIX_API_PROXY_TARGET ?? 'http://localhost:8008'}/scim/:path*`,
+      },
+      // Same-origin Supabase proxy for the sandbox preview. ENV-GATED: only
+      // active when KORTIX_SUPABASE_PROXY_TARGET is set (scripts/dev-local.sh
+      // run_sandbox_dev), so prod/normal deployments are untouched. The browser
+      // is served SUPABASE_URL=/supabase (same origin it loaded from, reachable
+      // through whatever preview proxy), and this rewrite forwards it to the
+      // in-sandbox Supabase (e.g. http://127.0.0.1:54321) which the browser
+      // cannot reach directly. Covers auth (/supabase/auth/v1/*) and rest
+      // (/supabase/rest/v1/*) and storage paths. Mirrors the /v1 API proxy.
+      ...(process.env.KORTIX_SUPABASE_PROXY_TARGET
+        ? [
+            {
+              source: '/supabase/:path*',
+              destination: `${process.env.KORTIX_SUPABASE_PROXY_TARGET}/:path*`,
+            },
+          ]
+        : []),
+      {
+        source: '/ingest/static/:path*',
+        destination: 'https://eu-assets.i.posthog.com/static/:path*',
+      },
+      {
+        source: '/ingest/:path*',
+        destination: 'https://eu.i.posthog.com/:path*',
+      },
+      {
+        source: '/ingest/flags',
+        destination: 'https://eu.i.posthog.com/flags',
+      },
+      // /docs is a Blume static build in public/docs/. Astro writes clean URLs as
+      // directories, and Next's static handler does not resolve a directory index,
+      // so map them explicitly. These are afterFiles rules, so an
+      // existing file such as /docs/_astro/app.css is served before they ever fire.
+      {
+        source: '/docs',
+        destination: '/docs/index.html',
+      },
+      // Blume links /docs/apple-touch-icon.png (it detects the app's
+      // public/apple-touch-icon.png) but never copies it into the docs build,
+      // so the directory rule below turned it into a 404 (KRTX-3226). Serve the
+      // app's one icon file.
+      {
+        source: '/docs/apple-touch-icon.png',
+        destination: '/apple-touch-icon.png',
+      },
+      {
+        source: '/docs/:path*',
+        destination: '/docs/:path*/index.html',
+      },
+      // /blog is a separate Next.js app (kortix-ai/marketing, basePath /blog)
+      // so posts ship on a push to that repo, without a release of this one.
+      // Every page, asset, feed and Markdown twin lives under /blog there, so
+      // these two rules carry all of it. The middleware lets /blog through
+      // untouched (i18n/routing.ts NON_PAGE_PREFIXES). KORTIX_BLOG_ORIGIN is
+      // unset on dev and self-hosted deployments, so the shared resolver
+      // (src/config/blog-origin.ts) falls back to the canonical origin: /blog
+      // serves the real blog everywhere instead of 404ing under the link the
+      // footer and navbar advertise. An explicit empty value keeps it off.
+      ...(BLOG_ORIGIN
+        ? [
+            { source: '/blog', destination: `${BLOG_ORIGIN}/blog` },
+            { source: '/blog/:path*', destination: `${BLOG_ORIGIN}/blog/:path*` },
+          ]
+        : []),
+    ];
+    return { beforeFiles, afterFiles, fallback: [] };
+  },
+
+  // HTTP headers for security, caching and performance
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          // Enforced: framing, plugins and <base>. The script allowlist is
+          // report-only until its reports are clean; see
+          // src/lib/security/content-security-policy.ts.
+          {
+            key: 'Content-Security-Policy',
+            value: enforcedContentSecurityPolicy(),
+          },
+          {
+            key: 'Content-Security-Policy-Report-Only',
+            value: reportOnlyContentSecurityPolicy(),
+          },
+          // No X-Frame-Options: it cannot allowlist the Kortix extension's side panel.
+          // CSP frame-ancestors above is the framing gate.
+          {
+            key: 'X-Content-Type-Options',
+            value: 'nosniff',
+          },
+          {
+            key: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=()',
+          },
+          {
+            key: 'Referrer-Policy',
+            value: 'strict-origin-when-cross-origin',
+          },
+          // The Supabase session cookie (see lib/supabase/client.ts /
+          // server.ts / middleware.ts) is now Secure-only on HTTPS, but
+          // without this header a plaintext http:// hit on a domain that
+          // NORMALLY redirects to HTTPS is still a window an on-path
+          // attacker can use before that redirect happens.
+          //
+          // HONEST STATE OF THIS GATE (R21, correcting R18's own comment):
+          // `next build` sets `process.env.NODE_ENV = 'production'`
+          // UNCONDITIONALLY, regardless of which host the build is deployed
+          // to. The ternary below is therefore a BUILD-time check, not an
+          // environment check — it ships the header from EVERY environment
+          // built with `next build`: `dev.kortix.com`, `staging.kortix.com`,
+          // every HTTPS self-host preview, and prod, all identically. The
+          // only thing this gate actually excludes is bare `next dev`
+          // (`NODE_ENV === 'development'`), which nothing on the public
+          // internet is served by. Read this as "not `next dev`", never as
+          // "production only" — a comment that implied the latter is
+          // exactly what stood here before and is what this note replaces.
+          //
+          // CONTROLLER RULING (R18/R21, final): keep the header and its
+          // 2-year `max-age` anyway, despite shipping everywhere. It is
+          // HOST-ONLY — `includeSubDomains` was dropped in the same fix —
+          // and every host it reaches is HTTPS-only regardless, so at worst
+          // it is redundant with a redirect that already exists. What it
+          // must not do is UNDERSTATE its own commitment: `max-age=63072000`
+          // has NO SERVER-SIDE UNDO. A browser that received this header
+          // from dev.kortix.com refuses plain HTTP to that exact host for
+          // two years, even if the header is removed from a later build.
+          // That commitment is made from dev and staging TODAY, not only
+          // from prod. `includeSubDomains` would additionally have pinned
+          // `*.dev.kortix.com` / `*.staging.kortix.com`, and from the prod
+          // apex the whole `*.kortix.com` zone — known and future
+          // subdomains, for two years, in every visitor's browser. That
+          // DNS-wide decision belongs to whoever owns the zone, not to this
+          // auth-cookie fix, which is why it stays out.
+          ...(process.env.NODE_ENV === 'production'
+            ? [
+                {
+                  key: 'Strict-Transport-Security',
+                  value: 'max-age=63072000',
+                },
+              ]
+            : []),
+        ],
+      },
+      // The session page is framed by host pages for a living (the Share
+      // dialog's Embed snippet). Its rule must come after the global
+      // `/:path*` rule: for the same header key, the LAST matching rule wins,
+      // so the enforced CSP here replaces the global one on the session page
+      // (verified by curl on the local stack). X-Frame-Options cannot be
+      // removed by a later rule, but a browser that implements CSP
+      // frame-ancestors — every evergreen browser — ignores X-Frame-Options
+      // when the policy carries frame-ancestors, so the global SAMEORIGIN is
+      // inert on this path.
+      //
+      // Only same-origin and Kortix-owned same-site host pages can frame the
+      // authenticated session. Cookies and existing project/session permissions
+      // still determine access. Both canonical URL forms are covered.
+      {
+        source: '/projects/:projectId/sessions/:sessionId',
+        headers: embedFrameHeaders(),
+      },
+      {
+        source: '/:locale/projects/:projectId/sessions/:sessionId',
+        headers: embedFrameHeaders(),
+      },
+      // Apple reads this file as JSON (Universal Links for /share and
+      // /auth/callback, shared web credentials). It has no extension, so it
+      // was served as application/octet-stream (KRTX-3255). The static file
+      // server keeps a Content-Type that a rule already set.
+      {
+        source: '/.well-known/apple-app-site-association',
+        headers: [{ key: 'Content-Type', value: 'application/json' }],
+      },
+      // Kortix in Chrome is not launched: its docs page is reachable by link from the app on
+      // dev, and no search engine indexes it (content/docs/connect/chrome.mdx `noindex`).
+      // Remove with the page's `noindex` at launch.
+      ...['/docs/connect/chrome', '/docs/connect/chrome.md', '/docs/connect/chrome.mdx'].map((source) => ({
+        source,
+        headers: [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }],
+      })),
+      {
+        source: '/fonts/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=31536000, immutable',
+          },
+        ],
+      },
+      // Astro content-hashes every file it writes to /docs/_astro/
+      // (`app.DDrhwGTK.css`), so a URL there never changes content. Without
+      // this, public/ files are served `max-age=0` and every docs page view
+      // revalidated each script and stylesheet.
+      {
+        source: '/docs/_astro/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=31536000, immutable',
+          },
+        ],
+      },
+      // Marketing media (hero posters and walkthrough encodes, trust-seal
+      // texture) are NOT content-hashed: a re-encode keeps its file name. So no
+      // `immutable` — a day of freshness, then a week of serve-stale while the
+      // CDN or browser revalidates in the background.
+      {
+        source: '/media/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=86400, stale-while-revalidate=604800',
+          },
+        ],
+      },
+      {
+        source: '/marketing/:path*',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=86400, stale-while-revalidate=604800',
+          },
+        ],
+      },
+      {
+        source: '/:path*.woff2',
+        headers: [
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=31536000, immutable',
+          },
+        ],
+      },
+    ];
+  },
+
+  skipTrailingSlashRedirect: true,
+});
+
+const withMDX = createMDX();
+const withNextIntl = createNextIntlPlugin('./src/i18n/request.ts');
+
+// Compose config wrappers: next-intl → MDX → Better Stack (structured logs) → Sentry (error tracking)
+//
+// Function form (not a plain object) so Next hands us the real build `phase`
+// — see ensureBlumeDocsBuilt above for why that, not `process.env.NEXT_PHASE`,
+// is the only reliable signal that this is a production build.
+export default function config(phase: string) {
+  ensureBlumeDocsBuilt(phase);
+
+  return withSentryConfig(withBetterStack(withMDX(withNextIntl(nextConfig()))), {
+    // Suppresses source map uploading logs during build
+    silent: true,
+
+    // Don't upload source maps during build (we can enable this later)
+    sourcemaps: {
+      disable: true,
+    },
+
+    // Disable Sentry CLI telemetry
+    telemetry: false,
+
+    // Tree-shake Sentry debug logger statements to reduce bundle size
+    bundleSizeOptimizations: {
+      excludeDebugStatements: true,
+    },
+
+    // Route Sentry envelopes through our server to bypass ad-blockers.
+    // Creates an auto-generated route at /monitoring that forwards to the DSN host.
+    tunnelRoute: '/monitoring',
+  });
+}

@@ -1,0 +1,202 @@
+/**
+ * Can this session show its saved conversation before its computer wakes?
+ *
+ * The control plane keeps every session's history (the session log, journaled
+ * at each turn end). It answers in one round trip; the computer takes
+ * 5-240 s to wake. A host that knows a saved copy is on its way shows the
+ * session with placeholder rows for that one round trip. A host that knows
+ * there is none shows its boot screen, because nothing can be read until the
+ * runtime is up. This decides which of the two is true, from what the session
+ * hook already tracks:
+ *
+ *   `loading` — a saved copy may still paint: a read is in flight, or the
+ *               OpenCode root it is keyed by is still resolving.
+ *   `shown`   — the store holds messages for this session (saved or live).
+ *   `none`    — nothing can paint before the runtime answers: the saved copy
+ *               is absent or was refused, or no root is known and no
+ *               control-plane read is left that could supply one.
+ *
+ * `none` is only ever an answer the server gave. A hook that has not started
+ * its reads yet (no signed-in user) says `loading`: an unknown is never
+ * rendered as a negative.
+ */
+
+import { type SessionTranscriptSyncEnvelope, getSessionTurn } from '../rest/projects-client/sessions';
+import { loadSessionLogPage, readFirstSessionLogAnswer, type SessionLogPage } from '../session-log/source';
+import { EMPTY_SESSION_LOG_STATE, applySessionLogPage } from '../session-log/store';
+import { sessionLogRoot } from '../session-log/v1-view';
+
+export interface SavedSessionCopy {
+  /**
+   * @deprecated Always null: no v1 saved copy is read (`GET …/transcript`, P8.3). The session
+   * log's page is `log`. Removed in the next major.
+   */
+  envelope: SessionTranscriptSyncEnvelope | null;
+  /**
+   * The conversation is proven empty, with nothing to wait for
+   * ({@link isEmptyConversation}): show the composer, not a boot screen.
+   */
+  empty: boolean;
+  /**
+   * The session log's newest page of the root thread (`GET …/log`). Null when the log answered
+   * no page: a new session, an unconverted mirror, a failed read or an invalid page.
+   */
+  log?: SessionLogPage | null;
+}
+
+/**
+ * The saved copy of a session, for a host that shows the session before
+ * `useSession` binds it (a connecting view while the computer wakes).
+ *
+ * The session log first: its newest page of the root thread (`GET …/log`), as `log` with
+ * `envelope: null`. The host puts it in the session store (`applySessionLogPage`) and renders
+ * `useSessionLogThread`, which loads a sub-agent's thread from the heads that page names.
+ * `useSession` reads the page again at the bind. No v1 window is read then.
+ *
+ * Any other answer (a 404, a failed read, an invalid page) answers no copy: `log: null`. No v1
+ * window is read (`GET …/transcript`, P8.3).
+ *
+ * The turn record is read only when the page proves `runtimeSessionId` empty. Never throws.
+ */
+export async function readSavedSessionCopy(input: {
+  projectId: string;
+  /** The Kortix session id. */
+  sessionId: string;
+  /** The runtime session the copy belongs to (the root). */
+  runtimeSessionId: string;
+  /**
+   * @deprecated Ignored: the session log is always read, and no v1 window. The project flag
+   * `session_log` it carried is gone.
+   */
+  sessionLog?: boolean;
+}): Promise<SavedSessionCopy> {
+  const { projectId, sessionId, runtimeSessionId } = input;
+  if (!projectId || !sessionId || !runtimeSessionId) return { envelope: null, empty: false };
+  const log = loadSessionLogPage ? await readFirstSessionLogAnswer(loadSessionLogPage, projectId, sessionId) : null;
+  if (!log || log === 'missing') return { envelope: null, empty: false, log: null };
+  const root = sessionLogRoot(applySessionLogPage(EMPTY_SESSION_LOG_STATE, log));
+  const provenEmpty = !!root?.empty && root.runtimeSessionId === runtimeSessionId;
+  return { envelope: null, empty: provenEmpty && (await noTurnSince(projectId, sessionId, runtimeSessionId)), log };
+}
+
+/**
+ * A page proved `runtimeSessionId` empty: no turn ended since and none is open (the page is
+ * not older than the conversation). An unanswered turn record is an unknown: false.
+ */
+async function noTurnSince(projectId: string, sessionId: string, runtimeSessionId: string): Promise<boolean> {
+  try {
+    const turn = await getSessionTurn(projectId, sessionId);
+    return isEmptyConversation({
+      savedEmptyRoot: runtimeSessionId,
+      rootSessionId: runtimeSessionId,
+      turnRead: true,
+      hasEndedTurn: turn.last_ended != null,
+      hasOpenOrQueuedTurn: turn.turns.length > 0,
+    });
+  } catch {
+    return false;
+  }
+}
+
+export type SavedTranscript = 'loading' | 'shown' | 'none';
+
+export interface SavedTranscriptInput {
+  /** The session hook is running its reads (it waits for a signed-in user). */
+  enabled: boolean;
+  /** The store holds at least one message for this session's root. */
+  hasMessages: boolean;
+  /**
+   * The saved-history read (the session log's page, `GET …/log`), which paints
+   * the copy. `off` when the host does not run it.
+   */
+  history: 'off' | 'loading' | 'present' | 'absent';
+  /**
+   * The mirror paint in `useSessionSync`: `idle` until it can run (no root
+   * yet), `loading` while its read is in flight, `painted` once it hydrated,
+   * `absent` when the read answered with nothing it may paint.
+   */
+  mirror: 'idle' | 'loading' | 'painted' | 'absent';
+  /**
+   * The OpenCode root the transcript is keyed by: `known`, `pending` while a
+   * control-plane read that can supply it is outstanding, or `unknown` when
+   * none is left (only the runtime can name it now).
+   */
+  root: 'known' | 'pending' | 'unknown';
+  /**
+   * The saved copy proves this root's conversation empty, and the turn record
+   * has not answered yet. The host's next surface is then the composer or the
+   * boot screen, and it cannot tell which: see {@link isEmptyConversation}.
+   */
+  emptyAwaitingTurnRead?: boolean;
+}
+
+export function resolveSavedTranscript(input: SavedTranscriptInput): SavedTranscript {
+  if (input.hasMessages) return 'shown';
+  if (!input.enabled) return 'loading';
+  if (input.emptyAwaitingTurnRead) return 'loading';
+  if (input.history === 'absent') return 'none';
+  if (input.history === 'loading') return 'loading';
+  if (input.root === 'unknown') return 'none';
+  if (input.root === 'pending') return 'loading';
+  if (input.mirror === 'absent') return 'none';
+  return 'loading';
+}
+
+/**
+ * The OpenCode root a saved window proves EMPTY, or null.
+ *
+ * The proof is the server's: a complete read of the runtime that found no
+ * messages, served as an available, complete window that counts zero. `total`
+ * must say so explicitly; an older API sends none and never answers an empty
+ * window as available.
+ */
+export function savedCopyEmptyRoot(
+  envelope: SessionTranscriptSyncEnvelope | null | undefined,
+): string | null {
+  return envelope?.available &&
+    envelope.source === 'mirror' &&
+    envelope.complete &&
+    envelope.total === 0 &&
+    envelope.messages.length === 0
+    ? (envelope.runtime_session_id ?? envelope.opencode_session_id ?? null)
+    : null;
+}
+
+export interface EmptyConversationInput {
+  /**
+   * The OpenCode root the server's saved copy proves empty: a complete read of
+   * the runtime found no messages (`total: 0`). Null when no copy proves it.
+   */
+  savedEmptyRoot: string | null;
+  /** The OpenCode root this session's transcript is keyed by, or `''`. */
+  rootSessionId: string;
+  /** The server's turn record (`GET …/turn`) has answered. */
+  turnRead: boolean;
+  /** That record names a turn that ended (`last_ended`). */
+  hasEndedTurn: boolean;
+  /** A turn is open, working, or waiting in the prompt inbox. */
+  hasOpenOrQueuedTurn: boolean;
+}
+
+/**
+ * Is this session's conversation empty, with nothing to wait for?
+ *
+ * Only a positive record answers yes: the saved copy of THIS root proves the
+ * conversation empty, and the turn record shows no turn ended since and none
+ * open or queued. Absent records are never evidence. The turn ledger exists
+ * since 2026-08-17 and its writes are best-effort, so "no turn ever ended" is
+ * also what an older session with history says before its first wake.
+ *
+ * A host shows an empty conversation its composer instead of a boot screen:
+ * no saved copy will paint, and the computer holds no messages. Any read
+ * still in flight answers `false`.
+ */
+export function isEmptyConversation(input: EmptyConversationInput): boolean {
+  return (
+    input.savedEmptyRoot !== null &&
+    input.savedEmptyRoot === input.rootSessionId &&
+    input.turnRead &&
+    !input.hasEndedTurn &&
+    !input.hasOpenOrQueuedTurn
+  );
+}

@@ -1,0 +1,145 @@
+/**
+ * The pi harness definition and service composition.
+ *
+ * This module is imported by the resolver for EVERY boot, so it stays light:
+ * pi itself loads inside `PiRuntime.start()` (runtime.ts), never here.
+ */
+import { homedir } from 'node:os'
+import type { ProjectEnvStore } from '@/services/sandbox-env/project-env'
+import type { HarnessDefinition, HarnessService, HarnessStartupOptions } from '../harness'
+import { isRepoMaterialized } from '@/services/workspace-provider/checkout'
+import { runtimeAssetsActivity } from '@/services/runtime-assets/runtime-assets'
+import { compiledAgentConfigFromEnv } from '@/services/config-provider/compiled-agent-config'
+import { createPiAssetsService, registerPiSkillReload } from './assets'
+import { startPiBackground } from './background'
+import type { PiBootState } from './boot-state'
+import { loadPiEnvironment, requirePiConfig, resolvePiSkillDirectories, type PiConfig } from './config'
+import { createPiConfigReleases, type PiConfigReleases, type PiConfigReleasesOptions } from './config-release'
+import { createPiControlService } from './control'
+import { createPiDiagnosticsService } from './diagnostics'
+import { createPiQueryService } from './queries'
+import { registerRuntimeStateReader, scheduleRuntimeProjectionPush } from '../shared/projection-relay'
+import { stopSessionLogJournal } from '../shared/session-log-journal'
+import { PiRuntime, parseCompiledAgentConfig, type PiRuntimeHooks } from './runtime'
+import { createPiSurface } from './surface'
+import { createPiTurnService } from './turns'
+
+export interface PiHarnessService extends HarnessService {
+  readonly id: 'pi'
+  /** The live runtime; null until `lifecycle.start()` resolved. */
+  readonly runtime: () => PiRuntime | null
+  /** What config the runtime reads: a config release, or the working tree while releases are off. */
+  readonly releases: PiConfigReleases
+}
+
+export function createPiHarnessService(
+  cfg: PiConfig,
+  projectEnv?: ProjectEnvStore,
+  options: HarnessStartupOptions & {
+    hooks?: PiRuntimeHooks
+    sessionId?: string
+    env?: NodeJS.ProcessEnv
+    releases?: Omit<PiConfigReleasesOptions, 'cfg' | 'env'>
+  } = {},
+): PiHarnessService {
+  const env = options.env ?? process.env
+  const sessionId = (options.sessionId ?? env.KORTIX_SESSION_ID ?? '').trim() || 'session-local'
+  const releases = createPiConfigReleases({ cfg, env, ...options.releases })
+  const runtime = new PiRuntime({ cfg, sessionId, hooks: options.hooks, env, releases })
+  let started = false
+  const live = () => (started ? runtime : null)
+  registerPiSkillReload(async () => live()?.reloadSkills())
+  const surface = createPiSurface(live)
+  registerRuntimeStateReader(async () => {
+    const rt = live()
+    if (!rt) return null
+    const doc = rt.stateDoc()
+    return { doc, etag: rt.stateEtag(doc) }
+  })
+  const pushProjection = scheduleRuntimeProjectionPush
+
+  return {
+    id: 'pi',
+    runtime: live,
+    releases,
+    environment: { home: homedir() },
+    lifecycle: {
+      async start() {
+        // What the runtime reads is chosen before it starts. `runPi` begins this
+        // beside the repository checkout; here it is joined, or run.
+        await releases.boot(options.onStartupMark)
+        await runtime.start()
+        started = true
+        options.onStartupMark?.('pi-ready')
+      },
+      async stop() {
+        // The journal reads the runtime: its last flush runs before the runtime stops.
+        await stopSessionLogJournal()
+        started = false
+        await runtime.stop()
+      },
+      async restart() {
+        await runtime.restart()
+        started = true
+      },
+      getState: () => runtime.getState(),
+    },
+    proxy: {
+      blockedPorts: () => [],
+      async readiness({ cfg: current, bootState }) {
+        const state: PiBootState = bootState
+        const notReady = (reason: string, body: Record<string, unknown>) => ({
+          ready: false as const,
+          phase: [state.timeline.at(-1)?.label ?? 'boot', `pi=${runtime.getState()}`, runtimeAssetsActivity() ?? '', reason].filter(Boolean).join('|'),
+          details: { error: 'sandbox runtime not ready', ...body },
+        })
+        if (state.repoMaterializationError) {
+          return notReady('repo_materialization_failed', { reason: 'repo_materialization_failed', message: state.repoMaterializationError })
+        }
+        if (current.autoClone && !(await isRepoMaterialized(current.projectTarget))) return notReady('repo_not_materialized', { reason: 'repo_not_materialized' })
+        if (state.workspaceReady === false) return notReady('workspace_not_ready', { reason: 'workspace_not_ready' })
+        if (state.initialRuntimeSessionError) {
+          return notReady('initial_session_failed', { reason: 'initial_runtime_session_failed', message: state.initialRuntimeSessionError })
+        }
+        if (state.initialRuntimeSessionRequired && !state.initialRuntimeSessionId) {
+          return notReady('initial_session_pending', { reason: 'initial_runtime_session_pending' })
+        }
+        if (runtime.getState() !== 'ok' || !started) return notReady('pi_not_ready', { reason: 'pi_not_ready', runtime: runtime.getState() })
+        return { ready: true }
+      },
+      forward: (input) => surface.handle(input),
+    },
+    control: createPiControlService(live, releases, () => pushProjection('kortix-env-applied')),
+    diagnostics: createPiDiagnosticsService(live, () => runtime.lastStartError, releases),
+    queries: createPiQueryService(live),
+    turns: createPiTurnService(live),
+    background: { start: (currentCfg) => startPiBackground(live, currentCfg) },
+    assets: createPiAssetsService(),
+  }
+}
+
+export const piDefinition: HarnessDefinition = {
+  id: 'pi',
+  assets: createPiAssetsService(),
+  environment: {
+    isInternalVariable: (name) => name.startsWith('KORTIX_PI_'),
+    protectedPathSegments: [],
+  },
+  resolveSkillDirectories: async (cfg) =>
+    resolvePiSkillDirectories(parseCompiledAgentConfig(compiledAgentConfigFromEnv(process.env))?.skills, cfg.projectTarget || cfg.workspace || '/workspace'),
+  loadConfig: loadPiEnvironment,
+  createBootState: (): PiBootState => ({
+    repoMaterializationError: null,
+    timeline: [],
+    initialRuntimeSessionRequired: (process.env.KORTIX_BOOTSTRAP_RUNTIME_SESSION ?? '').trim() === '1',
+    initialRuntimeSessionId: null,
+    initialRuntimeSessionError: null,
+  }),
+  bootDetails: (cfg) => {
+    const native = requirePiConfig(cfg)
+    return { harness: 'pi', piStateDir: native.piStateDir }
+  },
+  createService: (cfg, projectEnv, options) => createPiHarnessService(requirePiConfig(cfg), projectEnv, options),
+  run: async (context) => (await import('./boot')).runPi({ ...context, cfg: requirePiConfig(context.cfg) }),
+  // pi has no separate binary to stage: the daemon IS the runtime.
+}

@@ -1,0 +1,166 @@
+/**
+ * ONE answer to "what is this session's runtime doing", for every surface that
+ * draws it.
+ *
+ * ## Why this exists
+ *
+ * The frontend had four independent sources for that question — the control
+ * plane's session row, a health probe, the runtime's SSE frames, and the
+ * control plane's turn ledger — and every surface picked its own subset. The
+ * composer's notice read the probe, the sidebar dot read the row, the Stop
+ * button read the ledger and the stream. Each source has its own latency and
+ * its own failure mode, so on a cold load they answer in an arbitrary order and
+ * the surfaces disagree with each other and with the screen.
+ *
+ * Worse, the composer's notice treated the ABSENCE of an answer as an answer.
+ * A page reload of a session whose sandbox is up and mid-turn showed "Waking
+ * this session up…" for seconds before the runtime replied (screen recording,
+ * sampleco 2026-08-24) — a negative claim asserted from having asked nobody.
+ *
+ * ## The rule
+ *
+ * A negative claim needs positive evidence. `unknown` is a real state and it is
+ * the honest one until something answers; nothing may render an alarm from it.
+ *
+ * Pure, so each rule below is a test rather than a habit.
+ */
+import { isRuntimeReady, type SessionHealthResult } from './health';
+
+export type SessionConnection =
+  /** Nothing has answered yet. Say nothing; this is a cold load, not a fault. */
+  | 'unknown'
+  /** The control plane says the sandbox is not up. THIS is when "waking" is true. */
+  | 'waking'
+  /** The sandbox is up and the runtime has not answered this tab yet. */
+  | 'connecting'
+  /** The runtime is answering — a health pass, or its own output arriving. */
+  | 'live'
+  /** Probed and failed past the threshold, or reachable-but-never-healthy. */
+  | 'unreachable';
+
+/** The control plane's statement about the sandbox behind this session. `null`
+ *  when the session row has not loaded — which is NOT the same as "stopped". */
+export type SandboxLifecycle =
+  /** Every value `ProjectSessionStatus` can take, plus `null` for "the row has
+   *  not loaded" — which is NOT the same as "stopped" and must never be read as
+   *  one. `archived` is accepted for a caller reading a sandbox row rather than
+   *  a session row. */
+  | 'queued'
+  | 'branching'
+  | 'provisioning'
+  | 'running'
+  | 'stopped'
+  | 'archived'
+  | 'failed'
+  | 'completed'
+  | null;
+
+export interface SessionConnectionInputs {
+  /** `project_sessions.status` — the control plane's view of the box. */
+  sandbox: SandboxLifecycle;
+  /** The health probe passed (`useRuntimeReady`). */
+  runtimeReady: boolean;
+  /** The probe has given up (`useRuntimePhase() === 'unreachable'`). */
+  unreachable?: boolean;
+  /** Reachable, but never healthy for longer than the boot-stall grace period. */
+  stalled?: boolean;
+  /** The runtime's OWN OUTPUT is arriving right now — see `WorkingActivityInput`.
+   *  The strongest evidence there is: not a report about the runtime, the
+   *  runtime itself. */
+  activityFresh?: boolean;
+}
+
+export function projectSessionConnection(input: SessionConnectionInputs): SessionConnection {
+  // Content outranks every probe, including one that has given up: a runtime
+  // that is emitting parts is reachable by definition, whatever a health check
+  // on a different path concluded.
+  if (input.activityFresh) return 'live';
+  if (input.runtimeReady) return 'live';
+  if (input.unreachable || input.stalled) return 'unreachable';
+  // Positive evidence, and the ONLY thing that earns the word "waking".
+  if (input.sandbox === 'stopped' || input.sandbox === 'archived') return 'waking';
+  if (
+    input.sandbox === 'provisioning' ||
+    input.sandbox === 'queued' ||
+    input.sandbox === 'branching'
+  ) {
+    return 'waking';
+  }
+  // A finished session has no runtime to reach and nothing to wake. Nothing is
+  // wrong with it, so nothing is announced.
+  if (input.sandbox === 'completed') return 'unknown';
+  if (input.sandbox === 'failed') return 'unreachable';
+  // The box is up; we simply have not reached it yet. Not an alarm.
+  if (input.sandbox === 'running') return 'connecting';
+  // The row has not loaded. We know nothing, and we say nothing.
+  return 'unknown';
+}
+
+/** Whether a surface may draw an alarm (a notice, a warning colour) from this
+ *  state. `unknown` and `connecting` are waits, not faults. */
+export function connectionIsFaulted(connection: SessionConnection): boolean {
+  return connection === 'unreachable';
+}
+
+/**
+ * What ONE health probe (`getSessionHealth`) says about the session's
+ * computer, in this vocabulary. A host that probes on its own — mobile's
+ * thread does — reads it here instead of counting every non-200 as a fault:
+ * a parked box answers through the control plane, and a booting runtime
+ * answers `starting`. Neither is unreachable.
+ *
+ * A network error never reaches this: the caller that caught it knows the
+ * probe got no answer, which is `unreachable`.
+ */
+export function connectionFromHealth(result: SessionHealthResult | null): SessionConnection {
+  // No runtime to probe, or no probe yet: nothing is known, and nothing is said.
+  if (!result || result.status === 0) return 'unknown';
+  if (result.ok && isRuntimeReady(result.health)) return 'live';
+  // The platform answered from its own row: the box is not up, and it was
+  // never dialled. That is a sleeping or starting computer, not a lost one.
+  if (result.hop === 'control_plane') return 'waking';
+  // The runtime itself answered, and said it is still booting.
+  if (result.ok || result.health?.status === 'starting') return 'connecting';
+  return 'unreachable';
+}
+
+/**
+ * How long a fault must persist before a surface says so. A probe is one
+ * sample: a loaded box misses one, a proxy hop drops one, a phone waking from
+ * the background sends one before its radio is up. Drawing each sample as the
+ * state made the status flap connecting → unreachable → live on a computer that
+ * never went away. A computer that is really gone is still gone after this.
+ */
+export const CONNECTION_FAULT_GRACE_MS = 10_000;
+
+/** What a surface draws, plus when the current run of bad probes began. */
+export interface SettledConnection {
+  connection: SessionConnection;
+  /** When probes stopped saying `live`. `null` while they say it. */
+  faultSinceMs: number | null;
+}
+
+export const INITIAL_SETTLED_CONNECTION: SettledConnection = { connection: 'unknown', faultSinceMs: null };
+
+/**
+ * Fold one observation (`connectionFromHealth`, or a host's own evidence) into
+ * the state a surface draws. Good news lands at once; bad news must persist for
+ * `graceMs`. `waking` is the control plane stating the box is not up — an
+ * answer, not a missed sample — so it also lands at once.
+ */
+export function settleSessionConnection(
+  prev: SettledConnection,
+  observed: SessionConnection,
+  nowMs: number,
+  graceMs: number = CONNECTION_FAULT_GRACE_MS,
+): SettledConnection {
+  if (observed === 'unknown') return prev;
+  if (observed === 'live' || observed === 'waking') return { connection: observed, faultSinceMs: null };
+  const faultSinceMs = prev.faultSinceMs ?? nowMs;
+  const persisted = nowMs - faultSinceMs >= graceMs;
+  if (!persisted) {
+    const held = prev.connection === 'unknown' ? 'connecting' : prev.connection;
+    return { connection: held, faultSinceMs };
+  }
+  return { connection: observed, faultSinceMs };
+}

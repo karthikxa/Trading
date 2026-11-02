@@ -1,0 +1,719 @@
+#!/usr/bin/env bun
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  CliError,
+  getEnv,
+  handleError,
+  kortixConnectorCall,
+  kortixDownload,
+  kortixGet,
+  kortixPost,
+  kortixProjectId,
+  kortixSessionId,
+  out,
+  parseArgs,
+  validateRequired,
+} from '../lib';
+
+// Relay a checkpoint or the final answer into this turn's live Slack stream.
+// apps/api owns the streamed message; here we just hand it the content.
+//   detail → subtitle line under the new task's title (in_progress state).
+//   output → result line on the *previous* task as it transitions to complete.
+// What a relay that did NOT reach the thread reports. `reason` is the API's
+// own code (see apps/api channels/slack/turn.ts TurnRelayReason) or one of the
+// local ones below; `hint` is the one line an agent needs to act on it.
+type RelayOutcome =
+  | { ok: true }
+  | { ok: false; reason: string; hint: string; status?: number };
+
+const RELAY_HINTS: Record<string, string> = {
+  no_open_turn:
+    'No Slack turn is open for this run (the prompt did not come from Slack, or the turn was already closed). To post anyway, use `slack send --channel <id> --thread <ts>`.',
+  turn_finalized:
+    'This turn was already answered — one `slack send` per turn. Further progress is not shown; post a new message with `--channel/--thread` if there is more to say.',
+  finalize_lost_race:
+    'The turn was closed a moment ago by the runtime. Post the answer with `slack send --channel <id> --thread <ts>` if it did not land.',
+  stream_open_failed:
+    'Slack refused to open the live plan block. Continue working; post the answer with `slack send` when done.',
+  no_slack_thread: 'This session has no Slack thread to fall back to.',
+  answer_already_posted: 'This exact answer was already posted to the thread.',
+  post_failed: 'Slack rejected the post. Retry once; if it keeps failing, report it in the thread with `--channel/--thread`.',
+  missing_session_context:
+    'KORTIX_PROJECT_ID / KORTIX_SESSION_ID are not set in this environment, so there is no turn to relay into.',
+};
+
+function relayHint(reason: string, fallback: string): string {
+  return RELAY_HINTS[reason] ?? fallback;
+}
+
+async function relayTurnStream(
+  kind: 'step' | 'answer',
+  text: string,
+  extras: {
+    detail?: string;
+    output?: string;
+    sources?: Array<{ url: string; text: string }>;
+    blocks?: unknown[];
+  } = {},
+): Promise<RelayOutcome> {
+  const projectId = kortixProjectId();
+  const sessionId = kortixSessionId();
+  if (!projectId || !sessionId) {
+    return {
+      ok: false,
+      reason: 'missing_session_context',
+      hint: RELAY_HINTS.missing_session_context,
+    };
+  }
+  try {
+    const r = await kortixPost<{ ok?: boolean; reason?: string }>(
+      `/projects/${projectId}/turn-stream`,
+      {
+        session_id: sessionId,
+        kind,
+        text,
+        ...(extras.detail ? { detail: extras.detail } : {}),
+        ...(extras.output ? { output: extras.output } : {}),
+        ...(extras.sources && extras.sources.length > 0 ? { sources: extras.sources } : {}),
+        ...(extras.blocks && extras.blocks.length > 0 ? { blocks: extras.blocks } : {}),
+      },
+    );
+    if (r?.ok === true) return { ok: true };
+    const reason = typeof r?.reason === 'string' && r.reason ? r.reason : 'not_relayed';
+    return { ok: false, reason, hint: relayHint(reason, 'The relay was not delivered.') };
+  } catch (err) {
+    // Never collapse an HTTP failure into "no turn". A 401/403/5xx/timeout is a
+    // different problem with a different fix, and the agent must see it.
+    const message = err instanceof Error ? err.message : String(err);
+    const status = (err as { status?: number })?.status;
+    return {
+      ok: false,
+      reason: 'relay_request_failed',
+      hint: `The turn-stream request failed: ${message}. This is an API/auth problem, not a missing turn — retry once, then report it in the thread with \`slack send --channel <id> --thread <ts>\`.`,
+      ...(status ? { status } : {}),
+    };
+  }
+}
+
+// Parse a repeatable `--source` flag value like `https://example.com|Title`
+// into the structured shape the relay expects. Returns [] when missing.
+function readSourcesFlag(flags: Record<string, string>): Array<{ url: string; text: string }> {
+  const raw = flags.source ?? flags.sources;
+  if (!raw) return [];
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const i = line.indexOf('|');
+      if (i <= 0) return { url: line, text: line };
+      return { url: line.slice(0, i).trim(), text: line.slice(i + 1).trim() };
+    })
+    .filter((s) => /^https?:\/\//.test(s.url));
+}
+
+// Slack Web API methods → their Kortix `channel` connector action paths. The
+// shim speaks Slack method names; the Connector speaks connector actions.
+//
+// Use the reserved platform-owned channel slug first. Projects may define their
+// own `[[connectors]] slug="slack"` (often Pipedream Slack), which must not
+// shadow the built-in Slack CLI. Keep the legacy `slack` fallback so old API
+// deployments / old materialized rows continue to work during rollout.
+const SLACK_CONNECTORS = ['kortix_slack', 'slack'] as const;
+const METHOD_TO_ACTION: Record<string, string> = {
+  'chat.postMessage': 'send_message',
+  'chat.update': 'update_message',
+  'chat.delete': 'delete_message',
+  'reactions.add': 'add_reaction',
+  'reactions.remove': 'remove_reaction',
+  'conversations.history': 'get_history',
+  'conversations.replies': 'get_thread',
+  'conversations.list': 'list_channels',
+  'conversations.info': 'channel_info',
+  'conversations.join': 'join_channel',
+  'users.list': 'list_users',
+  'users.info': 'user_info',
+  'auth.test': 'auth_test',
+  'search.messages': 'search_messages',
+  'files.info': 'file_info',
+};
+
+type SlackWebApiResponse = Record<string, unknown> & {
+  ok?: boolean;
+  error?: string;
+};
+
+function requiredFlags<const K extends string>(
+  flags: Record<string, string>,
+  ...keys: K[]
+): Record<K, string> {
+  validateRequired(flags, ...keys);
+  return Object.fromEntries(keys.map((key) => [key, flags[key] ?? ''])) as Record<K, string>;
+}
+
+function optionalInt(value: string | undefined): number | undefined {
+  return value ? Number.parseInt(value, 10) : undefined;
+}
+
+// Route a Slack Web API call through the Kortix Connector (via the SDK): the bot
+// token is resolved + attached SERVER-SIDE (never in this sandbox), the call is
+// audited + policy-gated, and Slack's response comes back as `data`. The gateway
+// maps Slack's `{ok:false}` envelope to an error, so the SDK throws on failure
+// (surfacing the Slack error); on success it returns `{ ok:true, data:<slack> }`.
+// Args keep Slack's native names, so the existing callers + `data.ok` reads are
+// unchanged.
+async function connectorCall(
+  method: string,
+  args: Record<string, unknown>,
+): Promise<SlackWebApiResponse> {
+  const action = METHOD_TO_ACTION[method];
+  if (!action) throw new CliError(`No Connector action mapped for Slack method "${method}"`);
+  let lastErr: CliError | null = null;
+  for (const connector of SLACK_CONNECTORS) {
+    try {
+      const res = await kortixConnectorCall<{ data?: SlackWebApiResponse } & SlackWebApiResponse>(
+        `${connector}.${action}`,
+        args,
+      );
+      return (res.data ?? res) as SlackWebApiResponse;
+    } catch (err) {
+      if (!(err instanceof CliError)) throw err;
+      lastErr = err;
+      const reason = err.message || null;
+      // Try the legacy `slack` namespace only when the reserved channel connector
+      // is absent/not yet materialized. Do not fall back on `needs_auth` or
+      // upstream Slack errors — those are real results from the right connector.
+      if (
+        connector === SLACK_CONNECTORS[0] &&
+        (reason === 'connector_not_found' || reason === 'action_not_found')
+      ) {
+        continue;
+      }
+      throw new CliError(reason ?? err.message);
+    }
+  }
+  try {
+    throw lastErr ?? new CliError(`Slack connector action "${action}" was not found`);
+  } catch (err) {
+    if (err instanceof CliError) throw err;
+    throw err;
+  }
+}
+
+async function apiPost(
+  method: string,
+  body: Record<string, unknown>,
+): Promise<SlackWebApiResponse> {
+  return connectorCall(method, body);
+}
+
+async function apiGet(
+  method: string,
+  params: Record<string, string>,
+): Promise<SlackWebApiResponse> {
+  return connectorCall(method, params);
+}
+
+// Where a human reply in the thread goes. The API binds a thread to the
+// session that posts in it; every send path reports the result, so the agent
+// always knows whether a reply can come back here. In a channel, only a reply
+// that @mentions the bot comes back; in a DM, every reply does.
+type ThreadBinding = Record<string, unknown> & { bound?: unknown; reason?: unknown };
+
+const BINDING_HINTS: Record<string, string> = {
+  thread_bound_to_another_session:
+    'Replies in this thread go to ANOTHER session, not this one. Move it here with `slack bind-thread --channel <channel> --thread <thread_ts> --force`, or post a new top-level message.',
+  thread_owned_by_another_user:
+    "Another user's session owns this thread; replies go there and --force cannot move it. Post a new top-level message to get replies here.",
+  thread_owned_by_another_project:
+    'Another project owns this thread; replies go there. Post a new top-level message to get replies here.',
+  workspace_unknown: 'The project has no Slack install on record, so the thread was not bound. Replies will start a new session.',
+  bind_failed: 'The bind was not written; replies will start a new session. Run `slack bind-thread --channel <channel> --thread <thread_ts>` once.',
+  not_reported:
+    'The API did not report a binding (older API). Run `slack bind-thread --channel <channel> --thread <thread_ts>` to make sure mention replies come back here.',
+  top_level_file:
+    'A top-level file post has no thread to bind. If you expect a reply, post a text message with `slack send --channel` instead.',
+};
+
+function withHint(binding: ThreadBinding): ThreadBinding {
+  if (binding.bound === true) return binding;
+  const reason = typeof binding.reason === 'string' ? binding.reason : 'bind_failed';
+  return { ...binding, hint: BINDING_HINTS[reason] ?? BINDING_HINTS.bind_failed };
+}
+
+async function bindThread(channel: string, threadTs: string, force = false): Promise<ThreadBinding> {
+  const sessionId = kortixSessionId();
+  const projectId = kortixProjectId();
+  if (!sessionId) throw new CliError('KORTIX_SESSION_ID not set — cannot bind this session.');
+  if (!projectId) throw new CliError('KORTIX_PROJECT_ID not set — cannot bind.');
+  return kortixPost<ThreadBinding>(`/projects/${projectId}/channels/slack/bind-thread`, {
+    session_id: sessionId,
+    channel,
+    thread_ts: threadTs,
+    ...(force ? { force: true } : {}),
+  });
+}
+
+async function send(opts: {
+  channel: string;
+  text?: string;
+  threadTs?: string;
+  file?: string;
+  blocks?: unknown[];
+}) {
+  if (opts.file) {
+    if (!existsSync(opts.file)) throw new CliError(`File not found: ${opts.file}`);
+    const fileData = readFileSync(opts.file);
+    const fileName = opts.file.split('/').pop() || 'file';
+    // Upload via the server-side proxy — the bot token stays on the server (the
+    // 3-step external-upload + form-encoding can't ride the JSON Connector gateway).
+    const projectId = kortixProjectId();
+    if (!projectId) throw new CliError('KORTIX_PROJECT_ID not set — cannot upload.');
+    const res = await kortixPost<{ ok?: boolean; files?: unknown }>(
+      `/projects/${projectId}/channels/slack/file/upload`,
+      {
+        channel: opts.channel,
+        filename: fileName,
+        content_base64: fileData.toString('base64'),
+        ...(opts.text ? { comment: opts.text } : {}),
+        ...(opts.threadTs ? { thread_ts: opts.threadTs } : {}),
+      },
+    );
+    let threadBinding: ThreadBinding = { bound: false, reason: 'top_level_file' };
+    if (opts.threadTs) {
+      threadBinding = await bindThread(opts.channel, opts.threadTs).catch((err) => ({
+        bound: false,
+        thread_ts: opts.threadTs,
+        reason:
+          err instanceof CliError && err.details.status === 409 ? 'thread_bound_to_another_session' : 'bind_failed',
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
+    return { ok: true, files: res.files, channel: opts.channel, thread_binding: withHint(threadBinding) };
+  }
+
+  if (!opts.text && (!opts.blocks || opts.blocks.length === 0)) {
+    throw new CliError('Either --text, --blocks, or --file required');
+  }
+  const body: Record<string, unknown> = { channel: opts.channel, mrkdwn: true };
+  body.text = opts.text ?? deriveFallbackText(opts.blocks);
+  if (opts.blocks && opts.blocks.length > 0) body.blocks = opts.blocks;
+  if (opts.threadTs) body.thread_ts = opts.threadTs;
+  const data = await apiPost('chat.postMessage', body);
+  if (!data.ok) throw new CliError(data.error ?? 'send failed');
+  // The API binds the thread to this session on a successful post, so a human
+  // reply in it comes back here. Anything but `bound: true` carries a `hint`.
+  return {
+    ok: true,
+    ts: data.ts,
+    channel: data.channel,
+    thread_binding: withHint(
+      (data.thread_binding as ThreadBinding | undefined) ?? {
+        bound: 'unknown',
+        thread_ts: opts.threadTs ?? data.ts,
+        reason: 'not_reported',
+      },
+    ),
+  };
+}
+
+function deriveFallbackText(blocks: unknown[] | undefined): string {
+  if (!Array.isArray(blocks)) return 'New message';
+  for (const block of blocks as Array<Record<string, unknown>>) {
+    if (block.type === 'header' || block.type === 'section') {
+      const t = (block as { text?: { text?: string } }).text?.text;
+      if (typeof t === 'string' && t.trim()) return t.trim().slice(0, 200);
+    }
+  }
+  return 'New message';
+}
+
+async function edit(opts: {
+  channel: string;
+  ts: string;
+  text?: string;
+  blocks?: unknown[];
+}) {
+  const body: Record<string, unknown> = {
+    channel: opts.channel,
+    ts: opts.ts,
+    text: opts.text ?? deriveFallbackText(opts.blocks),
+  };
+  if (opts.blocks && opts.blocks.length > 0) body.blocks = opts.blocks;
+  const data = await apiPost('chat.update', body);
+  if (!data.ok) throw new CliError(data.error ?? 'edit failed');
+  return { ok: true, ts: data.ts, channel: data.channel };
+}
+
+async function del(opts: { channel: string; ts: string }) {
+  const data = await apiPost('chat.delete', { channel: opts.channel, ts: opts.ts });
+  if (!data.ok) throw new CliError(data.error ?? 'delete failed');
+  return { ok: true };
+}
+
+async function react(opts: { channel: string; ts: string; emoji: string }, method = 'reactions.add') {
+  const data = await apiPost(method, {
+    channel: opts.channel,
+    timestamp: opts.ts,
+    name: opts.emoji,
+  });
+  if (!data.ok) throw new CliError(data.error ?? 'react failed');
+  return { ok: true };
+}
+
+async function history(opts: { channel: string; limit?: number }) {
+  const data = await apiGet('conversations.history', {
+    channel: opts.channel,
+    limit: String(opts.limit ?? 20),
+  });
+  if (!data.ok) throw new CliError(data.error ?? 'history failed');
+  return { ok: true, messages: data.messages };
+}
+
+async function thread(opts: { channel: string; ts: string; limit?: number }) {
+  const data = await apiGet('conversations.replies', {
+    channel: opts.channel,
+    ts: opts.ts,
+    limit: String(opts.limit ?? 20),
+  });
+  if (!data.ok) throw new CliError(data.error ?? 'thread failed');
+  return { ok: true, messages: data.messages };
+}
+
+async function listChannels(opts: { limit?: number }) {
+  const data = await apiGet('conversations.list', {
+    limit: String(opts.limit ?? 100),
+    types: 'public_channel,private_channel',
+    exclude_archived: 'true',
+  });
+  if (!data.ok) throw new CliError(data.error ?? 'channels failed');
+  return { ok: true, channels: data.channels };
+}
+
+async function channelInfo(opts: { channel: string }) {
+  const data = await apiGet('conversations.info', { channel: opts.channel });
+  if (!data.ok) throw new CliError(data.error ?? 'channel info failed');
+  return { ok: true, channel: data.channel };
+}
+
+async function join(opts: { channel: string }) {
+  const data = await apiPost('conversations.join', { channel: opts.channel });
+  if (!data.ok) throw new CliError(data.error ?? 'join failed');
+  return { ok: true, channel: data.channel };
+}
+
+async function listUsers(opts: { limit?: number }) {
+  const data = await apiGet('users.list', { limit: String(opts.limit ?? 100) });
+  if (!data.ok) throw new CliError(data.error ?? 'users failed');
+  return { ok: true, members: data.members };
+}
+
+async function user(opts: { id: string }) {
+  const data = await apiGet('users.info', { user: opts.id });
+  if (!data.ok) throw new CliError(data.error ?? 'user failed');
+  return { ok: true, user: data.user };
+}
+
+async function me() {
+  const data = await apiPost('auth.test', {});
+  if (!data.ok) throw new CliError(data.error ?? 'auth.test failed');
+  return {
+    ok: true,
+    user_id: data.user_id,
+    user: data.user,
+    team: data.team,
+    team_id: data.team_id,
+    bot_id: data.bot_id,
+  };
+}
+
+async function search(opts: { query: string }) {
+  const data = await apiGet('search.messages', { query: opts.query });
+  if (!data.ok) throw new CliError(data.error ?? 'search failed');
+  return { ok: true, messages: data.messages };
+}
+
+async function fileInfo(opts: { fileId: string }) {
+  const data = await apiGet('files.info', { file: opts.fileId });
+  if (!data.ok) throw new CliError(data.error ?? 'file info failed');
+  return { ok: true, file: data.file };
+}
+
+async function download(opts: { url: string; out: string }) {
+  // Fetch via the server-side proxy — the bot token stays on the server.
+  const projectId = kortixProjectId();
+  if (!projectId) throw new CliError('KORTIX_PROJECT_ID not set — cannot download.');
+  const buf = await kortixDownload(`/projects/${projectId}/channels/slack/file`, {
+    url: opts.url,
+  });
+  const dir = opts.out.split('/').slice(0, -1).join('/');
+  if (dir) mkdirSync(dir, { recursive: true });
+  writeFileSync(opts.out, Buffer.from(buf));
+  return { ok: true, path: opts.out, size: buf.byteLength };
+}
+
+// The manifest is built by apps/api (the SINGLE source of truth) and served at
+// GET /v1/webhooks/slack/<projectId>/manifest. We just fetch + present it, so
+// there's one manifest implementation no matter where you ask for it.
+async function manifest(opts: { url?: string; projectId?: string; name?: string }) {
+  const projectId = opts.projectId || kortixProjectId();
+  if (!projectId) throw new CliError('--project-id required (or set KORTIX_PROJECT_ID)');
+
+  const params: Record<string, string> = {};
+  if (opts.name) params.name = opts.name;
+  const m = await kortixGet<unknown>(`/webhooks/slack/${projectId}/manifest`, params);
+
+  const publicUrl = (opts.url || getEnv('KORTIX_API_URL') || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/v1$/, '');
+  const webhookUrl = publicUrl ? `${publicUrl}/v1/webhooks/slack/${projectId}` : undefined;
+  return { ok: true, manifest: m, webhook_url: webhookUrl };
+}
+
+function readTextFlag(flags: Record<string, string>): string | undefined {
+  if (flags['text-file']) {
+    try {
+      return readFileSync(flags['text-file'], 'utf-8');
+    } catch {
+      throw new CliError(`Cannot read --text-file: ${flags['text-file']}`);
+    }
+  }
+  return flags.text;
+}
+
+function readBlocksFlag(flags: Record<string, string>): unknown[] | undefined {
+  let raw: string | undefined;
+  if (flags['blocks-file']) {
+    try {
+      raw = readFileSync(flags['blocks-file'], 'utf-8');
+    } catch {
+      throw new CliError(`Cannot read --blocks-file: ${flags['blocks-file']}`);
+    }
+  } else if (flags.blocks) {
+    raw = flags.blocks === '-' ? readFileSync(0, 'utf-8') : flags.blocks;
+  }
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new CliError(`--blocks is not valid JSON: ${(err as Error).message}`);
+  }
+  const arr = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object' && Array.isArray((parsed as { blocks?: unknown }).blocks)
+      ? (parsed as { blocks: unknown[] }).blocks
+      : null;
+  if (!arr) throw new CliError('--blocks must be a JSON array (or `{ "blocks": [...] }`)');
+  if (arr.length === 0) throw new CliError('--blocks cannot be empty');
+  return arr;
+}
+
+async function main(): Promise<void> {
+  const { command, args, flags } = parseArgs(process.argv);
+  switch (command) {
+    case 'step': {
+      const text = (readTextFlag(flags) ?? args[0] ?? '').trim();
+      if (!text) throw new CliError('checkpoint text required, e.g. slack step "Reading the logs"');
+      // --detail: subtitle line shown under the NEW task while in_progress.
+      //          Supports inline `<https://… |label>` mrkdwn links.
+      // --output: result line attached to the PREVIOUS task as it completes.
+      //          Also supports `<url|label>` mrkdwn.
+      // --source URL|TITLE (repeatable, newline-separated): citations
+      //          rendered under the closing task's card.
+      const detail = flags.detail?.trim() || undefined;
+      const output = flags.output?.trim() || undefined;
+      const sources = readSourcesFlag(flags);
+      const relayed = await relayTurnStream('step', text, { detail, output, sources });
+      if (relayed.ok) {
+        out({ ok: true, relayed: true });
+        break;
+      }
+      // Loud on purpose. `ok: true, relayed: false` made a dropped checkpoint
+      // indistinguishable from a delivered one, so an agent could stream a
+      // whole run into nothing and believe it was seen
+      // (INC-2026-09-08-CONNECTOR-GATEWAY, S3). Exit non-zero with the reason.
+      throw new CliError(
+        `Progress step was not relayed to Slack (${relayed.reason}). ${relayed.hint}`,
+        'STEP_NOT_RELAYED',
+        1,
+        { relayed: false, reason: relayed.reason, ...(relayed.status ? { status: relayed.status } : {}) },
+      );
+    }
+    case 'send': {
+      const text = readTextFlag(flags) ?? args[0];
+      const blocks = readBlocksFlag(flags);
+      // No --channel + no --file → this is the turn answer. Finalizes the
+      // live streamed message rather than posting a separate one. --blocks
+      // is allowed here: Slack accepts a closing `blocks` chunk on stopStream
+      // so the answer can be full Block Kit (header/section/actions/etc.).
+      if (!flags.channel && !flags.file) {
+        if (!text && (!blocks || blocks.length === 0)) {
+          throw new CliError('message text required, e.g. slack send "Done — here is the summary"');
+        }
+        const fallbackText = (text ?? 'Done.').slice(0, 11000);
+        const relayed = await relayTurnStream('answer', fallbackText, {
+          blocks: blocks && blocks.length > 0 ? blocks : undefined,
+        });
+        if (relayed.ok) {
+          out({ ok: true, delivered: 'stream', mode: blocks ? 'blocks' : 'text' });
+          break;
+        }
+        throw new CliError(
+          `The answer was not delivered into a Slack turn (${relayed.reason}). ${relayed.hint}`,
+          'ANSWER_NOT_RELAYED',
+          1,
+          { reason: relayed.reason, ...(relayed.status ? { status: relayed.status } : {}) },
+        );
+      }
+      validateRequired(flags, 'channel');
+      if (!text && !flags.file && !blocks) {
+        throw new CliError('--text, --text-file, --blocks, --blocks-file, and/or --file required');
+      }
+      const { channel } = requiredFlags(flags, 'channel');
+      out(
+        await send({
+          channel,
+          text,
+          blocks,
+          threadTs: flags.thread,
+          file: flags.file,
+        }),
+      );
+      break;
+    }
+    case 'edit': {
+      const { channel, ts } = requiredFlags(flags, 'channel', 'ts');
+      const text = readTextFlag(flags);
+      const blocks = readBlocksFlag(flags);
+      if (!text && !blocks) throw new CliError('--text, --text-file, or --blocks required');
+      out(await edit({ channel, ts, text, blocks }));
+      break;
+    }
+    case 'delete':
+      out(await del(requiredFlags(flags, 'channel', 'ts')));
+      break;
+    case 'react':
+      out(await react(requiredFlags(flags, 'channel', 'ts', 'emoji')));
+      break;
+    case 'unreact':
+      out(await react(requiredFlags(flags, 'channel', 'ts', 'emoji'), 'reactions.remove'));
+      break;
+    case 'typing':
+      validateRequired(flags, 'channel');
+      out({ ok: true, note: 'Slack Web API does not support typing indicators for bots' });
+      break;
+    case 'history':
+      out(await history({ ...requiredFlags(flags, 'channel'), limit: optionalInt(flags.limit) }));
+      break;
+    case 'thread':
+      out(
+        await thread({ ...requiredFlags(flags, 'channel', 'ts'), limit: optionalInt(flags.limit) }),
+      );
+      break;
+    case 'bind-thread': {
+      // Bind THIS session to a Slack thread so later replies route back to it —
+      // e.g. a thread a human started. `slack send --channel` binds its own
+      // thread already. A thread another session owns fails with HTTP 409
+      // unless --force moves it (only between your own sessions of the project).
+      const channel = flags.channel ?? getEnv('SLACK_CHANNEL_ID');
+      const threadTs = flags.thread ?? getEnv('SLACK_THREAD_TS');
+      if (!channel || !threadTs) {
+        throw new CliError(
+          'bind-thread needs --channel and --thread (defaults to $SLACK_CHANNEL_ID/$SLACK_THREAD_TS on Slack turns)',
+        );
+      }
+      out(await bindThread(channel, threadTs, flags.force === 'true'));
+      break;
+    }
+    case 'channels':
+      out(await listChannels({ limit: optionalInt(flags.limit) }));
+      break;
+    case 'channel-info':
+      out(await channelInfo(requiredFlags(flags, 'channel')));
+      break;
+    case 'join':
+      out(await join(requiredFlags(flags, 'channel')));
+      break;
+    case 'users':
+      out(await listUsers({ limit: optionalInt(flags.limit) }));
+      break;
+    case 'user':
+      out(await user(requiredFlags(flags, 'id')));
+      break;
+    case 'me':
+      out(await me());
+      break;
+    case 'search':
+      out(await search(requiredFlags(flags, 'query')));
+      break;
+    case 'file-info':
+      out(await fileInfo({ fileId: requiredFlags(flags, 'file').file }));
+      break;
+    case 'download':
+      out(await download(requiredFlags(flags, 'url', 'out')));
+      break;
+    case 'manifest':
+      out(await manifest({ url: flags.url, projectId: flags['project-id'], name: flags.name }));
+      break;
+    case 'ask':
+      // `slack ask` was replaced by opencode's native `question` tool. Calling
+      // opencode's `question` from any agent turn triggered from Slack
+      // surfaces the form in the same thread automatically via the
+      // sandbox-side event subscriber. The CLI keeps this case so older
+      // workflows fail loud instead of pretending to work.
+      throw new CliError(
+        "`slack ask` was removed — use opencode's built-in `question` tool. " +
+          "The Slack form is rendered automatically by the sandbox's opencode-events subscriber.",
+      );
+    default:
+      console.log(`
+slack — Slack Web API adapter
+
+Auth: none in-sandbox — calls run through the Kortix Connector (server-side bot token).
+
+Turn commands (use these when answering a Slack message):
+  step         "<checkpoint>"            # narrate a live plan step as you work
+  send         "<answer>"                # deliver your reply — finalizes the live update
+
+Commands:
+  send         (--channel, [--text|--text-file], [--blocks|--blocks-file], [--thread], [--file])
+               # binds the thread to this session: @mention replies (any DM reply) come back here (see thread_binding)
+  edit         (--channel, --ts, --text|--text-file|--blocks|--blocks-file)
+  delete       (--channel, --ts)
+  react        (--channel, --ts, --emoji)
+  unreact      (--channel, --ts, --emoji)   # remove a reaction you added
+  typing       (--channel)               # no-op on Slack Web API
+  history      (--channel, [--limit])
+  thread       (--channel, --ts, [--limit])
+  bind-thread  (--channel, --thread, [--force])  # route replies in a thread back to this session; 409 if another session owns it, --force moves it
+  channels     ([--limit])
+  channel-info (--channel)
+  join         (--channel)
+  users        ([--limit])
+  user         (--id)
+  me
+  search       (--query)
+  file-info    (--file <id>)
+  download     (--url, --out)
+  manifest     (--url, --project-id, [--name])
+
+Block Kit (rich messages):
+  --blocks '[{"type":"header","text":{"type":"plain_text","text":"Hi"}},
+              {"type":"section","text":{"type":"mrkdwn","text":"*bold* + _italic_"}},
+              {"type":"divider"},
+              {"type":"actions","elements":[{"type":"button","text":{"type":"plain_text","text":"OK"},"action_id":"ok"}]}]'
+  --blocks-file message.json    # read JSON from a file
+  --blocks -                    # read JSON from stdin
+  Design visually + copy JSON from: https://app.slack.com/block-kit-builder
+  --text is always sent as the notification fallback; if omitted, the first
+  section/header text is used.
+`);
+      break;
+  }
+}
+
+if (import.meta.main) {
+  main().catch(handleError);
+}

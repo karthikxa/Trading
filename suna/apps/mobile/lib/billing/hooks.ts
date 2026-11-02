@@ -1,0 +1,312 @@
+/**
+ * Unified Billing React Query Hooks
+ *
+ * Single hook for all billing data with proper invalidation
+ */
+
+import { useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query';
+import { getAccountState } from '@kortix/sdk';
+import { dollarsToCredits } from '@kortix/shared';
+import { accountStateSelectors, type AccountState } from './api';
+
+export type { AccountState };
+
+// Re-export selectors
+export { accountStateSelectors };
+
+// =============================================================================
+// QUERY KEYS - Single key for all billing state
+// =============================================================================
+
+export const accountStateKeys = {
+  all: ['account-state'] as const,
+  state: (accountId?: string) =>
+    [...accountStateKeys.all, 'state', { accountId: accountId ?? null }] as const,
+};
+
+// =============================================================================
+// UTILITY - Invalidation helper for mutations
+// =============================================================================
+
+export function invalidateAccountState(
+  queryClient: ReturnType<typeof useQueryClient>,
+  accountId?: string
+) {
+  queryClient.invalidateQueries({
+    queryKey: accountId ? accountStateKeys.state(accountId) : accountStateKeys.all,
+  });
+}
+
+// Don't retry on auth errors (401/403)
+const shouldRetry = (failureCount: number, error: Error) => {
+  const status = (error as { status?: unknown }).status;
+  if (status === 401 || status === 403) return false;
+  return failureCount < 2;
+};
+
+// =============================================================================
+// MAIN HOOK - Single query for all billing data
+// =============================================================================
+
+interface UseAccountStateOptions {
+  enabled?: boolean;
+  staleTime?: number;
+  refetchOnMount?: boolean;
+  refetchOnWindowFocus?: boolean;
+  /** Fetch a specific team account rather than the user's primary account. */
+  accountId?: string;
+}
+
+/**
+ * Unified hook for all account billing state.
+ *
+ * The data is cached for 10 minutes and only refetched when:
+ * - A mutation occurs (upgrade, downgrade, purchase, etc.)
+ * - User explicitly refreshes
+ * - Agent run completes (credits deducted)
+ */
+export function useAccountState(options?: UseAccountStateOptions) {
+  const enabled = options?.enabled ?? true;
+  const accountId = options?.accountId;
+
+  return useQuery<AccountState>({
+    queryKey: accountStateKeys.state(accountId),
+    // The SDK answers a 401 or a billing-disabled deployment with a default "no plan" state.
+    // ponytail: mobile's AccountState still declares subscription.is_trial /
+    // trial_status / trial_ends_at, which the API does not send; adopt the SDK's
+    // AccountState type when those readers are cleaned up.
+    queryFn: () => getAccountState({ accountId }) as unknown as Promise<AccountState>,
+    enabled,
+    staleTime: options?.staleTime ?? 1000 * 60 * 10, // 10 minutes
+    gcTime: 1000 * 60 * 15, // 15 minutes
+    refetchOnWindowFocus: options?.refetchOnWindowFocus ?? false,
+    refetchOnMount: options?.refetchOnMount ?? false,
+    refetchOnReconnect: true,
+    retry: enabled ? shouldRetry : false,
+  });
+}
+
+// =============================================================================
+// BACKWARD COMPATIBILITY HOOKS - Wrappers for BillingContext
+// =============================================================================
+
+// Types matching what BillingContext expects. Every credit amount below is a
+// credit count (1 credit = $0.01); the account state carries USD, converted
+// once in the transforms.
+export interface SubscriptionInfo {
+  status: string;
+  plan_name: string;
+  tier_key: string;
+  billing_period: 'monthly' | 'yearly' | 'yearly_commitment' | null;
+  provider: 'stripe' | 'revenuecat' | 'local';
+  subscription: {
+    id: string;
+    status: string;
+    tier_key: string;
+    current_period_end: number;
+    cancel_at: string | null;
+    cancel_at_period_end: boolean;
+  } | null;
+  tier: {
+    name: string;
+    display_name: string;
+    credits: number;
+  };
+  credits: {
+    balance: number;
+    tier_credits: number;
+    lifetime_granted: number;
+    lifetime_purchased: number;
+    lifetime_used: number;
+    can_purchase_credits: boolean;
+  };
+  is_trial: boolean;
+  trial_status: string | null;
+  has_scheduled_change: boolean;
+  revenuecat_product_id?: string | null; // Optional for RevenueCat compatibility
+}
+
+export interface CreditBalance {
+  balance: number;
+  expiring_credits: number;
+  non_expiring_credits: number;
+  tier: string;
+  can_purchase_credits: boolean;
+}
+
+export interface BillingStatus {
+  can_run: boolean;
+  has_credits: boolean;
+  credits_remaining: number;
+}
+
+// Export billingKeys as alias for accountStateKeys for backward compatibility
+export const billingKeys = accountStateKeys;
+
+// Transform AccountState to SubscriptionInfo
+function transformToSubscriptionInfo(
+  state: AccountState | undefined
+): SubscriptionInfo | undefined {
+  if (!state) return undefined;
+
+  // Get revenuecat_product_id from account state if available (for RevenueCat provider)
+  const revenuecatProductId =
+    (state as any).subscription?.revenuecat_product_id ||
+    (state as any).revenuecat_product_id ||
+    null;
+
+  return {
+    status: state.subscription.status,
+    plan_name: state.subscription.tier_display_name,
+    tier_key: state.subscription.tier_key,
+    billing_period: state.subscription.billing_period,
+    provider: state.subscription.provider,
+    subscription: state.subscription.subscription_id
+      ? {
+          id: state.subscription.subscription_id,
+          status: state.subscription.status,
+          tier_key: state.subscription.tier_key,
+          current_period_end: state.subscription.current_period_end || 0,
+          cancel_at: state.subscription.cancellation_effective_date || null,
+          cancel_at_period_end: state.subscription.cancel_at_period_end,
+        }
+      : null,
+    tier: {
+      name: state.tier.name,
+      display_name: state.tier.display_name,
+      credits: dollarsToCredits(state.tier.monthly_credits),
+    },
+    credits: {
+      balance: dollarsToCredits(state.credits.total),
+      tier_credits: dollarsToCredits(state.tier.monthly_credits),
+      lifetime_granted: dollarsToCredits(state.credits.lifetime_granted ?? 0),
+      lifetime_purchased: dollarsToCredits(state.credits.lifetime_purchased ?? 0),
+      lifetime_used: dollarsToCredits(state.credits.lifetime_used ?? 0),
+      can_purchase_credits: state.subscription.can_purchase_credits,
+    },
+    is_trial: state.subscription.is_trial,
+    trial_status: state.subscription.trial_status,
+    has_scheduled_change: state.subscription.has_scheduled_change,
+    // Add revenuecat_product_id for RevenueCat compatibility
+    revenuecat_product_id: revenuecatProductId,
+  };
+}
+
+// Transform AccountState to CreditBalance
+function transformToCreditBalance(state: AccountState | undefined): CreditBalance | undefined {
+  if (!state) return undefined;
+
+  return {
+    balance: dollarsToCredits(state.credits.total),
+    expiring_credits: dollarsToCredits(state.credits.daily + state.credits.monthly),
+    non_expiring_credits: dollarsToCredits(state.credits.extra),
+    tier: state.subscription.tier_key,
+    can_purchase_credits: state.subscription.can_purchase_credits,
+  };
+}
+
+// Transform AccountState to BillingStatus
+function transformToBillingStatus(state: AccountState | undefined): BillingStatus | undefined {
+  if (!state) return undefined;
+
+  return {
+    can_run: state.credits.can_run,
+    has_credits: state.credits.total > 0,
+    credits_remaining: dollarsToCredits(state.credits.total),
+  };
+}
+
+interface UseSubscriptionOptions {
+  enabled?: boolean;
+}
+
+interface UseCreditBalanceOptions {
+  enabled?: boolean;
+}
+
+interface UseBillingStatusOptions {
+  enabled?: boolean;
+}
+
+/**
+ * Backward compatibility hook for subscription data
+ * Uses useAccountState internally and transforms the data
+ */
+export function useSubscription(options?: UseSubscriptionOptions) {
+  const { data, isLoading, error, refetch, ...rest } = useAccountState({
+    enabled: options?.enabled,
+  });
+
+  return {
+    data: transformToSubscriptionInfo(data),
+    isLoading,
+    error,
+    refetch,
+    ...rest,
+  };
+}
+
+/**
+ * Backward compatibility hook for credit balance
+ * Uses useAccountState internally and transforms the data
+ */
+export function useCreditBalance(options?: UseCreditBalanceOptions) {
+  const { data, isLoading, error, refetch, ...rest } = useAccountState({
+    enabled: options?.enabled,
+  });
+
+  return {
+    data: transformToCreditBalance(data),
+    isLoading,
+    error,
+    refetch,
+    ...rest,
+  };
+}
+
+/**
+ * Backward compatibility hook for billing status
+ * Uses useAccountState internally and transforms the data
+ */
+export function useBillingStatus(options?: UseBillingStatusOptions) {
+  const { data, isLoading, error, refetch, ...rest } = useAccountState({
+    enabled: options?.enabled,
+  });
+
+  return {
+    data: transformToBillingStatus(data),
+    isLoading,
+    error,
+    refetch,
+    ...rest,
+  };
+}
+
+// =============================================================================
+// ADDITIONAL HOOKS
+// =============================================================================
+
+/**
+ * Invalidate credits after purchase - helper function
+ */
+export function invalidateCreditsAfterPurchase(queryClient: ReturnType<typeof useQueryClient>) {
+  invalidateAccountState(queryClient);
+}
+
+/**
+ * Subscription commitment hook - placeholder for now
+ */
+export function useSubscriptionCommitment(
+  subscriptionId: string | null | undefined,
+  options?: { enabled?: boolean }
+) {
+  // For now, return commitment info from account state
+  const { data: accountState } = useAccountState({ enabled: options?.enabled ?? !!subscriptionId });
+
+  return {
+    data: accountState?.subscription.commitment,
+    isLoading: false,
+    error: null,
+    refetch: async () => {},
+  };
+}

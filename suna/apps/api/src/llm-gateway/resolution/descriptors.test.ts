@@ -1,0 +1,227 @@
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { TEST_MANAGED_LINEUP } from '../../__tests__/fixtures/managed-lineup';
+import * as realTiers from '../../billing/services/tiers';
+
+const config: Record<string, unknown> = {
+  KORTIX_MANAGED_PROVIDER_ENABLED: true,
+  PLATINUM_INFERENCE_API_KEY: 'pt_live_test',
+  PLATINUM_INFERENCE_URL: 'https://platinum.example/v1/inference',
+};
+mock.module('../../config', () => ({ config }));
+// Spread the real module — see the note in resolve-candidates.test.ts. Listing
+// three exports by hand silently removed every other one from the registry.
+mock.module('../../billing/services/tiers', () => ({
+  ...realTiers,
+  getTierEntitlements: () => ({}),
+  llmPriceMarkup: () => 2,
+  tierHasEntitlement: () => false,
+}));
+
+// Stand in for the live models.dev pricing cache (router/config/model-pricing)
+// with a tiny fixed catalog keyed by BASE (unprefixed) Bedrock model ids —
+// mirrors what models.dev actually publishes for Bedrock: it has never heard
+// of a cross-region inference-profile id like `us.anthropic.claude-...`.
+const CATALOG: Record<string, { inputPer1M: number; outputPer1M: number; cacheReadPer1M?: number; contextOver200k?: { inputPer1M: number; outputPer1M: number; cacheReadPer1M?: number; contextThreshold: number } }> = {
+  'amazon-bedrock/anthropic.claude-opus-4-8': { inputPer1M: 15, outputPer1M: 75 },
+  'amazon-bedrock/amazon.nova-micro-v1:0': { inputPer1M: 0.035, outputPer1M: 0.14 },
+  'openrouter/x-ai/grok-4.6': {
+    inputPer1M: 2,
+    outputPer1M: 6,
+    cacheReadPer1M: 0.5,
+    contextOver200k: {
+      inputPer1M: 4,
+      outputPer1M: 12,
+      cacheReadPer1M: 1,
+      contextThreshold: 200_000,
+    },
+  },
+};
+const getModelPricing = mock(
+  (providerId: string, modelId: string) => CATALOG[`${providerId}/${modelId}`] ?? null,
+);
+mock.module('../../router/config/model-pricing', () => ({ getModelPricing }));
+
+const {
+  bedrockByokBaseUrl,
+  isAwsRegion,
+  livePricing,
+  managedCandidates,
+  stripBedrockInferenceProfilePrefix,
+  normalizeBedrockInferenceProfileRegion,
+} = await import('./descriptors');
+
+beforeEach(() => {
+  getModelPricing.mockClear();
+});
+
+describe('stripBedrockInferenceProfilePrefix', () => {
+  // The pricing lookup id: models.dev lists only the base Bedrock id.
+  test.each([
+    ['us.anthropic.claude-opus-4-8', 'anthropic.claude-opus-4-8'],
+    ['eu.amazon.nova-micro-v1:0', 'amazon.nova-micro-v1:0'],
+    ['apac.anthropic.claude-sonnet-4-6', 'anthropic.claude-sonnet-4-6'],
+    ['us-gov.anthropic.claude-opus-4-8', 'anthropic.claude-opus-4-8'],
+    // No prefix, a look-alike without the dot boundary, a region outside the
+    // known set, and a bare prefix all pass through unchanged.
+    ['anthropic.claude-opus-4-8', 'anthropic.claude-opus-4-8'],
+    ['use.something', 'use.something'],
+    ['usa.something', 'usa.something'],
+    ['us-west-2.anthropic.claude-opus-4-8', 'us-west-2.anthropic.claude-opus-4-8'],
+    ['us.', 'us.'],
+  ])('%s → %s', (input, expected) => {
+    expect(stripBedrockInferenceProfilePrefix(input)).toBe(expected);
+  });
+});
+
+describe('normalizeBedrockInferenceProfileRegion', () => {
+  test('rewrites a wrong-geography profile to the endpoint region (the jp.→us. incident)', () => {
+    // Sessions on a us-east-1 box were pinned to jp.anthropic.claude-opus-5,
+    // which Bedrock 400s "The provided model identifier is invalid."
+    expect(
+      normalizeBedrockInferenceProfileRegion('jp.anthropic.claude-opus-5', 'us-east-1'),
+    ).toBe('us.anthropic.claude-opus-5');
+  });
+
+  test('maps each endpoint geography from its region (us / eu / apac / us-gov)', () => {
+    expect(normalizeBedrockInferenceProfileRegion('jp.anthropic.claude-opus-5', 'us-west-2')).toBe(
+      'us.anthropic.claude-opus-5',
+    );
+    expect(normalizeBedrockInferenceProfileRegion('jp.anthropic.claude-opus-5', 'eu-west-1')).toBe(
+      'eu.anthropic.claude-opus-5',
+    );
+    expect(
+      normalizeBedrockInferenceProfileRegion('us.anthropic.claude-opus-5', 'ap-northeast-1'),
+    ).toBe('apac.anthropic.claude-opus-5');
+    expect(
+      normalizeBedrockInferenceProfileRegion('jp.anthropic.claude-opus-5', 'us-gov-east-1'),
+    ).toBe('us-gov.anthropic.claude-opus-5');
+  });
+
+  test('is a no-op when the geography already matches the endpoint region', () => {
+    expect(
+      normalizeBedrockInferenceProfileRegion('us.anthropic.claude-sonnet-5', 'us-east-1'),
+    ).toBe('us.anthropic.claude-sonnet-5');
+  });
+
+  test('leaves bare ids, global. profiles, and non-Anthropic families untouched', () => {
+    expect(normalizeBedrockInferenceProfileRegion('anthropic.claude-opus-5', 'us-east-1')).toBe(
+      'anthropic.claude-opus-5',
+    );
+    expect(
+      normalizeBedrockInferenceProfileRegion('global.anthropic.claude-sonnet-5', 'us-east-1'),
+    ).toBe('global.anthropic.claude-sonnet-5');
+    expect(normalizeBedrockInferenceProfileRegion('jp.amazon.nova-pro-v1:0', 'us-east-1')).toBe(
+      'jp.amazon.nova-pro-v1:0',
+    );
+  });
+
+  test('skips normalization for an unrecognized region rather than guessing a prefix', () => {
+    // ca-central-1 has no validated geography mapping → leave the id as-is.
+    expect(
+      normalizeBedrockInferenceProfileRegion('jp.anthropic.claude-opus-5', 'ca-central-1'),
+    ).toBe('jp.anthropic.claude-opus-5');
+  });
+
+  test('falls back to the default BYOK region (us-east-1) when region is unset', () => {
+    expect(normalizeBedrockInferenceProfileRegion('jp.anthropic.claude-opus-5', undefined)).toBe(
+      'us.anthropic.claude-opus-5',
+    );
+    expect(normalizeBedrockInferenceProfileRegion('eu.anthropic.claude-opus-5', '')).toBe(
+      'us.anthropic.claude-opus-5',
+    );
+  });
+});
+
+// The $0 upstream-cost bug: a cross-region profile id missed the catalog, so
+// resolve-candidates strips the prefix before this lookup
+// (resolve-candidates.test.ts asserts the stripped id reaches it).
+describe('livePricing maps the catalog price onto the descriptor', () => {
+  test('a flat price maps field by field', () => {
+    expect(livePricing('amazon-bedrock', 'anthropic.claude-opus-4-8')).toEqual({
+      inputPerMillion: 15,
+      outputPerMillion: 75,
+      cachedInputPerMillion: undefined,
+      cacheWritePerMillion: undefined,
+      tiers: undefined,
+      contextOver200k: undefined,
+    });
+  });
+
+  test('a long-context price maps its own tier', () => {
+    expect(livePricing('openrouter', 'x-ai/grok-4.6')).toEqual({
+      inputPerMillion: 2,
+      outputPerMillion: 6,
+      cachedInputPerMillion: 0.5,
+      cacheWritePerMillion: undefined,
+      tiers: undefined,
+      contextOver200k: {
+        inputPerMillion: 4,
+        outputPerMillion: 12,
+        cachedInputPerMillion: 1,
+        cacheWritePerMillion: undefined,
+        contextThreshold: 200_000,
+      },
+    });
+  });
+
+  test('a model the catalog does not list has no price', () => {
+    expect(livePricing('amazon-bedrock', 'us.anthropic.claude-opus-4-8')).toBeUndefined();
+  });
+});
+
+describe('managed models: one Platinum inference candidate', () => {
+  const [deepseek, glm] = TEST_MANAGED_LINEUP;
+
+  test('every managed model resolves to Platinum, billed in Kortix credits at its catalog price', () => {
+    for (const model of [deepseek!, glm!]) {
+      expect(managedCandidates(model)).toEqual([{
+        provider: 'platinum',
+        kind: 'openai-compat',
+        baseUrl: 'https://platinum.example/v1/inference',
+        apiKey: 'pt_live_test',
+        billingMode: 'credits',
+        markup: 2,
+        resolvedModel: model.id,
+        pricing: model.pricing,
+        publicProvider: 'kortix',
+      }]);
+    }
+  });
+
+  test('without the Platinum inference key no managed model is served', () => {
+    config.PLATINUM_INFERENCE_API_KEY = undefined;
+    try {
+      expect(managedCandidates(deepseek!)).toEqual([]);
+    } finally { config.PLATINUM_INFERENCE_API_KEY = 'pt_live_test'; }
+  });
+
+  test('with the managed provider off nothing resolves, even with a key', () => {
+    config.KORTIX_MANAGED_PROVIDER_ENABLED = false;
+    try {
+      expect(managedCandidates(glm!)).toEqual([]);
+    } finally { config.KORTIX_MANAGED_PROVIDER_ENABLED = true; }
+  });
+});
+
+describe('bedrockByokBaseUrl', () => {
+  test.each(['us-east-1', 'eu-central-2', 'ap-southeast-4', 'us-gov-west-1', 'il-central-1', 'ca-west-1'])(
+    'accepts the region %s',
+    (region) => {
+      expect(isAwsRegion(region)).toBe(true);
+      expect(bedrockByokBaseUrl(region)).toBe(`https://bedrock-runtime.${region}.amazonaws.com`);
+    },
+  );
+
+  test.each(['x@example.test/', 'example.test#', 'us-east-1.example.test', 'us-east-1/', 'US-EAST-1', 'us_east_1', '10.0.0.5:8443'])(
+    'refuses %s, which is not a region name',
+    (region) => {
+      expect(isAwsRegion(region)).toBe(false);
+      expect(() => bedrockByokBaseUrl(region)).toThrow('AWS_REGION is not a valid AWS region name');
+    },
+  );
+
+  test('an unset region uses us-east-1', () => {
+    expect(bedrockByokBaseUrl(null)).toBe('https://bedrock-runtime.us-east-1.amazonaws.com');
+    expect(bedrockByokBaseUrl('  ')).toBe('https://bedrock-runtime.us-east-1.amazonaws.com');
+  });
+});

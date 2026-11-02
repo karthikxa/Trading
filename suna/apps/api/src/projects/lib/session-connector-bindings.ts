@@ -1,0 +1,1686 @@
+import {
+  type SessionConnectorBindings,
+  SessionConnectorBindingsInputSchema,
+} from '@kortix/api-contract';
+import {
+  connectorConnections,
+  connectionCredentials,
+  projectSecrets,
+  connectors,
+  projectSessionConnectorBindings,
+  projectSessions,
+  serviceAccounts,
+} from '@kortix/db';
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { mapLimit } from '@kortix/registry';
+import {
+  canonicalConnectorAlias,
+  publicConnectorAlias,
+} from '../../shared/connector-alias';
+import {
+  loadEmailInboxAccountForInbox,
+  loadSlackInstall,
+  loadTeamsInstall,
+  loadTelegramInstall,
+} from '../../channels/install-store';
+import {
+  credentialExists,
+  connectionCredentialExists,
+  connectionIsEffectiveProjectDefault,
+} from '../../connectors/credentials';
+import { db } from '../../shared/db';
+import { isUniqueViolation } from '../../shared/postgres-errors';
+import {
+  type ConnectionAudienceReach,
+  type ConnectionReachabilityActor,
+  connectionNeedsPrivateSession,
+  connectionRowIsReachable,
+} from './connection-access';
+import { audiencePersonId, loadConnectionAudience } from './connection-audience';
+import { sessionAgentId } from './secret-audience';
+import { projectSecretIsConfiguredForConsumer } from '../secrets';
+import { invalidateRequestMemo, requestMemo } from '../../lib/request-context';
+
+export interface ValidatedSessionConnectorBinding {
+  alias: string;
+  connectionId: string;
+  connectorId: string;
+  ownerType: 'project' | 'agent' | 'member' | 'subject' | 'external';
+  ownerId: string | null;
+  /** A private account, or a shared one narrowed to an audience: the session
+   *  that binds it must stay private (`connectionNeedsPrivateSession`). */
+  personal: boolean;
+}
+
+export interface ResolvedSessionConnectorConnection {
+  connectionId: string;
+  connectorId: string;
+  alias: string;
+  status: 'active' | 'revoked' | 'error';
+  isDefault: boolean;
+  metadata: Record<string, unknown>;
+  source: 'request' | 'default';
+  /**
+   * Human-facing account name and ownership, carried so every successful call
+   * can echo WHICH identity ran it. A transcript that does not name the
+   * account cannot be read back later to answer "whose mailbox sent that".
+   */
+  label: string;
+  ownerType: 'project' | 'agent' | 'member' | 'subject' | 'external';
+}
+
+export interface ConnectorRequirementRow {
+  connectorId: string;
+  projectId: string;
+  slug: string;
+  name: string;
+  providerType: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  status: 'active' | 'disabled' | 'needs_auth' | 'error';
+}
+
+interface ConnectorConnectionRow {
+  connectionId: string;
+  isDefault: boolean;
+  ownerType: 'project' | 'agent' | 'member' | 'subject' | 'external';
+  ownerId: string | null;
+  status: 'active' | 'revoked' | 'error';
+  metadata: Record<string, unknown>;
+}
+
+function connectorPlatform(config: Record<string, unknown>): string | null {
+  return typeof config.platform === 'string' ? config.platform : null;
+}
+
+function connectorRequiresAuthorization(connector: ConnectorRequirementRow): boolean {
+  if (connector.providerType === 'pipedream' || connector.providerType === 'channel') return true;
+  const auth = connector.config.auth;
+  if (!auth || typeof auth !== 'object') return false;
+  return (auth as Record<string, unknown>).type !== 'none';
+}
+
+export async function connectorConnectionIsConnected(input: {
+  connector: ConnectorRequirementRow;
+  connection: ConnectorConnectionRow;
+  preloaded?: SessionConnectorResolutionData;
+}): Promise<boolean> {
+  const { connector, connection } = input;
+  if (!connectorRequiresAuthorization(connector)) return true;
+  if (connector.providerType !== 'channel' && input.preloaded) {
+    return input.preloaded.connectedConnectionIds.has(connection.connectionId);
+  }
+  if (connector.providerType === 'channel') {
+    const key = JSON.stringify([connector.projectId, connectorPlatform(connector.config),
+      connection.metadata.connector_slug ?? connector.slug, connection.metadata.inbox_id]);
+    const cached = input.preloaded?.channelInstalls.get(key);
+    if (cached) return cached;
+    // ponytail: channel installs still read once per platform/slug/inbox;
+    // batch the install store if projects gain many distinct inboxes.
+    const connected = (async () => {
+      const platform = connectorPlatform(connector.config);
+      if (platform === 'slack') {
+        return (await loadSlackInstall(connector.projectId).catch(() => null)) !== null;
+      }
+      if (platform === 'teams') {
+        return (await loadTeamsInstall(connector.projectId).catch(() => null)) !== null;
+      }
+      if (platform === 'telegram') {
+        return (await loadTelegramInstall(connector.projectId).catch(() => null)) !== null;
+      }
+      if (platform === 'email') {
+        // An email account is connected while it is its inbox's active account.
+        if (typeof connection.metadata.inbox_id !== 'string') return false;
+        const account = await loadEmailInboxAccountForInbox(
+          connector.projectId,
+          connection.metadata.inbox_id,
+        ).catch(() => null);
+        return account?.connectionId === connection.connectionId;
+      }
+      return false;
+    })();
+    input.preloaded?.channelInstalls.set(key, connected);
+    return connected;
+  }
+  if (
+    await connectionCredentialExists({
+      connectorId: connector.connectorId,
+      connectionId: connection.connectionId,
+    })
+  ) {
+    return true;
+  }
+  if (connection.ownerType !== 'project') return false;
+  // INVARIANT (2026-09-16, account_required rule): only the connector's
+  // EFFECTIVE project default may inherit the legacy connector-level
+  // credential — pinned, or (unchanged from before this rule) the connector's
+  // sole active project-owned connection when nothing is pinned. See
+  // `defaultConnectionIdForConnector`.
+  if (!(await connectionIsEffectiveProjectDefault(connector.connectorId, connection.connectionId))) {
+    return false;
+  }
+  if (await credentialExists(connector.connectorId, null)) return true;
+  const [stored] = await db
+    .select({ authSecret: connectors.authSecret })
+    .from(connectors)
+    .where(eq(connectors.connectorId, connector.connectorId))
+    .limit(1);
+  return stored?.authSecret
+    ? projectSecretIsConfiguredForConsumer({
+        projectId: connector.projectId,
+        name: stored.authSecret,
+        consumer: 'connector',
+      })
+    : false;
+}
+
+function sessionConnectionIsReachable(
+  connector: ConnectorRequirementRow,
+  connection: ConnectorConnectionRow,
+  actor: ConnectionReachabilityActor,
+  audience: ConnectionAudienceReach,
+): boolean {
+  return connectionRowIsReachable(
+    {
+      ownerType: connection.ownerType,
+      ownerId: connection.ownerId,
+      metadata: connection.metadata,
+      providerType: connector.providerType,
+      connectorConfig: connector.config,
+    },
+    actor,
+    audience,
+  );
+}
+
+/**
+ * Does the account the caller named describe the connection this session pinned?
+ * Accepts the same grammar as `selectEntitledConnectorConnection`: a connection
+ * id, a label, or the selector words `me` / `project`.
+ */
+function boundConnectionAnswersTo(
+  account: string,
+  bound: {
+    connectionId: string;
+    connectionLabel: string;
+    ownerType: 'project' | 'agent' | 'member' | 'subject' | 'external';
+  },
+): boolean {
+  const wanted = account.trim().toLowerCase();
+  if (wanted === 'me') return bound.ownerType === 'member';
+  if (wanted === 'project') return bound.ownerType !== 'member';
+  return (
+    wanted === bound.connectionId.toLowerCase() ||
+    wanted === bound.connectionLabel.trim().toLowerCase()
+  );
+}
+
+// Canonicalization lives in shared/ so pure IAM code can use it without
+// inheriting this module's database dependency. Imported for local use and
+// re-exported so existing importers are unaffected.
+export { canonicalConnectorAlias, publicConnectorAlias };
+
+export async function loadEmailInstallConnectionId(
+  projectId: string,
+  inboxId: string,
+): Promise<string | null> {
+  const rows = await db
+    .select({
+      connectionId: connectorConnections.connectionId,
+      metadata: connectorConnections.metadata,
+      status: connectorConnections.status,
+    })
+    .from(connectorConnections)
+    .innerJoin(
+      connectors,
+      eq(connectors.connectorId, connectorConnections.connectorId),
+    )
+    .where(
+      and(
+        eq(connectorConnections.projectId, projectId),
+        eq(connectors.slug, canonicalConnectorAlias('email')),
+      ),
+    );
+  return (
+    rows.find(
+      (row) =>
+        row.status === 'active' && (row.metadata as Record<string, unknown>)?.inbox_id === inboxId,
+    )?.connectionId ?? null
+  );
+}
+
+/**
+ * Bind a session to its inbox's account, once. `bound`: the session uses the
+ * inbox's active account. `stale`: it is bound to an account of the inbox that
+ * was revoked (the inbox was removed and added again), so it can never answer.
+ * `refused`: anything else (no account, another account, another session).
+ */
+export async function ensureEmailSessionBinding(input: {
+  projectId: string;
+  sessionId: string;
+  inboxId: string;
+}): Promise<'bound' | 'stale' | 'refused'> {
+  const connectionId = await loadEmailInstallConnectionId(input.projectId, input.inboxId);
+  if (!connectionId) return 'refused';
+  const [connection] = await db
+    .select({
+      accountId: connectorConnections.accountId,
+      connectorId: connectorConnections.connectorId,
+    })
+    .from(connectorConnections)
+    .where(eq(connectorConnections.connectionId, connectionId))
+    .limit(1);
+  const [session] = await db
+    .select({ accountId: projectSessions.accountId })
+    .from(projectSessions)
+    .where(
+      and(
+        eq(projectSessions.sessionId, input.sessionId),
+        eq(projectSessions.projectId, input.projectId),
+      ),
+    )
+    .limit(1);
+  if (!connection || !session || connection.accountId !== session.accountId) return 'refused';
+  try {
+    await db.insert(projectSessionConnectorBindings).values({
+      sessionId: input.sessionId,
+      accountId: session.accountId,
+      projectId: input.projectId,
+      connectorAlias: canonicalConnectorAlias('email'),
+      connectorId: connection.connectorId,
+      connectionId,
+      source: 'default',
+      createdBy: null,
+    });
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error;
+  }
+  const [binding] = await db
+    .select({ connectionId: projectSessionConnectorBindings.connectionId })
+    .from(projectSessionConnectorBindings)
+    .where(
+      and(
+        eq(projectSessionConnectorBindings.sessionId, input.sessionId),
+        eq(projectSessionConnectorBindings.connectorAlias, canonicalConnectorAlias('email')),
+      ),
+    )
+    .limit(1);
+  if (!binding) return 'refused';
+  if (binding.connectionId === connectionId) return 'bound';
+  const [bound] = await db
+    .select({ status: connectorConnections.status, inboxId: sql<unknown>`${connectorConnections.metadata}->>'inbox_id'` })
+    .from(connectorConnections)
+    .where(eq(connectorConnections.connectionId, binding.connectionId))
+    .limit(1);
+  return bound?.status === 'revoked' && bound.inboxId === input.inboxId ? 'stale' : 'refused';
+}
+
+export function parseSessionConnectorBindings(
+  value: unknown,
+): { ok: true; bindings: SessionConnectorBindings | undefined } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, bindings: undefined };
+  const parsed = SessionConnectorBindingsInputSchema.safeParse(value);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues.map((issue) => issue.message).join('; '),
+    };
+  }
+  return { ok: true, bindings: parsed.data };
+}
+
+export async function validateSessionConnectorBindings(input: {
+  accountId: string;
+  projectId: string;
+  actingUserId: string;
+  actingPrincipalIsServiceAccount: boolean;
+  /** @deprecated Authorization strategy is the only owner gate. */
+  mayManageSystemConnections: boolean;
+  bindings: SessionConnectorBindings | undefined;
+}): Promise<
+  | { ok: true; bindings: ValidatedSessionConnectorBinding[] }
+  | { ok: false; error: string; code: string }
+> {
+  if (!input.bindings) return { ok: true, bindings: [] };
+
+  const audienceOf = await loadConnectionAudience({
+    projectId: input.projectId,
+    accountId: input.accountId,
+    userId: audiencePersonId(input),
+  });
+  const validated: ValidatedSessionConnectorBinding[] = [];
+  for (const [requestedAlias, binding] of Object.entries(input.bindings)) {
+    const alias = canonicalConnectorAlias(requestedAlias);
+    const [row] = await db
+      .select({
+        connectionId: connectorConnections.connectionId,
+        connectorId: connectorConnections.connectorId,
+        ownerType: connectorConnections.ownerType,
+        ownerId: connectorConnections.ownerId,
+        isDefault: connectorConnections.isDefault,
+        status: connectorConnections.status,
+        metadata: connectorConnections.metadata,
+        connectorEnabled: connectors.enabled,
+        connectorStatus: connectors.status,
+        connectorName: connectors.name,
+        providerType: connectors.providerType,
+        connectorConfig: connectors.config,
+      })
+      .from(connectorConnections)
+      .innerJoin(
+        connectors,
+        and(
+          eq(connectors.connectorId, connectorConnections.connectorId),
+          eq(connectors.accountId, connectorConnections.accountId),
+          eq(connectors.projectId, connectorConnections.projectId),
+        ),
+      )
+      .where(
+        and(
+          eq(connectorConnections.connectionId, binding.connection_id),
+          eq(connectorConnections.accountId, input.accountId),
+          eq(connectorConnections.projectId, input.projectId),
+          eq(connectors.slug, alias),
+        ),
+      )
+      .limit(1);
+
+    if (!row) {
+      return {
+        ok: false,
+        error: `Connection is not available for connector alias "${alias}" in this project`,
+        code: 'CONNECTOR_CONNECTION_NOT_FOUND',
+      };
+    }
+    const connector: ConnectorRequirementRow = {
+      connectorId: row.connectorId,
+      projectId: input.projectId,
+      slug: alias,
+      name: row.connectorName,
+      providerType: row.providerType,
+      config: row.connectorConfig,
+      enabled: row.connectorEnabled,
+      status: row.connectorStatus,
+    };
+    const connection: ConnectorConnectionRow = {
+      connectionId: row.connectionId,
+      isDefault: row.isDefault,
+      ownerType: row.ownerType,
+      ownerId: row.ownerId,
+      status: row.status,
+      metadata: row.metadata,
+    };
+    const audience = audienceOf(row.connectionId);
+    if (
+      !sessionConnectionIsReachable(
+        connector,
+        connection,
+        {
+          userId: input.actingUserId,
+          isServiceAccount: input.actingPrincipalIsServiceAccount,
+          agentPrincipal: null,
+        },
+        audience,
+      )
+    ) {
+      return {
+        ok: false,
+        error: `Connection is not available for connector alias "${alias}" in this project`,
+        code: 'CONNECTOR_CONNECTION_NOT_FOUND',
+      };
+    }
+    if (row.status !== 'active') {
+      return {
+        ok: false,
+        error: `Connection for connector alias "${alias}" is not active`,
+        code: 'CONNECTOR_CONNECTION_INACTIVE',
+      };
+    }
+    if (!row.connectorEnabled) {
+      return {
+        ok: false,
+        error: `Connector for alias "${alias}" is disabled`,
+        code: 'CONNECTOR_CONNECTION_INACTIVE',
+      };
+    }
+    if (row.connectorStatus !== 'active') {
+      return {
+        ok: false,
+        error: `Connector for alias "${alias}" is not active`,
+        code: 'CONNECTOR_CONNECTION_INACTIVE',
+      };
+    }
+    if (!(await connectorConnectionIsConnected({ connector, connection }))) {
+      return {
+        ok: false,
+        error: `Connection for connector alias "${alias}" is not connected`,
+        code: 'CONNECTOR_CONNECTION_INACTIVE',
+      };
+    }
+    validated.push({
+      alias,
+      connectionId: row.connectionId,
+      connectorId: row.connectorId,
+      ownerType: row.ownerType,
+      ownerId: row.ownerId,
+      personal: connectionNeedsPrivateSession(row.ownerType, audience),
+    });
+  }
+  return { ok: true, bindings: validated };
+}
+
+export function sessionConnectorBindingsRequirePrivateVisibility(
+  bindings: readonly ValidatedSessionConnectorBinding[],
+): boolean {
+  return bindings.some((binding) => binding.personal);
+}
+
+/**
+ * Does this session hold a personal binding — a private account, or a shared
+ * one narrowed to an audience? Such a session cannot become shared: every
+ * other viewer could then make the agent act as that account.
+ *
+ * "Narrowed" is read from the grant store in SQL (a live `connection` grant
+ * and no grant to everyone), the same rule `audienceReachOf` applies.
+ */
+export async function sessionHasPersonalConnectorBinding(input: {
+  accountId: string;
+  projectId: string;
+  sessionId: string;
+}): Promise<boolean> {
+  const [row] = await db
+    .select({ connectionId: projectSessionConnectorBindings.connectionId })
+    .from(projectSessionConnectorBindings)
+    .innerJoin(
+      connectorConnections,
+      eq(connectorConnections.connectionId, projectSessionConnectorBindings.connectionId),
+    )
+    .where(
+      and(
+        eq(projectSessionConnectorBindings.sessionId, input.sessionId),
+        eq(projectSessionConnectorBindings.accountId, input.accountId),
+        eq(projectSessionConnectorBindings.projectId, input.projectId),
+        or(
+          eq(connectorConnections.ownerType, 'member'),
+          and(
+            eq(connectorConnections.ownerType, 'project'),
+            narrowedSharedConnection,
+            // Shared with this session's own agent: reachable whoever views the
+            // session, so sharing the session hands no one a person's account.
+            sql`not exists (
+              select 1 from kortix.role_assignments ra
+               where ${liveConnectionGrant} and ra.principal_type = 'service_account'
+                 and ra.principal_id in (
+                   select t.service_account_id from kortix.account_tokens t
+                    where t.session_id = ${input.sessionId} and t.status = 'active'
+                      and t.revoked_at is null and t.service_account_id is not null))`,
+          ),
+        ),
+      ),
+    )
+    .limit(1);
+  return Boolean(row);
+}
+
+const liveConnectionGrant = sql`
+  ra.scope_type = 'project'
+  and ra.scope_id = ${connectorConnections.projectId}
+  and ra.object_type = 'connection'
+  and ra.object_id = ${connectorConnections.connectionId}::text
+  and (ra.expires_at is null or ra.expires_at > now())`;
+
+/** A shared account with a live `connection` grant and none to everyone. */
+const narrowedSharedConnection = sql`(
+  exists (select 1 from kortix.role_assignments ra where ${liveConnectionGrant})
+  and not exists (
+    select 1 from kortix.role_assignments ra where ${liveConnectionGrant} and ra.principal_type = 'project'
+  )
+)`;
+
+/** The personal-resource scope of an agent-principal caller (spec §2.3). */
+export interface AgentPrincipalPersonalScope {
+  /** The human the session acts on behalf of; null = unattended or cleared. */
+  onBehalfOfUserId: string | null;
+  /** The agent's service account: a shared account whose audience names it is
+   *  reachable in every session of that agent. */
+  agentId?: string | null;
+}
+
+interface SessionConnectorLookup {
+  createdBy: string | null;
+  visibility: 'private' | 'project' | 'restricted';
+  bindingsConfigured: boolean;
+  inheritUnbound: boolean;
+  createdByServiceAccountId: string | null;
+}
+
+function sessionConnectorLookupMemoKey(sessionId: string, accountId: string, projectId: string): string {
+  return `session-connector-lookup:${accountId}:${projectId}:${sessionId}`;
+}
+
+/**
+ * The session/created-by/visibility row `resolveSessionConnectorConnectionOutcome`
+ * needs, request-memoized by (session, account, project).
+ *
+ * A binding read (`resolveEffectiveSessionConnectorBindings`) resolves ONE
+ * alias at a time but is called with the SAME sessionId for every alias a
+ * grant lists — 'all' resolves against every enabled connector on the project.
+ * Before this memo, each alias re-ran this identical join (measured: 49 DB
+ * queries / 255ms server time on `GET /sessions/:id/scope` for a session with
+ * several granted connectors, 2026-09-27). Request-scoped, not a TTL cache: a
+ * write inside the SAME request (`PUT /scope` toggling
+ * `connectorBindingsConfigured`) calls `invalidateSessionConnectorLookup` right
+ * after its transaction commits, so the post-write re-resolution in that same
+ * handler never reads pre-write data back out of this cache.
+ */
+async function loadSessionConnectorLookup(
+  sessionId: string,
+  accountId: string,
+  projectId: string,
+): Promise<SessionConnectorLookup | null> {
+  return requestMemo(sessionConnectorLookupMemoKey(sessionId, accountId, projectId), async () => {
+    const [session] = await db
+      .select({
+        createdBy: projectSessions.createdBy,
+        visibility: projectSessions.visibility,
+        bindingsConfigured: projectSessions.connectorBindingsConfigured,
+        inheritUnbound: projectSessions.connectorBindingsInheritUnbound,
+        createdByServiceAccountId: serviceAccounts.serviceAccountId,
+      })
+      .from(projectSessions)
+      .leftJoin(
+        serviceAccounts,
+        and(
+          eq(serviceAccounts.serviceAccountId, projectSessions.createdBy),
+          eq(serviceAccounts.accountId, projectSessions.accountId),
+        ),
+      )
+      .where(
+        and(
+          eq(projectSessions.sessionId, sessionId),
+          eq(projectSessions.accountId, accountId),
+          eq(projectSessions.projectId, projectId),
+        ),
+      )
+      .limit(1);
+    return session ?? null;
+  });
+}
+
+/**
+ * Drop the request-scoped session lookup memo. Call this after any write that
+ * changes what it reads (`project_sessions.connector_bindings_configured` /
+ * `.connector_bindings_inherit_unbound`) so a re-resolution later in the SAME
+ * request observes the write instead of the pre-write cached row.
+ */
+export function invalidateSessionConnectorLookup(sessionId: string, accountId: string, projectId: string): void {
+  invalidateRequestMemo(sessionConnectorLookupMemoKey(sessionId, accountId, projectId));
+}
+
+/**
+ * Resolve the effective connection on every connector request. A present but
+ * revoked/error binding never falls through to a project default.
+ *
+ * Returns the full outcome (see `ResolvedConnectorConnectionOutcome`) so a
+ * caller that must distinguish "nothing reachable" from "several reachable
+ * accounts and none named or pinned" — the gateway's `account_required`
+ * denial — can. `resolveSessionConnectorConnection` below is a thin wrapper
+ * for the many callers that only ever asked "did this resolve".
+ *
+ * A session PIN (an explicit `projectSessionConnectorBindings` row) is never
+ * ambiguous — it is the caller's own prior explicit choice, so it resolves
+ * directly (`ok`) or fails closed (`none`) exactly as before; only the
+ * project-default FALLBACK (no binding, or an inherit-unbound session) can
+ * ever return `ambiguous`.
+ */
+function resolutionAudience(
+  input: Parameters<typeof loadConnectionAudience>[0],
+  preloaded?: SessionConnectorResolutionData,
+): ReturnType<typeof loadConnectionAudience> {
+  if (!preloaded) return loadConnectionAudience(input);
+  const key = JSON.stringify([input.userId, input.agentId ?? null]);
+  const cached = preloaded.audiences.get(key);
+  if (cached) return cached;
+  const audience = loadConnectionAudience(input);
+  preloaded.audiences.set(key, audience);
+  return audience;
+}
+
+/** Request-local facts shared by singular resolution and account listing.
+ * Keep one snapshot per (account, project, session); principal identity is NOT
+ * cached here: a catalog's accounts use its caller, its outcome the creator.
+ */
+export interface SessionConnectorResolutionData {
+  session: SessionConnectorLookup | null;
+  bindings: Awaited<ReturnType<typeof loadSessionConnectorBoundRows>>;
+  connectors: ConnectorRequirementRow[];
+  connections: Array<ConnectorConnectionRow & { connectorId: string; label: string }>;
+  serviceAccountIds: ReadonlySet<string>;
+  connectedConnectionIds: ReadonlySet<string>;
+  catalogCredentialConnectionIds: ReadonlySet<string>;
+  channelInstalls: Map<string, Promise<boolean>>;
+  audiences: Map<string, ReturnType<typeof loadConnectionAudience>>;
+}
+
+export async function loadSessionConnectorResolutionData(input: {
+  accountId: string;
+  projectId: string;
+  sessionId: string | null;
+  /** All direct caller ids whose account lists will use this snapshot. */
+  actingUserIds?: readonly string[];
+}): Promise<SessionConnectorResolutionData> {
+  const [session, bindings, connectorRows] = await Promise.all([
+    input.sessionId
+      ? loadSessionConnectorLookup(input.sessionId, input.accountId, input.projectId)
+      : Promise.resolve(null),
+    input.sessionId
+      ? loadSessionConnectorBoundRows({ ...input, sessionId: input.sessionId })
+      : Promise.resolve([]),
+    db.select({
+      connectorId: connectors.connectorId,
+      projectId: connectors.projectId,
+      slug: connectors.slug,
+      name: connectors.name,
+      providerType: connectors.providerType,
+      config: connectors.config,
+      enabled: connectors.enabled,
+      status: connectors.status,
+      authSecret: connectors.authSecret,
+    }).from(connectors).where(and(
+      eq(connectors.accountId, input.accountId),
+      eq(connectors.projectId, input.projectId),
+    )),
+  ]);
+  // Include pinned ids as well: the singular join keys its connection by id,
+  // not by the binding's connector id. Never silently narrow that join here.
+  const connectorIds = [...new Set([
+    ...connectorRows.map((row) => row.connectorId),
+    ...bindings.map((row) => row.connectorId),
+  ])];
+  const actingUserIds = [...new Set((input.actingUserIds ?? []).filter(Boolean))];
+  const [connections, credentials, secrets, principals] = await Promise.all([
+    connectorIds.length ? db.select({
+      accountId: connectorConnections.accountId,
+      projectId: connectorConnections.projectId,
+      connectorId: connectorConnections.connectorId,
+      connectionId: connectorConnections.connectionId,
+      label: connectorConnections.label,
+      isDefault: connectorConnections.isDefault,
+      ownerType: connectorConnections.ownerType,
+      ownerId: connectorConnections.ownerId,
+      status: connectorConnections.status,
+      metadata: connectorConnections.metadata,
+    }).from(connectorConnections)
+      // No status filter: revoked project rows still affect the legacy default.
+      .where(inArray(connectorConnections.connectorId, connectorIds))
+      .orderBy(desc(connectorConnections.isDefault), connectorConnections.connectionId)
+      : Promise.resolve([]),
+    connectorIds.length ? db.select({
+      connectorId: connectionCredentials.connectorId,
+      connectionId: connectionCredentials.connectionId,
+      userId: connectionCredentials.userId,
+    }).from(connectionCredentials).where(inArray(connectionCredentials.connectorId, connectorIds))
+      : Promise.resolve([]),
+    db.select({
+      name: projectSecrets.name,
+      scope: projectSecrets.scope,
+      strategy: projectSecrets.strategy,
+      consumer: projectSecrets.consumer,
+    }).from(projectSecrets).where(and(
+      eq(projectSecrets.projectId, input.projectId),
+      isNull(projectSecrets.ownerUserId),
+      eq(projectSecrets.active, true),
+    )),
+    actingUserIds.length ? db.select({ id: serviceAccounts.serviceAccountId })
+      .from(serviceAccounts).where(and(
+        eq(serviceAccounts.accountId, input.accountId),
+        inArray(serviceAccounts.serviceAccountId, actingUserIds),
+      )) : Promise.resolve([]),
+  ]);
+  const secretNames = new Set(secrets.filter((row) =>
+    (row.strategy === 'broker' && row.consumer === 'connector') ||
+    (row.scope === 'connector' && (row.consumer === 'connector' || row.consumer === 'sandbox')),
+  ).map((row) => row.name));
+  const connectedConnectionIds = new Set<string>();
+  const catalogCredentialConnectionIds = new Set<string>();
+  for (const connector of connectorRows) {
+    const rows = connections.filter((row) => row.connectorId === connector.connectorId);
+    const projectRows = rows.filter((row) => row.ownerType === 'project');
+    const effectiveDefault = projectRows.find((row) => row.isDefault) ??
+      (projectRows.length === 1 ? projectRows[0] : undefined);
+    const connectorCredentials = credentials.filter((row) => row.connectorId === connector.connectorId);
+    // credentialExists(connectorId, null): legacy rows OR the effective
+    // default's credential, but only with a null userId.
+    const legacyConnected = connectorCredentials.some((row) => row.userId === null &&
+      (row.connectionId === null || row.connectionId === effectiveDefault?.connectionId));
+    const secretConnected = Boolean(connector.authSecret &&
+      secretNames.has(connector.authSecret.trim().toUpperCase()));
+    for (const row of rows) {
+      if (connectorCredentials.some((credential) => credential.connectionId === row.connectionId) ||
+        ((row.isDefault || row.connectionId === effectiveDefault?.connectionId) && legacyConnected)) {
+        catalogCredentialConnectionIds.add(row.connectionId);
+      }
+      if (connectorCredentials.some((credential) => credential.connectionId === row.connectionId) ||
+        (row.ownerType === 'project' && row.connectionId === effectiveDefault?.connectionId &&
+          (legacyConnected || secretConnected))) {
+        connectedConnectionIds.add(row.connectionId);
+      }
+    }
+  }
+  return {
+    session,
+    bindings,
+    connectors: connectorRows,
+    // Entitled listing's query additionally scopes these by account/project.
+    connections: connections.filter((row) => row.accountId === input.accountId && row.projectId === input.projectId),
+    serviceAccountIds: new Set(principals.map((row) => row.id)),
+    connectedConnectionIds,
+    catalogCredentialConnectionIds,
+    channelInstalls: new Map(),
+    audiences: new Map(),
+  };
+}
+
+async function loadSessionConnectorBoundRows(input: {
+  alias?: string;
+  accountId: string;
+  projectId: string;
+  sessionId: string;
+}) {
+  const query = db
+      .select({
+        alias: projectSessionConnectorBindings.connectorAlias,
+        connectionId: connectorConnections.connectionId,
+        connectorId: connectorConnections.connectorId,
+        connectionStatus: connectorConnections.status,
+        connectionLabel: connectorConnections.label,
+        isDefault: connectorConnections.isDefault,
+        metadata: connectorConnections.metadata,
+        ownerType: connectorConnections.ownerType,
+        ownerId: connectorConnections.ownerId,
+        source: projectSessionConnectorBindings.source,
+        connectorName: connectors.name,
+        providerType: connectors.providerType,
+        connectorConfig: connectors.config,
+        connectorEnabled: connectors.enabled,
+        connectorStatus: connectors.status,
+      })
+      .from(projectSessionConnectorBindings)
+      .innerJoin(
+        connectorConnections,
+        eq(connectorConnections.connectionId, projectSessionConnectorBindings.connectionId),
+      )
+      .innerJoin(
+        connectors,
+        and(
+          eq(connectors.connectorId, projectSessionConnectorBindings.connectorId),
+          eq(connectors.accountId, projectSessionConnectorBindings.accountId),
+          eq(connectors.projectId, projectSessionConnectorBindings.projectId),
+        ),
+      )
+      .where(
+        and(
+          eq(projectSessionConnectorBindings.sessionId, input.sessionId),
+          eq(projectSessionConnectorBindings.accountId, input.accountId),
+          eq(projectSessionConnectorBindings.projectId, input.projectId),
+          input.alias === undefined ? undefined : eq(projectSessionConnectorBindings.connectorAlias, input.alias),
+        ),
+      );
+  return input.alias === undefined ? query : query.limit(1);
+}
+
+export async function resolveSessionConnectorConnectionOutcome(input: {
+  preloaded?: SessionConnectorResolutionData;
+  accountId: string;
+  projectId: string;
+  sessionId: string | null;
+  alias: string;
+  actingUserId?: string;
+  actingPrincipalIsServiceAccount?: boolean;
+  /**
+   * Present when the caller is an agent session under the agent-principal
+   * model. A member-owned account then keys on `onBehalfOfUserId` AND a private
+   * session — never on the session creator or the token user.
+   */
+  agentPrincipal?: AgentPrincipalPersonalScope | null;
+  /**
+   * Name or id of the account to run this call as, when the caller named one.
+   * Omitted resolves exactly as before: the session's binding if it holds one,
+   * otherwise the project-default resolution rule (see
+   * `selectEntitledConnectorConnection`).
+   *
+   * A NAMED account is never silently substituted. It is matched against the
+   * accounts this caller is entitled to and, failing that, the call is denied —
+   * running "send mail as Work" against Personal is worse than not running.
+   */
+  account?: string | null;
+  /** The connector row the CALL path already loaded by this alias
+   *  (`loadConnectorBySlug`). When given and this alias, the project-default
+   *  fallback skips its own connectors re-select — the fan-out that re-read
+   *  the same row a second time per call. Per-request threading, not a
+   *  cache: callers that resolve without a loaded row read as before. */
+  connectorRow?: ConnectorRequirementRow | null;
+}): Promise<ResolvedConnectorConnectionOutcome> {
+  const alias = canonicalConnectorAlias(input.alias);
+  let actingUserId = input.actingUserId ?? '';
+  let actingPrincipalIsServiceAccount = input.actingPrincipalIsServiceAccount ?? false;
+  let visibility: 'private' | 'project' | 'restricted' = 'private';
+  let connectorBindingsConfigured = false;
+  let inheritUnbound = false;
+
+  if (input.sessionId) {
+    const session = input.preloaded
+      ? input.preloaded.session
+      : await loadSessionConnectorLookup(input.sessionId, input.accountId, input.projectId);
+    if (!session) return { kind: 'none' };
+    actingUserId = session.createdBy ?? '';
+    actingPrincipalIsServiceAccount = session.createdByServiceAccountId !== null;
+    visibility = session.visibility;
+    connectorBindingsConfigured = session.bindingsConfigured;
+    inheritUnbound = session.inheritUnbound;
+
+    const bound = input.preloaded
+      ? input.preloaded.bindings.find((row) => row.alias === alias)
+      : (await loadSessionConnectorBoundRows({ ...input, sessionId: input.sessionId, alias }))[0];
+    if (bound) {
+      const connector: ConnectorRequirementRow = {
+        connectorId: bound.connectorId,
+        projectId: input.projectId,
+        slug: alias,
+        name: bound.connectorName,
+        providerType: bound.providerType,
+        config: bound.connectorConfig,
+        enabled: bound.connectorEnabled,
+        status: bound.connectorStatus,
+      };
+      const connection: ConnectorConnectionRow = {
+        connectionId: bound.connectionId,
+        isDefault: bound.isDefault,
+        ownerType: bound.ownerType,
+        ownerId: bound.ownerId,
+        status: bound.connectionStatus,
+        metadata: bound.metadata,
+      };
+      const audience = (
+        await resolutionAudience({
+          projectId: input.projectId,
+          accountId: input.accountId,
+          userId: audiencePersonId({
+            actingUserId,
+            actingPrincipalIsServiceAccount,
+            agentPrincipal: input.agentPrincipal,
+          }),
+          agentId: input.agentPrincipal?.agentId ?? null,
+        }, input.preloaded)
+      )(connection.connectionId);
+      // A private inbox's mail starts a private session as the inbox's owner
+      // with no `on_behalf_of` (an email sender is no Kortix identity), so the
+      // owner's personal accounts stay out of reach. The one exception is the
+      // inbox itself: a private session its creator owns may use the email
+      // inbox account it is bound to, and nothing else of that person's.
+      const ownBoundInbox =
+        visibility === 'private' &&
+        !actingPrincipalIsServiceAccount &&
+        actingUserId !== '' &&
+        connection.ownerType === 'member' &&
+        connection.ownerId === actingUserId &&
+        connectorPlatform(connector.config) === 'email' &&
+        typeof connection.metadata?.inbox_id === 'string';
+      if (
+        !connector.enabled ||
+        connector.status !== 'active' ||
+        connection.status !== 'active' ||
+        (connectionNeedsPrivateSession(connection.ownerType, audience) && visibility !== 'private') ||
+        (!ownBoundInbox &&
+        !sessionConnectionIsReachable(
+          connector,
+          connection,
+          {
+            userId: actingUserId,
+            isServiceAccount: actingPrincipalIsServiceAccount,
+            agentPrincipal: input.agentPrincipal
+              ? { onBehalfOfUserId: input.agentPrincipal.onBehalfOfUserId, agentId: input.agentPrincipal.agentId ?? null, visibility }
+              : null,
+          },
+          audience,
+        )) ||
+        !(await connectorConnectionIsConnected({ connector, connection, preloaded: input.preloaded }))
+      ) {
+        return { kind: 'none' };
+      }
+      // A session that PINNED an account is a constraint, not a suggestion. A
+      // call that names a different one is denied rather than quietly run
+      // against the pinned account — the caller asked for a specific mailbox.
+      if (input.account?.trim() && !boundConnectionAnswersTo(input.account, bound)) {
+        return { kind: 'none' };
+      }
+      return {
+        kind: 'ok',
+        connection: {
+          connectionId: bound.connectionId,
+          connectorId: bound.connectorId,
+          status: bound.connectionStatus,
+          isDefault: bound.isDefault,
+          source: bound.source,
+          alias,
+          metadata: bound.metadata ?? {},
+          label: bound.connectionLabel,
+          ownerType: bound.ownerType,
+        },
+      };
+    }
+    if (connectorBindingsConfigured && !inheritUnbound) return { kind: 'none' };
+  }
+
+  // Hand the project-default fallback the SAME principal identity the original
+  // inlined branch used: when a session is in scope, the session-resolved
+  // service-account flag (line 715) is authoritative and detection must NOT
+  // re-run (the original skipped it when `input.sessionId` was set). When no
+  // session is in scope, pass the RAW caller value so the helper's
+  // `=== undefined` detection runs exactly as before.
+  return resolveProjectDefaultConnectorConnectionOutcome({
+    accountId: input.accountId,
+    projectId: input.projectId,
+    alias,
+    actingUserId,
+    actingPrincipalIsServiceAccount: input.sessionId
+      ? actingPrincipalIsServiceAccount
+      : input.actingPrincipalIsServiceAccount,
+    visibility,
+    account: input.account,
+    agentPrincipal: input.agentPrincipal ?? null,
+    connectorRow: input.connectorRow,
+    preloaded: input.preloaded,
+  });
+}
+
+/** `resolveSessionConnectorConnectionOutcome`, collapsed to the pre-existing
+ *  `T | null` shape for the many callers that only ever asked "did this
+ *  resolve" — `ambiguous` collapses to `null` here exactly like "nothing
+ *  reachable" did before this rule existed; a caller that must tell them
+ *  apart (the gateway's `account_required` denial) uses the outcome-returning
+ *  sibling above directly. */
+export async function resolveSessionConnectorConnection(
+  input: Parameters<typeof resolveSessionConnectorConnectionOutcome>[0],
+): Promise<ResolvedSessionConnectorConnection | null> {
+  const outcome = await resolveSessionConnectorConnectionOutcome(input);
+  return outcome.kind === 'ok' ? outcome.connection : null;
+}
+
+/**
+ * EVERY connection for this alias the caller is entitled to use, default first.
+ *
+ * One connector can hold several accounts — the project's shared one and each
+ * member's own ("Work", "Personal"). Resolution used to stop at the first
+ * match and nothing could reach the rest, so the only way to use a second
+ * account was to pin it per session from a dropdown in the composer. The list
+ * is the primitive now: the CLI prints it, a call selects from it by name, and
+ * an unselected call takes the first entry exactly as before.
+ *
+ * Entitlement is three filters: the row's reachability for this principal
+ * (`connectionRowIsReachable`), the session's visibility (a member-owned account
+ * never leaks into a shared session), and whether the account is genuinely
+ * connected.
+ *
+ * Order: the caller's own default private account, their other private
+ * accounts, the project's default shared account, then the rest. A call that
+ * names no account takes the first entry, so "my own identity first, the
+ * project's shared one as the fallback" is the resolution rule.
+ */
+export interface EntitledConnectorConnection {
+  connectionId: string;
+  connectorId: string;
+  alias: string;
+  /** Human-facing account name. What `--account` matches on. */
+  label: string;
+  ownerType: 'project' | 'agent' | 'member' | 'subject' | 'external';
+  isDefault: boolean;
+  status: 'active' | 'revoked' | 'error';
+  metadata: Record<string, unknown>;
+}
+
+export async function listEntitledConnectorConnections(input: {
+  preloaded?: SessionConnectorResolutionData;
+  accountId: string;
+  projectId: string;
+  alias: string;
+  actingUserId?: string;
+  actingPrincipalIsServiceAccount?: boolean;
+  visibility?: 'private' | 'project' | 'restricted';
+  /** See `resolveSessionConnectorConnectionOutcome`. With it, the
+   *  service-account probe below is skipped: the rule keys on on_behalf_of. */
+  agentPrincipal?: AgentPrincipalPersonalScope | null;
+  /** The connector row the caller already holds for this alias. When given
+   *  and it answers this exact (project, alias), the re-select below is
+   *  skipped — the same row read twice per call was the resolution fan-out's
+   *  duplicate. Mismatched hints fall back to the select, byte-identical. */
+  connectorRow?: ConnectorRequirementRow | null;
+}): Promise<EntitledConnectorConnection[]> {
+  const alias = canonicalConnectorAlias(input.alias);
+  const actingUserId = input.actingUserId ?? '';
+  let actingPrincipalIsServiceAccount = input.actingPrincipalIsServiceAccount ?? false;
+  const visibility: 'private' | 'project' | 'restricted' = input.visibility ?? 'private';
+
+  if (!input.agentPrincipal && input.actingPrincipalIsServiceAccount === undefined && actingUserId.length > 0) {
+    if (input.preloaded) {
+      actingPrincipalIsServiceAccount = input.preloaded.serviceAccountIds.has(actingUserId);
+    } else {
+    const [serviceAccount] = await db
+      .select({ id: serviceAccounts.serviceAccountId })
+      .from(serviceAccounts)
+      .where(
+        and(
+          eq(serviceAccounts.serviceAccountId, actingUserId),
+          eq(serviceAccounts.accountId, input.accountId),
+        ),
+      )
+      .limit(1);
+    actingPrincipalIsServiceAccount = serviceAccount !== undefined;
+    }
+  }
+
+  // The caller's already-loaded row answers the select below when it is the
+  // row that select would return (same project, same canonical alias). The
+  // enabled/status gate is applied identically either way, so a stale or
+  // mismatched hint cannot widen what the fresh select would have admitted.
+  const [connectorRow] =
+    input.connectorRow &&
+    input.connectorRow.projectId === input.projectId &&
+    input.connectorRow.slug === alias
+      ? [input.connectorRow]
+      : input.preloaded
+        ? input.preloaded.connectors.filter((row) => row.slug === alias)
+        : await db
+          .select({
+            connectorId: connectors.connectorId,
+            projectId: connectors.projectId,
+            slug: connectors.slug,
+            name: connectors.name,
+            providerType: connectors.providerType,
+            config: connectors.config,
+            enabled: connectors.enabled,
+            status: connectors.status,
+          })
+          .from(connectors)
+          .where(
+            and(
+              eq(connectors.accountId, input.accountId),
+              eq(connectors.projectId, input.projectId),
+              eq(connectors.slug, alias),
+            ),
+          )
+          .limit(1);
+  if (!connectorRow || !connectorRow.enabled || connectorRow.status !== 'active') return [];
+  const connector: ConnectorRequirementRow = connectorRow;
+
+  const rows = input.preloaded
+    ? input.preloaded.connections.filter((row) => row.connectorId === connector.connectorId && row.status === 'active')
+    : await db
+    .select({
+      connectionId: connectorConnections.connectionId,
+      label: connectorConnections.label,
+      isDefault: connectorConnections.isDefault,
+      ownerType: connectorConnections.ownerType,
+      ownerId: connectorConnections.ownerId,
+      status: connectorConnections.status,
+      metadata: connectorConnections.metadata,
+    })
+    .from(connectorConnections)
+    .where(
+      and(
+        eq(connectorConnections.accountId, input.accountId),
+        eq(connectorConnections.projectId, input.projectId),
+        eq(connectorConnections.connectorId, connector.connectorId),
+        eq(connectorConnections.status, 'active'),
+      ),
+    )
+    .orderBy(desc(connectorConnections.isDefault), connectorConnections.connectionId);
+
+  const audienceOf = await resolutionAudience({
+    projectId: input.projectId,
+    accountId: input.accountId,
+    userId: audiencePersonId({
+      actingUserId,
+      actingPrincipalIsServiceAccount,
+      agentPrincipal: input.agentPrincipal,
+    }),
+    agentId: input.agentPrincipal?.agentId ?? null,
+  }, input.preloaded);
+  const entitled: EntitledConnectorConnection[] = [];
+  for (const row of rows) {
+    const connection: ConnectorConnectionRow = {
+      connectionId: row.connectionId,
+      isDefault: row.isDefault,
+      ownerType: row.ownerType,
+      ownerId: row.ownerId,
+      status: row.status,
+      metadata: row.metadata,
+    };
+    const audience = audienceOf(row.connectionId);
+    if (
+      !sessionConnectionIsReachable(
+        connector,
+        connection,
+        {
+          userId: actingUserId,
+          isServiceAccount: actingPrincipalIsServiceAccount,
+          agentPrincipal: input.agentPrincipal
+            ? { onBehalfOfUserId: input.agentPrincipal.onBehalfOfUserId, agentId: input.agentPrincipal.agentId ?? null, visibility }
+            : null,
+        },
+        audience,
+      )
+    ) {
+      continue;
+    }
+    if (connectionNeedsPrivateSession(connection.ownerType, audience) && visibility !== 'private') continue;
+    if (!(await connectorConnectionIsConnected({ connector, connection, preloaded: input.preloaded }))) continue;
+    entitled.push({
+      connectionId: row.connectionId,
+      connectorId: connector.connectorId,
+      alias,
+      label: row.label,
+      ownerType: row.ownerType,
+      isDefault: row.isDefault,
+      status: row.status,
+      metadata: row.metadata ?? {},
+    });
+  }
+  // Every member-owned row that survived the filter is the CALLER's own, so
+  // owner type alone ranks the list. `sort` is stable, so rows inside a rank
+  // keep the query's `connectionId` order.
+  return entitled.sort(
+    (a, b) => entitledConnectionRank(a) - entitledConnectionRank(b),
+  );
+}
+
+function entitledConnectionRank(connection: EntitledConnectorConnection): number {
+  if (connection.ownerType === 'member') return connection.isDefault ? 0 : 1;
+  return connection.isDefault ? 2 : 3;
+}
+
+/**
+ * `listEntitledConnectorConnections`, batched across MANY connectors in one
+ * request instead of called once per connector.
+ *
+ * `GET /connectors/projects/:id/connectors` (db-deps.ts `listConnectors`) and
+ * `GET /connectors/projects/:id/catalog` (`listCatalog`) each called
+ * `listEntitledConnectorConnections` once PER connector — every invocation
+ * re-ran its own service-account check, re-selected the `connectors` row by
+ * alias (the caller already held that exact row), and re-selected
+ * `connectorConnections` scoped to just that one connector. On a project with
+ * ~20 connectors that is ~60 avoidable round trips (measured: n=64 on
+ * `/connectors`, n=97 on `/catalog`).
+ *
+ * This is the SAME per-connection filter logic as `listEntitledConnectorConnections`
+ * (`sessionConnectionIsReachable` → `connectionNeedsPrivateSession` →
+ * `connectorConnectionIsConnected` → rank + sort) — only the three per-connector
+ * lookups above are hoisted out of the loop and issued once for the whole
+ * batch: the service-account check depends only on (accountId, actingUserId),
+ * not on which connector is asked; the connector rows are supplied by the
+ * caller instead of re-selected; and `connectorConnections` is fetched with
+ * one `inArray` over every connector id instead of one `eq` per connector.
+ */
+export async function listEntitledConnectorConnectionsBatch(input: {
+  accountId: string;
+  projectId: string;
+  /** Already-fetched, already-verified-enabled/active connector rows. */
+  connectors: readonly ConnectorRequirementRow[];
+  actingUserId?: string;
+  actingPrincipalIsServiceAccount?: boolean;
+  visibility?: 'private' | 'project' | 'restricted';
+  agentPrincipal?: AgentPrincipalPersonalScope | null;
+}): Promise<Map<string, EntitledConnectorConnection[]>> {
+  const result = new Map<string, EntitledConnectorConnection[]>();
+  const eligible = input.connectors.filter((c) => c.enabled && c.status === 'active');
+  if (eligible.length === 0) return result;
+
+  const actingUserId = input.actingUserId ?? '';
+  let actingPrincipalIsServiceAccount = input.actingPrincipalIsServiceAccount ?? false;
+  const visibility: 'private' | 'project' | 'restricted' = input.visibility ?? 'private';
+
+  if (
+    !input.agentPrincipal &&
+    input.actingPrincipalIsServiceAccount === undefined &&
+    actingUserId.length > 0
+  ) {
+    const [serviceAccount] = await db
+      .select({ id: serviceAccounts.serviceAccountId })
+      .from(serviceAccounts)
+      .where(
+        and(
+          eq(serviceAccounts.serviceAccountId, actingUserId),
+          eq(serviceAccounts.accountId, input.accountId),
+        ),
+      )
+      .limit(1);
+    actingPrincipalIsServiceAccount = serviceAccount !== undefined;
+  }
+
+  const connectorIds = eligible.map((c) => c.connectorId);
+  const rows = await db
+    .select({
+      connectorId: connectorConnections.connectorId,
+      connectionId: connectorConnections.connectionId,
+      label: connectorConnections.label,
+      isDefault: connectorConnections.isDefault,
+      ownerType: connectorConnections.ownerType,
+      ownerId: connectorConnections.ownerId,
+      status: connectorConnections.status,
+      metadata: connectorConnections.metadata,
+    })
+    .from(connectorConnections)
+    .where(
+      and(
+        eq(connectorConnections.accountId, input.accountId),
+        eq(connectorConnections.projectId, input.projectId),
+        inArray(connectorConnections.connectorId, connectorIds),
+        eq(connectorConnections.status, 'active'),
+      ),
+    )
+    .orderBy(desc(connectorConnections.isDefault), connectorConnections.connectionId);
+
+  const rowsByConnector = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const list = rowsByConnector.get(row.connectorId);
+    if (list) list.push(row);
+    else rowsByConnector.set(row.connectorId, [row]);
+  }
+
+  const audienceOf = await loadConnectionAudience({
+    projectId: input.projectId,
+    accountId: input.accountId,
+    userId: audiencePersonId({
+      actingUserId,
+      actingPrincipalIsServiceAccount,
+      agentPrincipal: input.agentPrincipal,
+    }),
+    agentId: input.agentPrincipal?.agentId ?? null,
+  });
+
+  for (const connector of eligible) {
+    const alias = canonicalConnectorAlias(connector.slug);
+    const connectorRows = rowsByConnector.get(connector.connectorId) ?? [];
+    // One connector's row throwing (e.g. a malformed config) must not blank
+    // out every other connector in the batch — the original per-connector
+    // call site wrapped each invocation in `.catch(() => [])`; matched here
+    // per-connector so the fault stays isolated.
+    let entitled: EntitledConnectorConnection[] = [];
+    try {
+      for (const row of connectorRows) {
+        const connection: ConnectorConnectionRow = {
+          connectionId: row.connectionId,
+          isDefault: row.isDefault,
+          ownerType: row.ownerType,
+          ownerId: row.ownerId,
+          status: row.status,
+          metadata: row.metadata,
+        };
+        const audience = audienceOf(row.connectionId);
+        if (
+          !sessionConnectionIsReachable(
+            connector,
+            connection,
+            {
+              userId: actingUserId,
+              isServiceAccount: actingPrincipalIsServiceAccount,
+              agentPrincipal: input.agentPrincipal
+                ? { onBehalfOfUserId: input.agentPrincipal.onBehalfOfUserId, agentId: input.agentPrincipal.agentId ?? null, visibility }
+                : null,
+            },
+            audience,
+          )
+        ) {
+          continue;
+        }
+        if (connectionNeedsPrivateSession(connection.ownerType, audience) && visibility !== 'private') {
+          continue;
+        }
+        if (!(await connectorConnectionIsConnected({ connector, connection }))) continue;
+        entitled.push({
+          connectionId: row.connectionId,
+          connectorId: connector.connectorId,
+          alias,
+          label: row.label,
+          ownerType: row.ownerType,
+          isDefault: row.isDefault,
+          status: row.status,
+          metadata: row.metadata ?? {},
+        });
+      }
+    } catch {
+      entitled = [];
+    }
+    entitled.sort((a, b) => entitledConnectionRank(a) - entitledConnectionRank(b));
+    result.set(connector.connectorId, entitled);
+  }
+  return result;
+}
+
+/**
+ * The outcome of picking one entitled account.
+ *
+ * THE RULE (INC-class, 2026-09-16): an unnamed (or `me`/`project`-shorthand)
+ * connector call uses an account implicitly ONLY when exactly one account is
+ * reachable, OR a human has deliberately pinned a default. A silent tie-break
+ * among several equally-reachable accounts is a guess with real consequences
+ * — mail sent from the wrong mailbox. `ambiguous` is a DISTINCT outcome from
+ * `none` so a caller can never conflate "nothing here" with "several things
+ * here and I refuse to guess which."
+ */
+export type EntitledConnectionSelection =
+  | { kind: 'none' }
+  | { kind: 'one'; connection: EntitledConnectorConnection }
+  | { kind: 'ambiguous'; connections: readonly EntitledConnectorConnection[] };
+
+/** 0 → none; 1 → it; 2+ → the pinned one iff exactly one is pinned, else ambiguous. */
+function resolveEntitledTier(
+  connections: readonly EntitledConnectorConnection[],
+): EntitledConnectionSelection {
+  if (connections.length === 0) return { kind: 'none' };
+  if (connections.length === 1) return { kind: 'one', connection: connections[0]! };
+  const pinned = connections.filter((c) => c.isDefault);
+  if (pinned.length === 1) return { kind: 'one', connection: pinned[0]! };
+  return { kind: 'ambiguous', connections };
+}
+
+/**
+ * Pick one entitled account by name.
+ *
+ * Matches a connection id exactly, a label case-insensitively — the CLI prints
+ * both, and a human types the label — or the two selector words:
+ *
+ *   `me`      the caller's pinned private account, else their only private
+ *             one, else AMBIGUOUS among their private accounts.
+ *   `project` the pinned shared account, else the only shared one, else
+ *             AMBIGUOUS among the shared accounts.
+ *
+ * The words are matched BEFORE labels, so a connection literally labelled
+ * "me" is still reachable by its id. An unnamed call (no `account` at all)
+ * applies the same 0/1/pinned/ambiguous rule to the WHOLE entitled list,
+ * unfiltered — this is what replaced "always take the first entry".
+ *
+ * A named-but-unknown account returns `none`, which the caller reports as "no
+ * such account" rather than silently running as a different one than asked
+ * for. Silently falling back would be the worst outcome here: the call would
+ * succeed against the wrong mailbox. `ambiguous` is reported differently
+ * (`account_required`): several real candidates exist and none was named.
+ */
+export function selectEntitledConnectorConnection(
+  connections: readonly EntitledConnectorConnection[],
+  account: string | null | undefined,
+): EntitledConnectionSelection {
+  if (!account || !account.trim()) return resolveEntitledTier(connections);
+  const wanted = account.trim().toLowerCase();
+  if (wanted === 'me') {
+    return resolveEntitledTier(connections.filter((c) => c.ownerType === 'member'));
+  }
+  if (wanted === 'project') {
+    return resolveEntitledTier(connections.filter((c) => c.ownerType !== 'member'));
+  }
+  const named =
+    connections.find((c) => c.connectionId.toLowerCase() === wanted) ??
+    connections.find((c) => c.label.trim().toLowerCase() === wanted) ??
+    null;
+  return named ? { kind: 'one', connection: named } : { kind: 'none' };
+}
+
+/** The outcome of resolving a connector connection: found, absent, or
+ *  AMBIGUOUS (several reachable accounts, none named, none pinned — see
+ *  `EntitledConnectionSelection`). A `null`-collapsing caller cannot tell
+ *  "nothing here" from "several things here and nobody said which"; a caller
+ *  that must (the gateway's `account_required` denial) uses this instead. */
+export type ResolvedConnectorConnectionOutcome =
+  | { kind: 'ok'; connection: ResolvedSessionConnectorConnection }
+  | { kind: 'none' }
+  | { kind: 'ambiguous'; accounts: readonly EntitledConnectorConnection[] };
+
+/**
+ * Project-default connection resolution — the fallback an UNBOUND alias resolves
+ * to when no session binding covers it (or no session is in scope at all).
+ *
+ * A thin pick over `listEntitledConnectorConnections` + `selectEntitledConnectorConnection`,
+ * which preserves the original ordering (default first, then connection id) and
+ * the original three filters, so a call naming one account (or exactly one
+ * reachable, or exactly one pinned) resolves to exactly what it always did.
+ */
+export async function resolveProjectDefaultConnectorConnectionOutcome(input: {
+  preloaded?: SessionConnectorResolutionData;
+  accountId: string;
+  projectId: string;
+  alias: string;
+  actingUserId?: string;
+  actingPrincipalIsServiceAccount?: boolean;
+  visibility?: 'private' | 'project' | 'restricted';
+  /** Name or id of the account to run as. Omitted = the default. */
+  account?: string | null;
+  agentPrincipal?: AgentPrincipalPersonalScope | null;
+  /** See `listEntitledConnectorConnections` — the call path's already-loaded
+   *  connector row, threaded through so the fallback reads it once. */
+  connectorRow?: ConnectorRequirementRow | null;
+}): Promise<ResolvedConnectorConnectionOutcome> {
+  const entitled = await listEntitledConnectorConnections(input);
+  const selection = selectEntitledConnectorConnection(entitled, input.account);
+  if (selection.kind === 'none') return { kind: 'none' };
+  if (selection.kind === 'ambiguous') return { kind: 'ambiguous', accounts: selection.connections };
+  const chosen = selection.connection;
+  return {
+    kind: 'ok',
+    connection: {
+      connectionId: chosen.connectionId,
+      connectorId: chosen.connectorId,
+      status: chosen.status,
+      isDefault: chosen.isDefault,
+      alias: chosen.alias,
+      metadata: chosen.metadata,
+      source: 'default',
+      label: chosen.label,
+      ownerType: chosen.ownerType,
+    },
+  };
+}
+
+/**
+ * Return the authorization map that Connector resolves for the session now.
+ *
+ * A session without caller-configured bindings can use strategy-based defaults
+ * without durable binding rows. Read-back must materialize those defaults.
+ * Explicit-only sessions remain explicit-only because
+ * `resolveSessionConnectorConnection` enforces the persisted inheritance state.
+ *
+ * Batched (2026-09-27). This answers, for every alias, exactly what
+ * `resolveSessionConnectorConnection` answers for that alias alone, but reads
+ * the session, the connector rows, the session's bindings and the candidate
+ * connections once for all aliases. Resolving alias by alias cost 4-5 queries
+ * per connector: `GET /sessions/:id/scope` measured `db n=55-64` and up to
+ * 5 s on prod, on every session open. The per-alias resolver stays the
+ * definition; `integration-session-scope-query-count.test.ts` asserts the two
+ * agree across bound, revoked, inherited, fail-closed, ambiguous, pinned,
+ * foreign-member and disabled connectors.
+ */
+export async function resolveEffectiveSessionConnectorBindings(input: {
+  accountId: string;
+  projectId: string;
+  sessionId: string;
+  grantedConnectors: string[] | 'all' | undefined;
+}): Promise<SessionConnectorBindings> {
+  const requestedAliases = Array.isArray(input.grantedConnectors)
+    ? input.grantedConnectors
+    : (
+        await db
+          .select({ alias: connectors.slug })
+          .from(connectors)
+          .where(
+            and(
+              eq(connectors.accountId, input.accountId),
+              eq(connectors.projectId, input.projectId),
+              eq(connectors.enabled, true),
+              eq(connectors.status, 'active'),
+            ),
+          )
+          .orderBy(connectors.slug)
+      ).map((row) => row.alias);
+  const uniqueAliases = [...new Set(requestedAliases.map((a) => canonicalConnectorAlias(a)))];
+  if (uniqueAliases.length === 0) return {};
+
+  const session = await loadSessionConnectorLookup(input.sessionId, input.accountId, input.projectId);
+  if (!session) return {};
+  const actingUserId = session.createdBy ?? '';
+  const actingPrincipalIsServiceAccount = session.createdByServiceAccountId !== null;
+  const visibility = session.visibility;
+  const fallbackAllowed = !session.bindingsConfigured || session.inheritUnbound;
+
+  const boundRows = await db
+    .select({
+      alias: projectSessionConnectorBindings.connectorAlias,
+      connectionId: connectorConnections.connectionId,
+      connectorId: connectorConnections.connectorId,
+      connectionStatus: connectorConnections.status,
+      isDefault: connectorConnections.isDefault,
+      metadata: connectorConnections.metadata,
+      ownerType: connectorConnections.ownerType,
+      ownerId: connectorConnections.ownerId,
+      connectorName: connectors.name,
+      providerType: connectors.providerType,
+      connectorConfig: connectors.config,
+      connectorEnabled: connectors.enabled,
+      connectorStatus: connectors.status,
+    })
+    .from(projectSessionConnectorBindings)
+    .innerJoin(
+      connectorConnections,
+      eq(connectorConnections.connectionId, projectSessionConnectorBindings.connectionId),
+    )
+    .innerJoin(
+      connectors,
+      and(
+        eq(connectors.connectorId, projectSessionConnectorBindings.connectorId),
+        eq(connectors.accountId, projectSessionConnectorBindings.accountId),
+        eq(connectors.projectId, projectSessionConnectorBindings.projectId),
+      ),
+    )
+    .where(
+      and(
+        eq(projectSessionConnectorBindings.sessionId, input.sessionId),
+        eq(projectSessionConnectorBindings.accountId, input.accountId),
+        eq(projectSessionConnectorBindings.projectId, input.projectId),
+        inArray(projectSessionConnectorBindings.connectorAlias, uniqueAliases),
+      ),
+    );
+  // The primary key is (session_id, connector_alias): at most one row per alias.
+  const boundByAlias = new Map(boundRows.map((row) => [row.alias, row]));
+
+  const resolved = new Map<string, string>();
+
+  // A bound alias resolves to its pin or to nothing — never to a default.
+  if (boundRows.length > 0) {
+    const audienceOf = await loadConnectionAudience({
+      projectId: input.projectId,
+      accountId: input.accountId,
+      userId: audiencePersonId({ actingUserId, actingPrincipalIsServiceAccount }),
+      agentId: await sessionAgentId(input.sessionId),
+    });
+    const RESOLVE_CONCURRENCY = 8;
+    await mapLimit(boundRows, RESOLVE_CONCURRENCY, async (bound) => {
+      const connector: ConnectorRequirementRow = {
+        connectorId: bound.connectorId,
+        projectId: input.projectId,
+        slug: bound.alias,
+        name: bound.connectorName,
+        providerType: bound.providerType,
+        config: bound.connectorConfig,
+        enabled: bound.connectorEnabled,
+        status: bound.connectorStatus,
+      };
+      const connection: ConnectorConnectionRow = {
+        connectionId: bound.connectionId,
+        isDefault: bound.isDefault,
+        ownerType: bound.ownerType,
+        ownerId: bound.ownerId,
+        status: bound.connectionStatus,
+        metadata: bound.metadata,
+      };
+      const audience = audienceOf(connection.connectionId);
+      if (
+        !connector.enabled ||
+        connector.status !== 'active' ||
+        connection.status !== 'active' ||
+        (connectionNeedsPrivateSession(connection.ownerType, audience) && visibility !== 'private') ||
+        !sessionConnectionIsReachable(
+          connector,
+          connection,
+          { userId: actingUserId, isServiceAccount: actingPrincipalIsServiceAccount, agentPrincipal: null },
+          audience,
+        ) ||
+        !(await connectorConnectionIsConnected({ connector, connection }))
+      ) {
+        return;
+      }
+      resolved.set(bound.alias, bound.connectionId);
+    });
+  }
+
+  // An unbound alias falls back to the project default unless the session
+  // configured its bindings without inheriting.
+  const unbound = uniqueAliases.filter((alias) => !boundByAlias.has(alias));
+  if (fallbackAllowed && unbound.length > 0) {
+    const connectorRows = await db
+      .select({
+        connectorId: connectors.connectorId,
+        projectId: connectors.projectId,
+        slug: connectors.slug,
+        name: connectors.name,
+        providerType: connectors.providerType,
+        config: connectors.config,
+        enabled: connectors.enabled,
+        status: connectors.status,
+      })
+      .from(connectors)
+      .where(
+        and(
+          eq(connectors.accountId, input.accountId),
+          eq(connectors.projectId, input.projectId),
+          inArray(connectors.slug, unbound),
+        ),
+      );
+    const entitledByConnector = await listEntitledConnectorConnectionsBatch({
+      accountId: input.accountId,
+      projectId: input.projectId,
+      connectors: connectorRows,
+      actingUserId,
+      actingPrincipalIsServiceAccount,
+      visibility,
+      agentPrincipal: null,
+    });
+    for (const connector of connectorRows) {
+      const selection = resolveEntitledTier(entitledByConnector.get(connector.connectorId) ?? []);
+      if (selection.kind === 'one') resolved.set(connector.slug, selection.connection.connectionId);
+    }
+  }
+
+  const bindings: SessionConnectorBindings = {};
+  for (const alias of uniqueAliases) {
+    const connectionId = resolved.get(alias);
+    if (connectionId) bindings[publicConnectorAlias(alias)] = { connection_id: connectionId };
+  }
+  return bindings;
+}
+
+export function canonicalConnectorBindings(value: unknown): string {
+  const parsed = parseSessionConnectorBindings(value);
+  if (!parsed.ok || !parsed.bindings) return '{}';
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(parsed.bindings)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([alias, binding]) => [
+          alias,
+          { connection_id: binding.connection_id },
+        ]),
+    ),
+  );
+}
+
+export function connectorBindingPayloadConflicts(existing: unknown, requested: unknown): boolean {
+  return canonicalConnectorBindings(existing) !== canonicalConnectorBindings(requested);
+}

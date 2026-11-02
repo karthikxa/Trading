@@ -1,0 +1,298 @@
+import { describe, expect, test } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  InvalidDeviceAuthResponseError,
+  awaitDeviceAuthorization,
+  machineDisplayName,
+  machineId,
+  parseDeviceAuthChallenge,
+  parseDeviceAuthStatus,
+  requestDeviceAuthorization,
+} from './device-auth';
+
+describe('browser opener on Node', () => {
+  test.each([
+    ['missing opener', 'https://example.invalid/approve', '0'],
+    ['invalid URL', 'not a URL', '0'],
+    ['unsafe scheme', 'javascript:alert(1)', '0'],
+    ['browser disabled', 'https://example.invalid/approve', '1'],
+  ])('%s does not terminate authorization polling', async (_name, url, disabled) => {
+    const directory = await mkdtemp(join(tmpdir(), 'device-browser-'));
+    try {
+      const bundle = join(directory, 'device-auth.mjs');
+      const build = await Bun.build({
+        entrypoints: [join(import.meta.dir, 'device-auth.ts')],
+        target: 'node',
+      });
+      expect(build.success).toBe(true);
+      await Bun.write(bundle, await build.outputs[0].text());
+      const child = Bun.spawn([Bun.which('node') ?? '/usr/local/bin/node', '--input-type=module', '-e', `
+        import { openBrowser, awaitDeviceAuthorization } from ${JSON.stringify(bundle)};
+        openBrowser(${JSON.stringify(url)});
+        await awaitDeviceAuthorization('http://127.0.0.1:1', {
+          deviceCode: 'TEST-0001', deviceSecret: 'synthetic',
+          expiresAt: new Date(Date.now() + 60000).toISOString(), pollIntervalMs: 250,
+        }, { onWaiting() { console.log('polling'); }, sleep: async () => {
+          await new Promise(resolve => setImmediate(resolve));
+          console.log('survived');
+          process.exit(0);
+        }});
+      `], {
+        env: { ...process.env, PATH: directory, KORTIX_AGENT_TUNNEL_NO_BROWSER: disabled },
+        stdout: 'pipe', stderr: 'pipe',
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+      ]);
+      expect(stderr).toBe('');
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain('polling');
+      expect(stdout).toContain('survived');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+const VALID_TUNNEL_ID = '00000000-0000-4000-8000-000000000042';
+const VALID_TOKEN = `kortix_tnl_${'A'.repeat(36)}`;
+
+function challenge(overrides: Record<string, unknown> = {}) {
+  return {
+    deviceCode: 'ABCD-1234',
+    deviceSecret: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ123456',
+    verificationUrl: 'https://kortix.com/tunnel/authorize/ABCD-1234',
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    pollIntervalMs: 2000,
+    ...overrides,
+  };
+}
+
+describe('device auth challenge validation', () => {
+  test('accepts a well-formed challenge', () => {
+    const parsed = parseDeviceAuthChallenge(challenge());
+    expect(parsed.deviceCode).toBe('ABCD-1234');
+    expect(parsed.verificationUrl).toStartWith('https://kortix.com/');
+  });
+
+  test('rejects a verification URL that is not https and not loopback', () => {
+    expect(() => parseDeviceAuthChallenge(challenge({ verificationUrl: 'http://evil.example/x' })))
+      .toThrow(InvalidDeviceAuthResponseError);
+  });
+
+  test('allows a loopback URL over http for local development', () => {
+    const parsed = parseDeviceAuthChallenge(
+      challenge({ verificationUrl: 'http://127.0.0.1:3000/tunnel/authorize/ABCD-1234' }),
+    );
+    expect(parsed.verificationUrl).toContain('127.0.0.1');
+  });
+
+  test('rejects a URL carrying credentials', () => {
+    expect(() => parseDeviceAuthChallenge(challenge({ verificationUrl: 'https://user:pw@kortix.com/x' })))
+      .toThrow(/unsafe verification URL/);
+  });
+
+  test('rejects a non-http scheme outright', () => {
+    expect(() => parseDeviceAuthChallenge(challenge({ verificationUrl: 'javascript:alert(1)' })))
+      .toThrow(InvalidDeviceAuthResponseError);
+  });
+
+  test.each([
+    ['device code', { deviceCode: 'nope' }],
+    ['device secret', { deviceSecret: 'short' }],
+    ['expiration in the past', { expiresAt: new Date(Date.now() - 1000).toISOString() }],
+    ['expiration too far out', { expiresAt: new Date(Date.now() + 60 * 60_000).toISOString() }],
+    ['poll interval too small', { pollIntervalMs: 10 }],
+    ['poll interval too large', { pollIntervalMs: 60_000 }],
+  ])('rejects a bad %s', (_label, overrides) => {
+    expect(() => parseDeviceAuthChallenge(challenge(overrides))).toThrow(InvalidDeviceAuthResponseError);
+  });
+});
+
+describe('device auth status validation', () => {
+  test('returns null while the request is still pending', () => {
+    expect(parseDeviceAuthStatus({ status: 'pending' })).toBeNull();
+  });
+
+  test('narrows an approval to supported capabilities and dedupes them', () => {
+    const outcome = parseDeviceAuthStatus({
+      status: 'approved',
+      tunnelId: VALID_TUNNEL_ID,
+      token: VALID_TOKEN,
+      capabilities: ['shell', 'shell', 'filesystem', 'root-access'],
+    });
+    expect(outcome).toEqual({
+      status: 'approved',
+      tunnelId: VALID_TUNNEL_ID,
+      token: VALID_TOKEN,
+      capabilities: ['shell', 'filesystem'],
+    });
+  });
+
+  test('reports an approval that carries no token separately', () => {
+    expect(parseDeviceAuthStatus({ status: 'approved' })).toEqual({ status: 'approved-without-token' });
+  });
+
+  test('rejects a malformed tunnel id', () => {
+    expect(() => parseDeviceAuthStatus({ status: 'approved', tunnelId: 'nope', token: VALID_TOKEN }))
+      .toThrow(/invalid tunnel ID/);
+  });
+
+  test('rejects a malformed setup token', () => {
+    expect(() => parseDeviceAuthStatus({ status: 'approved', tunnelId: VALID_TUNNEL_ID, token: 'bad' }))
+      .toThrow(/invalid setup token/);
+  });
+
+  test.each([['denied'], ['expired']])('passes %s through', (status) => {
+    expect(parseDeviceAuthStatus({ status })).toEqual({ status } as never);
+  });
+});
+
+describe('polling', () => {
+  test('retries transport failures and stops on a decision', async () => {
+    let calls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      calls++;
+      if (calls < 3) throw new Error('network down');
+      return new Response(JSON.stringify({ status: 'denied' }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      const outcome = await awaitDeviceAuthorization('http://127.0.0.1:1/v1/tunnel', challenge(), {
+        sleep: async () => {},
+      });
+      expect(outcome).toEqual({ status: 'denied' });
+      expect(calls).toBe(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('gives up once the challenge has expired', async () => {
+    const outcome = await awaitDeviceAuthorization(
+      'http://127.0.0.1:1/v1/tunnel',
+      { ...challenge(), expiresAt: new Date(Date.now() - 1).toISOString() },
+      { sleep: async () => {} },
+    );
+    expect(outcome).toEqual({ status: 'expired' });
+  });
+});
+
+describe('machine display name', () => {
+  const fails = () => {
+    throw new Error('scutil: not found');
+  };
+
+  test('macOS uses the ComputerName the person set', () => {
+    const name = machineDisplayName({
+      os: 'darwin',
+      host: 'MacBook-Pro-9.local',
+      env: {},
+      run: (command, args) => {
+        expect([command, ...args]).toEqual(['scutil', '--get', 'ComputerName']);
+        return 'Ada’s MacBook Pro\n';
+      },
+    });
+    expect(name).toBe('Ada’s MacBook Pro');
+  });
+
+  test('macOS falls back to the hostname without .local when scutil fails or is empty', () => {
+    expect(machineDisplayName({ os: 'darwin', host: 'MacBook-Pro-9.local', env: {}, run: fails })).toBe(
+      'MacBook-Pro-9',
+    );
+    expect(machineDisplayName({ os: 'darwin', host: 'MacBook-Pro-9.local', env: {}, run: () => '  ' })).toBe(
+      'MacBook-Pro-9',
+    );
+  });
+
+  test('Windows uses COMPUTERNAME', () => {
+    expect(
+      machineDisplayName({ os: 'win32', host: 'desktop-1', env: { COMPUTERNAME: 'STUDIO-PC' }, run: fails }),
+    ).toBe('STUDIO-PC');
+    expect(machineDisplayName({ os: 'win32', host: 'desktop-1', env: {}, run: fails })).toBe('desktop-1');
+  });
+
+  test('Linux uses the hostname and never runs a command', () => {
+    expect(machineDisplayName({ os: 'linux', host: 'build-box.local', env: {}, run: fails })).toBe('build-box');
+    expect(machineDisplayName({ os: 'linux', host: 'build-box', env: {}, run: fails })).toBe('build-box');
+  });
+
+  test('pairing proposes the display name as the machine name', async () => {
+    const original = globalThis.fetch;
+    let body: Record<string, unknown> = {};
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify(challenge()), { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      await requestDeviceAuthorization('https://api.kortix.com/v1/tunnel');
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(body.machineHostname).toBe(machineDisplayName());
+  });
+});
+
+describe('machine id', () => {
+  const HEX = /^[a-f0-9]{64}$/;
+  const fails = () => {
+    throw new Error('not available');
+  };
+  const UUID = '8B1F2C3D-4E5F-4A6B-9C7D-0E1F2A3B4C5D';
+
+  test('macOS hashes the IOPlatformUUID; the raw id never leaves the machine', () => {
+    const id = machineId({
+      os: 'darwin',
+      run: (command, args) => {
+        expect([command, ...args]).toEqual(['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice']);
+        return `+-o J316sAP  <class IOPlatformExpertDevice>\n    "IOPlatformUUID" = "${UUID}"\n`;
+      },
+      read: fails,
+    });
+    expect(id).toMatch(HEX);
+    expect(id).not.toContain(UUID.toLowerCase().replace(/-/g, ''));
+  });
+
+  test('the same hardware gives the same id on every platform source, and other hardware a different one', () => {
+    const mac = (uuid: string) => machineId({ os: 'darwin', run: () => `"IOPlatformUUID" = "${uuid}"`, read: fails });
+    expect(mac(UUID)).toBe(mac(UUID));
+    expect(mac(UUID)).not.toBe(mac(UUID.replace('8B1F', '9B1F')));
+    const win = machineId({
+      os: 'win32',
+      run: () => `\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n    MachineGuid    REG_SZ    ${UUID}\r\n`,
+      read: fails,
+    });
+    expect(win).toBe(mac(UUID));
+  });
+
+  test('Linux reads /etc/machine-id, then the dbus copy', () => {
+    const first = machineId({ os: 'linux', run: fails, read: (path) => (path === '/etc/machine-id' ? 'abc123\n' : fails()) });
+    const dbus = machineId({ os: 'linux', run: fails, read: (path) => (path === '/etc/machine-id' ? fails() : 'abc123') });
+    expect(first).toMatch(HEX);
+    expect(dbus).toBe(first);
+  });
+
+  test('an unreadable or empty id is null, never a random one', () => {
+    expect(machineId({ os: 'darwin', run: fails, read: fails })).toBeNull();
+    expect(machineId({ os: 'darwin', run: () => 'no uuid here', read: fails })).toBeNull();
+    expect(machineId({ os: 'linux', run: fails, read: () => '  \n' })).toBeNull();
+  });
+
+  test('pairing sends the machine id', async () => {
+    const original = globalThis.fetch;
+    let body: Record<string, unknown> = {};
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify(challenge()), { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      await requestDeviceAuthorization('https://api.kortix.com/v1/tunnel');
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(body.machine_id).toBe(machineId() ?? undefined);
+  });
+});

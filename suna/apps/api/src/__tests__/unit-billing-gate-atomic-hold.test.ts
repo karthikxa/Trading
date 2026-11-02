@@ -1,0 +1,155 @@
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
+
+/**
+ * BILLING-CORRECTNESS: checkBillingActive used to be a read-only
+ * `balance >= MINIMUM_CREDIT_FOR_RUN` check, fully decoupled from the real
+ * per-request deduction that only happens once the whole (possibly
+ * long-running, streaming) request settles — N concurrent requests could all
+ * read the same stale balance and all get admitted. This now takes an ATOMIC
+ * admission hold (via the same row-locked `atomic_use_credits` DB function
+ * the real deduction uses) on the pure-wallet path, returning `holdUsd` so the
+ * caller (llm-gateway hooks.recordGatewayUsage) reconciles it to the real
+ * cost at settle. This file covers: the hold IS taken on the wallet path, is
+ * NOT taken for an active credits subscription or a self-host/billing-off
+ * deploy, and a failed hold (insufficient credits) surfaces as
+ * `insufficient_credits` — the same denial the old read-only check produced.
+ */
+
+let creditAccount: {
+  balance: number;
+  tier?: string | null;
+  stripeSubscriptionId: string | null;
+  stripeSubscriptionStatus: string | null;
+} | null = null;
+let billingInternalEnabled = true;
+let debitCalls: Array<{ accountId: string; amount: number }> = [];
+let deductShouldFail = false;
+
+mock.module('../config', () => ({
+  config: {
+    get KORTIX_BILLING_INTERNAL_ENABLED() {
+      return billingInternalEnabled;
+    },
+  },
+}));
+
+mock.module('../billing/repositories/credit-accounts', () => ({
+  getCreditAccount: async () => creditAccount,
+  updateCreditAccount: async (_accountId: string, data: Record<string, unknown>) => {
+    if (creditAccount) Object.assign(creditAccount, data);
+  },
+}));
+
+// billing-gate debits through wallet-debits, which fires the auto-topup check.
+mock.module('../billing/services/auto-topup', () => ({
+  checkAndTriggerAutoTopup: async () => {},
+}));
+
+mock.module('../billing/services/free-tier', () => ({
+  ensureFreeTierAccountReady: async () => {},
+}));
+
+mock.module('../billing/wallet', () => ({
+  wallet: {
+    debit: async ({ accountId, amount }: { accountId: string; amount: number }) => {
+      debitCalls.push({ accountId, amount });
+      if (deductShouldFail) {
+        throw new Error('Insufficient credits');
+      }
+      return { amount, balance: 0, transactionId: 'txn-1', replayed: false };
+    },
+  },
+}));
+
+const { checkBillingActive } = await import('../billing/services/billing-gate');
+
+describe('checkBillingActive — atomic admission hold (pure-wallet path)', () => {
+  beforeEach(() => {
+    billingInternalEnabled = true;
+    debitCalls = [];
+    deductShouldFail = false;
+    creditAccount = {
+      balance: 5,
+      tier: 'free',
+      stripeSubscriptionId: null,
+      stripeSubscriptionStatus: null,
+    };
+  });
+
+  test('a solvent wallet account gets an ATOMIC hold taken (not just a read check) and holdUsd is returned', async () => {
+    const result = await checkBillingActive('acct-1');
+    expect(result.ok).toBe(true);
+    expect((result as { holdUsd?: number }).holdUsd).toBe(0.01);
+    // The critical behavioral change: this is a real deduction call through
+    // the SAME atomic path the final charge uses, not a passive balance read.
+    expect(debitCalls).toHaveLength(1);
+    expect(debitCalls[0]).toEqual({ accountId: 'acct-1', amount: 0.01 });
+  });
+
+  test('a hold that fails (concurrent drain / insufficient balance) denies with insufficient_credits — same denial shape as the old read check', async () => {
+    deductShouldFail = true;
+    const result = await checkBillingActive('acct-1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('insufficient_credits');
+    }
+  });
+
+  test('no credit account at all → no_account, no hold attempted', async () => {
+    creditAccount = null;
+    const result = await checkBillingActive('acct-1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('no_account');
+    expect(debitCalls).toHaveLength(0);
+  });
+
+  test('an active credits subscription at $0 is REFUSED — nothing bypasses the floor', async () => {
+    // Was: admitted, no hold, no deduct. That exemption is removed; the whole
+    // point of the atomic hold is that it applies to every admitted request.
+    creditAccount = {
+      balance: 0,
+      tier: 'credits',
+      stripeSubscriptionId: 'sub_123',
+      stripeSubscriptionStatus: 'active',
+    };
+    const result = await checkBillingActive('acct-1');
+    expect(result.ok).toBe(false);
+  });
+
+  test('an active credits subscription WITH credit takes the atomic hold', async () => {
+    creditAccount = {
+      balance: 25,
+      tier: 'credits',
+      stripeSubscriptionId: 'sub_123',
+      stripeSubscriptionStatus: 'active',
+    };
+    const result = await checkBillingActive('acct-1');
+    expect(result.ok).toBe(true);
+    expect((result as { holdUsd?: number }).holdUsd).toBe(0.01);
+    expect(debitCalls).toHaveLength(1);
+  });
+
+  test('an account with no active subscription and a drained wallet falls back to the wallet-floor check (no hold — insufficient_credits, billingState says no_subscription)', async () => {
+    creditAccount = {
+      balance: 0,
+      tier: 'free',
+      stripeSubscriptionId: null,
+      stripeSubscriptionStatus: null,
+    };
+    const result = await checkBillingActive('acct-1');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('insufficient_credits');
+      expect(result.billingState).toBe('no_subscription');
+    }
+    expect(debitCalls).toHaveLength(0);
+  });
+
+  test('self-host / billing-internal-disabled deploys skip the gate entirely — no hold, always ok', async () => {
+    billingInternalEnabled = false;
+    const result = await checkBillingActive('acct-1');
+    expect(result.ok).toBe(true);
+    expect((result as { holdUsd?: number }).holdUsd).toBeUndefined();
+    expect(debitCalls).toHaveLength(0);
+  });
+});

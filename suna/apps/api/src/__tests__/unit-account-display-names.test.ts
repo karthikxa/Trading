@@ -1,0 +1,141 @@
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
+
+// Placeholder accounts use a neutral fallback regardless of caller or owner email.
+
+let dbResults: unknown[][] = [];
+function makeChain(): any {
+  const chain: any = {};
+  // `innerJoin` joined the list when the owner lookup moved to
+  // `role_assignments`: the role comes from the canonical store now, the
+  // `joined_at` ordering still from `account_members`.
+  for (const m of ['from', 'innerJoin', 'where', 'limit', 'orderBy', 'set', 'values', 'returning']) {
+    chain[m] = () => chain;
+  }
+  chain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve(dbResults.shift() ?? []));
+  return chain;
+}
+// Owner emails now come from a single `auth.users` lookup via `db.execute`
+// (they used to be one Supabase admin HTTP call per owner).
+let emailsById: Record<string, string> = {};
+mock.module('../shared/db', () => ({
+  db: { select: () => makeChain(), update: () => makeChain(), insert: () => makeChain(), execute: async () => Object.entries(emailsById).map(([id, email]) => ({ id, email })) },
+  hasDatabase: () => true,
+}));
+
+// Retained because other modules in this import graph still construct a client.
+mock.module('../shared/supabase', () => ({
+  getSupabase: () => ({ auth: { admin: {} } }),
+}));
+
+mock.module('../shared/resolve-account', () => ({
+  resolveAccountId: async () => 'acc-x',
+}));
+
+const {
+  accountDisplayName,
+  clearOwnerEmailCache,
+  properAccountName,
+  resolveAccountDisplayNames,
+} = await import('../accounts/core/app');
+
+const CALLER = { userId: 'u-caller', email: 'caller@gmail.com' };
+
+beforeEach(() => {
+  dbResults = [];
+  emailsById = {};
+  // The owner-email lookup memoizes for 5 minutes; drop it so each test
+  // observes its own fixture rather than the previous test's.
+  clearOwnerEmailCache();
+});
+
+describe('properAccountName / accountDisplayName', () => {
+  test('placeholder names are not proper names', () => {
+    expect(properAccountName('Personal')).toBeNull();
+    expect(properAccountName('User')).toBeNull();
+    expect(properAccountName('  ')).toBeNull();
+    expect(properAccountName(null)).toBeNull();
+    expect(properAccountName('Acme Corp')).toBe('Acme Corp');
+  });
+
+  test('accountDisplayName falls back to a suggested name, never the email (KRTX-638)', () => {
+    expect(accountDisplayName('Personal', 'ada@gmail.com')).toBe('My workspace');
+    expect(accountDisplayName('Acme', 'ada@gmail.com')).toBe('Acme');
+    expect(accountDisplayName(null, null)).toBe('My workspace');
+  });
+});
+
+describe('resolveAccountDisplayNames', () => {
+  test('keeps proper names without touching owners', async () => {
+    const names = await resolveAccountDisplayNames(
+      [{ accountId: 'a1', name: 'Acme Corp' }],
+      CALLER,
+    );
+    expect(names.get('a1')).toBe('Acme Corp');
+  });
+
+  test("unnamed account owned by the caller → neutral name", async () => {
+    dbResults = [[{ accountId: 'a1', userId: 'u-caller' }]];
+    const names = await resolveAccountDisplayNames(
+      [{ accountId: 'a1', name: 'Personal' }],
+      CALLER,
+    );
+    expect(names.get('a1')).toBe('My workspace');
+  });
+
+  test("unnamed account owned by someone else → neutral name", async () => {
+    dbResults = [[{ accountId: 'a1', userId: 'u-owner' }]];
+    emailsById = { 'u-owner': 'bob@gmail.com' };
+    const names = await resolveAccountDisplayNames(
+      [{ accountId: 'a1', name: 'Personal' }],
+      CALLER,
+    );
+    expect(names.get('a1')).toBe('My workspace');
+  });
+
+  test('multiple owners → neutral fallback', async () => {
+    dbResults = [[
+      { accountId: 'a1', userId: 'u-first' },
+      { accountId: 'a1', userId: 'u-second' },
+    ]];
+    emailsById = { 'u-first': 'first@gmail.com', 'u-second': 'second@gmail.com' };
+    const names = await resolveAccountDisplayNames(
+      [{ accountId: 'a1', name: '' }],
+      CALLER,
+    );
+    expect(names.get('a1')).toBe('My workspace');
+  });
+
+  test("no owner rows → neutral fallback", async () => {
+    dbResults = [[]];
+    const names = await resolveAccountDisplayNames(
+      [{ accountId: 'a1', name: 'User' }],
+      CALLER,
+    );
+    expect(names.get('a1')).toBe('My workspace');
+  });
+
+  test('owner whose email cannot be resolved → neutral fallback', async () => {
+    dbResults = [[{ accountId: 'a1', userId: 'u-ghost' }]];
+    const names = await resolveAccountDisplayNames(
+      [{ accountId: 'a1', name: 'Personal' }],
+      CALLER,
+    );
+    expect(names.get('a1')).toBe('My workspace');
+  });
+
+  test('mixed batch resolves each account independently', async () => {
+    dbResults = [[
+      { accountId: 'a2', userId: 'u-owner' },
+    ]];
+    emailsById = { 'u-owner': 'owner@gmail.com' };
+    const names = await resolveAccountDisplayNames(
+      [
+        { accountId: 'a1', name: 'Acme Corp' },
+        { accountId: 'a2', name: 'Personal' },
+      ],
+      CALLER,
+    );
+    expect(names.get('a1')).toBe('Acme Corp');
+    expect(names.get('a2')).toBe('My workspace');
+  });
+});

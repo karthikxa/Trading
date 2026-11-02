@@ -1,0 +1,186 @@
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { accounts, gatewayApiKeys, projects } from '@kortix/db';
+import { eq } from 'drizzle-orm';
+import { hashSecretKey } from '../shared/crypto';
+import { db } from '../shared/db';
+import {
+  INTERNAL_SESSION_TITLE_KEY_NAME,
+  createGatewayKey,
+  deleteGatewayKey,
+  listGatewayKeys,
+  revokeGatewayKey,
+  validateGatewayKey,
+} from '../llm-gateway/gateway-keys';
+
+const ACCOUNT = crypto.randomUUID();
+const PROJECT = crypto.randomUUID();
+const CREATOR = crypto.randomUUID();
+
+let n = 0;
+async function seedKey(opts: {
+  status?: 'active' | 'revoked';
+  expiresAt?: Date | null;
+  createdBy?: string | null;
+}) {
+  n += 1;
+  const secretKey = `kortix_gw_test_${n}_${crypto.randomUUID()}`;
+  const [row] = await db
+    .insert(gatewayApiKeys)
+    .values({
+      accountId: ACCOUNT,
+      projectId: PROJECT,
+      name: `test-key-${n}`,
+      keyPrefix: secretKey.slice(0, 14),
+      secretKeyHash: hashSecretKey(secretKey),
+      status: opts.status ?? 'active',
+      expiresAt: opts.expiresAt ?? null,
+      createdBy: opts.createdBy === undefined ? CREATOR : opts.createdBy,
+    })
+    .returning({ keyId: gatewayApiKeys.keyId });
+  return { secretKey, keyId: row!.keyId };
+}
+
+beforeAll(async () => {
+  await db.insert(accounts).values({ accountId: ACCOUNT, name: 'gateway-key-test-acct' });
+  await db.insert(projects).values({
+    projectId: PROJECT,
+    accountId: ACCOUNT,
+    name: 'gateway-key-test-project',
+    repoUrl: 'https://example.test/gw-key.git',
+  });
+});
+
+afterAll(async () => {
+  await db.delete(projects).where(eq(projects.accountId, ACCOUNT));
+  await db.delete(accounts).where(eq(accounts.accountId, ACCOUNT));
+});
+
+describe('validateGatewayKey', () => {
+  test('accepts an active key with no expiry', async () => {
+    const { secretKey, keyId } = await seedKey({ expiresAt: null });
+    expect(await validateGatewayKey(secretKey)).toEqual({
+      accountId: ACCOUNT,
+      projectId: PROJECT,
+      userId: CREATOR,
+      keyId,
+    });
+  });
+
+  test('accepts an active key whose expiry is in the future', async () => {
+    const { secretKey } = await seedKey({ expiresAt: new Date(Date.now() + 60_000) });
+    expect(await validateGatewayKey(secretKey)).not.toBeNull();
+  });
+
+  test('a revoked key is refused but keeps its identity (gateway trace attribution)', async () => {
+    const { secretKey, keyId } = await seedKey({ status: 'revoked' });
+    expect(await validateGatewayKey(secretKey)).toEqual({
+      accountId: ACCOUNT,
+      projectId: PROJECT,
+      userId: CREATOR,
+      keyId,
+      refused: 'revoked',
+    });
+  });
+
+  test('a key past its expiry is refused but keeps its identity', async () => {
+    const { secretKey } = await seedKey({ expiresAt: new Date(Date.now() - 1) });
+    const result = await validateGatewayKey(secretKey);
+    expect(result).not.toBeNull();
+    expect(result?.refused).toBe('expired');
+    expect(result?.accountId).toBe(ACCOUNT);
+  });
+
+  test('refuses exactly at the expiry boundary instant', async () => {
+    const now = new Date();
+    const { secretKey } = await seedKey({ expiresAt: now });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await validateGatewayKey(secretKey)).toEqual({
+      accountId: ACCOUNT,
+      projectId: PROJECT,
+      userId: CREATOR,
+      keyId: expect.any(String),
+      refused: 'expired',
+    });
+  });
+
+  test('falls back userId to accountId when createdBy is null', async () => {
+    const { secretKey } = await seedKey({ createdBy: null });
+    expect((await validateGatewayKey(secretKey))?.userId).toBe(ACCOUNT);
+  });
+
+  test('an unknown secret matches nothing and stays unattributed', async () => {
+    expect(await validateGatewayKey(`kortix_gw_${crypto.randomUUID()}`)).toBeNull();
+  });
+
+  test('the internal title key is DELETED, never hidden from the key list', async () => {
+    // Excluding it from listGatewayKeys by its `name` — a value any caller of
+    // POST /gateway/keys can set — would let a member mint a fully valid, fully
+    // billable key that no owner or auditor can see or revoke. Deleting it
+    // instead also keeps one row per prompt out of gateway_api_keys forever.
+    const created = await createGatewayKey({
+      accountId: ACCOUNT,
+      projectId: PROJECT,
+      name: INTERNAL_SESSION_TITLE_KEY_NAME,
+      createdBy: CREATOR,
+    });
+    expect((await listGatewayKeys(PROJECT)).map((k) => k.keyId)).toContain(created.key_id);
+
+    expect(await deleteGatewayKey(PROJECT, created.key_id)).toBe(true);
+    expect(await validateGatewayKey(created.secret_key)).toBeNull();
+    expect((await listGatewayKeys(PROJECT)).map((k) => k.keyId)).not.toContain(created.key_id);
+    expect(await deleteGatewayKey(PROJECT, created.key_id)).toBe(false);
+  });
+
+  test('the key list offers only keys that still authenticate — a revoked key leaves it', async () => {
+    // The dogfood cleanup (KRTX-2560): `gateway keys rm` then `gateway keys ls`
+    // still listed the dead key. The list is the surface that names live
+    // credentials; the CLI reads it with that meaning for PATs already
+    // (`tokens ls --mine` = "keys that still authenticate"). The revoked row
+    // stays in the table so a refused request keeps its identity
+    // (`validateGatewayKey`), it just stops being listed.
+    const { keyId, secretKey } = await seedKey({ status: 'active' });
+    expect((await listGatewayKeys(PROJECT)).map((k) => k.keyId)).toContain(keyId);
+
+    expect(await revokeGatewayKey(PROJECT, keyId)).toBe(true);
+    expect(await validateGatewayKey(secretKey)).toEqual({
+      accountId: ACCOUNT,
+      projectId: PROJECT,
+      userId: CREATOR,
+      keyId,
+      refused: 'revoked',
+    });
+    expect((await listGatewayKeys(PROJECT)).map((k) => k.keyId)).not.toContain(keyId);
+  });
+
+  test('deleteGatewayKey is scoped to the owning project', async () => {
+    const created = await createGatewayKey({
+      accountId: ACCOUNT,
+      projectId: PROJECT,
+      name: INTERNAL_SESSION_TITLE_KEY_NAME,
+      createdBy: CREATOR,
+    });
+    expect(await deleteGatewayKey(crypto.randomUUID(), created.key_id)).toBe(false);
+    expect(await validateGatewayKey(created.secret_key)).not.toBeNull();
+    expect(await deleteGatewayKey(PROJECT, created.key_id)).toBe(true);
+  });
+
+  test('stamps lastUsedAt on a successful validation (fire-and-forget)', async () => {
+    const { secretKey, keyId } = await seedKey({});
+    expect(await validateGatewayKey(secretKey)).not.toBeNull();
+    // The stamp is fire-and-forget: a fixed sleep races the write under load,
+    // so poll for it within a bounded window instead.
+    let lastUsedAt: Date | null = null;
+    for (let waited = 0; waited < 5_000; waited += 50) {
+      const [row] = await db
+        .select({ lastUsedAt: gatewayApiKeys.lastUsedAt })
+        .from(gatewayApiKeys)
+        .where(eq(gatewayApiKeys.keyId, keyId));
+      if (row?.lastUsedAt) {
+        lastUsedAt = row.lastUsedAt;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(lastUsedAt).toBeTruthy();
+  });
+});

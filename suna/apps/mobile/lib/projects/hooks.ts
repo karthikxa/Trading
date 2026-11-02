@@ -1,0 +1,1287 @@
+/**
+ * Projects React Query hooks — web-aligned.
+ * Query keys mirror the web app: ['accounts'] and ['projects', accountId].
+ */
+
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { pickerProviderList } from '@kortix/sdk';
+import { notificationInboxEnabled } from '@/lib/notifications/inbox';
+import { composerModelList, offeredModelCount } from '@/lib/session/model-picker';
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query';
+import { flattenSessionPages, sessionsNextCursor } from '@/lib/session/session-pages';
+import { normalizeSessionListFilter, type SessionListFilter } from '@/lib/session/session-tree';
+import {
+  createdSessionListRow,
+  sessionRowsOf,
+  upsertIntoSessionCache,
+  writeSessionLists,
+} from '@/lib/session/session-cache-write';
+import {
+  nextProjectSessionsPollWindow,
+  projectSessionsPollInterval,
+  type ProjectSessionsPollWindow,
+} from './poll-policy';
+import {
+  archiveProject,
+  buildSandboxTemplate,
+  closeChangeRequest,
+  connectSlack,
+  createProjectSession,
+  createProjectTrigger,
+  createSandboxTemplate,
+  deleteConnector,
+  deleteSandboxTemplate,
+  fixSandboxWithAgent,
+  listProjectSnapshots,
+  rebuildProjectSnapshot,
+  updateSandboxTemplate,
+  deletePersonalProjectSecret,
+  deleteProjectSecret,
+  deleteProjectTrigger,
+  disconnectConnector,
+  disconnectSlack,
+  fireProjectTrigger,
+  getChangeRequest,
+  getChangeRequestDiff,
+  getChangeRequestMergePreview,
+  getSlackInstallation,
+  getSlackMode,
+  getProject,
+  getProjectDetail,
+  getProjectSession,
+  getModelDefaults,
+  getProjectLlmCatalog,
+  getProjectModelPicker,
+  getProjectCommitDiff,
+  getProjectFileHistory,
+  getVersionDiff,
+  listAccounts,
+  listChangeRequests,
+  listConnectors,
+  listPipedreamApps,
+  listProjectAccess,
+  getSessionParticipants,
+  getSessionMessageAuthors,
+  listProjectBranches,
+  listProjectDirectory,
+  searchProjectFiles,
+  listProjectPolicies,
+  listProjectSecrets,
+  listProjectSessions,
+  listProjectSessionsPage,
+  listProjectTriggers,
+  listProjectsForAccount,
+  mergeChangeRequest,
+  openChangeRequest,
+  patchChangeRequest,
+  readProjectFile,
+  reopenChangeRequest,
+  setPersonalProjectSecret,
+  setProjectPolicies,
+  syncConnectors,
+  updateExperimentalFeature,
+  updateProject,
+  updateProjectTrigger,
+  upsertProjectSecret,
+  updateProjectDefaultAgent,
+  inviteProjectMember,
+  updateProjectAccess,
+  revokeProjectAccess,
+  listPendingProjectInvites,
+  resendPendingProjectInvite,
+  revokePendingProjectInvite,
+  type ChangeRequestStatus,
+  type ConnectorSharing,
+  type ExperimentalFeatureKey,
+  type ProjectRole,
+  type CreateProjectSessionInput,
+  type CreateProjectTriggerInput,
+  type CreateSandboxTemplateInput,
+  type OpenChangeRequestInput,
+  type PolicyDefaultMode,
+  type ProjectPolicy,
+  type ProjectSession,
+  type UpdateProjectTriggerInput,
+  type UpdateSandboxTemplateInput,
+} from './projects-client';
+import { filterTriggerAgents, flattenTriggerModelCatalog } from './trigger-picker-options';
+import { shouldScanPastEmptySessionPages } from '@kortix/sdk/react';
+
+export type { TriggerAgentOption, TriggerModelOption } from './trigger-picker-options';
+
+export const projectKeys = {
+  accounts: ['accounts'] as const,
+  projects: (accountId: string | null | undefined) => ['projects', accountId] as const,
+  project: (projectId: string | null | undefined) => ['project', projectId] as const,
+  projectDetail: (projectId: string | null | undefined) => ['project-detail', projectId] as const,
+  llmCatalog: (projectId: string | null | undefined) => ['project-llm-catalog', projectId] as const,
+  modelPicker: (projectId: string | null | undefined) => ['project-model-picker', projectId] as const,
+  modelDefaults: (projectId: string | null | undefined) => ['model-defaults', projectId] as const,
+  projectFile: (projectId: string | null | undefined, path: string | null | undefined) =>
+    ['project-file', projectId, path] as const,
+  projectSessions: (projectId: string | null | undefined) =>
+    ['project-sessions', projectId] as const,
+  /**
+   * The paged list (`useInfiniteQuery`). A child of `projectSessions`, so every
+   * `invalidateQueries({ queryKey: projectSessions(id) })` refreshes it too. Its
+   * own key: a flat `useQuery` and an infinite query under one key would hand
+   * each other the wrong data shape.
+   */
+  projectSessionsPaged: (projectId: string | null | undefined, filter?: SessionListFilter) => {
+    const normalized = normalizeSessionListFilter(filter);
+    return Object.keys(normalized).length === 0
+      ? (['project-sessions', projectId, 'paged'] as const)
+      : (['project-sessions', projectId, 'paged', normalized] as const);
+  },
+  /** One parent's children (`parent=<id>`), optionally narrowed by a search. */
+  sessionChildren: (projectId: string | null | undefined, parentId: string | null | undefined, q?: string) =>
+    ['project-sessions', projectId, 'children', parentId, q?.trim() || null] as const,
+  /**
+   * One session's row by id (`useProjectSession`). Under `projectSessions`, so
+   * every session-list invalidation and write reaches it too.
+   */
+  projectSession: (projectId: string | null | undefined, sessionId: string | null | undefined) =>
+    ['project-sessions', projectId, 'session', sessionId] as const,
+  /** A session's public shares (KRTX-248: the transcript link). */
+  /** Under `projectSessions`, so a sharing save (which invalidates that key) refetches it. */
+  sessionParticipants: (projectId: string | null | undefined, sessionId: string | null | undefined) =>
+    ['project-sessions', projectId, 'participants', sessionId] as const,
+  /** Who wrote each message; under `projectSessions` like `sessionParticipants`. */
+  sessionMessageAuthors: (projectId: string | null | undefined, sessionId: string | null | undefined) =>
+    ['project-sessions', projectId, 'message-authors', sessionId] as const,
+  sessionPublicShares: (projectId: string | null | undefined, sessionId: string | null | undefined) =>
+    ['session-public-shares', projectId, sessionId] as const,
+  connectors: (projectId: string | null | undefined) => ['project-connectors', projectId] as const,
+  secrets: (projectId: string | null | undefined) => ['project-secrets', projectId] as const,
+  slackInstall: (projectId: string | null | undefined) => ['slack-install', projectId] as const,
+  slackMode: (projectId: string | null | undefined) => ['slack-mode', projectId] as const,
+  triggers: (projectId: string | null | undefined) => ['project-triggers', projectId] as const,
+  apps: (projectId: string | null | undefined) => ['project-apps', projectId] as const,
+  changeRequests: (projectId: string | null | undefined, status: string) =>
+    ['change-requests', projectId, status] as const,
+  changeRequest: (projectId: string | null | undefined, crId: string | null | undefined) =>
+    ['change-request', projectId, crId] as const,
+  changeRequestDiff: (projectId: string | null | undefined, crId: string | null | undefined) =>
+    ['change-request-diff', projectId, crId] as const,
+  changeRequestMergePreview: (
+    projectId: string | null | undefined,
+    crId: string | null | undefined
+  ) => ['change-request-merge-preview', projectId, crId] as const,
+  branches: (projectId: string | null | undefined) => ['project-branches', projectId] as const,
+  projectDirectory: (projectId: string | null | undefined, ref: string, path: string) =>
+    ['project-directory', projectId, ref, path] as const,
+  projectFileSearch: (projectId: string | null | undefined, ref: string, query: string) =>
+    ['project-file-search', projectId, ref, query] as const,
+  projectFileContent: (
+    projectId: string | null | undefined,
+    path: string | null | undefined,
+    ref: string
+  ) => ['project-file-content', projectId, path, ref] as const,
+  projectFileHistory: (
+    projectId: string | null | undefined,
+    path: string | null | undefined,
+    ref: string
+  ) => ['project-file-history', projectId, path, ref] as const,
+  projectCommitDiff: (
+    projectId: string | null | undefined,
+    sha: string | null | undefined,
+    path: string
+  ) => ['project-commit-diff', projectId, sha, path] as const,
+  snapshots: (projectId: string | null | undefined) => ['project-snapshots', projectId] as const,
+  versionDiff: (projectId: string | null | undefined, from: string, into: string) =>
+    ['version-diff', projectId, from, into] as const,
+  projectAccess: (projectId: string | null | undefined) => ['project-access', projectId] as const,
+  pendingInvites: (projectId: string | null | undefined) =>
+    ['project-pending-invites', projectId] as const,
+  policies: (projectId: string | null | undefined) => ['project-policies', projectId] as const,
+  pipedreamApps: (projectId: string | null | undefined, q: string) =>
+    ['pipedream-apps', projectId, q] as const,
+  pipedreamAppMeta: (projectId: string | null | undefined, slug: string | null | undefined) =>
+    ['pipedream-app-meta', projectId, slug] as const,
+};
+
+/**
+ * Every cached session list of a project, for a write that must reach every
+ * reader (lib/session/session-cache-write): the flat first page (the thread's
+ * lookups), each paged list (the drawer's three sections, the Sessions page
+ * and its searches) and each parent's children.
+ */
+export function sessionListKeys(queryClient: QueryClient, projectId: string) {
+  return queryClient
+    .getQueryCache()
+    .findAll({ queryKey: projectKeys.projectSessions(projectId) })
+    .map((query) => query.queryKey);
+}
+
+/**
+ * A session's freshest cached row, from any cached list of the project or its
+ * by-id read. An entry under the prefix that holds no rows (message authors)
+ * is skipped.
+ */
+export function cachedSessionRow(queryClient: QueryClient, projectId: string, sessionId: string): ProjectSession | null {
+  for (const key of sessionListKeys(queryClient, projectId)) {
+    const row = sessionRowsOf<ProjectSession>(queryClient.getQueryData(key)).find((r) => r.session_id === sessionId);
+    if (row) return row;
+  }
+  return null;
+}
+
+/**
+ * One session's row by its Kortix id: `GET /projects/:id/sessions/:sid`
+ * (KRTX-2316). A session older than the first list page has a row too. While
+ * the read runs, the row any cached list holds shows (`cachedSessionRow`).
+ */
+export function useProjectSession(projectId: string | null | undefined, sessionId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  return useQuery({
+    queryKey: projectKeys.projectSession(projectId, sessionId),
+    queryFn: () => getProjectSession(projectId!, sessionId!, { showErrors: false }),
+    enabled: !!projectId && !!sessionId,
+    // A new function each render: TanStack recomputes it, so the seed follows
+    // the lists until the read answers. Never the previous session's row.
+    placeholderData: () =>
+      projectId && sessionId ? (cachedSessionRow(queryClient, projectId, sessionId) ?? undefined) : undefined,
+    staleTime: 10_000,
+  });
+}
+
+/** Where a session the viewer just started belongs: their top-level "Sessions" list. */
+const CREATED_SESSION_FILTER: SessionListFilter = { parent: 'root', startedBy: 'me' };
+
+/**
+ * A created session, in the cached lists now: the top of page one, or in
+ * place where a refetch already brought it. A 202 (create only queued) is not
+ * a row and waits for the refetch. Only lists it belongs to: the flat lookup
+ * list and the viewer's top-level list, never "Shared", "Automated", a search
+ * or a parent's children.
+ */
+export function listCreatedSession(queryClient: QueryClient, projectId: string, created: unknown) {
+  const row = createdSessionListRow(created, projectId);
+  if (!row) return;
+  writeSessionLists(
+    queryClient,
+    [
+      projectKeys.projectSessions(projectId),
+      projectKeys.projectSessionsPaged(projectId, CREATED_SESSION_FILTER),
+    ],
+    (cached) => upsertIntoSessionCache(cached, row)
+  );
+}
+
+export function useAccounts(enabled = true) {
+  return useQuery({
+    queryKey: projectKeys.accounts,
+    queryFn: listAccounts,
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useProjects(accountId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.projects(accountId),
+    queryFn: () => listProjectsForAccount(accountId || undefined),
+    enabled: !!accountId,
+    staleTime: 20_000,
+  });
+}
+
+/**
+ * True when one of the signed-in user's projects has `notification_center`
+ * on (KRTX-1742): Settings → Notifications then shows the user's record.
+ * Reads every account's project list (the switcher's queries and keys).
+ * False while a list loads or fails.
+ */
+export function useHasNotificationCenterProject(): boolean {
+  return useHasNotificationProject((project) => project.experimental?.notification_center === true);
+}
+
+export function useHasNotificationInboxProject(): boolean {
+  return useHasNotificationProject(notificationInboxEnabled);
+}
+
+function useHasNotificationProject(enabled: (project: { experimental?: { notification_center?: unknown; artifacts?: unknown; artifact_comments?: unknown } }) => boolean): boolean {
+  const accounts = useAccounts();
+  const lists = useQueries({
+    queries: (accounts.data ?? []).map((account) => ({
+      queryKey: projectKeys.projects(account.account_id),
+      queryFn: () => listProjectsForAccount(account.account_id),
+      staleTime: 20_000,
+    })),
+  });
+  return lists.some((list) => list.data?.some(enabled));
+}
+
+export function useProject(projectId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.project(projectId),
+    queryFn: () => getProject(projectId!),
+    enabled: !!projectId,
+    staleTime: 20_000,
+  });
+}
+
+// ── Settings (web parity: customize/sections/settings-view) ───────────────────
+
+/** Patch project fields (name / default branch / manifest path). */
+export function useUpdateProject(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name?: string; default_branch?: string; manifest_path?: string }) =>
+      updateProject(projectId, input),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(projectKeys.project(projectId), updated);
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+}
+
+/** Toggle an experimental / WIP feature for this project. */
+export function useUpdateExperimentalFeature(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      feature,
+      enabled,
+    }: {
+      feature: ExperimentalFeatureKey;
+      enabled: boolean | null;
+    }) => updateExperimentalFeature(projectId, feature, enabled),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(projectKeys.project(projectId), updated);
+      queryClient.invalidateQueries({ queryKey: projectKeys.projectDetail(projectId) });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+}
+
+/** Project config summary — agents, skills, commands (web parity). */
+export function useProjectDetail(projectId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.projectDetail(projectId),
+    queryFn: () => getProjectDetail(projectId!),
+    enabled: !!projectId,
+    staleTime: 30_000,
+  });
+}
+
+/** Read a repo file's content (config source views). */
+export function useProjectFile(projectId: string | null, path: string | null) {
+  return useQuery({
+    queryKey: projectKeys.projectFile(projectId, path),
+    queryFn: () => readProjectFile(projectId!, path!),
+    enabled: !!projectId && !!path,
+    staleTime: 30_000,
+  });
+}
+
+// ── Connectors (web parity) ──────────────────────────────────────────────────
+
+/** Connected tool connectors for a project. */
+export function useConnectors(projectId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.connectors(projectId),
+    queryFn: () => listConnectors(projectId!),
+    enabled: !!projectId,
+    staleTime: 15_000,
+  });
+}
+
+/** Re-index connector actions from their providers. */
+export function useSyncConnectors(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => syncConnectors(projectId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.connectors(projectId) }),
+  });
+}
+
+/** Remove a connector. */
+export function useDeleteConnector(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => deleteConnector(projectId, slug),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.connectors(projectId) }),
+  });
+}
+
+/** Disconnect a connector — remove its credential but keep the connector. */
+export function useDisconnectConnector(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => disconnectConnector(projectId, slug),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.connectors(projectId) }),
+  });
+}
+
+/** Tool-approval policies for a project. */
+export function useProjectPolicies(projectId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.policies(projectId),
+    queryFn: () => listProjectPolicies(projectId!),
+    enabled: !!projectId,
+    staleTime: 15_000,
+  });
+}
+
+export function useSetProjectPolicies(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      policies,
+      defaultMode,
+    }: {
+      policies: ProjectPolicy[];
+      defaultMode: PolicyDefaultMode;
+    }) => setProjectPolicies(projectId, policies, defaultMode),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.policies(projectId) }),
+  });
+}
+
+/** Project members (for the Members page). */
+export function useProjectAccess(projectId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.projectAccess(projectId),
+    queryFn: () => listProjectAccess(projectId!),
+    enabled: !!projectId,
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * Who can open a session. Mirrors the SDK's `useSessionParticipants`
+ * (`@kortix/sdk/react`, which mobile does not import).
+ */
+export function useSessionParticipants(projectId: string | null | undefined, sessionId: string | null | undefined) {
+  return useQuery({
+    queryKey: projectKeys.sessionParticipants(projectId, sessionId),
+    queryFn: () => getSessionParticipants(projectId!, sessionId!),
+    enabled: !!projectId && !!sessionId,
+    staleTime: 30_000,
+  });
+}
+
+/** When to ask again for an author that is not recorded yet: 2 s, 5 s, 12 s. */
+const AUTHOR_RETRY_DELAYS_MS = [2000, 5000, 12000];
+
+/**
+ * Who wrote each message of a session (`GET .../message-authors`). The ledger
+ * records a delivered prompt's id a moment after the runtime shows it, and a
+ * prompt someone else just queued is newer than the cached answer. So while
+ * any of `wantedMessageIds` (the transcript's user messages and the queued
+ * prompts) has no author, it asks again on `AUTHOR_RETRY_DELAYS_MS`, per set
+ * of missing ids. A message that never gets an author (a slash command) stops
+ * after the last delay. When `busy` goes from true to false (a turn ended), it
+ * asks once more: a stop records who stopped the turn (`stops`).
+ */
+export function useSessionMessageAuthors(
+  projectId: string | null | undefined,
+  sessionId: string | null | undefined,
+  wantedMessageIds: readonly string[] = [],
+  busy = false,
+) {
+  const query = useQuery({
+    queryKey: projectKeys.sessionMessageAuthors(projectId, sessionId),
+    queryFn: () => getSessionMessageAuthors(projectId!, sessionId!),
+    enabled: !!projectId && !!sessionId,
+    staleTime: 30_000,
+  });
+  const { data, refetch } = query;
+  const missing = data ? wantedMessageIds.filter((id) => id && !data.authors[id]).sort().join(',') : '';
+  const attempts = useRef<{ key: string; count: number }>({ key: '', count: 0 });
+  useEffect(() => {
+    if (!missing) return;
+    if (attempts.current.key !== missing) attempts.current = { key: missing, count: 0 };
+    const delay = AUTHOR_RETRY_DELAYS_MS[attempts.current.count];
+    if (delay === undefined) return;
+    const timer = setTimeout(() => {
+      attempts.current.count += 1;
+      void refetch();
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [missing, data, refetch]);
+  const wasBusy = useRef(busy);
+  useEffect(() => {
+    if (wasBusy.current && !busy && projectId && sessionId) void refetch();
+    wasBusy.current = busy;
+  }, [busy, projectId, sessionId, refetch]);
+  return query;
+}
+
+// ── Members (web parity: customize/sections/members-view) ─────────────────────
+
+export function usePendingProjectInvites(projectId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: projectKeys.pendingInvites(projectId),
+    queryFn: () => listPendingProjectInvites(projectId!),
+    enabled: enabled && !!projectId,
+    staleTime: 5_000,
+  });
+}
+
+/** Invalidate everything that a membership change can ripple into. */
+function useInvalidateMembership(projectId: string) {
+  const queryClient = useQueryClient();
+  return () => {
+    queryClient.invalidateQueries({ queryKey: projectKeys.projectAccess(projectId) });
+    queryClient.invalidateQueries({ queryKey: projectKeys.project(projectId) });
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
+  };
+}
+
+export function useInviteProjectMember(projectId: string) {
+  const queryClient = useQueryClient();
+  const invalidate = useInvalidateMembership(projectId);
+  return useMutation({
+    mutationFn: ({ email, role }: { email: string; role: ProjectRole }) =>
+      inviteProjectMember(projectId, email, role),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.pendingInvites(projectId) });
+      invalidate();
+    },
+  });
+}
+
+export function useUpdateProjectAccess(projectId: string) {
+  const invalidate = useInvalidateMembership(projectId);
+  return useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: ProjectRole }) =>
+      updateProjectAccess(projectId, userId, role),
+    onSuccess: invalidate,
+  });
+}
+
+export function useRevokeProjectAccess(projectId: string) {
+  const invalidate = useInvalidateMembership(projectId);
+  return useMutation({
+    mutationFn: (userId: string) => revokeProjectAccess(projectId, userId),
+    onSuccess: invalidate,
+  });
+}
+
+export function useResendProjectInvite(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (inviteId: string) => resendPendingProjectInvite(projectId, inviteId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: projectKeys.pendingInvites(projectId) }),
+  });
+}
+
+export function useRevokeProjectInvite(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (inviteId: string) => revokePendingProjectInvite(projectId, inviteId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: projectKeys.pendingInvites(projectId) }),
+  });
+}
+
+/** Resolve a single Pipedream app's display name + logo by its slug, for showing
+ *  connected connectors with their real app branding. Cached; lazy per row. */
+export function usePipedreamAppMeta(projectId: string | null, slug: string | null, enabled = true) {
+  return useQuery({
+    queryKey: projectKeys.pipedreamAppMeta(projectId, slug),
+    queryFn: async () => {
+      const page = await listPipedreamApps(projectId!, slug || undefined);
+      return page.apps.find((a) => a.slug === slug) ?? page.apps[0] ?? null;
+    },
+    enabled: enabled && !!projectId && !!slug,
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** Searchable, paginated Pipedream app catalogue (Easy Connect). */
+export function usePipedreamApps(projectId: string | null, q: string) {
+  return useInfiniteQuery({
+    queryKey: projectKeys.pipedreamApps(projectId, q),
+    queryFn: ({ pageParam }) => listPipedreamApps(projectId!, q || undefined, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => (last.hasMore ? last.nextCursor : undefined),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
+/** Background-poll options for list hooks. */
+export interface PollOptions {
+  /** Run the interval poll. `false` pauses it, e.g. while the screen is not focused. Default `true`. */
+  poll?: boolean;
+}
+
+export function useProjectSessions(projectId: string | null, { poll = true }: PollOptions = {}) {
+  const pollWindowRef = useRef<ProjectSessionsPollWindow | null>(null);
+  return useQuery({
+    queryKey: projectKeys.projectSessions(projectId),
+    queryFn: () => listProjectSessions(projectId!),
+    enabled: !!projectId,
+    staleTime: 10_000,
+    // Poll so freshly-provisioning session sandboxes flip to running in the
+    // list, for at most 4 min per set of pending rows (poll-policy).
+    refetchInterval: (query) => {
+      const rows = query.state.data;
+      const now = Date.now();
+      const pollWindow = nextProjectSessionsPollWindow(pollWindowRef.current, rows, now);
+      pollWindowRef.current = pollWindow;
+      if (!poll || !pollWindow) return false;
+      return projectSessionsPollInterval(rows, pollWindow.startedAt, now);
+    },
+  });
+}
+
+/**
+ * `query` plus `extra` (`sessions`, `isScanning`). A spread
+ * (`{ ...query, sessions }`) reads every field of TanStack's tracked result,
+ * which turns off its tracked-field renders: the consumer then re-rendered on
+ * every fetch start and end (`isFetching`), also when it never reads it
+ * (`useReviewItems` documents the same bug). The proxy passes each read
+ * through, so only the fields a consumer reads subscribe it.
+ */
+function withSessions<T extends object, E extends { sessions: ProjectSession[] }>(query: T, extra: E): T & E {
+  return new Proxy(query, {
+    get: (target, key) =>
+      Object.prototype.hasOwnProperty.call(extra, key) ? extra[key as keyof E] : Reflect.get(target, key),
+  }) as T & E;
+}
+
+/**
+ * A project's sessions a page at a time, newest activity first — the list the
+ * project drawer and the Sessions page scroll. `useProjectSessions` above is
+ * one page (the first 50): it serves lookups, not browsing.
+ *
+ * `sessions` is every loaded page, flattened and de-duplicated. A refetch
+ * (poll, pull to refresh, invalidation) refetches every loaded page, so the
+ * cost is bounded by what the user scrolled to.
+ *
+ * KRTX-1727: the server drops rows the viewer may not see, and deleted ones,
+ * after a bounded scan, so a page can be empty and still carry a cursor.
+ * While every page so far is empty, the hook reads the next one on its own,
+ * up to the SDK's `EMPTY_SESSION_PAGE_SCAN_LIMIT` pages (`isScanning`). A
+ * failed page ends the scan; the list's Show more is the retry.
+ */
+export function useProjectSessionsPaged(
+  projectId: string | null,
+  { poll = true, enabled = true, limit, ...filter }: PollOptions & SessionListFilter & { enabled?: boolean; limit?: number } = {}
+) {
+  const pollWindowRef = useRef<ProjectSessionsPollWindow | null>(null);
+  const normalized = normalizeSessionListFilter(filter);
+  const query = useInfiniteQuery({
+    queryKey: projectKeys.projectSessionsPaged(projectId, normalized),
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => listProjectSessionsPage(projectId!, { ...normalized, limit, cursor: pageParam }),
+    getNextPageParam: sessionsNextCursor,
+    enabled: !!projectId && enabled,
+    staleTime: 10_000,
+    // A new search or scope keeps the previous rows on screen until its answer lands.
+    placeholderData: keepPreviousData,
+    // The same 4-minute provisioning poll as `useProjectSessions`, judged on the rows loaded so far.
+    refetchInterval: (q) => {
+      const rows = flattenSessionPages(q.state.data);
+      const now = Date.now();
+      const pollWindow = nextProjectSessionsPollWindow(pollWindowRef.current, rows, now);
+      pollWindowRef.current = pollWindow;
+      if (!poll || !pollWindow) return false;
+      return projectSessionsPollInterval(rows, pollWindow.startedAt, now);
+    },
+  });
+  const sessions = useMemo(() => flattenSessionPages(query.data), [query.data]);
+  // A failed fetch ends the scan: the list's Show more (or a refresh) is the retry.
+  const isScanning = shouldScanPastEmptySessionPages(query.data, query.hasNextPage) && !query.isError;
+  // A refetch that answers the same pages keeps the same `data` (structural
+  // sharing), so the effect also runs on each answer's time. Read only while
+  // scanning: an idle list keeps its tracked-field renders.
+  const answeredAt = isScanning ? query.dataUpdatedAt : 0;
+  const { data, fetchNextPage } = query;
+  useEffect(() => {
+    // `cancelRefetch: false` joins a fetch already running (a poll, a mount
+    // refetch) instead of cancelling it. Its answer runs this again.
+    if (isScanning) void fetchNextPage({ cancelRefetch: false });
+  }, [isScanning, data, answeredAt, fetchNextPage]);
+  return withSessions(query, { sessions, isScanning });
+}
+
+/** Rows a parent shows per "Show more". */
+export const SESSION_CHILDREN_PAGE_SIZE = 20;
+
+/**
+ * One parent's children, newest first, 20 at a time (`parent=<id>`). Runs only
+ * while `enabled`: a collapsed parent fetches nothing. `q` narrows it to the
+ * children a search matched.
+ */
+export function useSessionChildren(
+  projectId: string | null,
+  parentSessionId: string | null,
+  { enabled = true, q }: { enabled?: boolean; q?: string } = {}
+) {
+  const query = useInfiniteQuery({
+    queryKey: projectKeys.sessionChildren(projectId, parentSessionId, q),
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) =>
+      listProjectSessionsPage(projectId!, {
+        ...normalizeSessionListFilter({ parent: parentSessionId!, q }),
+        limit: SESSION_CHILDREN_PAGE_SIZE,
+        cursor: pageParam,
+      }),
+    getNextPageParam: sessionsNextCursor,
+    enabled: !!projectId && !!parentSessionId && enabled,
+    staleTime: 10_000,
+  });
+  const sessions = useMemo(() => flattenSessionPages(query.data), [query.data]);
+  return withSessions(query, { sessions });
+}
+
+export function useCreateProjectSession(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateProjectSessionInput) => createProjectSession(projectId!, input),
+    onSuccess: (created) => {
+      // The drawer and the Sessions page list it the moment the POST answers;
+      // the refetch below then replaces it with the list's own row.
+      if (projectId) listCreatedSession(queryClient, projectId, created);
+      queryClient.invalidateQueries({ queryKey: projectKeys.projectSessions(projectId) });
+    },
+  });
+}
+
+export function useArchiveProject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: archiveProject,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+}
+
+// ── Project secrets (web parity) ──────────────────────────────────────────────
+
+/** Project secrets: shared values + the caller's personal overrides + manifest. */
+export function useProjectSecrets(projectId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.secrets(projectId),
+    queryFn: () => listProjectSecrets(projectId!),
+    enabled: !!projectId,
+    staleTime: 15_000,
+  });
+}
+
+/** Create / update the shared (project-wide) value of a secret. */
+export function useUpsertProjectSecret(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; value?: string; sharing?: ConnectorSharing }) =>
+      upsertProjectSecret(projectId, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.secrets(projectId) }),
+  });
+}
+
+/** Set the agent a new session runs on when the user picks none. */
+export function useSetProjectDefaultAgent(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (agentName: string) => updateProjectDefaultAgent(projectId, agentName),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.projectDetail(projectId) }),
+  });
+}
+
+/** Delete the shared value of a secret (members' overrides are left intact). */
+export function useDeleteProjectSecret(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => deleteProjectSecret(projectId, name),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.secrets(projectId) }),
+  });
+}
+
+/** Set the caller's personal override (value and/or active flag). */
+export function useSetPersonalProjectSecret(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, value, active }: { name: string; value?: string; active?: boolean }) =>
+      setPersonalProjectSecret(projectId, name, { value, active }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.secrets(projectId) }),
+  });
+}
+
+/** Remove the caller's personal override. */
+export function useDeletePersonalProjectSecret(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => deletePersonalProjectSecret(projectId, name),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.secrets(projectId) }),
+  });
+}
+
+// ── Channels — Slack (web parity) ─────────────────────────────────────────────
+
+/** Current Slack install (null when not connected). Polls while pending. */
+export function useSlackInstallation(projectId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.slackInstall(projectId),
+    queryFn: () => getSlackInstallation(projectId!),
+    enabled: !!projectId,
+    staleTime: 30_000,
+  });
+}
+
+/** Whether 1-click OAuth is available + the install URL (degrades gracefully). */
+export function useSlackMode(projectId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.slackMode(projectId),
+    queryFn: () =>
+      getSlackMode(projectId!).catch(() => ({ oauth_available: false, install_url: null })),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
+export function useConnectSlack(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { bot_token: string; signing_secret: string }) =>
+      connectSlack(projectId, input),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: projectKeys.slackInstall(projectId) }),
+  });
+}
+
+export function useDisconnectSlack(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => disconnectSlack(projectId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: projectKeys.slackInstall(projectId) }),
+  });
+}
+
+// ── Triggers — schedules (cron) + webhooks (web parity) ───────────────────────
+
+/** All project triggers (cron + webhook). Polls while any are recently active. */
+export function useProjectTriggers(projectId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.triggers(projectId),
+    queryFn: () => listProjectTriggers(projectId!),
+    enabled: !!projectId,
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useCreateProjectTrigger(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateProjectTriggerInput) => createProjectTrigger(projectId, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.triggers(projectId) }),
+  });
+}
+
+export function useUpdateProjectTrigger(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, input }: { slug: string; input: UpdateProjectTriggerInput }) =>
+      updateProjectTrigger(projectId, slug, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.triggers(projectId) }),
+  });
+}
+
+export function useDeleteProjectTrigger(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => deleteProjectTrigger(projectId, slug),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.triggers(projectId) }),
+  });
+}
+
+export function useFireProjectTrigger(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => fireProjectTrigger(projectId, slug),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.triggers(projectId) }),
+  });
+}
+
+/** Server-side, sandbox-free agent list for a trigger's "Agent" picker — a
+ *  project may not have a live sandbox running when you're just configuring
+ *  a trigger, so this reads the repo config directly (web parity:
+ *  useVisibleAgents({ projectId })). */
+export function useProjectAgentsForTrigger(projectId: string | null) {
+  const { data, isLoading } = useProjectDetail(projectId);
+  const agents = useMemo(() => filterTriggerAgents(data?.config.agents), [data]);
+  return { agents, isLoading };
+}
+
+/** Gateway model catalog for a trigger's "Model" override picker (web parity:
+ *  useRuntimeProviders() + flattenModels()). Sandbox-free — reads the
+ *  project's server-side catalog directly. */
+export function useProjectModelCatalogForTrigger(projectId: string | null) {
+  // `/model-picker`, NOT `/llm-catalog`: the raw catalog is the full runtime
+  // projection (7134 models on 2026-09-16). The picker rendered every one of
+  // them as a row, so the sheet froze when it opened (Jay, 2026-09-22). The
+  // model picker is the bounded, connection-aware list the composer reads, and
+  // it shares that query's cache: the list is usually there before the tap.
+  const query = useQuery({
+    queryKey: projectKeys.modelPicker(projectId),
+    queryFn: () => getProjectModelPicker(projectId!),
+    enabled: !!projectId,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const models = useMemo(() => flattenTriggerModelCatalog(query.data?.models), [query.data]);
+  return { models, isLoading: query.isLoading };
+}
+
+/**
+ * The composer's models (project home and thread): the project's
+ * `/model-picker` catalog, built by `@kortix/sdk` (`pickerProviderList` →
+ * `flattenModels`), and its `/model-defaults` — the sources web's
+ * `useRuntimeProviders` and `useModelDefaults` read. Every model goes through
+ * the LLM gateway.
+ * `isLoading`: the list or the default is not known yet. Consumers hide the
+ * chip instead of flashing a wrong list.
+ */
+export function useComposerModels(projectId: string | null) {
+  const picker = useQuery({
+    queryKey: projectKeys.modelPicker(projectId),
+    queryFn: () => getProjectModelPicker(projectId!),
+    enabled: !!projectId,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const defaults = useQuery({
+    queryKey: projectKeys.modelDefaults(projectId),
+    queryFn: () => getModelDefaults(projectId!),
+    enabled: !!projectId,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  const providers = useMemo(
+    () => pickerProviderList({ modelPicker: picker.data }),
+    [picker.data],
+  );
+  const models = useMemo(() => composerModelList(picker.data), [picker.data]);
+
+  // `ConnectProviderSheet` refetches once the in-app browser closes, to toast
+  // "Provider connected" only once the list actually turns up a model.
+  const refetchModelCount = useCallback(async () => {
+    const result = await picker.refetch();
+    return offeredModelCount(composerModelList(result.data));
+  }, [picker]);
+
+  return {
+    providers,
+    /** Every model the picker can list (`enabled: false` rows included, as web). */
+    models,
+    modelDefaults: defaults.data,
+    isLoading: picker.isLoading || defaults.isLoading,
+    refetchModelCount,
+  };
+}
+
+// ── Change requests (web parity) ──────────────────────────────────────────────
+
+/** Invalidate everything that the open-CR count / merge state depends on. */
+function invalidateChangeWorld(queryClient: ReturnType<typeof useQueryClient>, projectId: string) {
+  queryClient.invalidateQueries({ queryKey: ['change-requests', projectId] });
+  queryClient.invalidateQueries({ queryKey: projectKeys.branches(projectId) });
+  queryClient.invalidateQueries({ queryKey: projectKeys.projectSessions(projectId) });
+}
+
+/** CR list, filtered by status. Polls so merged/closed transitions clear live. */
+export function useChangeRequests(
+  projectId: string | null,
+  status: ChangeRequestStatus | 'all',
+  { poll = true }: PollOptions = {}
+) {
+  return useQuery({
+    queryKey: projectKeys.changeRequests(projectId, status),
+    queryFn: () => listChangeRequests(projectId!, status),
+    enabled: !!projectId,
+    staleTime: 8_000,
+    refetchInterval: poll ? 8_000 : false,
+  });
+}
+
+export function useChangeRequest(projectId: string | null, crId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.changeRequest(projectId, crId),
+    queryFn: () => getChangeRequest(projectId!, crId!).then((r) => r.change_request),
+    enabled: !!projectId && !!crId,
+    staleTime: 8_000,
+    refetchInterval: 8_000,
+  });
+}
+
+export function useChangeRequestDiff(projectId: string | null, crId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.changeRequestDiff(projectId, crId),
+    queryFn: () => getChangeRequestDiff(projectId!, crId!),
+    enabled: !!projectId && !!crId,
+    staleTime: 15_000,
+  });
+}
+
+/** Merge preview (clean / conflict / up-to-date) — only meaningful for open CRs. */
+export function useChangeRequestMergePreview(
+  projectId: string | null,
+  crId: string | null,
+  enabled: boolean
+) {
+  return useQuery({
+    queryKey: projectKeys.changeRequestMergePreview(projectId, crId),
+    queryFn: () => getChangeRequestMergePreview(projectId!, crId!),
+    enabled: enabled && !!projectId && !!crId,
+    staleTime: 8_000,
+  });
+}
+
+export function useOpenChangeRequest(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: OpenChangeRequestInput) => openChangeRequest(projectId, input),
+    onSuccess: () => invalidateChangeWorld(queryClient, projectId),
+  });
+}
+
+export function useMergeChangeRequest(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ crId, message }: { crId: string; message?: string }) =>
+      mergeChangeRequest(projectId, crId, message),
+    onSuccess: (_d, { crId }) => {
+      invalidateChangeWorld(queryClient, projectId);
+      queryClient.invalidateQueries({ queryKey: projectKeys.changeRequest(projectId, crId) });
+    },
+  });
+}
+
+export function useCloseChangeRequest(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (crId: string) => closeChangeRequest(projectId, crId),
+    onSuccess: (_d, crId) => {
+      invalidateChangeWorld(queryClient, projectId);
+      queryClient.invalidateQueries({ queryKey: projectKeys.changeRequest(projectId, crId) });
+    },
+  });
+}
+
+export function useReopenChangeRequest(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (crId: string) => reopenChangeRequest(projectId, crId),
+    onSuccess: (_d, crId) => {
+      invalidateChangeWorld(queryClient, projectId);
+      queryClient.invalidateQueries({ queryKey: projectKeys.changeRequest(projectId, crId) });
+    },
+  });
+}
+
+export function usePatchChangeRequest(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      crId,
+      title,
+      description,
+    }: {
+      crId: string;
+      title?: string;
+      description?: string;
+    }) => patchChangeRequest(projectId, crId, { title, description }),
+    onSuccess: (_d, { crId }) => {
+      invalidateChangeWorld(queryClient, projectId);
+      queryClient.invalidateQueries({ queryKey: projectKeys.changeRequest(projectId, crId) });
+    },
+  });
+}
+
+/** Project branches (Versions tab + Open-CR picker). */
+export function useProjectBranches(projectId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: projectKeys.branches(projectId),
+    queryFn: () => listProjectBranches(projectId!),
+    enabled: enabled && !!projectId,
+    staleTime: 15_000,
+  });
+}
+
+/** Cheap version-diff preview — gates the Open-CR submit button (no CR created). */
+export function useVersionDiff(
+  projectId: string | null,
+  from: string,
+  into: string,
+  enabled: boolean
+) {
+  return useQuery({
+    queryKey: projectKeys.versionDiff(projectId, from, into),
+    queryFn: () => getVersionDiff(projectId!, from, into),
+    enabled: enabled && !!projectId && !!from && !!into && from !== into,
+    staleTime: 10_000,
+  });
+}
+
+// ── Project files (web parity) ────────────────────────────────────────────────
+
+const retryUnlessDenied = (count: number, err: any) => {
+  const m = String(err?.message ?? '');
+  if (/40[34]/.test(m) || /not found|forbidden/i.test(m)) return false;
+  return count < 3;
+};
+
+/** Entries per folder page. A folder with more shows "Load more items". */
+export const PROJECT_DIRECTORY_PAGE_SIZE = 500;
+
+/**
+ * One folder level at a ref (`path` '' is the root), in pages of
+ * `PROJECT_DIRECTORY_PAGE_SIZE`. The recursive list stops at 1,000 files, and
+ * a tree built from it lost every folder after file 1,000 (KRTX-1723). The
+ * cursor pins the commit the first page read.
+ */
+export function useProjectDirectory(projectId: string | null, ref: string, path: string) {
+  return useInfiniteQuery({
+    queryKey: projectKeys.projectDirectory(projectId, ref, path),
+    queryFn: ({ pageParam }) =>
+      listProjectDirectory(projectId!, {
+        ref,
+        path: path || undefined,
+        cursor: pageParam,
+        limit: PROJECT_DIRECTORY_PAGE_SIZE,
+      }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
+    enabled: !!projectId && !!ref,
+    staleTime: 20_000,
+    retry: retryUnlessDenied,
+  });
+}
+
+/** Filename search over the whole repository at a ref, on the server. */
+export function useProjectFileSearch(projectId: string | null, ref: string, query: string) {
+  const q = query.trim();
+  return useQuery({
+    queryKey: projectKeys.projectFileSearch(projectId, ref, q),
+    queryFn: async () => (await searchProjectFiles(projectId!, q, { ref, limit: 200 })).results,
+    enabled: !!projectId && !!ref && !!q,
+    staleTime: 30_000,
+    retry: retryUnlessDenied,
+  });
+}
+
+/** Read a file's text content at a ref (version-aware). */
+export function useProjectFileContent(projectId: string | null, path: string | null, ref: string) {
+  return useQuery({
+    queryKey: projectKeys.projectFileContent(projectId, path, ref),
+    queryFn: () => readProjectFile(projectId!, path!, ref),
+    enabled: !!projectId && !!path && !!ref,
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+/** Commit history (checkpoints) for a file at a ref. */
+export function useProjectFileHistory(projectId: string | null, path: string | null, ref: string) {
+  return useQuery({
+    queryKey: projectKeys.projectFileHistory(projectId, path, ref),
+    queryFn: () => getProjectFileHistory(projectId!, path!, { ref, limit: 50 }),
+    enabled: !!projectId && !!path && !!ref,
+    staleTime: 30_000,
+  });
+}
+
+/** The diff a checkpoint (commit) introduced for a file. */
+export function useProjectCommitDiff(projectId: string | null, sha: string | null, path: string) {
+  return useQuery({
+    queryKey: projectKeys.projectCommitDiff(projectId, sha, path),
+    queryFn: () => getProjectCommitDiff(projectId!, sha!, path),
+    enabled: !!projectId && !!sha && !!path,
+    staleTime: 5 * 60_000,
+  });
+}
+
+// ── Sandbox (web parity) ──────────────────────────────────────────────────────
+
+/** Sandbox templates + recent builds. Polls while anything is building. */
+export function useProjectSnapshots(projectId: string | null) {
+  return useQuery({
+    queryKey: projectKeys.snapshots(projectId),
+    queryFn: () => listProjectSnapshots(projectId!),
+    enabled: !!projectId,
+    staleTime: 10_000,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return false;
+      const anyBuilding =
+        (data.builds ?? []).some((b) => b.status === 'building') ||
+        (data.templates ?? []).some((t) =>
+          ['pulling', 'building'].includes((t.daytona_state || '').toLowerCase())
+        );
+      return anyBuilding ? 5_000 : false;
+    },
+  });
+}
+
+export function useCreateSandboxTemplate(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateSandboxTemplateInput) => createSandboxTemplate(projectId, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.snapshots(projectId) }),
+  });
+}
+
+export function useUpdateSandboxTemplate(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      templateId,
+      input,
+    }: {
+      templateId: string;
+      input: UpdateSandboxTemplateInput;
+    }) => updateSandboxTemplate(projectId, templateId, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.snapshots(projectId) }),
+  });
+}
+
+export function useBuildSandboxTemplate(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (templateId: string) => buildSandboxTemplate(projectId, templateId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.snapshots(projectId) }),
+  });
+}
+
+export function useDeleteSandboxTemplate(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (templateId: string) => deleteSandboxTemplate(projectId, templateId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.snapshots(projectId) }),
+  });
+}
+
+export function useRebuildSnapshot(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug?: string) => rebuildProjectSnapshot(projectId, slug),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: projectKeys.snapshots(projectId) }),
+  });
+}
+
+export function useFixSandboxWithAgent(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => fixSandboxWithAgent(projectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.snapshots(projectId) });
+      queryClient.invalidateQueries({ queryKey: projectKeys.projectSessions(projectId) });
+    },
+  });
+}

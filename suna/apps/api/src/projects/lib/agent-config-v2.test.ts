@@ -1,0 +1,258 @@
+import { describe, expect, test } from 'bun:test';
+import {
+  applyAgentBlockV2,
+  applyAgentScopeV2,
+  grantSecretToAgentV2,
+  readAgentBlockV2,
+  resolveBehaviorDraft,
+} from './agent-config-v2';
+
+describe('resolveBehaviorDraft: `behavior` and its pre-W4 name `opencode`', () => {
+  const stored = { description: 'old', prompt: 'Be brief.' };
+  const edited = { description: 'new', prompt: 'Be brief.' };
+
+  test('one name alone is the draft', () => {
+    expect(resolveBehaviorDraft({ behavior: edited }, stored)).toEqual({ ok: true, draft: edited });
+    expect(resolveBehaviorDraft({ opencode: edited }, stored)).toEqual({ ok: true, draft: edited });
+    expect(resolveBehaviorDraft({}, stored)).toEqual({ ok: true, draft: undefined });
+  });
+
+  test('a round trip that edited only the pre-W4 name keeps that edit', () => {
+    // An older client echoes the GET block (both names) and edits `opencode`.
+    expect(resolveBehaviorDraft({ behavior: stored, opencode: edited }, stored)).toEqual({
+      ok: true,
+      draft: edited,
+    });
+  });
+
+  test('a round trip that edited only `behavior` keeps that edit', () => {
+    expect(resolveBehaviorDraft({ behavior: edited, opencode: stored }, stored)).toEqual({
+      ok: true,
+      draft: edited,
+    });
+  });
+
+  test('two different edits are refused, never guessed', () => {
+    const other = { description: 'other' };
+    expect(resolveBehaviorDraft({ behavior: edited, opencode: other }, stored).ok).toBe(false);
+  });
+});
+
+const manifest = (agents: Record<string, unknown>) => ({
+  path: 'kortix.yaml',
+  raw: { default_agent: 'support', agents },
+});
+
+const blockOf = (result: { ok: boolean; raw?: Record<string, unknown> }, name = 'support') =>
+  (result as { raw: Record<string, unknown> }).raw.agents as Record<
+    string,
+    Record<string, unknown>
+  >;
+
+describe('applyAgentScopeV2 — connectors_required', () => {
+  test('writes a required subset alongside the grant', () => {
+    const res = applyAgentScopeV2(manifest({ support: { connectors: ['gmail', 'slack'] } }), 'support', {
+      connectors: ['gmail', 'slack'],
+      connectorsRequired: ['gmail'],
+    });
+    expect(res.ok).toBe(true);
+    expect(blockOf(res).support.connectors_required).toEqual(['gmail']);
+    expect(blockOf(res).support).not.toHaveProperty('connectors_personal');
+  });
+
+  test('an empty list CLEARS the field rather than writing []', () => {
+    const res = applyAgentScopeV2(
+      manifest({ support: { connectors: ['gmail'], connectors_required: ['gmail'] } }),
+      'support',
+      { connectorsRequired: [] },
+    );
+    expect(res.ok).toBe(true);
+    expect(blockOf(res).support).not.toHaveProperty('connectors_required');
+  });
+
+  test('narrowing the grant PRUNES a required entry that just lost it', () => {
+    const res = applyAgentScopeV2(
+      manifest({ support: { connectors: ['gmail', 'slack'], connectors_required: ['gmail', 'slack'] } }),
+      'support',
+      { connectors: ['gmail'] },
+    );
+    expect(res.ok).toBe(true);
+    expect(blockOf(res).support.connectors_required).toEqual(['gmail']);
+  });
+
+  test('clearing the grant entirely also clears the required list', () => {
+    const res = applyAgentScopeV2(
+      manifest({ support: { connectors: ['gmail'], connectors_required: ['gmail'] } }),
+      'support',
+      { connectors: [] },
+    );
+    expect(res.ok).toBe(true);
+    expect(blockOf(res).support).not.toHaveProperty('connectors');
+    expect(blockOf(res).support).not.toHaveProperty('connectors_required');
+  });
+
+  test("a grant of 'all' keeps every required entry", () => {
+    const res = applyAgentScopeV2(manifest({ support: { connectors: 'all' } }), 'support', {
+      connectors: 'all',
+      connectorsRequired: ['gmail', 'slack'],
+    });
+    expect(res.ok).toBe(true);
+    expect(blockOf(res).support.connectors_required).toEqual(['gmail', 'slack']);
+  });
+
+  test('dedupes a repeated required entry', () => {
+    const res = applyAgentScopeV2(manifest({ support: { connectors: ['gmail'] } }), 'support', {
+      connectors: ['gmail'],
+      connectorsRequired: ['gmail', 'gmail'],
+    });
+    expect(res.ok).toBe(true);
+    expect(blockOf(res).support.connectors_required).toEqual(['gmail']);
+  });
+
+  test('imports the deprecated alias and serializes only the canonical field', () => {
+    const res = applyAgentScopeV2(
+      manifest({ support: { connectors: ['gmail'], connectors_personal: ['gmail'] } }),
+      'support',
+      {},
+    );
+    expect(res.ok).toBe(true);
+    expect(blockOf(res).support.connectors_required).toEqual(['gmail']);
+    expect(blockOf(res).support).not.toHaveProperty('connectors_personal');
+  });
+
+  test('leaves other governance keys on the block untouched', () => {
+    const res = applyAgentScopeV2(
+      manifest({ support: { connectors: ['gmail'], secrets: 'all', kortix_cli: ['project.read'] } }),
+      'support',
+      { connectorsRequired: ['gmail'] },
+    );
+    expect(res.ok).toBe(true);
+    expect(blockOf(res).support.secrets).toBe('all');
+    // The deprecated `kortix_cli` key is written back under its canonical
+    // name, value unchanged — same canonicalization as connectors_personal.
+    expect(blockOf(res).support.kortix_permissions).toEqual(['project.read']);
+    expect(blockOf(res).support).not.toHaveProperty('kortix_cli');
+  });
+});
+
+describe('kortix_permissions / kortix_cli alias', () => {
+  test('readAgentBlockV2 presents a legacy kortix_cli block under kortix_permissions', () => {
+    const read = readAgentBlockV2(manifest({ support: { kortix_cli: ['project.read'] } }), 'support');
+    expect(read.ok).toBe(true);
+    const block = (read as unknown as { block: Record<string, unknown> }).block;
+    expect(block.kortix_permissions).toEqual(['project.read']);
+    expect(block).not.toHaveProperty('kortix_cli');
+  });
+
+  test('applyAgentBlockV2 accepts a kortix_cli request and writes kortix_permissions', () => {
+    const res = applyAgentBlockV2(manifest({ support: {} }), 'support', { kortix_cli: 'all' });
+    expect(res.ok).toBe(true);
+    expect(blockOf(res).support.kortix_permissions).toBe('all');
+    expect(blockOf(res).support).not.toHaveProperty('kortix_cli');
+  });
+
+  test('applyAgentBlockV2 rejects kortix_cli that disagrees with kortix_permissions', () => {
+    const res = applyAgentBlockV2(manifest({ support: {} }), 'support', {
+      kortix_permissions: ['project.read'],
+      kortix_cli: ['project.write'],
+    });
+    expect(res.ok).toBe(false);
+  });
+});
+
+// `revision` is what tells the helper the manifest exists on disk; a committed
+// manifest always carries a blob SHA (readManifest → readManifestFromRepo).
+const committed = (agents?: Record<string, unknown>) => ({
+  path: 'kortix.yaml',
+  revision: 'a'.repeat(40),
+  raw: {
+    default_agent: 'support',
+    ...(agents === undefined ? {} : { agents }),
+  },
+});
+
+describe('grantSecretToAgentV2', () => {
+  test('appends to an existing list and preserves every other governance field', () => {
+    const res = grantSecretToAgentV2(
+      committed({ support: { secrets: ['ALPHA'], connectors: ['gmail'], skills: 'all' } }),
+      'support',
+      'BETA',
+    );
+    expect(res).toMatchObject({ ok: true, alreadyGranted: false, adoptedGovernance: false });
+    if (!res.ok) return;
+    const support = (res.raw.agents as Record<string, any>).support;
+    expect(support.secrets).toEqual(['ALPHA', 'BETA']);
+    expect(support.connectors).toEqual(['gmail']);
+    expect(support.skills).toBe('all');
+  });
+
+  test('an already-admitting list returns the ORIGINAL raw, so no commit rewrites the file', () => {
+    const source = committed({ support: { secrets: ['alpha'] } });
+    const res = grantSecretToAgentV2(source, 'support', 'ALPHA');
+    expect(res).toMatchObject({ ok: true, alreadyGranted: true, adoptedGovernance: false });
+    if (!res.ok) return;
+    expect(res.raw).toBe(source.raw);
+  });
+
+  test('an omitted `secrets` key becomes an explicit single-entry list', () => {
+    const res = grantSecretToAgentV2(committed({ support: { connectors: 'all' } }), 'support', 'ALPHA');
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const support = (res.raw.agents as Record<string, any>).support;
+    expect(support.secrets).toEqual(['ALPHA']);
+    expect(support.connectors).toBe('all');
+  });
+
+  test('`secrets: all` expands to what it currently means, never to the one identifier', () => {
+    const res = grantSecretToAgentV2(committed({ support: { secrets: 'all' } }), 'support', 'BETA', [
+      'ALPHA',
+      'BETA',
+      'GAMMA',
+    ]);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect((res.raw.agents as Record<string, any>).support.secrets).toEqual([
+      'ALPHA',
+      'GAMMA',
+      'BETA',
+    ]);
+  });
+
+  test('an absent `agents:` map adopts governance and creates the entry', () => {
+    const res = grantSecretToAgentV2(committed(), 'support', 'ALPHA');
+    expect(res).toMatchObject({ ok: true, alreadyGranted: false, adoptedGovernance: true });
+    if (!res.ok) return;
+    expect(res.raw.agents).toEqual({ support: { secrets: ['ALPHA'], workspace: { project_repository: false } } });
+  });
+
+  test('a malformed `agents:` value is refused instead of overwritten', () => {
+    const res = grantSecretToAgentV2(
+      { ...committed(), raw: { agents: [{ name: 'support' }] } },
+      'support',
+      'ALPHA',
+    );
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe('a YAML null agent entry parses past the validator — each path pins base semantics', () => {
+  const nullEntry = { support: null } as Record<string, unknown>;
+
+  test('the read path rejects it as malformed (the editor must show the broken shape)', () => {
+    expect(readAgentBlockV2(manifest(nullEntry), 'support')).toEqual({
+      ok: false,
+      error: 'agents.support is malformed (expected a table/object).',
+    });
+  });
+
+  test('the scope path reports the agent as not declared', () => {
+    const res = applyAgentScopeV2(manifest(nullEntry), 'support', { connectors: ['gmail'] });
+    expect(res).toMatchObject({ ok: false, notFound: true });
+  });
+
+  test('the secret-grant path upserts it (an absent entry is widened, not rewritten)', () => {
+    const res = grantSecretToAgentV2(committed(nullEntry), 'support', 'ALPHA_KEY');
+    expect(res).toMatchObject({ ok: true, alreadyGranted: false, adoptedGovernance: false });
+    expect(blockOf(res).support).toEqual({ secrets: ['ALPHA_KEY'], workspace: { project_repository: false } });
+  });
+});

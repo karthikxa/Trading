@@ -1,0 +1,227 @@
+---
+title: "How we run operations from Slack"
+description: A single agent reachable from Slack, with scoped access to our database, Stripe, Linear, and GitHub. Ask in a thread and it runs the task across whatever platforms it needs.
+date: "2026-07-05"
+author: team
+tags:
+  - Operations
+  - Case Study
+  - Enterprise
+template: slack-control-pane
+---
+
+Operations work usually spans several platforms: the database, Stripe, the
+sandbox providers, Linear, and GitHub. Onboarding a customer means provisioning,
+setting up billing, and filing a tracking issue. Shipping a fix means reviewing a
+PR, cutting a branch, and updating a ticket. No single tool covers the whole
+task, so the coordination falls to a person moving between several tabs.
+
+We run these tasks through a single agent reachable from Slack, with scoped
+access to the platforms we've connected. This is how we run our own operations on
+Kortix, and the same setup works for any team.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Control surface">Slack</Fact>
+  <Fact label="Connected systems">Database · Stripe · Sandboxes · Linear · GitHub</Fact>
+  <Fact label="Setup per platform">Connect once, then it can act</Fact>
+</KeyFacts>
+
+## The problem
+
+The cross-platform tasks are the ones no single tool owns. "Onboard this
+enterprise account" touches the database, Stripe, and Linear. "Get this fix out"
+touches GitHub, the sandbox that reproduces the bug, and the ticket that tracks
+it. Each step is simple; stitching them together means switching between tabs,
+copying IDs, and keeping the order straight.
+
+The common workarounds each fall short. Internal scripts each do one thing and
+break when an API changes. A no-code automation tool handles the flow it was
+built for and nothing beyond it. A chatbot that integrates with Slack can answer
+questions but can't run a multi-step task, because it has no safe way to hold
+credentials and take actions across systems.
+
+## What we built
+
+Our Slack is wired to an agent with scoped access to every connected system. You
+@-mention it in a thread and describe the task in plain language. It spawns an
+isolated session, a cloud sandbox, with scoped access to the platforms we've
+connected, works out the steps, runs them, and replies in the thread as it goes.
+Adding a capability means connecting one more platform.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the operations skill and the hourly health check, and opens a change request for you to review. Prefer
+clicks? Choose **Use this template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a Slack control-pane agent in this project.
+
+1. Create the agent agents/slack-control-pane.md. Its job is to run cross-platform operations tasks when someone @-mentions it in a Slack thread, and to reply in that thread. It may use the Linear and Stripe connectors and the GH_TOKEN and DATABASE_URL secrets.
+
+2. Create the skill skills/control-pane-ops/SKILL.md with these rules:
+   - Each mention is its own session. Read the whole thread first. Nothing carries over from other threads.
+   - The database is read-only. If a task needs a write, put the exact statement in the thread and hand it to a person.
+   - Look up Stripe state freely. A refund, plan change or cancellation waits for an explicit approval reply in the thread.
+   - Invite Linear members and create Linear projects and issues directly.
+   - Review and open pull requests on owner/repo with gh. Never merge.
+   - Never act on silence. Reply with what you found, what you did and what waits for approval.
+
+3. Add a cron trigger control-pane-heartbeat to kortix.yaml. It runs the slack-control-pane agent every hour with the prompt "Load the control-pane-ops skill and run the health check. Post any failure to #ops."
+
+4. Tell me which of these connectors and secrets are not set up yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect Stripe and Linear. Add a GitHub
+token and a read-only database URL as secrets, and connect Slack as a channel
+so a mention reaches the agent. Connector credentials are brokered server-side
+and never enter the agent's machine.
+
+<ToolList>
+  <ToolNeed name="Stripe" domain="stripe.com" tag="Required" alternatives={[['Linear', 'linear.app'], ['Jira', 'atlassian.com']]}>
+    Looks up plans and invoices, and refunds only after approval.
+  </ToolNeed>
+  <ToolNeed name="GitHub" domain="github.com" tag="Required" alternatives={[['PostgreSQL', 'postgresql.org'], ['Slack', 'slack.com']]}>
+    Reads PRs, issues and checks, and opens PRs without merging.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **slack-control-pane**
+agent and send this prompt. It runs the health check by hand, so you see each
+credential work before the first real task.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one health check across every connected platform.
+
+1. Run SELECT 1 against the database.
+2. Look up the Stripe account.
+3. Run a Linear viewer query.
+4. Run gh auth status against owner/repo.
+5. Post one line per platform to #ops: OK, or what failed and how to reconnect it.`}
+/>
+
+</Step>
+<Step title="Let the hourly schedule take over">
+
+The change request added this heartbeat to `kortix.yaml`. It runs every hour
+and only checks that each credential still works. The real work starts when
+someone @-mentions the agent in a Slack thread, and each mention runs in a new
+session on its own cloud computer. To change the interval, edit the cron line,
+or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: control-pane-heartbeat
+    name: Control-pane health heartbeat
+    on:
+      cron: "0 0 * * * *"
+    run:
+      agent: slack-control-pane
+      prompt: Load the control-pane-ops skill and run the health check. Post any failure to #ops.`}
+/>
+
+</Step>
+<Step title="Hold money and access changes for approval">
+
+Lookups, Linear issues and new pull requests run on their own. A Stripe refund,
+plan change or cancellation, or any access change, stops in the thread: the
+agent posts the exact change and waits for an explicit reply. It never acts on
+silence. Database writes never run, because the role is read-only, so the agent
+hands the statement to a person. A person merges every pull request.
+
+</Step>
+<Step title="Read the health check">
+
+Each run ends with one line per platform, and an alert in #ops if one fails. This is what a run looks like
+in the session:
+
+<ExampleRun
+  title="Control-pane health heartbeat · 11:00"
+  message="Load the control-pane-ops skill and run the health check. Post any failure to #ops."
+  worked="Worked for 0m 38s"
+  tools={[
+    'postgres · select 1',
+    'stripe · retrieve account',
+    'linear · viewer query',
+    'github · gh auth status',
+    'slack · post message → #ops',
+  ]}
+  note="Illustrative example. Your results depend on which credentials are current."
+>
+  The database, Linear and GitHub answered. Stripe returned **401**, so the
+  connector needs reconnecting. Posted **1** alert to #ops.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The setup" tone="accent">
+  Connect Slack as the **channel**, connect each platform to Kortix as a scoped
+  **connector** (the only per-platform setup), and gate every sensitive action
+  behind a human. One agent then runs cross-platform tasks from a thread.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Onboard an account from one message"
+  code="When someone writes onboard and an account name in a thread, look up the account, file the Linear project, and hold the Stripe plan change for approval."
+/>
+
+<CopyBlock
+  title="Daily failed-payment digest"
+  code="Every morning at 09:00, post the Stripe invoices that failed in the last 24 hours to #ops, with the plan for each."
+/>
+
+<CopyBlock
+  title="Triage bug reports"
+  code="When a thread reports a bug, reproduce it in a sandbox, then file a Linear issue with the steps and the result."
+/>
+
+## Guardrails
+
+Giving one agent access to the database, Stripe, sandboxes, Linear, and GitHub is
+a security question. The controls that make it workable:
+
+- **Isolation.** Every request runs in its own isolated sandbox on its own branch.
+  A session is granted access only to the platforms it's scoped to, and only what it's
+  explicitly allowed to send is written back out.
+- **Scoped secrets.** Each platform credential is encrypted in the Secrets
+  Manager and injected into the sandbox at runtime, scoped to the agents you grant them to or
+  the logs.
+- **Human approval gates.** Irreversible actions (money, production data, merges)
+  require a person to approve in the thread.
+- **Everything is code.** The agent's persona, skills, and per-platform
+  permissions are files in the repo, versioned and changed through a reviewed
+  **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="One thread" label="Any cross-platform task, asked in plain language" />
+  <Stat value="Connect once" label="A new platform is a new capability, no build" />
+  <Stat value="5+ systems" label="Database, Stripe, sandboxes, Linear, GitHub — one agent" />
+</StatGrid>
+
+Cross-platform tasks such as onboarding, reviews, provisioning, and billing
+changes now run in the Slack thread where they're already discussed, with the
+risky steps held for approval. Extending the system means connecting the next
+platform.

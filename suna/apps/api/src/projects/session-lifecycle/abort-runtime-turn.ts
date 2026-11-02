@@ -1,0 +1,57 @@
+import { resolveSessionOpencodeEndpoint } from './runtime-client';
+import { runtimeVerbPaths, sessionRuntimeFetch } from './runtime-fetch';
+
+/**
+ * Abort whatever turn the runtime still thinks is running for this session.
+ *
+ * Closing a channel card is not the same as ending the run. On dev
+ * 2026-09-19 a Teams turn died mid-flight: the ledger settled it
+ * `runtime_gone`, the 30-minute GC eventually closed the Adaptive Card — and
+ * the runtime kept an assistant message OPEN for two days. Every later message
+ * in that conversation was accepted, stored, and never run.
+ *
+ * The runtime's abort (`POST /kortix/runtime/sessions/:id/abort`) unwedges
+ * it — the same call the Stop button makes.
+ *
+ * Best effort by design. The caller is a housekeeping sweep that has already
+ * decided the turn is dead; a sandbox that is parked, gone, or simply slow is
+ * not a reason to fail the sweep.
+ *
+ * `requestedStop`: a person pressed Stop (Slack, Teams, or the web Stop whose
+ * hold settle re-aborts the box). This call does not pass
+ * the sandbox proxy that stamps `UserStop` on web and CLI stops, so it stamps
+ * the open turn itself. Without the stamp the abort reads as a failure nobody
+ * explained. A stamp that fails never blocks the stop. `stoppedBy` is the
+ * person who pressed Stop, recorded on the stamp ("Stopped by <name>"); the
+ * caller has already decided they may (`turn-stop-authority.ts`).
+ */
+export async function abortRuntimeTurn(
+  sessionId: string,
+  opts: { requestedStop?: boolean; stoppedBy?: string | null } = {},
+): Promise<boolean> {
+  if (!sessionId) return false;
+  try {
+    const resolved = await resolveSessionOpencodeEndpoint(sessionId);
+    if (!resolved) return false;
+    if (opts.requestedStop) {
+      try {
+        const { markTurnStopRequested } = await import('../session-turn-ledger');
+        await markTurnStopRequested(
+          sessionId,
+          'UserStop',
+          { opencodeSessionId: resolved.opencodeSessionId },
+          opts.stoppedBy ?? null,
+        );
+      } catch (err) {
+        console.warn('[abort-runtime-turn] could not stamp the requested stop', {
+          sessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    const res = await sessionRuntimeFetch(resolved.endpoint, 'POST', runtimeVerbPaths.abort(resolved.opencodeSessionId));
+    return res.ok;
+  } catch {
+    return false;
+  }
+}

@@ -1,0 +1,163 @@
+import { beforeEach, expect, mock, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { configureKortix } from '../../http/config';
+import {
+  acceptAccountInviteAndLand,
+  accountInviteLanding,
+  listMyAccountInvites,
+  validateToken,
+} from './accounts';
+
+let calls: { url: string; method: string }[] = [];
+let nextResponse: { status: number; body: unknown } = { status: 200, body: {} };
+
+beforeEach(() => {
+  calls = [];
+  nextResponse = { status: 200, body: {} };
+  globalThis.fetch = mock(async (url: unknown, opts: { method?: string } = {}) => {
+    calls.push({ url: String(url), method: opts.method ?? 'GET' });
+    return new Response(JSON.stringify(nextResponse.body), {
+      status: nextResponse.status,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as unknown as typeof fetch;
+});
+
+configureKortix({ backendUrl: 'http://test.local', getToken: async () => 'tok' });
+const last = () => calls[calls.length - 1];
+
+test('validateToken hits GET /accounts/me and returns { valid: true, identity } on success', async () => {
+  nextResponse = {
+    status: 200,
+    body: {
+      user_id: 'u1',
+      email: 'a@b.com',
+      accounts: [{ account_id: 'acc-1', slug: 'acc-1', name: 'Acme', role: 'owner' }],
+    },
+  };
+  const result = await validateToken();
+  expect(last().url).toContain('/accounts/me');
+  expect(last().method).toBe('GET');
+  expect(result.valid).toBe(true);
+  expect(result.identity?.user_id).toBe('u1');
+  expect(result.error).toBeUndefined();
+});
+
+test('validateToken never throws — returns { valid: false, error } on a 401', async () => {
+  nextResponse = { status: 401, body: { message: 'invalid token' } };
+  const result = await validateToken();
+  expect(result.valid).toBe(false);
+  expect(result.identity).toBeUndefined();
+  expect(result.error).toBeTruthy();
+});
+
+// `accounts.iam_v2_enabled` was the per-account rollout flag that routed a
+// caller between the V1 and V2 IAM engines. The canonical-RBAC cutover made
+// `kortix.role_assignments` the only authorization store and
+// `apps/api/src/iam/authorize.ts` the only engine, so the API no longer emits
+// the field and nothing can ever set it again. A declared-but-never-populated
+// optional field is worse than no field: it reads as a live switch and invites
+// a host to branch on `undefined`. Asserted against the SOURCE, not the type,
+// because an optional property that is simply absent from the wire cannot be
+// caught at runtime.
+test('AccountDetail no longer declares the dead iam_v2_enabled dual-model switch', () => {
+  const source = readFileSync(join(import.meta.dir, 'accounts.ts'), 'utf8');
+  const offending = source.split('\n').filter((line) => line.includes('iam_v2_enabled'));
+  expect(offending).toEqual([]);
+});
+
+test('listMyAccountInvites hits GET /account-invites and returns the invites array', async () => {
+  nextResponse = {
+    status: 200,
+    body: {
+      invites: [
+        {
+          invite_id: 'inv-1',
+          account_id: 'acc-1',
+          account_name: 'Acme',
+          initial_role: 'member',
+          inviter_email: 'owner@acme.com',
+          created_at: '2026-09-21T00:00:00.000Z',
+          expires_at: '2026-10-05T00:00:00.000Z',
+          projects: [{ project_id: 'p-1', name: 'Launch', role: 'member' }],
+        },
+      ],
+    },
+  };
+  const invites = await listMyAccountInvites();
+  expect(last().url).toMatch(/\/account-invites$/);
+  expect(last().method).toBe('GET');
+  expect(invites).toHaveLength(1);
+  expect(invites[0]?.account_name).toBe('Acme');
+  expect(invites[0]?.projects[0]?.name).toBe('Launch');
+});
+
+/**
+ * Where an accepted invite lands (KRTX-1731): every host (web invite page,
+ * selector Join, sidebar Join, mobile) reads this one rule. The plain door
+ * reopened the project the browser remembered, in the account the user came from.
+ */
+test('accountInviteLanding: the first project the accept granted', () => {
+  const accepted = {
+    account_id: 'acc-1',
+    bootstrap_grants_applied: [
+      { project_id: 'p-1', role: 'member' },
+      { project_id: 'p-2', role: 'member' },
+    ],
+  };
+  expect(accountInviteLanding(accepted)).toEqual({ kind: 'project', projectId: 'p-1', accountId: 'acc-1' });
+});
+
+test('accountInviteLanding: without a grant, the first project the invite names', () => {
+  // An admin invite (grants apply to members only), or an invite accepted before.
+  const invite = { projects: [{ project_id: 'p-9', name: 'Launch', role: 'member' }] };
+  expect(accountInviteLanding({ account_id: 'acc-1', bootstrap_grants_applied: [] }, invite)).toEqual({
+    kind: 'project',
+    projectId: 'p-9',
+    accountId: 'acc-1',
+  });
+  expect(accountInviteLanding({ account_id: 'acc-1' }, invite)).toEqual({
+    kind: 'project',
+    projectId: 'p-9',
+    accountId: 'acc-1',
+  });
+});
+
+test('accountInviteLanding: a granted project wins over the one the invite names', () => {
+  const accepted = { account_id: 'acc-1', bootstrap_grants_applied: [{ project_id: 'p-1', role: 'member' }] };
+  const invite = { projects: [{ project_id: 'p-9', name: 'Other', role: 'member' }] };
+  expect(accountInviteLanding(accepted, invite)).toEqual({ kind: 'project', projectId: 'p-1', accountId: 'acc-1' });
+});
+
+test('accountInviteLanding: a workspace invite lands in the joined account', () => {
+  expect(accountInviteLanding({ account_id: 'acc-1', bootstrap_grants_applied: [] }, { projects: [] })).toEqual({
+    kind: 'account',
+    accountId: 'acc-1',
+  });
+  expect(accountInviteLanding({ account_id: 'acc-1' }, null)).toEqual({ kind: 'account', accountId: 'acc-1' });
+});
+
+test('acceptAccountInviteAndLand accepts with POST /account-invites/:id/accept and returns the landing', async () => {
+  nextResponse = {
+    status: 200,
+    body: {
+      account_id: 'acc-1',
+      account_role: 'member',
+      already_accepted: false,
+      bootstrap_grants_applied: [{ project_id: 'p-1', role: 'member' }],
+    },
+  };
+  const result = await acceptAccountInviteAndLand('inv-1');
+  expect(last().url).toMatch(/\/account-invites\/inv-1\/accept$/);
+  expect(last().method).toBe('POST');
+  expect(result.accepted.account_role).toBe('member');
+  expect(result.landing).toEqual({ kind: 'project', projectId: 'p-1', accountId: 'acc-1' });
+});
+
+test('acceptAccountInviteAndLand falls back to the projects of the invite it is given', async () => {
+  nextResponse = { status: 200, body: { account_id: 'acc-1', account_role: 'admin', bootstrap_grants_applied: [] } };
+  const invite = { projects: [{ project_id: 'p-7', name: 'Ops', role: 'manager' }] };
+  const result = await acceptAccountInviteAndLand('inv-2', invite);
+  expect(result.landing).toEqual({ kind: 'project', projectId: 'p-7', accountId: 'acc-1' });
+});

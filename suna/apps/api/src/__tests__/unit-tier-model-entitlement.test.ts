@@ -1,0 +1,56 @@
+import { describe, expect, test } from 'bun:test';
+import {
+  getTier,
+  isPaidTier,
+  tierGrantsAllModels,
+} from '../billing/services/tiers';
+
+const PAID_TIER_NAMES = [
+  'credits',
+  'pro',
+  'per_seat',
+  'tier_2_20',
+  'tier_6_50',
+  'tier_12_100',
+  'tier_25_200',
+  'tier_50_400',
+  'tier_125_800',
+  'tier_200_1000',
+  'tier_150_1200',
+];
+
+// The regression this guards: the premium LLM gateway used to be gated on
+// `isPerSeatAccount(billing_model)`, which silently stripped every legacy paid
+// customer (pro, tier_*) down to OpenCode's Zen-only catalog even though their
+// tier config carries models:['all']. Entitlement now keys off the tier, so the
+// invariant we lock in here is "every paid tier grants the full model catalog".
+describe('tierGrantsAllModels', () => {
+  test('every paid tier unlocks the full model catalog', () => {
+    // Sanity: the config actually treats the expected paid tiers as paid.
+    expect(PAID_TIER_NAMES.every(isPaidTier)).toBe(true);
+    for (const tierName of PAID_TIER_NAMES) {
+      expect(tierGrantsAllModels(tierName)).toBe(true);
+    }
+  });
+
+  test('the none tier does NOT unlock the managed models', () => {
+    expect(tierGrantsAllModels('none')).toBe(false);
+  });
+
+  // #10147: Free = 500 credits a month. #10297: never the managed models.
+  test('the free tier grants 500 credits a month and no managed model', () => {
+    const free = getTier('free');
+    expect(free.monthlyCredits * 100).toBe(500);
+    expect(tierGrantsAllModels('free')).toBe(false);
+  });
+
+  test('credits and every legacy paid plan key are entitled', () => {
+    for (const name of PAID_TIER_NAMES) {
+      expect(tierGrantsAllModels(name)).toBe(true);
+    }
+  });
+
+  test('an unknown tier name falls back to the none tier (no gateway)', () => {
+    expect(tierGrantsAllModels('totally-made-up-tier')).toBe(false);
+  });
+});

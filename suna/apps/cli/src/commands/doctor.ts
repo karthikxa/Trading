@@ -1,0 +1,226 @@
+import { type ProjectSession, type SessionLogMessage, classifySessionLogMessage } from '@kortix/sdk';
+import { loadAuth, loadAuthForHost } from '../api/auth.ts';
+import { ApiError } from '../api/client.ts';
+import { hasEnvTokenHost } from '../api/config.ts';
+import { kortixFromAuth, withKortixScope } from '../api/sdk.ts';
+import { sendAndWaitForReply } from './sessions-chat.ts';
+import type { MeResponse, ProjectSummary } from '../api/types.ts';
+import { takeFlags } from '../command-argv.ts';
+import { resolveProjectContext, shortId, takeFlagBool, takeFlagValue } from '../command-helpers.ts';
+import { loadLink } from '../project-link.ts';
+import { C, help, status } from '../style.ts';
+
+const HELP = help`Usage: kortix doctor [options]
+
+End-to-end smoke test: confirms login → project resolves → optionally
+spins up a throwaway session, sends a message, and asserts the agent
+replies. Designed so coding agents can verify Kortix end-to-end before
+they start orchestrating real work.
+
+By default, doctor attempts to delete only its diagnostic session.
+With --keep-session, it leaves that session in place. UI-prepared warm
+sessions are left unchanged and may remain billed.
+
+Options:
+  --no-session         Stop after auth + project checks. Don't create
+                       a sandbox. Fast and cheap.
+  --keep-session       Don't delete the test session at the end.
+  --prompt "<text>"    Test prompt (default: "ping").
+  --timeout <seconds>  How long to wait for the reply (default: 180).
+  --project <id>       Operate on this project (default: linked).
+  --host <name>        Operate against a non-default Kortix host.
+  -h, --help           Show this help.
+
+Exit codes:
+  0  All checks passed, or agent reply explicitly skipped (no available model).
+  1  At least one check failed.
+`;
+
+export async function runDoctor(argv: string[]): Promise<number> {
+  const flags = takeFlags(argv, HELP, (rest) => ({
+    noSession: takeFlagBool(rest, ['--no-session']),
+    keepSession: takeFlagBool(rest, ['--keep-session']),
+    project: takeFlagValue(rest, ['--project']),
+    host: takeFlagValue(rest, ['--host']),
+    prompt: takeFlagValue(rest, ['--prompt']) || 'ping',
+    timeoutSec: timeoutSeconds(takeFlagValue(rest, ['--timeout'])),
+  }));
+  if (typeof flags === 'number') return flags;
+
+  process.stdout.write(`\n  ${C.bold}kortix doctor${C.reset}\n\n`);
+
+  let failures = 0;
+
+  // ── 1. Auth ─────────────────────────────────────────────────────────────
+  const hostFromLink =
+    !flags.host && !hasEnvTokenHost() ? (loadLink()?.host ?? undefined) : undefined;
+  const hostName = flags.host ?? hostFromLink;
+  const auth = hostName ? loadAuthForHost(hostName) : loadAuth();
+  if (!auth?.token) {
+    process.stdout.write(`${status.err('not logged in — run `kortix login`')}\n`);
+    return 1;
+  }
+  process.stdout.write(
+    `${status.ok(`logged in to ${C.bold}${hostName ?? 'default'}${C.reset} (${auth.api_base})`)}\n`,
+  );
+
+  // ── 2. /accounts/me ─────────────────────────────────────────────────────
+  const ctx = await resolveProjectContext({ projectArg: flags.project, hostArg: flags.host });
+  if (!ctx) return 1;
+  try {
+    const me = await ctx.client.get<MeResponse>('/accounts/me');
+    process.stdout.write(`${status.ok(`identity verified as ${C.bold}${me.email}${C.reset}`)}\n`);
+  } catch (err) {
+    process.stdout.write(`${status.err(`identity probe failed: ${describe(err)}`)}\n`);
+    return 1;
+  }
+
+  // ── 3. Project ──────────────────────────────────────────────────────────
+  let project: ProjectSummary;
+  try {
+    project = await ctx.client.get<ProjectSummary>(`/projects/${ctx.projectId}`);
+    process.stdout.write(
+      `${status.ok(`project ${C.bold}${project.name}${C.reset} ${C.faded}(${project.project_id})${C.reset}`)}\n`,
+    );
+  } catch (err) {
+    process.stdout.write(`${status.err(`project lookup failed: ${describe(err)}`)}\n`);
+    return 1;
+  }
+
+  if (flags.noSession) {
+    process.stdout.write(`\n${status.ok('all checks passed (no-session)')}\n\n`);
+    return 0;
+  }
+
+  process.stdout.write(
+    `  ${C.dim}UI-prepared warm sessions are left unchanged and may remain billed.${C.reset}\n`,
+  );
+
+  // Resolve through the server's entitlement and provider checks, not the runtime's default.
+  let model: string | null;
+  try {
+    const defaults = await withKortixScope(auth, () =>
+      kortixFromAuth(auth).project(ctx.projectId).modelDefaults.get(),
+    );
+    model = defaults.resolvedForCaller;
+  } catch (err) {
+    process.stdout.write(`${status.err(`model lookup failed: ${describe(err)}`)}\n`);
+    return 1;
+  }
+  if (!model) {
+    process.stdout.write(`\n  agent reply skipped: no available model. Connect one with kortix providers; then rerun doctor.\n\n`);
+    return 0;
+  }
+
+  // ── 4. Spin up a session ────────────────────────────────────────────────
+  const t0 = Date.now();
+  process.stdout.write(`  ${C.dim}creating session…${C.reset}\n`);
+  let session: ProjectSession;
+  try {
+    session = await withKortixScope(auth, () =>
+      kortixFromAuth(auth).project(ctx.projectId).sessions.create({ model }),
+    );
+  } catch (err) {
+    process.stdout.write(`${status.err(`session create failed: ${describe(err)}`)}\n`);
+    return 1;
+  }
+  const sessionId = session.session_id;
+  const handle = kortixFromAuth(auth).session(ctx.projectId, sessionId);
+  process.stdout.write(
+    `${status.ok(`session ${C.bold}${shortId(sessionId)}${C.reset} created`)}\n`,
+  );
+
+  const cleanup = async () => {
+    if (flags.keepSession) return;
+    try {
+      await withKortixScope(auth, () => handle.delete());
+      process.stdout.write(`  ${C.dim}cleaned up session${C.reset}\n`);
+    } catch {
+      /* best effort */
+    }
+  };
+
+  try {
+    // ── 5. Resolve the session-scoped runtime ──────────────────────────
+    process.stdout.write(`  ${C.dim}waiting for sandbox to come up…${C.reset}\n`);
+    let runtimeSessionId: string;
+    try {
+      const ready = await withKortixScope(auth, () =>
+        handle.ensureReady({ readyTimeoutMs: flags.timeoutSec * 1000 }),
+      );
+      runtimeSessionId = ready.runtimeSessionId;
+    } catch (error) {
+      process.stdout.write(`${status.err(`session runtime failed: ${describe(error)}`)}\n`);
+      failures += 1;
+      return 1;
+    }
+    const provisionMs = Date.now() - t0;
+    process.stdout.write(`${status.ok(`sandbox running (${(provisionMs / 1000).toFixed(1)}s)`)}\n`);
+    process.stdout.write(
+      `${status.ok(`runtime session ${C.faded}${runtimeSessionId}${C.reset}`)}\n`,
+    );
+
+    // ── 6. Send through the session-scoped SDK handle ────────────────────
+    process.stdout.write(`  ${C.dim}prompt: "${flags.prompt}"${C.reset}\n`);
+    const sendStart = Date.now();
+    try {
+      const reply = await sendAndWaitForReply(
+        { auth, handle, runtimeSessionId },
+        flags.prompt,
+      );
+      const verdict = doctorReplyVerdict(reply);
+      if (!verdict.ok) {
+        process.stdout.write(`${status.err(verdict.reason)}\n`);
+        failures += 1;
+      } else {
+        const dur = ((Date.now() - sendStart) / 1000).toFixed(1);
+        const text = verdict.text;
+        const preview = text.length > 80 ? `${text.slice(0, 77)}…` : text;
+        process.stdout.write(`${status.ok(`reply (${dur}s) — ${C.dim}${preview}${C.reset}`)}\n`);
+      }
+    } catch (err) {
+      process.stdout.write(`${status.err(`prompt failed: ${describe(err)}`)}\n`);
+      failures += 1;
+    }
+  } finally {
+    await cleanup();
+  }
+
+  process.stdout.write('\n');
+  if (failures > 0) {
+    process.stdout.write(
+      `${status.err(`${failures} check${failures === 1 ? '' : 's'} failed`)}\n\n`,
+    );
+    return 1;
+  }
+  process.stdout.write(`${status.ok('all checks passed')}\n\n`);
+  return 0;
+}
+
+/** `--timeout <seconds>`; absent or empty keeps the 180 s default. */
+/** The agent-reply check: the reply's text, or why the check fails. A turn
+ *  error fails it even after partial text, and names the cause the way
+ *  `sessions chat` does (KRTX-2918). */
+export function doctorReplyVerdict(
+  reply: SessionLogMessage,
+): { ok: true; text: string } | { ok: false; reason: string } {
+  const error = classifySessionLogMessage(reply).error;
+  if (error) return { ok: false, reason: `reply failed — ${error.name}: ${error.message}` };
+  const text = reply.blocks
+    .map((block) => (block.type === 'text' ? block.text : ''))
+    .join(' ')
+    .trim();
+  return text ? { ok: true, text } : { ok: false, reason: 'reply had no text content' };
+}
+
+function timeoutSeconds(raw: string | undefined): number {
+  if (!raw) return 180;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) throw new Error('--timeout must be a positive number of seconds');
+  return n;
+}
+
+function describe(err: unknown): string {
+  if (err instanceof ApiError) return `HTTP ${err.status} — ${err.message}`;
+  return err instanceof Error ? err.message : String(err);
+}

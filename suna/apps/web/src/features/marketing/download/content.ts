@@ -1,0 +1,91 @@
+/**
+ * `/download` copy.
+ *
+ * Plain English lives here, not in `apps/web/translations/*.json`, so copy can
+ * iterate before paying the 8-locale parity gate. Same precedent as
+ * `features/marketing/self-hosted/content.ts`.
+ *
+ * ACCURACY GATE — every string below is checked against the live GitHub release
+ * (v0.11.0, 2026-07-28), not against docs:
+ *  1. macOS ships ONE universal .dmg. Never advertise separate Apple Silicon
+ *     and Intel desktop builds — they do not exist.
+ *  2. Linux desktop is x86_64 ONLY. There is no arm64 AppImage. The row says so
+ *     rather than letting an ARM visitor download a binary that will not run.
+ *  3. There is NO Windows CLI binary. The install script is bash-only, so the
+ *     terminal block says "macOS & Linux · WSL on Windows".
+ *  4. The Chrome extension (apps/chrome-extension) is not public in the
+ *     Chrome Web Store yet. The page must not advertise it until it is.
+ *  5. Both mobile apps are public: iOS on the App Store, Android on Google
+ *     Play. The rows link the store listings — see MOBILE_ROWS.
+ */
+
+import { localizeUiCatalog } from '@kortix/ui/i18n';
+import { REMAINING_UI_TRANSLATION_KEYS } from '@kortix/ui/i18n/ui-catalog/remaining-ui-translation-keys.generated';
+import type { UiTranslator } from '@/i18n/translator';
+import type { DesktopOs, MobileOs } from '@kortix/ui/internal/lib/detect-os';
+import { APP_STORE_URL, GOOGLE_PLAY_URL } from '@kortix/ui/internal/lib/mobile-store-urls';
+
+export const hero = {
+  title: 'Download Kortix',
+  sub: 'Get the app for your desktop, your phone, or your terminal.',
+};
+
+export type CardCopy = { title: string; description: string };
+export type RowCopy = { label: string; hint: string; href: string };
+
+export const DESKTOP_CARD: CardCopy = {
+  title: 'Desktop app',
+  description: 'Run Kortix on your own machine, with your files and your terminal.',
+};
+
+export const MOBILE_CARD: CardCopy = {
+  title: 'Mobile app',
+  description: 'Start a session anywhere and pick up where you left off.',
+};
+
+/**
+ * `hint` is the line under the label, and it carries copy ONLY. The live
+ * download size is appended at render from the GitHub release, so when that API
+ * is unreachable the size disappears instead of printing a stale or invented
+ * number.
+ */
+export const DESKTOP_ROWS: Record<DesktopOs, RowCopy> = {
+  macos: { label: 'macOS', hint: 'Universal', href: '/download/macos' },
+  windows: { label: 'Windows', hint: '64-bit', href: '/download/windows' },
+  linux: { label: 'Linux', hint: 'AppImage · x86_64', href: '/download/linux' },
+};
+
+/** Store URLs live in `mobile-store-urls.ts`. */
+export const MOBILE_ROWS: Record<MobileOs, RowCopy> = {
+  ios: {
+    label: 'iPhone and iPad',
+    hint: 'App Store',
+    href: APP_STORE_URL,
+  },
+  android: {
+    label: 'Android',
+    hint: 'Google Play',
+    href: GOOGLE_PLAY_URL,
+  },
+};
+
+export const TERMINAL = {
+  title: 'Terminal',
+  description: 'Install the CLI and drive Kortix from your shell.',
+  support: 'macOS & Linux · WSL on Windows',
+};
+
+export function localizedDownloadContent(tI18nComplete: UiTranslator) {
+  return localizeUiCatalog(
+    {
+      hero,
+      desktopCard: DESKTOP_CARD,
+      mobileCard: MOBILE_CARD,
+      desktopRows: DESKTOP_ROWS,
+      mobileRows: MOBILE_ROWS,
+      terminal: TERMINAL,
+    },
+    tI18nComplete,
+    REMAINING_UI_TRANSLATION_KEYS,
+  );
+}

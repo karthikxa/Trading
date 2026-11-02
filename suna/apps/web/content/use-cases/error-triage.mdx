@@ -1,0 +1,244 @@
+---
+title: "How we groom our production error backlog"
+description: The error-triage agent we run on Kortix — connected to Sentry and GitHub. Hourly, it groups new and spiking errors, dedupes against our existing GitHub issues, and drafts an issue with the stack trace and impact for the top offenders, then alerts Slack. It never resolves, ignores, or assigns an error itself.
+date: "2026-03-28"
+author: team
+tags:
+  - Engineering
+  - Case Study
+  - Enterprise
+template: error-triage
+---
+
+Sentry catches every error. Turning that stream into work someone actually picks
+up is a different problem. New error types pile up next to ones that have been
+spiking for days, half of them already have a GitHub issue somewhere and half
+don't, and by the time an engineer has the hour to sit down and sort it, the
+backlog is long enough that sorting it feels like its own project. Most weeks,
+no one has that hour, so the backlog just grows.
+
+We run an error-triage agent on Kortix that grooms that backlog every hour. It
+reads the current state of Sentry, groups new and spiking errors, checks which
+ones already have a tracked GitHub issue, and drafts an issue with the stack
+trace and impact for the ones that don't — then posts a summary to Slack. This
+is grooming, not paging: it doesn't wake anyone up and it doesn't decide
+anything is fixed.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Hourly cron</Fact>
+  <Fact label="Connected systems">Sentry · GitHub · Slack</Fact>
+  <Fact label="Mode">Drafts issues + alerts only · never resolves or assigns</Fact>
+</KeyFacts>
+
+## The problem
+
+A Sentry project accumulates issues faster than anyone triages them. Some are
+brand new. Some have been sitting unresolved for weeks at a low, steady rate.
+Some just started spiking after today's deploy. Working out which of those
+deserve an engineer's attention — and whether that attention already exists as
+an open GitHub issue — means reading the whole backlog by hand, which is
+exactly the task that gets deferred every time something more urgent comes up.
+
+The common fixes don't groom the backlog, they just move it. Auto-creating a
+GitHub issue for every Sentry error floods the tracker with duplicates and
+one-offs no one will ever action. Leaving Sentry as the system of record means
+the backlog is only as current as the last time someone opened the dashboard.
+And on-call triage tools are built for the opposite end of the problem — one
+loud alert right now — not the quiet pile of errors that never paged anyone but
+still need a decision.
+
+## What we built
+
+On Kortix, an hourly cron triggers an agent. It spawns a fresh session with
+read-only access to Sentry, pulls the errors that are new or whose event
+frequency has spiked over their trailing baseline, and groups them by
+fingerprint. For each one, it checks our GitHub repo for an existing issue
+before doing anything else. For the top offenders that aren't already tracked,
+it drafts a GitHub issue with the stack trace and the impact — event count,
+affected users, first seen — and posts a summary of what's new, what's
+spiking, and what got drafted to Slack. It never touches Sentry's issue state
+and never assigns anything.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the triage skill and the hourly trigger, and
+opens a change request for you to review. Prefer clicks? Choose **Use this
+template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up an hourly error triage agent in this project.
+
+1. Create the agent agents/error-triage.md. Its job is to groom the Sentry backlog into a short list of GitHub issues. It may use the Sentry and Slack connectors and a GH_TOKEN secret for GitHub.
+
+2. Create the skill skills/error-backlog-triage/SKILL.md with these rules:
+   - Read the web project in Sentry. Pick issues first seen in the last hour, and issues at 3x or more of their trailing hourly baseline.
+   - Group issues by fingerprint. Rank the groups by event count times affected users.
+   - Before you draft, search owner/repo for an issue that already has the Sentry issue ID. Skip anything already tracked.
+   - Draft at most 5 GitHub issues per sweep, each with the stack trace and the impact. Never assign them.
+   - Never resolve, ignore, mute or merge anything in Sentry.
+   - Post one summary to #eng-errors: new, spiking, drafted and already tracked. Post nothing when the sweep finds nothing.
+
+3. Add a cron trigger hourly-error-backlog-sweep to kortix.yaml. It runs the error-triage agent every hour, on the hour, with the prompt "Load the error-backlog-triage skill and run one complete sweep of the web project."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your error tracker and Slack.
+Credentials are brokered server-side and never enter the agent's machine. Add a GitHub token as the `GH_TOKEN` secret so the agent can draft
+issues.
+
+<ToolList>
+  <ToolNeed name="Sentry" domain="sentry.io" tag="Required" alternatives={[['Datadog', 'datadoghq.com'], ['Rollbar', 'rollbar.com']]}>
+    Reads new and spiking errors, read-only.
+  </ToolNeed>
+  <ToolNeed name="GitHub" domain="github.com" tag="Required" alternatives={[['Linear', 'linear.app'], ['Jira', 'atlassian.com']]}>
+    Skips tracked errors and drafts issues for the rest.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com']]}>
+    Posts the sweep summary.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **error-triage** agent
+and send this prompt. Read the drafted issues before you let the
+schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one error-backlog sweep of the web project in Sentry.
+
+1. Pull issues first seen in the last hour, and issues at 3x or more of their trailing hourly baseline.
+2. Group them by fingerprint and rank the groups by event count times affected users.
+3. Search owner/repo for an issue that already has each Sentry issue ID, and skip those.
+4. Draft a GitHub issue for each of the top 5 that are not tracked, with the stack trace and impact. Do not assign them.
+5. Post one summary to #eng-errors. Change nothing in Sentry.`}
+/>
+
+</Step>
+<Step title="Let the hourly schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every hour, on the hour, each run in a new session on its own cloud
+computer.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: hourly-error-backlog-sweep
+    name: Hourly error-backlog sweep
+    on:
+      cron: "0 0 * * * *"
+    run:
+      agent: error-triage
+      prompt: Load the error-backlog-triage skill and run one complete sweep of the web project.`}
+/>
+
+</Step>
+<Step title="Never resolve, mute or assign">
+
+Sentry access is read-only. The agent never resolves, ignores or mutes an
+error, and a drafted GitHub issue has no assignee. It drafts at most 5 issues
+per sweep. The team decides priority and ownership.
+
+</Step>
+<Step title="Read the sweep summary">
+
+A sweep that finds new or spiking errors posts one summary, and a quiet sweep
+posts nothing. This is what a run looks like in the session:
+
+<ExampleRun
+  title="Hourly error-backlog sweep · 15:00"
+  message="Load the error-backlog-triage skill and run one complete sweep of the web project."
+  worked="Worked for 2m 03s"
+  tools={[
+    'sentry · list issues',
+    'sentry · get issue events × 7',
+    'github · search issues × 7',
+    'github · create issue × 3',
+    'slack · post message → #eng-errors',
+  ]}
+  note="Illustrative example. Your errors and traffic differ."
+>
+  Found **4** new and **3** spiking errors. **4** were already tracked, so the
+  agent drafted **3** issues. The top one, a TypeError in checkout, had
+  **1,240** events from **312** users this hour.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  An hourly **cron** spawns a session with a read-only **connector** into
+  Sentry and a scoped GitHub token for drafts. The grooming rules live as
+  **skills** and **memory**. The agent dedupes against existing issues, drafts
+  the top offenders, and alerts Slack — it never resolves, ignores, or assigns
+  an error.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Link the suspect commit"
+  code="For each drafted issue, find the latest commit that touched the top frame of the stack trace and link it in the issue body."
+/>
+
+<CopyBlock
+  title="Morning error digest"
+  code="Every weekday at 09:00, post to #eng-errors the 5 errors with the most affected users in the last 24 hours and their issue links."
+/>
+
+<CopyBlock
+  title="Watch each release"
+  code="When a new release appears in Sentry, run a sweep right away and compare its error rate with the previous release."
+/>
+
+## Guardrails
+
+The agent reads production error telemetry and writes issues others will act
+on, so its access is scoped and one-directional:
+
+- **Isolation.** Every run happens in its own isolated sandbox. The session can
+  read Sentry and search GitHub; only the drafted issue and the Slack post
+  are written back out.
+- **Scoped secrets.** The Sentry credential is brokered through the connector
+  and the GitHub token is encrypted in the Secrets Manager and injected into
+  the sandbox at runtime, scoped to the agents you grant them to.
+- **Never resolves, ignores, or mutes.** The agent has no path to changing an
+  error's state in Sentry. It reports; it doesn't manage the backlog's status.
+- **Never assigns.** A drafted GitHub issue has no assignee. Triage priority
+  and ownership are decided by the team, not the agent.
+- **Everything is code.** The grooming rules, thresholds, and per-system
+  permissions are files in the repo, versioned and changed through a reviewed
+  **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every hour" label="The backlog re-read from Sentry's current state" />
+  <Stat value="Deduped" label="Checked against existing GitHub issues before drafting" />
+  <Stat value="Draft-only" label="Issues and a Slack alert — never a resolve, ignore, or assign" />
+</StatGrid>
+
+The error backlog that used to need a dedicated hour to sort now arrives
+pre-groomed every hour: new errors and real spikes ranked by impact, checked
+against what's already tracked, and the top offenders already drafted as
+issues with the trace attached. The team spends its time deciding what to fix,
+not rediscovering what's broken.

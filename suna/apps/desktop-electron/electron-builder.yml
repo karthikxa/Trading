@@ -1,0 +1,141 @@
+# electron-builder packaging config. Replaces the Tauri bundle:
+# same appId/identifier, the kortix:// protocol, macOS ATS exceptions, and the
+# installer formats the web /download route resolves (.dmg / .exe / .AppImage).
+#
+# Icons live in build/ (icon.icns / icon.ico / icon.png) and are auto-detected.
+# Code signing / notarization are env-driven (CSC_LINK / APPLE_* / WIN_CSC_*) so
+# unsigned local builds work for testing; CI injects the secrets.
+appId: com.kortix.desktop
+productName: Kortix
+copyright: © Kortix
+
+# Publish target. We never auto-publish from electron-builder (CI uploads the
+# artifacts itself with --publish never), but a concrete provider is REQUIRED:
+# without it electron-builder can't infer one ("Cannot detect repository") and
+# crashes generating update metadata (computeChannelNames → channel of null).
+publish:
+  provider: github
+  owner: kortix-ai
+  repo: suna
+
+directories:
+  output: dist
+  buildResources: build
+
+# `version` comes from package.json; CI overrides it from the root VERSION file
+# via --config.extraMetadata.version=$VERSION.
+files:
+  - src/**/*
+  - assets/**/*
+  - package.json
+
+# The computer agent (@kortix/agent-tunnel), outside the asar so the OS service
+# can run it with this app's binary (ELECTRON_RUN_AS_NODE=1). Build it first:
+# `pnpm --filter @kortix/agent-tunnel build` (scripts/ensure-runtime.js does).
+extraResources:
+  - from: ../../packages/agent-tunnel/dist/agent-cli.js
+    to: agent-tunnel/agent-cli.js
+  # Beside the bundle: the agent reads its version from it, and it marks the
+  # bundle as an ES module.
+  - from: ../../packages/agent-tunnel/package.json
+    to: agent-tunnel/package.json
+
+# Registers the kortix:// deep-link scheme (auth callbacks) in the OS bundle.
+protocols:
+  - name: Kortix
+    schemes:
+      - kortix
+
+mac:
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  minimumSystemVersion: "10.15"
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Universal binary → ONE .dmg that runs natively on both Apple Silicon and
+  # Intel. Avoids the "wrong-arch download" bug and halves the CI mac matrix.
+  # The `zip` target is REQUIRED for auto-update: Squirrel.Mac (what
+  # electron-updater drives on macOS) installs from a zip, not the dmg. The dmg
+  # stays the user-facing first-install download; the zip is consumed only by the
+  # updater (referenced from latest-mac.yml). Both must ship in the release.
+  target:
+    - target: dmg
+      arch:
+        - universal
+    - target: zip
+      arch:
+        - universal
+  # macOS ATS exceptions so HTTP localhost / *.localhost sandbox previews load
+  # inside the in-app browser (same rationale as the Tauri Info.plist).
+  # Computer Use: the agent runs this driver embedded, so the macOS grants
+  # belong to Kortix (scripts/fetch-cua-driver.js). It is already a universal
+  # binary: x64ArchFiles lets the universal merge keep the one file.
+  extraResources:
+    - from: vendor/cua-driver/cua-driver
+      to: cua-driver/cua-driver
+  x64ArchFiles: Contents/Resources/cua-driver/cua-driver
+  extendInfo:
+    NSAppleEventsUsageDescription: Kortix agents use this to work with the apps on this computer when you allow Computer Use.
+    NSScreenCaptureUsageDescription: Kortix agents see this computer's screen when you allow Computer Use.
+    NSAppTransportSecurity:
+      NSAllowsArbitraryLoads: true
+      NSAllowsArbitraryLoadsInWebContent: true
+      NSAllowsLocalNetworking: true
+
+# Per-arch dmg name so the /download route can pick the right one
+# (e.g. Kortix-0.9.82-arm64.dmg / Kortix-0.9.82-x64.dmg).
+dmg:
+  title: Kortix ${version}
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  # Drag-to-install window, laid out like sindresorhus/create-dmg 8.1.0: a
+  # 660x400 window, 160pt icons, app left, Applications right. The background
+  # (build/background.png, merged with background@2x.png for Retina by
+  # dmg-builder) is a #102B53 ordered dither: its chevron sits between the icons.
+  # Source: the "Desktop DMG · dither install window" page in the Kortix Paper file.
+  background: build/background.png
+  iconSize: 160
+  contents:
+    - x: 180
+      y: 170
+    - x: 480
+      y: 170
+      type: link
+      path: /Applications
+
+win:
+  # Computer Use: the agent runs this driver embedded (scripts/fetch-cua-driver.js).
+  extraResources:
+    - from: vendor/cua-driver
+      to: cua-driver
+      filter:
+        - "*.exe"
+  # The symbol on the light rounded tile, 16 to 256 px. Generated from
+  # apps/web/public/favicon.svg by scripts/build-win-icon.py; do not hand-edit.
+  icon: build/icon.ico
+  target:
+    - nsis
+  artifactName: ${productName}-Setup-${version}.${ext}
+
+nsis:
+  # The installer, the uninstaller and the assisted-installer header carry the
+  # same tile icon as the app (build/icon.ico, scripts/build-win-icon.py).
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  # electron-builder 26 derives the binary name from package.json `name`
+  # (@kortix/desktop-electron), which it rejects for AppImage. Name it here.
+  executableName: kortix
+  icon: build/icon.png
+  category: Utility
+  target:
+    - AppImage
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+# No native modules to rebuild — keeps packaging fast.
+npmRebuild: false

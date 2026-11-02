@@ -1,0 +1,1050 @@
+/**
+ * Channel connectors (Slack + Email as first-class connectors).
+ *   • catalog — fixed channel action sets normalize to http bindings against
+ *     provider APIs, with native param names + correct verbs/risks.
+ *   • parse   — `provider="channel" platform="..."` round-trips; bad platform
+ *     and a declared auth table are rejected.
+ *   • gateway — channel calls build the right provider request with the install
+ *     token as a bearer, and Slack's HTTP-200 `{ok:false}` envelope is surfaced
+ *     as a real error (parity with the in-sandbox CLI's throw).
+ */
+import { config } from '../config';
+import { describe, expect, test } from 'bun:test';
+import {
+  EMAIL_CHANNEL_CONNECTOR_SLUG,
+  SLACK_CHANNEL_CONNECTOR_SLUG,
+  TEAMS_CHANNEL_CONNECTOR_SLUG,
+  channelApiBase,
+  channelCatalog,
+  channelDefaultSlug,
+} from '../connectors/channels';
+import {
+  type CallInput,
+  type GatewayAction,
+  type GatewayConnector,
+  type GatewayDeps,
+  handleCall,
+} from '../connectors/gateway';
+import type { NormalizedAction } from '../connectors/types';
+import { extractConnectors } from '../projects/connectors';
+import { parseManifestString } from '../projects/triggers';
+
+function expectDefined<T>(value: T | null | undefined): T {
+  expect(value).toBeDefined();
+  if (value == null) throw new Error('expected value to be defined');
+  return value;
+}
+
+function objectSchema(schema: NormalizedAction['inputSchema']): {
+  properties: Record<string, unknown>;
+  required?: string[];
+} {
+  expect(schema).toBeTruthy();
+  return schema as { properties: Record<string, unknown>; required?: string[] };
+}
+
+/* ─── catalog ─────────────────────────────────────────────────────────────── */
+
+describe('channelCatalog(slack)', () => {
+  const actions = channelCatalog('slack');
+  const byPath = new Map(actions.map((a) => [a.path, a]));
+  const action = (path: string) => expectDefined(byPath.get(path));
+
+  test('exposes the full native Slack surface as http bindings', () => {
+    // 15 native Web API methods (relay/typing/download/manifest/file-upload are CLI-side).
+    expect(actions.length).toBe(15);
+    for (const a of actions) {
+      expect(a.binding.kind).toBe('http');
+      if (a.binding.kind === 'http') expect(a.binding.path.startsWith('/')).toBe(true);
+    }
+  });
+
+  test('send_message → POST /chat.postMessage, write, channel required', () => {
+    const a = action('send_message');
+    expect(a.binding).toEqual({ kind: 'http', method: 'POST', path: '/chat.postMessage' });
+    expect(a.risk).toBe('write');
+    expect(objectSchema(a.inputSchema).required).toContain('channel');
+  });
+
+  test('get_history → GET /conversations.history, read', () => {
+    const a = action('get_history');
+    expect(a.binding).toEqual({ kind: 'http', method: 'GET', path: '/conversations.history' });
+    expect(a.risk).toBe('read');
+  });
+
+  test('delete_message is destructive; reactions use Slack native param names', () => {
+    expect(action('delete_message').risk).toBe('destructive');
+    const react = action('add_reaction');
+    const props = Object.keys(objectSchema(react.inputSchema).properties);
+    expect(props).toEqual(['channel', 'timestamp', 'name']); // not ts/emoji — Slack's own names
+  });
+
+  test('remove_reaction → POST /reactions.remove with the same params as add_reaction', () => {
+    const a = action('remove_reaction');
+    expect(a.binding).toEqual({ kind: 'http', method: 'POST', path: '/reactions.remove' });
+    expect(a.risk).toBe('write');
+    expect(objectSchema(a.inputSchema).required).toEqual(['channel', 'timestamp', 'name']);
+  });
+
+  test('auth_test has no inputs; unknown platform → empty', () => {
+    expect(action('auth_test').inputSchema).toBeNull();
+    expect(channelCatalog('nope')).toEqual([]);
+  });
+
+  test('api base', () => {
+    expect(channelApiBase('slack')).toBe('https://slack.com/api');
+  });
+
+  test('default slack channel slug is platform-owned, not the user connector namespace', () => {
+    expect(channelDefaultSlug('slack')).toBe(SLACK_CHANNEL_CONNECTOR_SLUG);
+    expect(SLACK_CHANNEL_CONNECTOR_SLUG).toBe('kortix_slack');
+  });
+});
+
+describe('channelCatalog(email)', () => {
+  const actions = channelCatalog('email');
+  const byPath = new Map(actions.map((a) => [a.path, a]));
+  const action = (path: string) => expectDefined(byPath.get(path));
+
+  test('exposes the Resend inbox/thread surface as http bindings', () => {
+    expect(actions.map((a) => a.path).sort()).toEqual([
+      'get_message',
+      'get_message_attachment',
+      'get_thread',
+      'list_messages',
+      'list_threads',
+      'reply_all_message',
+      'reply_message',
+      'search_messages',
+      'send_message',
+    ]);
+    for (const a of actions) {
+      expect(a.binding.kind).toBe('http');
+      if (a.binding.kind === 'http') expect(a.binding.path.startsWith('/')).toBe(true);
+    }
+  });
+
+  test('reply_message path params are marked for URL substitution', () => {
+    const a = action('reply_message');
+    expect(a.binding).toEqual({
+      kind: 'http',
+      method: 'POST',
+      path: '/inboxes/{inbox_id}/threads/{thread_id}/emails/{message_id}/reply',
+    });
+    const props = objectSchema(a.inputSchema).properties;
+    expect(props.inbox_id).toMatchObject({ 'x-in': 'path' });
+    expect(props.thread_id).toMatchObject({ 'x-in': 'path' });
+    expect(props.message_id).toMatchObject({ 'x-in': 'path' });
+    expect(a.risk).toBe('write');
+  });
+
+  test('connection-scoped actions do not require agents to supply inbox_id', () => {
+    expect(objectSchema(action('list_messages').inputSchema).required ?? []).not.toContain(
+      'inbox_id',
+    );
+    expect(objectSchema(action('list_threads').inputSchema).required ?? []).not.toContain(
+      'inbox_id',
+    );
+    expect(objectSchema(action('send_message').inputSchema).required ?? []).toEqual(['to']);
+    expect(objectSchema(action('reply_message').inputSchema).required ?? []).toEqual([
+      'thread_id',
+      'message_id',
+    ]);
+  });
+
+  test('describes opaque handles and URL transport without exposing base64', () => {
+    for (const path of ['send_message', 'reply_message', 'reply_all_message']) {
+      const props = objectSchema(action(path).inputSchema).properties;
+      const attachments = props.attachments as {
+        items: {
+          required: string[];
+          anyOf: Array<{ required: string[] }>;
+          properties: Record<string, { description: string }>;
+        };
+      };
+      expect(attachments.items.required).toEqual(['filename']);
+      expect(attachments.items.anyOf).toEqual([
+        { required: ['attachment_id'] },
+        { required: ['url'] },
+      ]);
+      expect(attachments.items.properties.attachment_id?.description).toContain('Opaque');
+      expect(attachments.items.properties.content).toBeUndefined();
+      expect(attachments.items.properties.url?.description).toContain('URL');
+    }
+  });
+
+  test('api base + default slug', () => {
+    expect(channelApiBase('email')).toBe('https://api.resend.com');
+    expect(channelDefaultSlug('email')).toBe(EMAIL_CHANNEL_CONNECTOR_SLUG);
+    expect(EMAIL_CHANNEL_CONNECTOR_SLUG).toBe('kortix_email');
+  });
+});
+
+/* ─── parse ───────────────────────────────────────────────────────────────── */
+
+function parse(body: string) {
+  return extractConnectors(parseManifestString(`project:\n  name: t\n${body}`));
+}
+
+describe('connectors provider: channel', () => {
+  test('slack platform parses', () => {
+    const { specs, errors } = parse(`
+connectors:
+  - slug: slack
+    provider: channel
+    platform: slack
+`);
+    expect(errors).toEqual([]);
+    expect(specs[0]).toMatchObject({ slug: 'slack', provider: 'channel', platform: 'slack' });
+  });
+
+  test('email platform parses', () => {
+    const { specs, errors } = parse(`
+connectors:
+  - slug: kortix_email
+    provider: channel
+    platform: email
+`);
+    expect(errors).toEqual([]);
+    expect(specs[0]).toMatchObject({
+      slug: 'kortix_email',
+      provider: 'channel',
+      platform: 'email',
+    });
+  });
+
+  test('missing / unknown platform is rejected', () => {
+    expect(
+      expectDefined(
+        parse(`
+connectors:
+  - slug: x
+    provider: channel
+`).errors[0],
+      ).error,
+    ).toMatch(/platform/);
+    expect(
+      expectDefined(
+        parse(`
+connectors:
+  - slug: x
+    provider: channel
+    platform: discord
+`).errors[0],
+      ).error,
+    ).toMatch(/platform/);
+  });
+
+  test('declaring [connectors.auth] is rejected (credential is the install token)', () => {
+    const { errors } = parse(`
+connectors:
+  - slug: slack
+    provider: channel
+    platform: slack
+    auth:
+      type: bearer
+`);
+    expect(expectDefined(errors[0]).error).toMatch(/install token/);
+  });
+});
+
+/* ─── gateway execution ───────────────────────────────────────────────────── */
+
+const SLACK: GatewayConnector = {
+  connectorId: 'conn-slack',
+  slug: SLACK_CHANNEL_CONNECTOR_SLUG,
+  provider: 'channel',
+  platform: 'slack',
+  baseUrl: 'https://slack.com/api',
+  auth: { type: 'bearer', in: 'header', name: null, prefix: null },
+  hasAuth: true,
+  credentialMode: 'shared',
+  enabled: true,
+};
+
+const EMAIL: GatewayConnector = {
+  connectorId: 'conn-email',
+  slug: EMAIL_CHANNEL_CONNECTOR_SLUG,
+  provider: 'channel',
+  platform: 'email',
+  baseUrl: 'https://api.resend.com',
+  auth: { type: 'bearer', in: 'header', name: null, prefix: null },
+  hasAuth: true,
+  credentialMode: 'shared',
+  enabled: true,
+};
+
+const SEND: GatewayAction = {
+  path: 'slack.send_message',
+  relPath: 'send_message',
+  inputSchema: { type: 'object', properties: { channel: {}, text: {} }, required: ['channel'] },
+  risk: 'write',
+  binding: { kind: 'http', method: 'POST', path: '/chat.postMessage' },
+};
+
+const EMAIL_REPLY: GatewayAction = {
+  path: 'email.reply_message',
+  relPath: 'reply_message',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      inbox_id: { 'x-in': 'path' },
+      thread_id: { 'x-in': 'path' },
+      message_id: { 'x-in': 'path' },
+      text: {},
+    },
+    required: ['inbox_id', 'thread_id', 'message_id'],
+  },
+  risk: 'write',
+  binding: {
+    kind: 'http',
+    method: 'POST',
+    path: '/inboxes/{inbox_id}/threads/{thread_id}/emails/{message_id}/reply',
+  },
+};
+
+const EMAIL_LIST_MESSAGES: GatewayAction = {
+  path: 'email.list_messages',
+  relPath: 'list_messages',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      inbox_id: { 'x-in': 'path' },
+      thread_id: { 'x-in': 'path' },
+      limit: {},
+    },
+  },
+  risk: 'read',
+  binding: { kind: 'http', method: 'GET', path: '/inboxes/{inbox_id}/threads/{thread_id}/emails' },
+};
+
+function makeDeps(body: string, status = 200) {
+  const fetchCalls: Array<{
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body?: string;
+  }> = [];
+  const deps: GatewayDeps = {
+    loadConnectorBySlug: async () => SLACK,
+    loadAction: async () => SEND,
+    resolveCredential: async () => 'xoxb-install-token',
+    loadPolicies: async () => [],
+    loadProjectPolicies: async () => [],
+    loadDefaultMode: async () => 'allow_all',
+    recordExecution: async () => null,
+    fetchImpl: async (url, init) => {
+      fetchCalls.push({ url, ...init });
+      return { status, ok: status >= 200 && status < 300, text: async () => body };
+    },
+  };
+  return { deps, fetchCalls };
+}
+
+const input: CallInput = {
+  projectId: 'proj-1',
+  accountId: 'acct-1',
+  subject: { userId: 'u1', groupIds: [] },
+  sessionId: 'sess-1',
+  connectorSlug: 'slack',
+  actionPath: 'send_message',
+  args: { channel: 'C123', text: 'hi' },
+};
+
+describe('handleCall — channel (slack)', () => {
+  test('builds the slack.com/api request, attaches the install token as bearer', async () => {
+    const { deps, fetchCalls } = makeDeps('{"ok":true,"ts":"123.45","channel":"C123"}');
+    const res = await handleCall(deps, input);
+    expect(res.status).toBe('ok');
+    const call = expectDefined(fetchCalls[0]);
+    expect(call.url).toBe('https://slack.com/api/chat.postMessage');
+    expect(call.method).toBe('POST');
+    expect(call.headers.Authorization).toBe('Bearer xoxb-install-token');
+    expect(JSON.parse(expectDefined(call.body))).toEqual({ channel: 'C123', text: 'hi' });
+  });
+
+  test('Slack {ok:false} (HTTP 200) is surfaced as an error, not a silent ok', async () => {
+    const { deps } = makeDeps('{"ok":false,"error":"channel_not_found"}');
+    const res = await handleCall(deps, input);
+    expect(res.status).toBe('error');
+    if (res.status === 'error') expect(res.reason).toMatch(/channel_not_found/);
+  });
+
+  test('legacy connector="slack" calls use the reserved channel connector before a user-defined slack connector', async () => {
+    const pipedreamSlack: GatewayConnector = {
+      connectorId: 'conn-user-pipedream-slack',
+      slug: 'slack',
+      provider: 'pipedream',
+      baseUrl: null,
+      auth: { type: 'none', in: 'header', name: null, prefix: null },
+      hasAuth: true,
+      credentialMode: 'shared',
+      enabled: true,
+    };
+    const getThread: GatewayAction = {
+      path: `${SLACK_CHANNEL_CONNECTOR_SLUG}.get_thread`,
+      relPath: 'get_thread',
+      inputSchema: {
+        type: 'object',
+        properties: { channel: {}, ts: {} },
+        required: ['channel', 'ts'],
+      },
+      risk: 'read',
+      binding: { kind: 'http', method: 'GET', path: '/conversations.replies' },
+    };
+    const fetchCalls: Array<{
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      body?: string;
+    }> = [];
+    const deps: GatewayDeps = {
+      loadConnectorBySlug: async (_projectId, slug) => {
+        if (slug === SLACK_CHANNEL_CONNECTOR_SLUG) return SLACK;
+        if (slug === 'slack') return pipedreamSlack;
+        return null;
+      },
+      loadAction: async (connectorId, relPath) =>
+        connectorId === SLACK.connectorId && relPath === 'get_thread' ? getThread : null,
+      resolveCredential: async (connector) =>
+        connector.provider === 'channel' ? 'xoxb-install-token' : 'pipedream-account-id',
+      loadPolicies: async () => [],
+      loadProjectPolicies: async () => [],
+      loadDefaultMode: async () => 'allow_all',
+      recordExecution: async () => null,
+      fetchImpl: async (url, init) => {
+        fetchCalls.push({ url, ...init });
+        return { status: 200, ok: true, text: async () => '{"ok":true,"messages":[]}' };
+      },
+    };
+
+    const res = await handleCall(deps, {
+      ...input,
+      connectorSlug: 'slack',
+      actionPath: 'get_thread',
+      args: { channel: 'C123', ts: '111.222' },
+    });
+
+    expect(res.status).toBe('ok');
+    expect(fetchCalls).toHaveLength(1);
+    const [call] = fetchCalls;
+    expect(call?.url).toBe('https://slack.com/api/conversations.replies?channel=C123&ts=111.222');
+    expect(call?.headers.Authorization).toBe('Bearer xoxb-install-token');
+  });
+});
+
+/**
+ * Teams refuses a read with 403 "… Resource specific consent grants on the
+ * request ''" when the Kortix app installed in that team holds no permission
+ * to read its messages. On dev (2026-10-01) the agent relayed "a Teams admin
+ * needs to grant that permission", which names nobody's next step. The
+ * refusal now names the fix; Graph's text stays after it.
+ */
+describe('handleCall — channel (teams): a read the installed app may not make', () => {
+  const TEAMS: GatewayConnector = {
+    connectorId: 'conn-teams',
+    slug: TEAMS_CHANNEL_CONNECTOR_SLUG,
+    provider: 'channel',
+    platform: 'teams',
+    baseUrl: 'https://graph.microsoft.com/v1.0',
+    auth: { type: 'bearer', in: 'header', name: null, prefix: null },
+    hasAuth: true,
+    credentialMode: 'shared',
+    enabled: true,
+  };
+  const LIST_REPLIES: GatewayAction = {
+    path: 'teams.list_replies',
+    relPath: 'list_replies',
+    inputSchema: {
+      type: 'object',
+      properties: { 'team-id': { 'x-in': 'path' }, 'channel-id': { 'x-in': 'path' }, 'message-id': { 'x-in': 'path' } },
+      required: ['team-id', 'channel-id', 'message-id'],
+    },
+    risk: 'read',
+    binding: { kind: 'http', method: 'GET', path: '/teams/{team-id}/channels/{channel-id}/messages/{message-id}/replies' },
+  };
+  const refusal = (permissions: string) =>
+    JSON.stringify({
+      error: {
+        code: 'Forbidden',
+        message: `Missing role permissions on the request. API requires one of '${permissions}'. Roles on the request ''. Resource specific consent grants on the request ''.`,
+      },
+    });
+  const read = async (body: string, status = 403) => {
+    const { deps } = makeDeps(body, status);
+    deps.loadConnectorBySlug = async () => TEAMS;
+    deps.loadAction = async () => LIST_REPLIES;
+    return handleCall(deps, {
+      ...input,
+      connectorSlug: TEAMS_CHANNEL_CONNECTOR_SLUG,
+      actionPath: 'list_replies',
+      args: { 'team-id': 'team-1', 'channel-id': 'channel-1', 'message-id': 'message-1' },
+    });
+  };
+
+  test('a team: the reason says who updates the app, where, and what to do when no update shows', async () => {
+    const res = await read(refusal('ChannelMessage.Read.All, ChannelMessage.Read.Group'));
+    expect(res.status).toBe('error');
+    if (res.status !== 'error') return;
+    expect(res.reason).toStartWith('Kortix cannot read messages in this team yet');
+    expect(res.reason).toContain('A team owner updates the app in Teams (the team → ⋯ → Manage team → Apps → Update)');
+    expect(res.reason).toContain('Connectors → Channels → Microsoft Teams');
+    // The Graph cause stays, for whoever debugs it.
+    expect(res.reason).toContain('ChannelMessage.Read.Group');
+  });
+
+  test('any other refusal keeps the plain upstream reason', async () => {
+    const res = await read(JSON.stringify({ error: { code: 'Forbidden', message: 'Insufficient privileges.' } }));
+    if (res.status !== 'error') throw new Error('expected an error');
+    expect(res.reason).toStartWith('upstream_403');
+  });
+});
+
+describe('handleCall — slack thread auto-bind', () => {
+  const SLACK_WITH_PLATFORM: GatewayConnector = { ...SLACK, platform: 'slack' };
+
+  function bindingDeps(body: string, bind?: GatewayDeps['bindSlackThread']) {
+    const { deps } = makeDeps(body);
+    const binds: Array<Parameters<NonNullable<GatewayDeps['bindSlackThread']>>[0]> = [];
+    deps.loadConnectorBySlug = async () => SLACK_WITH_PLATFORM;
+    deps.bindSlackThread = async (i) => {
+      binds.push(i);
+      return bind ? bind(i) : { bound: true, thread_ts: i.threadTs, session_id: i.sessionId };
+    };
+    return { deps, binds };
+  }
+
+  test('a top-level post binds the new message ts to the calling session, on the resolved DM channel', async () => {
+    const { deps, binds } = bindingDeps('{"ok":true,"ts":"1700000000.000100","channel":"D0DM"}');
+    const res = await handleCall(deps, { ...input, args: { channel: 'U0USER', text: 'hi' } });
+    expect(binds).toEqual([{ projectId: 'proj-1', sessionId: 'sess-1', channel: 'D0DM', threadTs: '1700000000.000100' }]);
+    expect(res).toMatchObject({
+      status: 'ok',
+      data: { ts: '1700000000.000100', thread_binding: { bound: true, thread_ts: '1700000000.000100', session_id: 'sess-1' } },
+    });
+  });
+
+  test('a threaded reply binds the thread root, not the reply ts', async () => {
+    const { deps, binds } = bindingDeps('{"ok":true,"ts":"200.2","channel":"C123"}');
+    await handleCall(deps, { ...input, args: { channel: 'C123', text: 'hi', thread_ts: '100.1' } });
+    expect(binds[0]?.threadTs).toBe('100.1');
+  });
+
+  test('a thread owned by another session is reported, not stolen', async () => {
+    const { deps } = bindingDeps('{"ok":true,"ts":"200.2","channel":"C123"}', async (i) => ({
+      bound: false,
+      thread_ts: i.threadTs,
+      reason: 'thread_bound_to_another_session',
+    }));
+    const res = await handleCall(deps, { ...input, args: { channel: 'C123', text: 'hi', thread_ts: '100.1' } });
+    expect(res).toMatchObject({
+      status: 'ok',
+      data: { thread_binding: { bound: false, reason: 'thread_bound_to_another_session' } },
+    });
+  });
+
+  test('a bind error keeps the delivered post ok and reports bind_failed', async () => {
+    const { deps } = bindingDeps('{"ok":true,"ts":"300.3","channel":"C123"}', async () => {
+      throw new Error('db down');
+    });
+    const res = await handleCall(deps, input);
+    expect(res).toMatchObject({ status: 'ok', data: { ts: '300.3', thread_binding: { bound: false, reason: 'bind_failed' } } });
+  });
+
+  test('no session on the token → no bind', async () => {
+    const { deps, binds } = bindingDeps('{"ok":true,"ts":"300.3","channel":"C123"}');
+    const res = await handleCall(deps, { ...input, sessionId: null });
+    expect(binds).toHaveLength(0);
+    expect((res as { data?: Record<string, unknown> }).data?.thread_binding).toBeUndefined();
+  });
+
+  test('a failed post → no bind', async () => {
+    const { deps, binds } = bindingDeps('{"ok":false,"error":"channel_not_found"}');
+    const res = await handleCall(deps, input);
+    expect(res.status).toBe('error');
+    expect(binds).toHaveLength(0);
+  });
+});
+
+describe('handleCall — channel (email)', () => {
+  test('resolves opaque handles to signed URLs only at provider execution and consumes on success', async () => {
+    const lifecycle: string[] = [];
+    const fetchCalls: Array<{ body?: string }> = [];
+    const deps: GatewayDeps = {
+      loadConnectorBySlug: async () => EMAIL,
+      loadAction: async () => EMAIL_REPLY,
+      resolveCredential: async () => 're_project_token',
+      loadPolicies: async () => [],
+      loadProjectPolicies: async () => [],
+      loadDefaultMode: async () => 'allow_all',
+      recordExecution: async () => null,
+      attachmentStore: {
+        stage: async () => {
+          throw new Error('not used');
+        },
+        claimForEmail: async (scope, args) => {
+          lifecycle.push(`claim:${scope.projectId}:${scope.sessionId}:${scope.userId}`);
+          return {
+            args: {
+              ...args,
+              attachments: [
+                {
+                  filename: 'memo.pdf',
+                  content_type: 'application/pdf',
+                  content_disposition: 'attachment',
+                  url: 'https://storage.test/signed-on-execute',
+                },
+              ],
+            },
+            claimToken: 'claim-1',
+            attachmentIds: ['019fc40d-04dd-7f52-a591-65ab13d2a245'],
+          };
+        },
+        completeClaim: async (claimToken) => {
+          lifecycle.push(`complete:${claimToken}`);
+        },
+        releaseClaim: async (claimToken) => {
+          lifecycle.push(`release:${claimToken}`);
+        },
+      },
+      fetchImpl: async (_url, init) => {
+        fetchCalls.push(init);
+        return { status: 200, ok: true, text: async () => '{"message_id":"msg-reply"}' };
+      },
+    };
+
+    const res = await handleCall(deps, {
+      ...input,
+      connectorSlug: 'email',
+      actionPath: 'reply_message',
+      args: {
+        inbox_id: 'inb_1',
+        message_id: 'msg_1',
+        text: 'Attached',
+        attachments: [
+          {
+            filename: 'memo.pdf',
+            content_type: 'application/pdf',
+            content_disposition: 'attachment',
+            attachment_id: '019fc40d-04dd-7f52-a591-65ab13d2a245',
+          },
+        ],
+      },
+    });
+
+    expect(res.status).toBe('ok');
+    expect(lifecycle).toEqual(['claim:proj-1:sess-1:u1', 'complete:claim-1']);
+    const providerBody = JSON.parse(expectDefined(fetchCalls[0]?.body));
+    // Resend fetches a reply's file from `path`; Kortix's own fields are dropped.
+    expect(providerBody.attachments[0]).toEqual({
+      filename: 'memo.pdf',
+      content_type: 'application/pdf',
+      path: 'https://storage.test/signed-on-execute',
+    });
+  });
+
+  test('releases a claim after a provider failure so the same approved call can retry', async () => {
+    const lifecycle: string[] = [];
+    const deps: GatewayDeps = {
+      loadConnectorBySlug: async () => EMAIL,
+      loadAction: async () => EMAIL_REPLY,
+      resolveCredential: async () => 're_project_token',
+      loadPolicies: async () => [],
+      loadProjectPolicies: async () => [],
+      loadDefaultMode: async () => 'allow_all',
+      recordExecution: async () => null,
+      attachmentStore: {
+        stage: async () => {
+          throw new Error('not used');
+        },
+        claimForEmail: async (_scope, args) => ({
+          args,
+          claimToken: 'claim-1',
+          attachmentIds: ['019fc40d-04dd-7f52-a591-65ab13d2a245'],
+        }),
+        completeClaim: async () => {
+          lifecycle.push('complete');
+        },
+        releaseClaim: async () => {
+          lifecycle.push('release');
+        },
+      },
+      fetchImpl: async () => ({
+        status: 500,
+        ok: false,
+        text: async () => '{"error":"provider_failed"}',
+      }),
+    };
+
+    const res = await handleCall(deps, {
+      ...input,
+      connectorSlug: 'email',
+      actionPath: 'reply_message',
+      args: {
+        inbox_id: 'inb_1',
+        message_id: 'msg_1',
+        attachments: [{ attachment_id: '019fc40d-04dd-7f52-a591-65ab13d2a245' }],
+      },
+    });
+
+    expect(res.status).toBe('error');
+    expect(lifecycle).toEqual(['release']);
+  });
+
+  test('does not claim or sign attachments while human approval is pending', async () => {
+    let claimCount = 0;
+    const deps: GatewayDeps = {
+      loadConnectorBySlug: async () => EMAIL,
+      loadAction: async () => EMAIL_REPLY,
+      resolveCredential: async () => 're_project_token',
+      loadPolicies: async () => [],
+      loadProjectPolicies: async () => [
+        { match: 'kortix_email.reply_message', action: 'require_approval', position: 0 },
+      ],
+      loadDefaultMode: async () => 'allow_all',
+      enforcePolicies: true,
+      recordExecution: async () => 'execution-1',
+      attachmentStore: {
+        stage: async () => {
+          throw new Error('not used');
+        },
+        claimForEmail: async (_scope, args) => {
+          claimCount++;
+          return { args, claimToken: null, attachmentIds: [] };
+        },
+        completeClaim: async () => {},
+        releaseClaim: async () => {},
+      },
+      fetchImpl: async () => {
+        throw new Error('provider must not run before approval');
+      },
+    };
+
+    const res = await handleCall(deps, {
+      ...input,
+      connectorSlug: 'email',
+      actionPath: 'reply_message',
+      args: {
+        inbox_id: 'inb_1',
+        message_id: 'msg_1',
+        attachments: [{ attachment_id: '019fc40d-04dd-7f52-a591-65ab13d2a245' }],
+      },
+    });
+
+    expect(res.status).toBe('pending_approval');
+    expect(claimCount).toBe(0);
+  });
+
+  test('legacy connector="email" calls use kortix_email and build Resend requests', async () => {
+    const fetchCalls: Array<{
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      body?: string;
+    }> = [];
+    const deps: GatewayDeps = {
+      loadConnectorBySlug: async (_projectId, slug) =>
+        slug === EMAIL_CHANNEL_CONNECTOR_SLUG ? EMAIL : null,
+      loadAction: async (connectorId, relPath) =>
+        connectorId === EMAIL.connectorId && relPath === 'reply_message' ? EMAIL_REPLY : null,
+      resolveCredential: async () => 're_project_token',
+      loadPolicies: async () => [],
+      loadProjectPolicies: async () => [],
+      loadDefaultMode: async () => 'allow_all',
+      recordExecution: async () => null,
+      fetchImpl: async (url, init) => {
+        fetchCalls.push({ url, ...init });
+        return { status: 200, ok: true, text: async () => '{"message_id":"msg-reply"}' };
+      },
+    };
+
+    const res = await handleCall(deps, {
+      ...input,
+      connectorSlug: 'email',
+      actionPath: 'reply_message',
+      args: { inbox_id: 'inb_1', thread_id: 'thr_1', message_id: 'msg_1', text: 'Thanks' },
+    });
+
+    expect(res.status).toBe('ok');
+    expect(fetchCalls).toHaveLength(1);
+    const call = expectDefined(fetchCalls[0]);
+    expect(call.url).toBe('https://api.resend.com/inboxes/inb_1/threads/thr_1/emails/msg_1/reply');
+    expect(call.method).toBe('POST');
+    expect(call.headers.Authorization).toBe('Bearer re_project_token');
+    expect(JSON.parse(expectDefined(call.body))).toEqual({ text: 'Thanks' });
+  });
+
+  test('email-originated sessions pin calls to the active inbox, thread and email', async () => {
+    const staleConnectionConnector: GatewayConnector = {
+      ...EMAIL,
+      connectorId: 'conn-email-stale-connection',
+      slug: 'email_old_connection',
+      connectionId: 'connection-active-inbox',
+      connectionMetadata: {
+        connector_slug: 'email_active_connection',
+        inbox_id: 'inb_active',
+      },
+    };
+    const fetchCalls: Array<{
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      body?: string;
+    }> = [];
+    const deps: GatewayDeps = {
+      loadConnectorBySlug: async (_projectId, slug) =>
+        slug === 'email_old_connection' ? staleConnectionConnector : null,
+      loadAction: async (connectorId, relPath) =>
+        connectorId === staleConnectionConnector.connectorId && relPath === 'reply_message'
+          ? EMAIL_REPLY
+          : null,
+      resolveCredential: async () => 're_stale_connection_token',
+      loadEmailSessionContext: async () => ({
+        inboxId: 'inb_active',
+        threadId: 'thr_active',
+        messageId: 'msg_active',
+      }),
+      resolveEmailCredentialForInbox: async (_projectId, inboxId) =>
+        inboxId === 'inb_active' ? 're_active_inbox_token' : null,
+      loadPolicies: async () => [],
+      loadProjectPolicies: async () => [],
+      loadDefaultMode: async () => 'allow_all',
+      recordExecution: async () => null,
+      fetchImpl: async (url, init) => {
+        fetchCalls.push({ url, ...init });
+        return { status: 200, ok: true, text: async () => '{"message_id":"msg-reply"}' };
+      },
+    };
+
+    const res = await handleCall(deps, {
+      ...input,
+      connectorSlug: 'email_old_connection',
+      actionPath: 'reply_message',
+      args: { inbox_id: 'inb_deleted', thread_id: 'thr_deleted', message_id: 'msg_deleted', text: 'Thanks' },
+    });
+
+    expect(res.status).toBe('ok');
+    expect(fetchCalls).toHaveLength(1);
+    const call = expectDefined(fetchCalls[0]);
+    expect(call.url).toBe(
+      'https://api.resend.com/inboxes/inb_active/threads/thr_active/emails/msg_active/reply',
+    );
+    expect(call.headers.Authorization).toBe('Bearer re_active_inbox_token');
+    expect(JSON.parse(expectDefined(call.body))).toEqual({ text: 'Thanks' });
+  });
+
+  test('email connector calls use the connection inbox instead of caller-provided inbox_id', async () => {
+    const connectionConnector: GatewayConnector = {
+      ...EMAIL,
+      connectorId: 'conn-email-connection',
+      slug: 'email_fabian_u7vq',
+    };
+    const fetchCalls: Array<{
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      body?: string;
+    }> = [];
+    const deps: GatewayDeps = {
+      loadConnectorBySlug: async (_projectId, slug) =>
+        slug === 'email_fabian_u7vq' ? connectionConnector : null,
+      loadAction: async (connectorId, relPath) =>
+        connectorId === connectionConnector.connectorId && relPath === 'list_messages'
+          ? EMAIL_LIST_MESSAGES
+          : null,
+      resolveCredential: async () => 're_connection_token',
+      loadEmailConnectorContext: async (_projectId, connectorSlug) =>
+        connectorSlug === 'email_fabian_u7vq' ? { inboxId: 'email-inbox@kortixmail.com' } : null,
+      loadPolicies: async () => [],
+      loadProjectPolicies: async () => [],
+      loadDefaultMode: async () => 'allow_all',
+      recordExecution: async () => null,
+      fetchImpl: async (url, init) => {
+        fetchCalls.push({ url, ...init });
+        return { status: 200, ok: true, text: async () => '{"messages":[]}' };
+      },
+    };
+
+    const res = await handleCall(deps, {
+      ...input,
+      sessionId: null,
+      connectorSlug: 'email_fabian_u7vq',
+      actionPath: 'list_messages',
+      args: { inbox_id: 'email_fabian_u7vq', thread_id: 'thr_1', limit: 1 },
+    });
+
+    expect(res.status).toBe('ok');
+    expect(fetchCalls).toHaveLength(1);
+    const call = expectDefined(fetchCalls[0]);
+    expect(call.url).toBe(
+      'https://api.resend.com/inboxes/email-inbox%40kortixmail.com/threads/thr_1/emails?limit=1',
+    );
+    expect(call.headers.Authorization).toBe('Bearer re_connection_token');
+  });
+});
+
+describe('handleCall — email send_message is a draft sent at once', () => {
+  test('creates the draft with inline file bytes, then sends it, as one call', async () => {
+    const EMAIL_SEND: GatewayAction = {
+      path: 'email.send_message',
+      relPath: 'send_message',
+      inputSchema: { type: 'object', properties: { inbox_id: { 'x-in': 'path' }, to: {}, subject: {}, text: {} } },
+      risk: 'write',
+      binding: { kind: 'http', method: 'POST', path: '/inboxes/{inbox_id}/drafts' },
+    };
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('file-bytes')) as unknown as typeof fetch;
+    const fetchCalls: Array<{ url: string; method: string; body?: string }> = [];
+    const deps: GatewayDeps = {
+      loadConnectorBySlug: async () => EMAIL,
+      loadAction: async () => EMAIL_SEND,
+      resolveCredential: async () => 're_project_token',
+      loadEmailConnectorContext: async () => ({ inboxId: 'inb_1' }),
+      loadPolicies: async () => [],
+      loadProjectPolicies: async () => [],
+      loadDefaultMode: async () => 'allow_all',
+      recordExecution: async () => null,
+      attachmentStore: {
+        stage: async () => {
+          throw new Error('not used');
+        },
+        claimForEmail: async (_scope, args) => ({
+          args: {
+            ...args,
+            // Kortix's own storage: read directly, not through the egress guard.
+            attachments: [
+              {
+                filename: 'memo.txt',
+                content_type: 'text/plain',
+                url: `${(config.SUPABASE_PUBLIC_URL ?? config.SUPABASE_URL).replace(/\/+$/, '')}/storage/v1/object/sign/memo`,
+              },
+            ],
+          },
+          claimToken: 'claim-1',
+          attachmentIds: ['019fc40d-04dd-7f52-a591-65ab13d2a245'],
+        }),
+        completeClaim: async () => {},
+        releaseClaim: async () => {},
+      },
+      fetchImpl: async (url, init) => {
+        fetchCalls.push({ url, method: init.method, body: init.body });
+        const body = url.endsWith('/send') ? '{"id":"email-sent-1"}' : '{"object":"inbox_draft","id":"draft-1"}';
+        return { status: 200, ok: true, text: async () => body };
+      },
+    };
+    try {
+      const res = await handleCall(deps, {
+        ...input,
+        sessionId: null,
+        connectorSlug: 'email',
+        actionPath: 'send_message',
+        args: {
+          to: ['someone@example.test'],
+          subject: 'Hi',
+          text: 'Hello',
+          attachments: [{ attachment_id: '019fc40d-04dd-7f52-a591-65ab13d2a245' }],
+        },
+      });
+      expect(res).toMatchObject({ status: 'ok' });
+      expect(fetchCalls.map((c) => `${c.method} ${c.url}`)).toEqual([
+        'POST https://api.resend.com/inboxes/inb_1/drafts',
+        'POST https://api.resend.com/inboxes/inb_1/drafts/draft-1/send',
+      ]);
+      const draft = JSON.parse(expectDefined(fetchCalls[0]?.body));
+      expect(draft.attachments).toEqual([
+        { filename: 'memo.txt', content_type: 'text/plain', content: Buffer.from('file-bytes').toString('base64') },
+      ]);
+      expect(res.status === 'ok' && res.data).toEqual({ id: 'email-sent-1' });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+// The agent read `slack history` and `slack thread` as raw Slack messages
+// (2026-10-02): `user: "U0…"` and no name, so its answers named people by id.
+// After the read-scope gate, the gateway names each message's author as
+// `user_name`; the `user` id stays for operations.
+describe('handleCall — Slack history and thread name each author', () => {
+  const SLACK_WITH_PLATFORM: GatewayConnector = { ...SLACK, platform: 'slack' };
+  const HISTORY: GatewayAction = {
+    path: 'slack.get_history',
+    relPath: 'get_history',
+    inputSchema: { type: 'object', properties: { channel: {}, limit: {} }, required: ['channel'] },
+    risk: 'read',
+    binding: { kind: 'http', method: 'GET', path: '/conversations.history' },
+  };
+  const THREAD: GatewayAction = {
+    path: 'slack.get_thread',
+    relPath: 'get_thread',
+    inputSchema: { type: 'object', properties: { channel: {}, ts: {} }, required: ['channel', 'ts'] },
+    risk: 'read',
+    binding: { kind: 'http', method: 'GET', path: '/conversations.replies' },
+  };
+  const BODY = JSON.stringify({
+    ok: true,
+    messages: [
+      { ts: '3.0', user: 'U0TEST1', text: 'ship it' },
+      { ts: '2.0', user: 'U0TEST2', text: 'which one?' },
+      { ts: '1.0', bot_id: 'B0TEST1', text: 'deploy 42 done' },
+      { ts: '0.5', user: 'U0TEST1', text: 'first' },
+    ],
+  });
+
+  function namingDeps(action: GatewayAction, names: Record<string, string> | Error = { U0TEST1: 'Sam Rivera' }) {
+    const { deps } = makeDeps(BODY);
+    const asked: Array<{ projectId: string; token: string; userIds: string[] }> = [];
+    deps.loadConnectorBySlug = async () => SLACK_WITH_PLATFORM;
+    deps.loadAction = async () => action;
+    deps.nameSlackUsers = async (i) => {
+      asked.push(i);
+      if (names instanceof Error) throw names;
+      return new Map(Object.entries(names));
+    };
+    return { deps, asked };
+  }
+
+  const authors = (res: Awaited<ReturnType<typeof handleCall>>) =>
+    ((res as { data?: { messages?: Array<Record<string, unknown>> } }).data?.messages ?? []).map((m) => [
+      m.user ?? null,
+      m.user_name ?? null,
+    ]);
+
+  test('history: each author Slack can name gains user_name, once per person; the id stays', async () => {
+    const { deps, asked } = namingDeps(HISTORY);
+    const res = await handleCall(deps, { ...input, actionPath: 'get_history', args: { channel: 'C123' } });
+
+    expect(res.status).toBe('ok');
+    expect(asked).toEqual([{ projectId: 'proj-1', token: 'xoxb-install-token', userIds: ['U0TEST1', 'U0TEST2'] }]);
+    expect(authors(res)).toEqual([
+      ['U0TEST1', 'Sam Rivera'],
+      ['U0TEST2', null],
+      [null, null],
+      ['U0TEST1', 'Sam Rivera'],
+    ]);
+  });
+
+  test('thread: replies are named the same way', async () => {
+    const { deps } = namingDeps(THREAD, { U0TEST1: 'Sam Rivera', U0TEST2: 'Alex Kim' });
+    const res = await handleCall(deps, { ...input, actionPath: 'get_thread', args: { channel: 'C123', ts: '0.5' } });
+    expect(authors(res)).toEqual([
+      ['U0TEST1', 'Sam Rivera'],
+      ['U0TEST2', 'Alex Kim'],
+      [null, null],
+      ['U0TEST1', 'Sam Rivera'],
+    ]);
+  });
+
+  test('a naming failure keeps the read ok and unchanged', async () => {
+    const { deps } = namingDeps(HISTORY, new Error('slack down'));
+    const res = await handleCall(deps, { ...input, actionPath: 'get_history', args: { channel: 'C123' } });
+    expect(res.status).toBe('ok');
+    expect(authors(res).every(([, name]) => name === null)).toBe(true);
+  });
+
+  test('a post is never named, even when its answer carries messages', async () => {
+    const { deps, asked } = namingDeps(SEND);
+    await handleCall(deps, input);
+    expect(asked).toHaveLength(0);
+  });
+});

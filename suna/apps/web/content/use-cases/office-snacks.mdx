@@ -1,0 +1,222 @@
+---
+title: "How we keep the office stocked"
+description: People request snacks through a Slack shortcut, and an agent batches the requests weekly, prepares an order, and posts it for the office manager to approve before placing anything.
+date: "2026-01-28"
+author: team
+tags:
+  - Operations
+  - Case Study
+  - Fun
+template: office-snacks
+---
+
+Keeping an office stocked is a small recurring chore that never quite has an
+owner. Requests come in over Slack, hallway conversations, and sticky notes; the
+office manager reconciles them into an order; and half the time a request is
+forgotten by the time the order goes in. It's low-stakes, but it's steady work.
+
+We handle it with an agent on Kortix. People request snacks through a Slack
+shortcut, and once a week the agent batches every request, prepares an order, and
+posts it for the office manager to approve. Nothing is placed until a person signs
+off.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Control surface">Slack</Fact>
+  <Fact label="Connected systems">Slack · Ordering account</Fact>
+  <Fact label="Mode">Weekly batch · human-gated</Fact>
+</KeyFacts>
+
+## The problem
+
+Snack requests arrive one at a time and out of band. Someone asks in a channel,
+someone else mentions it in passing, and the office manager is left assembling a
+list from memory. Requests get dropped, duplicates slip through, and the order
+goes in later than it should.
+
+The task is simple but constant. It needs one place to collect requests, a way to
+batch them on a schedule, and a person's sign-off before any money is spent — none
+of which a shared spreadsheet or a recurring calendar reminder actually provides.
+
+## What we built
+
+Requests come in through a Slack shortcut, so there's one place to submit them.
+Once a week a cron trigger spawns an isolated session that collects the week's
+requests, prepares an order against the ordering account, and posts the draft in
+Slack for the office manager to approve. Only after approval does it place
+anything.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the snack batching skill and the weekly trigger, and
+opens a change request for you to review. Prefer clicks? Choose **Use this
+template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a weekly office snacks agent in this project.
+
+1. Create the agent agents/office-snacks.md. Its job is to batch the week's snack requests into one draft order for the office manager to approve. It may read and post in #office through Slack, and it uses the ORDERING_ACCOUNT_API_KEY secret for the ordering account.
+
+2. Create the skill skills/snack-batching/SKILL.md with these rules:
+   - The cutoff is your last posted draft order in #office, or the last 7 days if there is none. Collect every snack-shortcut request since then.
+   - Merge duplicate and near-duplicate items into one line, add up the quantities and list every requester.
+   - Always add the standing staples: coffee beans, sparkling water and oat milk.
+   - Build the cart on Amazon within $150. When it runs over, trim the non-staple items with the fewest requesters first. Never check out.
+   - Post the draft with its total and say that nothing is purchased. Place the order only after the office manager writes an explicit approval in the draft's thread.
+
+3. Add a cron trigger weekly-snack-batch to kortix.yaml. It runs the office-snacks agent every Monday at 08:00 with the prompt "Load the snack-batching skill and run this week's snack-batching pass."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect Slack. Credentials are
+brokered server-side and never enter the agent's machine. Then add your
+ordering account's API key as the `ORDERING_ACCOUNT_API_KEY` secret, granted
+to this agent only.
+
+<ToolList>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com']]}>
+    Collects requests and posts the draft order for approval.
+  </ToolNeed>
+  <ToolNeed name="Amazon" domain="amazon.com" tag="Required" alternatives={[['Instacart', 'instacart.com']]}>
+    Builds the cart within budget and orders only after approval.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **office-snacks** agent
+and send this prompt. Check the cart and the total before you let the schedule
+take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run this week's snack-batching pass in #office.
+
+1. Find your last posted draft order in #office and collect every snack-shortcut request since then.
+2. Merge duplicates into one line each, with the total quantity and every requester.
+3. Add the standing staples: coffee beans, sparkling water and oat milk.
+4. Build the cart on Amazon within $150, and trim the least-requested items first if it runs over. Do not check out.
+5. Post the draft order with its total to #office, and say that nothing is purchased yet.`}
+/>
+
+</Step>
+<Step title="Let the weekly schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every Monday at 08:00, each run in a new session on its own cloud computer.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: weekly-snack-batch
+    name: Weekly snack batch
+    on:
+      cron: "0 0 8 * * 1"
+    run:
+      agent: office-snacks
+      prompt: Load the snack-batching skill and run this week's snack-batching pass.`}
+/>
+
+</Step>
+<Step title="Buy nothing without a written yes">
+
+The draft post is the only output of the weekly run. The agent checks out only
+after the office manager writes an explicit approval in the draft's thread.
+Silence, an emoji or a question is not approval. When the thread is still open
+at the next weekly run, its items roll into the new batch instead of a stale
+order.
+
+</Step>
+<Step title="Read the draft order">
+
+Each run ends with one draft order in the channel. This is what a run looks
+like in the session:
+
+<ExampleRun
+  title="Weekly snack batch · Mon 08:00"
+  message="Load the snack-batching skill and run this week's snack-batching pass."
+  worked="Worked for 1m 46s"
+  tools={[
+    'slack · search messages → #office',
+    'ordering account · search items × 11',
+    'ordering account · add to cart × 11',
+    'slack · post message → #office',
+  ]}
+  note="Illustrative example. Your cart depends on what people request."
+>
+  Collected **14** requests and merged them into **8** lines, plus the **3**
+  standing staples. The cart totals **$138.40** against the **$150** budget.
+  Nothing is purchased until the office manager approves in the thread.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  Collect requests through a Slack **channel** shortcut, batch them on a **cron
+  trigger**, keep the vendor and budget rules in **skills** and **memory**, and hold
+  the order at a **human approval gate** before it spends. One place in, one approved
+  order out.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Suggest new staples"
+  code="Once a month, list every item requested in three or more weeks and propose it as a standing staple in a change request."
+/>
+
+<CopyBlock
+  title="Label dietary needs"
+  code="Mark each line in the draft order as vegan, gluten-free or contains nuts when the vendor listing says so."
+/>
+
+<CopyBlock
+  title="Announce the delivery"
+  code="After an order is placed, post in #office on the morning it is due to arrive, with the list of what is coming."
+/>
+
+## Guardrails
+
+Because the agent can prepare an order that spends money, the controls matter even
+for a small chore:
+
+- **Isolation.** Each weekly run executes in its own isolated sandbox, and only the
+  prepared order and Slack post it's explicitly allowed to send are written back out.
+- **Scoped secrets.** The ordering-account credential is encrypted in the secrets
+  manager and injected into the sandbox at runtime, scoped to the agents you grant them to or
+  the logs.
+- **Human approval gates.** No purchase is placed until the office manager approves
+  the draft order in Slack.
+- **Everything is code.** The vendor, the budget, the staples, and the batching
+  schedule are files in the repo — versioned and changed through a reviewed
+  **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Weekly" label="Requests batched into one order on a schedule" />
+  <Stat value="One place" label="Every request comes in through a Slack shortcut" />
+  <Stat value="Approve first" label="Nothing is purchased without a person signing off" />
+</StatGrid>
+
+Requests stop getting lost, duplicates get consolidated, and the office manager
+reviews a finished order instead of assembling one. The spending step stays behind
+a person, so the automation saves the busywork without ever placing an order on
+its own.

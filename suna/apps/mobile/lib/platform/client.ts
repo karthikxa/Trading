@@ -1,0 +1,430 @@
+/**
+ * Platform API Client for Kortix Computer Mobile
+ *
+ * Communicates with the Computer backend to manage sandbox lifecycle
+ * and provides the sandbox URL for runtime session operations.
+ *
+ * All sandbox operations are proxied through:
+ *   {BACKEND_URL}/p/{sandboxId}/{containerPort}
+ */
+
+import { mapConcurrent } from './map-concurrent';
+import {
+  listProjectsForAccount,
+  listProjectSessions as listProjectSessionsSdk,
+} from '@/lib/projects/projects-client';
+import {
+  getLatestSandboxVersion as sdkGetLatestSandboxVersion,
+  getSandboxUrlForExternalId,
+  getServiceLogs as sdkGetServiceLogs,
+  listServices as sdkListServices,
+  reconcileServices as sdkReconcileServices,
+  type SandboxProviderName,
+  serviceAction as sdkServiceAction,
+} from '@kortix/sdk';
+// The SDK's kortix-master service wrappers are public via the
+// canonical `@kortix/sdk` root entry (client.ts re-exports the module).
+// Mobile's service fns delegate transport to them but keep soft-fail
+// semantics (null/false/[] on any error) — the SDK wrappers throw, and
+// mobile's callers treat failures as quiet degradation, not exceptions.
+
+// ─── Port Constants ──────────────────────────────────────────────────────────
+
+export const SANDBOX_PORTS = {
+  DESKTOP: '6080',
+  DESKTOP_HTTPS: '6081',
+  KORTIX_MASTER: '8000',
+  BROWSER_STREAM: '9223',
+  SSH: '22',
+} as const;
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+export type { SandboxProviderName } from '@kortix/sdk';
+
+export interface SandboxInfo {
+  sandbox_id: string;
+  external_id: string;
+  name: string;
+  provider: SandboxProviderName;
+  base_url: string;
+  status: string;
+  version?: string | null;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ProjectSummary {
+  project_id: string;
+  account_id: string;
+  name: string;
+  updated_at: string;
+}
+
+interface ProjectSessionSummary {
+  session_id: string;
+  account_id: string;
+  project_id: string;
+  sandbox_provider: SandboxProviderName | null;
+  sandbox_id: string;
+  sandbox_url: string | null;
+  name: string | null;
+  status: string;
+  error: string | null;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ProjectSessionSandbox {
+  sandbox_id: string;
+  session_id: string;
+  project_id: string;
+  account_id: string;
+  provider: SandboxProviderName;
+  external_id: string | null;
+  base_url: string | null;
+  status: string;
+  config?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Build the runtime URL for a sandbox.
+ * Pattern: {BACKEND_URL}/p/{externalId}/8000
+ */
+export function getSandboxUrl(sandboxExternalId: string): string {
+  return getSandboxUrlForExternalId(sandboxExternalId, Number(SANDBOX_PORTS.KORTIX_MASTER));
+}
+
+/**
+ * Build a URL to any port on the sandbox.
+ */
+export function getSandboxPortUrl(sandboxExternalId: string, port: string): string {
+  return getSandboxUrlForExternalId(sandboxExternalId, Number(port));
+}
+
+function normalizeSessionStatus(status: string | undefined): string {
+  if (status === 'running') return 'active';
+  if (status === 'queued' || status === 'branching' || status === 'provisioning')
+    return 'provisioning';
+  if (status === 'failed') return 'error';
+  if (status === 'stopped' || status === 'completed') return 'stopped';
+  return status || 'unknown';
+}
+
+// Derived from the session row alone: the listing never calls /start (that would
+// wake every sandbox), so no runtime record exists here.
+function toSandboxInfo(project: ProjectSummary, session: ProjectSessionSummary): SandboxInfo {
+  return {
+    sandbox_id: session.sandbox_id || session.session_id,
+    external_id:
+      session.sandbox_url?.match(/\/p\/([^/]+)\//)?.[1] || session.sandbox_id,
+    name: session.name || `${project.name} session`,
+    provider: session.sandbox_provider || 'platinum',
+    base_url: session.sandbox_url || '',
+    status: normalizeSessionStatus(session.status),
+    version: null,
+    metadata: {
+      ...(session.metadata || {}),
+      project_id: project.project_id,
+      session_id: session.session_id,
+      project_name: project.name,
+      error: session.error,
+    },
+    created_at: session.created_at,
+    updated_at: session.updated_at,
+  };
+}
+
+// The three helpers below used to hand-roll their own `fetch` + auth-header +
+// JSON-parse boilerplate (a private `apiFetch`, now removed) duplicating what
+// `@kortix/sdk`'s `backendApi` already does. They now go through
+// `lib/projects/projects-client.ts`, which itself re-exports
+// the `@kortix/sdk` root entry — same endpoints, same responses, just no
+// second hand-rolled REST client. Return values are narrowed to this file's
+// local `ProjectSummary`/`ProjectSessionSummary`/`ProjectSessionSandbox` view
+// types, which are structural subsets of the SDK's richer `KortixProject` /
+// `ProjectSession` / `ProjectSessionSandbox` shapes.
+
+async function listProjects(): Promise<ProjectSummary[]> {
+  return listProjectsForAccount();
+}
+
+async function listProjectSessions(projectId: string): Promise<ProjectSessionSummary[]> {
+  return listProjectSessionsSdk(projectId) as unknown as Promise<ProjectSessionSummary[]>;
+}
+
+async function listProjectSessionSandboxes(): Promise<
+  Array<{
+    project: ProjectSummary;
+    session: ProjectSessionSummary;
+    runtime: ProjectSessionSandbox | null;
+    sandbox: SandboxInfo;
+  }>
+> {
+  const projects = await listProjects();
+  const results: Array<{
+    project: ProjectSummary;
+    session: ProjectSessionSummary;
+    runtime: ProjectSessionSandbox | null;
+    sandbox: SandboxInfo;
+  }> = [];
+
+  // At most 4 session listings in flight; results keep the project order, so
+  // the ranking below is the same as a serial scan.
+  const sessionsByProject = await mapConcurrent(projects, 4, (project) =>
+    listProjectSessions(project.project_id).catch((): ProjectSessionSummary[] => [])
+  );
+
+  projects.forEach((project, index) => {
+    for (const session of sessionsByProject[index]) {
+      // Derive from the session row — do NOT call /start while listing, or every
+      // sandbox across every project would be woken. Single-session opens use it.
+      const runtime = null;
+      results.push({
+        project,
+        session,
+        runtime,
+        sandbox: toSandboxInfo(project, session),
+      });
+    }
+  });
+
+  return results.sort((a, b) => {
+    const priority: Record<string, number> = { active: 0, provisioning: 1, stopped: 2, error: 3 };
+    const statusDelta = (priority[a.sandbox.status] ?? 99) - (priority[b.sandbox.status] ?? 99);
+    if (statusDelta !== 0) return statusDelta;
+    return Date.parse(b.sandbox.updated_at) - Date.parse(a.sandbox.updated_at);
+  });
+}
+
+// ─── API Methods ─────────────────────────────────────────────────────────────
+
+/**
+ * List all project-session sandboxes from the DB: each project's first
+ * sessions page (Settings → Instances only).
+ */
+export async function listSandboxes(sandboxId?: string): Promise<SandboxInfo[]> {
+  try {
+    const rows = await listProjectSessionSandboxes();
+    return rows
+      .map((row) => row.sandbox)
+      .filter(
+        (sandbox) =>
+          !sandboxId || sandbox.sandbox_id === sandboxId || sandbox.external_id === sandboxId
+      );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Add a custom URL instance to the server store.
+ * POST /platform/sandbox with custom URL.
+ * For now this is a local-only operation — custom URLs are stored on-device.
+ */
+export interface CustomInstance {
+  id: string;
+  label: string;
+  url: string;
+}
+
+export async function checkInstanceHealth(url: string): Promise<string | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`${url}/kortix/health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Sandbox Update API ─────────────────────────────────────────────────────
+
+export interface ChangelogChange {
+  type: 'feature' | 'fix' | 'improvement' | 'breaking' | 'upstream' | 'security' | 'deprecation';
+  text: string;
+}
+
+export interface ChangelogEntry {
+  version: string;
+  date: string;
+  title: string;
+  description: string;
+  changes: ChangelogChange[];
+}
+
+export interface SandboxVersionInfo {
+  version: string;
+  channel?: string;
+  changelog: ChangelogEntry | null;
+}
+
+export type UpdatePhase =
+  | 'idle'
+  | 'pulling'
+  | 'stopping'
+  | 'removing'
+  | 'recreating'
+  | 'starting'
+  | 'health_check'
+  | 'complete'
+  | 'failed';
+
+export interface SandboxUpdateStatus {
+  phase: UpdatePhase;
+  progress: number;
+  message: string;
+  targetVersion: string | null;
+  previousVersion: string | null;
+  currentVersion: string | null;
+  error: string | null;
+  startedAt: string | null;
+  updatedAt: string | null;
+}
+
+export function getLatestSandboxVersion(): Promise<SandboxVersionInfo> {
+  return sdkGetLatestSandboxVersion();
+}
+
+export async function triggerSandboxUpdate(_version: string): Promise<void> {
+  throw new Error(
+    'Sandbox image updates are managed by project-session provisioning in the current API'
+  );
+}
+
+export async function getSandboxUpdateStatus(): Promise<SandboxUpdateStatus> {
+  return {
+    phase: 'idle',
+    progress: 0,
+    message: 'Project-session sandboxes do not expose legacy update status',
+    targetVersion: null,
+    previousVersion: null,
+    currentVersion: null,
+    error: null,
+    startedAt: null,
+    updatedAt: null,
+  };
+}
+
+export async function resetSandboxUpdateStatus(): Promise<void> {
+  return;
+}
+
+// ─── SSH API ────────────────────────────────────────────────────────────────
+
+export interface SSHConnectionInfo {
+  host: string;
+  port: number;
+  username: string;
+  provider: string;
+  key_name: string;
+  host_alias: string;
+  reconnect_command: string;
+  ssh_command: string;
+  ssh_config_entry: string;
+  ssh_config_command: string;
+}
+
+export interface SSHSetupResult extends SSHConnectionInfo {
+  private_key: string;
+  public_key: string;
+  setup_command: string;
+  agent_prompt: string;
+  key_comment: string;
+}
+
+export async function setupSSH(): Promise<SSHSetupResult> {
+  throw new Error('SSH setup is not exposed for project-session sandboxes');
+}
+
+export async function getSSHConnection(): Promise<SSHConnectionInfo> {
+  throw new Error('SSH connection details are not exposed for project-session sandboxes');
+}
+
+// ─── Running Services API ───────────────────────────────────────────────────
+
+export type SandboxServiceStatus = 'running' | 'stopped' | 'starting' | 'failed' | 'backoff';
+export type SandboxServiceAdapter = 'spawn' | 's6';
+export type SandboxServiceScope = 'bootstrap' | 'core' | 'project' | 'session';
+
+export interface SandboxService {
+  id: string;
+  name: string;
+  port: number;
+  pid: number;
+  framework: string;
+  sourcePath: string;
+  startedAt: string;
+  status: SandboxServiceStatus;
+  managed: boolean;
+  adapter?: SandboxServiceAdapter;
+  scope?: SandboxServiceScope;
+  desiredState?: 'running' | 'stopped';
+  builtin?: boolean;
+  autoStart?: boolean;
+}
+
+export type ServiceAction = 'start' | 'stop' | 'restart' | 'delete';
+
+export async function getSandboxServices(
+  sandboxUrl: string,
+  includeAll = false
+): Promise<SandboxService[]> {
+  try {
+    return (await sdkListServices(sandboxUrl, includeAll)) as SandboxService[];
+  } catch {
+    return [];
+  }
+}
+
+export async function sandboxServiceAction(
+  sandboxUrl: string,
+  serviceId: string,
+  action: ServiceAction
+): Promise<boolean> {
+  try {
+    await sdkServiceAction(sandboxUrl, serviceId, action);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function getSandboxServiceLogs(
+  sandboxUrl: string,
+  serviceId: string
+): Promise<string[]> {
+  try {
+    return await sdkGetServiceLogs(sandboxUrl, serviceId);
+  } catch {
+    return [];
+  }
+}
+
+export async function reconcileSandboxServices(
+  sandboxUrl: string,
+  reload = false
+): Promise<boolean> {
+  try {
+    await sdkReconcileServices(sandboxUrl, reload);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** @deprecated Use sandboxServiceAction instead */
+export async function stopSandboxService(sandboxUrl: string, serviceId: string): Promise<boolean> {
+  return sandboxServiceAction(sandboxUrl, serviceId, 'stop');
+}

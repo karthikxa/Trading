@@ -1,0 +1,19 @@
+{
+    "applinks": {
+        "apps": [],
+        "details": [
+            {
+                "appID": "T8G9J33433.com.kortix.app",
+                "paths": [
+                    "/share/*",
+                    "/auth/callback"
+                ]
+            }
+        ]
+    },
+    "webcredentials": {
+        "apps": [
+            "T8G9J33433.com.kortix.app"
+        ]
+    }
+}

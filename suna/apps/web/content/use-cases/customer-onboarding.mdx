@@ -1,0 +1,243 @@
+---
+title: "How we drive new customers to activation"
+description: The customer onboarding agent we run on Kortix — a daily cron that checks every new account against its onboarding milestones in Postgres, drafts a nudge email when one stalls, and alerts the owning CSM in Slack with the context to act.
+date: "2026-06-25"
+author: team
+tags:
+  - Customer Success
+  - Case Study
+  - Enterprise
+template: customer-onboarding
+---
+
+The first thirty days decide most renewals long before the renewal date shows
+up. An account that gets its workspace live, finishes setup, and hits its
+first real result in week one tends to stick. An account that signs and then
+goes quiet — no second login, no setup finished, no teammate invited — is
+already at risk, and usually nobody notices until the CSM happens to open
+HubSpot and wonder why an account they haven't heard from in three weeks is
+still on "customer since" last month.
+
+We run a customer-onboarding agent on Kortix that checks every new account
+against its onboarding milestones every day, catches the ones that are
+stalling, drafts a nudge for the customer, and alerts the owning CSM with
+exactly what's stuck and why. It never changes an account and never sends
+anything itself — it hands the CSM a head start instead of a surprise churn
+conversation two quarters later.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Daily cron</Fact>
+  <Fact label="Connected systems">Postgres · HubSpot · Slack · Email</Fact>
+  <Fact label="Mode">Draft + alert only · CSM sends</Fact>
+</KeyFacts>
+
+## The problem
+
+A new account's onboarding progress lives in two places that don't talk to
+each other: the product events and activation milestones sit in Postgres,
+and the account record — who owns it, when it became a customer — sits in
+HubSpot. Neither system on its own tells a CSM whether an account is on
+track. A login count means nothing without knowing what day of onboarding the
+account is on; a HubSpot record means nothing without knowing whether the
+account has actually done anything since it signed.
+
+The usual fallback is a CSM manually checking their book of accounts, or a
+dashboard that shows raw usage numbers with no sense of what "on track" even
+means for a given account's age. By the time a stalled account gets noticed,
+it's often past the point where a simple nudge would have fixed it.
+
+## What we built
+
+On Kortix, a daily cron triggers an agent that reads HubSpot for every
+account inside its onboarding window and owned by a CSM, checks that
+account's activation milestones and product events in Postgres, and
+classifies each one as on track, stalled at a specific milestone, or overdue
+for full activation. For every stalled or overdue account, it drafts a nudge
+email addressed to the customer's own missed step and posts an alert to the
+owning CSM's Slack with the specific context — what's done, what's stuck, and
+what the nudge says. The draft waits in the CSM's inbox; the CSM decides
+whether to send it, edit it, or reach out a different way.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the milestones skill and the daily trigger,
+and opens a change request for you to review. Prefer clicks? Choose **Use this
+template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a daily customer onboarding agent in this project.
+
+1. Create the agent agents/customer-onboarding.md. Its job is to track new accounts against their onboarding milestones and alert the owning CSM. It may use the HubSpot, PostgreSQL, Slack and Gmail connectors.
+
+2. Create the skill skills/onboarding-milestones/SKILL.md with these rules:
+   - An account is in onboarding when its closedate in HubSpot falls within the last 30 days.
+   - Expected milestones: workspace live by day 1, core setup by day 3, first activation event by day 7, team expansion by day 14, full activation by day 30.
+   - Read milestones and product events from PostgreSQL, read-only. An account is stalled at its earliest missed milestone, and overdue after 30 days without full activation.
+   - For each stalled or overdue account, draft a short nudge email about the one missed step. Never send it.
+   - Skip the draft when kortix_onboarding_last_nudge_milestone already equals the current stall. Write only that marker and its timestamp back to HubSpot.
+   - Alert the owning CSM in #cs-onboarding every day the stall persists, with the milestones done, the stall and the draft.
+
+3. Add a cron trigger daily-onboarding-check to kortix.yaml. It runs the customer-onboarding agent every day at 07:00 with the prompt "Load the onboarding-milestones skill and run today's onboarding check."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your CRM, your product
+database, Slack and your email. Credentials are brokered server-side and never enter the agent's machine.
+
+<ToolList>
+  <ToolNeed name="HubSpot" domain="hubspot.com" tag="Required" alternatives={[['Salesforce', 'salesforce.com']]}>
+    Reads accounts in the onboarding window and writes the nudge marker.
+  </ToolNeed>
+  <ToolNeed name="PostgreSQL" domain="postgresql.org" tag="Required" alternatives={[['Snowflake', 'snowflake.com'], ['BigQuery', 'cloud.google.com']]}>
+    Reads activation milestones and product events, read-only.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Gmail', 'gmail.com'], ['Microsoft Teams', 'teams.microsoft.com']]}>
+    Alerts the owning CSM with the stall and the drafted nudge.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **customer-onboarding** agent
+and send this prompt. Read the drafts and alerts before you let
+the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run today's onboarding check.
+
+1. Find HubSpot accounts whose closedate is within the last 30 days, and the CSM who owns each one.
+2. Read each account's activation milestones and product events from PostgreSQL. Read only.
+3. Mark each account as on track, stalled at a milestone, or overdue.
+4. For each stalled or overdue account, draft a nudge email in Gmail about the missed step, unless that stall was already nudged. Do not send it.
+5. Post an alert to #cs-onboarding for the CSM of each stalled or overdue account.
+6. Write only the nudge marker back to HubSpot.`}
+/>
+
+</Step>
+<Step title="Let the daily schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every day at 07:00, each run in a new session on its own cloud computer.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: daily-onboarding-check
+    name: Daily onboarding check
+    on:
+      cron: "0 0 7 * * *"
+    run:
+      agent: customer-onboarding
+      prompt: Load the onboarding-milestones skill and run today's onboarding check.`}
+/>
+
+</Step>
+<Step title="Draft nudges, never send them">
+
+The nudge email stays a draft in Gmail until the CSM reviews, edits and
+sends it. The agent never contacts the customer. It never changes a plan, a
+seat count, the deal stage or the owner. Its only HubSpot write is the nudge
+marker.
+
+</Step>
+<Step title="Read the CSM alerts">
+
+Each run ends with one alert per account that needs attention. This is what a
+run looks like in the session:
+
+<ExampleRun
+  title="Daily onboarding check · 07:00"
+  message="Load the onboarding-milestones skill and run today's onboarding check."
+  worked="Worked for 4m 05s"
+  tools={[
+    'hubspot · search companies',
+    'postgresql · query × 18',
+    'gmail · create draft × 3',
+    'slack · post message → #cs-onboarding × 4',
+    'hubspot · update company × 3',
+  ]}
+  note="Illustrative example. Your counts depend on your accounts and milestones."
+>
+  Checked **18** accounts in onboarding: **14** on track, **3** stalled and
+  **1** overdue. Drafted **3** nudges, one for each new stall. The overdue
+  account was nudged before, so its CSM got an alert only.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A daily **cron** spawns a session with read connectors into Postgres and
+  HubSpot. The milestone framework lives as a **skill**. The agent flags the
+  stall, drafts the nudge, and alerts the CSM; the CSM reviews, edits, and
+  sends.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Weekly cohort view"
+  code="Every Monday, post to #cs-onboarding how many accounts from each signup week reached each milestone."
+/>
+
+<CopyBlock
+  title="Celebrate activation"
+  code="When an account reaches full activation, tell its CSM in #cs-onboarding and name the day it got there."
+/>
+
+<CopyBlock
+  title="Catch silent accounts early"
+  code="If an account has no product events in its first 3 days, alert its CSM the same day, before core setup is due."
+/>
+
+## Guardrails
+
+The agent touches new, revenue-relevant accounts, so what it can do is narrow
+and explicit:
+
+- **Draft and alert only.** The agent never sends the nudge email itself and
+  never contacts the customer directly. The email is a draft in the CSM's
+  inbox until the CSM sends it.
+- **No account changes, ever.** The agent never touches a plan, a seat count,
+  a billing setting, or any other account state — in HubSpot or anywhere
+  else. It reports and drafts; it does not administer.
+- **Scoped writes.** The only thing the agent writes back to HubSpot is which
+  milestone a nudge was last drafted for — never the deal stage, the owner,
+  or any account property a CSM relies on.
+- **Isolation.** Every run happens in its own isolated sandbox. Credentials for
+  Postgres and HubSpot are encrypted in the Secrets Manager and injected at
+  runtime, scoped to the agents you grant them to.
+- **Everything is code.** The milestone framework, the stall thresholds, and
+  the per-system permissions are files in the repo, versioned and changed
+  through a reviewed **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every day" label="New accounts rechecked against live milestone data" />
+  <Stat value="0 sent" label="Emails sent or account settings changed automatically" />
+  <Stat value="5 milestones" label="Tracked from first login to full activation" />
+</StatGrid>
+
+Onboarding stalls that used to surface only when a CSM happened to look now
+arrive the same day they start, with the exact missed step and a nudge
+already written. The agent watches every new account and does the noticing;
+the CSM still decides what to send and when.

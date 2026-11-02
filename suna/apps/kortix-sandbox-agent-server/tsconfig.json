@@ -1,0 +1,57 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext"],
+    "types": ["bun"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "forceConsistentCasingInFileNames": true,
+    // The relay wire contract is SHARED with apps/api, not copied — a base64
+    // codec is far too risky to duplicate (blocked-headers.test.ts exists
+    // because a hand copy of ten strings drifted and broke every deployed
+    // daemon).
+    //
+    // It is reached through a tsconfig path and NOT through a package.json
+    // dependency, deliberately. This app is built STANDALONE: apps/sandbox/
+    // Dockerfile copies only its own package.json + bun.lock into the builder
+    // stage, and .github/workflows/ci.yml runs `bun install --frozen-lockfile`
+    // with this directory as the working directory. A `"workspace:*"` entry
+    // makes both of those fail outright — reproduced: `error: Workspace
+    // dependency "@kortix/api-contract" not found / Searched in "./*"`, exit 1,
+    // which red-lines the sandbox-agent-build job AND stops any new sandbox
+    // image from being produced. A path mapping costs no lockfile entry and is
+    // honoured by `bun run`, `bun test` and `bun build --compile` (verified).
+    // The Dockerfile places packages/api-contract at the matching relative
+    // path.
+    "paths": {
+      // `@/` is this package's src/. Imports that cross a top-level folder of
+      // src/ use it; imports inside one stay relative (ARCHITECTURE.md, enforced
+      // by the kortixd/import-style lint rule).
+      "@/*": ["./src/*"],
+      "@kortix/shared/ssrf-guard": ["../../packages/shared/src/ssrf-guard.ts"],
+      // The prompt envelopes a cross-session or room message arrives in: pi reads a
+      // turn's origin from them (the workflow origin gate). Both files import nothing.
+      "@kortix/shared/peer-message-prompt": ["../../packages/shared/src/peer-message-prompt.ts"],
+      "@kortix/shared/room-prompt": ["../../packages/shared/src/room-prompt.ts"],
+      "@kortix/api-contract/*": ["../../packages/api-contract/src/*"],
+      // pi mints message ids with the platform codec. The file imports nothing;
+      // the Dockerfiles copy it to the matching relative path.
+      "@kortix/sdk/wire-message-id": ["../../packages/sdk/src/core/session/wire-message-id.ts"],
+      // The mapped contract imports zod (runtime-relay.ts), and this standalone
+      // build installs zod only here. `scripts/build.sh` passes this tsconfig to
+      // `bun build` so the bundler resolves it the same way.
+      "zod": ["./node_modules/zod"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

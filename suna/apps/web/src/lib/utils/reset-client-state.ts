@@ -1,0 +1,147 @@
+import { clearDeviceCaches } from '@/lib/device-caches';
+import { getSharedQueryClient } from '@kortix/ui/internal/lib/query-client-singleton';
+import { clearUserLocalStorage } from '@/lib/utils/clear-local-storage';
+import { withTimeBudget } from '@kortix/ui/internal/lib/utils/time-budget';
+// A sanctioned reach into an SDK internal module. Sign-out must purge
+// the saved session copies the device keeps in IndexedDB, and that
+// cache is browser-only: it cannot be re-exported from `@kortix/sdk`, whose
+// isomorphic-core tier has to load in React Native, a worker, and a CLI.
+// The internal subpath is its canonical address. See CANONICAL_SDK_ENTRIES in
+// scripts/sdk-boundary.mjs.
+import { useCurrentAccountStore } from '@kortix/ui/internal/stores/current-account-store';
+import { resetAllRegisteredPersistedStores } from '@kortix/ui/internal/stores/persisted-store-registry';
+import { clearImpersonationSession } from '@kortix/sdk';
+import { resetIdentityState } from '@kortix/sdk/react';
+import { clearSessionIDBCache } from '@kortix/sdk/internal/idb-sync-cache'; // eslint-disable-line no-restricted-imports
+
+/**
+ * Wipe ALL client-side state tied to the signed-in user.
+ *
+ * Run on logout and whenever a *different* user signs in, so the next account
+ * never inherits the previous one's data. Covers, in order:
+ *   0. The device caches (`device-caches.ts`) — the persisted query cache and
+ *      the session saved copies stop writing, then forget this user.
+ *   1. React Query cache — every cached server response (accounts, projects,
+ *      sessions, billing, …). This is the big one that was missing.
+ *   2. The persisted "current account" selection (zustand + its localStorage).
+ *   3. Every OTHER persisted zustand store's IN-MEMORY state — via
+ *      `resetAllRegisteredPersistedStores()`, see `persisted-store-registry.ts`
+ *      — plus the SDK's impersonation session, which lives partly at module
+ *      scope (`current`/`hydrated` in
+ *      `packages/sdk/src/core/http/impersonation.ts`) and so cannot be forgotten
+ *      by deleting its sessionStorage key alone, and the SDK's per-user session
+ *      state (`resetIdentityState` from `@kortix/sdk/react`).
+ *   4. Remaining per-user localStorage AND sessionStorage — a PREFIX sweep,
+ *      not a delete-list; see `clear-local-storage.ts`. Runs AFTER step 3 so a
+ *      store that just had its in-memory state reset has nothing left to
+ *      re-persist.
+ *   5. Every saved session copy in IndexedDB (`clearSessionIDBCache`), for
+ *      every user, beyond the adopted user's copies step 0 clears.
+ *
+ * Safe to call from anywhere (no React context needed) — the QueryClient is
+ * read from the module-level singleton, so AuthProvider (mounted above the
+ * React Query provider) can use it too.
+ *
+ * **Steps 0-4 are SYNCHRONOUS and always complete. Step 5 is bounded and may
+ * be outrun.** That distinction is the contract, not an implementation detail:
+ * callers await this before publishing a new identity, and `clearSessionIDBCache()`
+ * could hang FOREVER — before database version 4, `openDB()` in
+ * `packages/sdk/src/browser/cache/idb-sync-cache.ts` had no `onblocked`
+ * handler, so an `indexedDB.open` needing a version upgrade while a stale tab
+ * held the old version fired neither `success` nor `error`, and the memoized
+ * promise parked every later caller. Unbounded, that meant a user could not
+ * sign out AND the app could park on its loading frame at sign-in, with no
+ * error shown either way. The bound stays: nothing else bounds IndexedDB.
+ *
+ * Outrunning step 5 is safe because every saved copy names its user, and the
+ * saved-copy store refuses a copy written for another user, so the next
+ * account cannot read them even if the purge never lands. Everything that would actually leak
+ * across identities is already gone by then.
+ *
+ * Does NOT clear `kortix_last_project`. That cookie is owner-bound
+ * (`<userId>:<projectId>`) and deliberately survives sign-out — the
+ * middleware reads its owner half to attribute a post-logout bounce. See
+ * `packages/ui/src/internal/lib/onboarding/last-project-cookie.ts` and the tripwire test at
+ * `lib/auth/sign-out-navigation.test.ts`.
+ */
+export async function resetClientState({
+  // Injectable ONLY so the "a hung IndexedDB purge still settles" test does not
+  // have to wait two real seconds. No caller passes it.
+  idbTimeoutMs,
+}: { idbTimeoutMs?: number } = {}): Promise<void> {
+  // First, and synchronously: the device caches stop writing before anything
+  // below empties the query cache, so the next user's queries can never be
+  // persisted under this user's key. The query cache is a `kortix.` key, so
+  // the sweep below removes it too; the saved copies are in IndexedDB, which
+  // the last step empties. The promise is not awaited; its `.catch` reports a purge rejection.
+  try {
+    void clearDeviceCaches().catch((error) => {
+      console.error('Failed to clear the device caches:', error);
+    });
+  } catch (error) {
+    console.error('Failed to clear the device caches:', error);
+  }
+
+  try {
+    getSharedQueryClient()?.clear();
+  } catch (error) {
+    console.error('Failed to clear React Query cache:', error);
+  }
+
+  try {
+    useCurrentAccountStore.getState().clear();
+  } catch (error) {
+    console.error('Failed to clear current-account store:', error);
+  }
+
+  // Does NOT statically import the stores it resets. Each persisted store
+  // registers its own reset at its OWN module scope (see
+  // `persisted-store-registry.ts`) so that `reset-client-state.ts` — reachable
+  // from every route through `AuthProvider` — cannot drag a feature-heavy
+  // store's transitive imports (e.g. `session-browser-store.ts` →
+  // `kortix-computer-store.ts` → the shiki-backed markdown renderer) into
+  // every route's initial JS chunk. `connectors-page.chunk.test.ts` is the
+  // regression this avoids; it was tripped once already during this change.
+  //
+  // NOT wrapped in try/catch, unlike every other step in this function — a
+  // throw here propagates and skips everything below it, including the
+  // localStorage sweep and the IndexedDB purge. Known gap, not closed here:
+  // closing it is a behaviour change (deciding what "reset" means when one
+  // store's reset throws), out of scope for a documentation-only pass.
+  resetAllRegisteredPersistedStores();
+
+  try {
+    clearImpersonationSession();
+  } catch (error) {
+    console.error('Failed to clear impersonation session:', error);
+  }
+
+  // The SDK's per-user in-memory state: transcripts, pending permission and
+  // question asks, turn receipts, and model picks. Without it a cross-tab
+  // sign-in keeps the previous user's transcripts on screen, and the next
+  // model pick writes the previous user's picks back to storage.
+  try {
+    resetIdentityState();
+  } catch (error) {
+    console.error('Failed to reset SDK identity state:', error);
+  }
+
+  try {
+    clearUserLocalStorage();
+  } catch (error) {
+    // Guarded, because it reaches `localStorage` directly, and reading that
+    // accessor THROWS in a storage-blocked context (Safari private mode, a
+    // partitioned iframe). `runSignOut` absorbs a rejection through
+    // `withTimeBudget`, but `AuthProvider.adoptUser` awaits this bare — so an
+    // UNGUARDED throw here would reject a SIGN-IN, before
+    // `setIsLoading(false)`. (`resetAllRegisteredPersistedStores()` above is
+    // the one call in this function that is NOT guarded this way — see its
+    // own comment.)
+    console.error('Failed to clear per-user localStorage:', error);
+  }
+
+  const purged = await withTimeBudget(clearSessionIDBCache(), idbTimeoutMs);
+  if (purged.status !== 'settled') {
+    console.error('[resetClientState] session IDB purge did not complete:', purged);
+  }
+}

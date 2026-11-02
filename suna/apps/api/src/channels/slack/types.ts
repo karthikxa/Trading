@@ -1,0 +1,156 @@
+import type { RuntimeQuestion } from '@kortix/api-contract/transcript';
+import type { StreamTaskChunk } from '../slack-api';
+
+/** A question the agent asks, as both harnesses send it (`kortix.transcript.v1`). */
+export type QuestionInfo = RuntimeQuestion;
+
+export interface LiveTurn {
+  channel: string;
+  ts: string;
+  token: string;
+  triggerTs: string;
+  steps: StreamTaskChunk[];
+  expiry: number;
+  finalized: boolean;
+  projectId: string;
+  sessionId: string;
+  teamId: string;
+  originatingEvent: SlackEvent;
+}
+
+export type ProjectResolution =
+  | { kind: 'project'; projectId: string }
+  | { kind: 'ambiguous'; projectIds: string[] }
+  | { kind: 'pending' }
+  | { kind: 'none' };
+
+export type SlashResponse = { response_type: 'ephemeral' | 'in_channel'; text?: string; blocks?: unknown[] };
+
+export interface SlashCtx {
+  teamId: string;
+  channelId: string;
+  // The Slack user who invoked the command (slash form `user_id`, or the DM
+  // sender). Drives `/login` / `/logout` / `whoami` identity and the settings
+  // permission check. May be '' on call sites that don't carry a user.
+  slackUserId: string;
+  command: string;
+  // Slack slash response_url — valid ~30 min / 5 uses. Used to post a deferred
+  // reply for subcommands too slow for the synchronous 3s window (agent list
+  // touches git). DB-only subcommands answer synchronously and ignore it.
+  responseUrl?: string;
+  // DM fallback path: the Assistant pane delivers `/kortix …` as a plain message
+  // (no response_url), so deferred subcommands post their result through this
+  // instead of `respondViaUrl`. Set only by the DM command runner.
+  deferredDeliver?: (resp: SlashResponse) => Promise<void>;
+  // Set for per-project/manual Slack apps. These apps do not switch projects:
+  // the webhook URL already scopes every event and command to one Kortix project.
+  projectScopedProjectId?: string;
+}
+
+export type EventClass = 'mention' | 'dm' | 'ignore';
+
+export interface HomeProjectRow { projectId: string; name: string; repoUrl: string }
+export interface HomeRecentRow { projectId: string; lastMessageAt: Date; threadId: string }
+
+export interface SlackEnvelope {
+  type: string;
+  team_id?: string;
+  challenge?: string;
+  event_id?: string;
+  event?: SlackEvent;
+}
+
+export interface SlackFile {
+  id: string;
+  created: number;
+  timestamp: number;
+  mimetype: string;
+  filetype: string;
+  pretty_type: string;
+  user: string;
+  size: number;
+  mode: string;
+  url_private: string;
+  url_private_download: string;
+  name?: string;
+  title?: string;
+}
+
+export interface SlackEvent {
+  type: string;
+  user?: string;
+  bot_id?: string;
+  channel?: string;
+  channel_type?: string;
+  text?: string;
+  files?: SlackFile[];
+  ts?: string;
+  thread_ts?: string;
+  subtype?: string;
+  team?: string;
+  tab?: 'home' | 'messages';
+  // Present on assistant_thread_started / assistant_thread_context_changed.
+  // The AI-Assistant DM pane delivers its own thread coordinates here (NOT on
+  // the top-level event), so the picker has to read channel/thread from this.
+  assistant_thread?: {
+    user_id?: string;
+    channel_id?: string;
+    thread_ts?: string;
+    context?: Record<string, unknown>;
+  };
+}
+
+/** A click on an agent question's button, carried to the follow-up (`spawnAgentTurn`). */
+export interface SlackQuestionPress {
+  /** The follow-up's idempotency key: one per click. */
+  key: string;
+  /** The stored question and option the button names (`kq:`). Absent: a button whose value carries its label (`{q,a}`), as posted before. */
+  button?: { pendingId: string; question: number; index: number };
+  responseUrl?: string;
+  /** The clicked message's blocks, from the click. */
+  blocks?: unknown[];
+}
+
+export interface SlackInteractionPayload {
+  type: string;
+  /** Single-use, expires in ~3s. Present on block_actions; required by views.open. */
+  trigger_id?: string;
+  /** Present on `view_submission`: the modal being submitted. */
+  view?: {
+    callback_id?: string;
+    private_metadata?: string;
+    state?: {
+      values?: Record<string, Record<string, { value?: string | null }>>;
+    };
+  };
+  // Present on shortcuts / message actions (type === 'message_action').
+  callback_id?: string;
+  team?: { id: string };
+  user?: { id: string };
+  channel?: { id: string };
+  /** The message the clicked block is on, with its blocks as Slack renders them. */
+  message?: { ts: string; thread_ts?: string; blocks?: unknown[] };
+  actions?: Array<{
+    action_id?: string;
+    value?: string;
+    url?: string;
+    text?: { type?: string; text?: string };
+    // static_select fires block_actions with the picked option here.
+    selected_option?: { value?: string; text?: { text?: string } } | null;
+  }>;
+  response_url?: string;
+  state?: {
+    values?: Record<
+      string,
+      Record<
+        string,
+        {
+          type?: string;
+          value?: string;
+          selected_option?: { value?: string } | null;
+          selected_options?: Array<{ value?: string }>;
+        }
+      >
+    >;
+  };
+}

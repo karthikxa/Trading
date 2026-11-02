@@ -1,0 +1,342 @@
+import { describe, expect, test } from 'bun:test';
+import { toolCallBlock, type ToolCallBlock, type ToolPart } from '@kortix/sdk';
+import { blocksOf } from '@/lib/testing/session-log';
+
+import {
+  DISCLOSURE_UNCAPPED_HEIGHT,
+  SHIMMER,
+  activityIconKey,
+  burstView,
+  disclosureBodyMaxHeight,
+  isStalePending,
+  isToolRunning,
+  isScrollPinnedToEnd,
+  parseErrorContent,
+  permissionLabel,
+  resolveDisclosureOpen,
+  samePartsList,
+  scrollFades,
+  shimmerBandCenter,
+  shimmerSpread,
+  toolDisplayName,
+  toolDurationMs,
+} from './activity';
+
+// ─── Fixtures ────────────────────────────────────────────────────────────────
+
+let seq = 0;
+
+function tool(
+  name: string,
+  status: 'pending' | 'running' | 'completed' | 'error',
+  state: Record<string, unknown> = {},
+): ToolPart {
+  seq += 1;
+  return {
+    type: 'tool',
+    id: `prt_${seq}`,
+    callID: `call_${seq}`,
+    tool: name,
+    sessionID: 's',
+    messageID: 'm',
+    state: { status, input: {}, ...(status === 'error' ? { error: 'boom' } : {}), ...state },
+  } as unknown as ToolPart;
+}
+
+/** One tool call as a block (`fromV1`, live). */
+function call(name: string, status: 'pending' | 'running' | 'completed' | 'error', state: Record<string, unknown> = {}): ToolCallBlock {
+  return toolCallBlock(tool(name, status, state));
+}
+
+function reasoning(text: string, time: { start?: number; end?: number } = { start: 1 }): unknown {
+  seq += 1;
+  return {
+    type: 'reasoning',
+    id: `prt_${seq}`,
+    sessionID: 's',
+    messageID: 'm',
+    text,
+    time,
+  };
+}
+
+// ─── Disclosure rule ─────────────────────────────────────────────────────────
+
+describe('resolveDisclosureOpen', () => {
+  test('follows the automatic state until the user toggles', () => {
+    expect(resolveDisclosureOpen({ auto: true })).toBe(true);
+    expect(resolveDisclosureOpen({ auto: false })).toBe(false);
+  });
+
+  test('the user choice wins permanently', () => {
+    expect(resolveDisclosureOpen({ userChoice: false, auto: true })).toBe(false);
+    expect(resolveDisclosureOpen({ userChoice: true, auto: false })).toBe(true);
+  });
+
+  test('forceOpen wins over a closed user choice', () => {
+    expect(resolveDisclosureOpen({ userChoice: false, auto: false, forceOpen: true })).toBe(true);
+  });
+});
+
+// ─── Burst running ───────────────────────────────────────────────────────────
+
+describe('burstView running (web burstIsRunning)', () => {
+  test('an idle turn is never running', () => {
+    expect(burstView(blocksOf([tool('bash', 'running')]), false, true).running).toBe(false);
+  });
+
+  test('the trailing burst stays running for the whole working turn', () => {
+    expect(burstView(blocksOf([tool('bash', 'completed')]), true, true).running).toBe(true);
+  });
+
+  test('an earlier burst runs only while it holds an unfinished part', () => {
+    expect(burstView(blocksOf([tool('bash', 'completed')]), true, false).running).toBe(false);
+    expect(burstView(blocksOf([tool('bash', 'pending')]), true, false).running).toBe(true);
+  });
+});
+
+// ─── Burst view ──────────────────────────────────────────────────────────────
+
+describe('burstView', () => {
+  test('one call gets the summary line that opens the sheet', () => {
+    const view = burstView(blocksOf([tool('bash', 'completed')]), false, false);
+    expect(view.hidden).toBe(false);
+    expect(view.steps).toHaveLength(1);
+    expect(view.title).toBe('Completed 1 step');
+  });
+
+  test('reasoning is not a step: a lone thought is hidden, and one beside a call is not counted', () => {
+    const lone = burstView(blocksOf([reasoning('plan', { start: 1, end: 2 })]), false, false);
+    expect(lone.hidden).toBe(true);
+    expect(lone.steps).toEqual([]);
+    const mixed = burstView(blocksOf([reasoning('plan', { start: 1, end: 2 }), tool('bash', 'completed')]), false, false);
+    expect(mixed.steps).toHaveLength(1);
+    expect(mixed.title).toBe('Completed 1 step');
+  });
+
+  test('a same-family group of 3 is ONE step row and summarises 3 calls', () => {
+    const view = burstView(blocksOf([tool('bash', 'completed'), tool('bash', 'completed'), tool('bash', 'completed')]),
+      false,
+      false,
+    );
+    expect(view.steps).toHaveLength(1);
+    expect(view.steps[0]?.kind).toBe('group');
+    expect(view.title).toBe('Completed 3 steps');
+  });
+
+  test('running title counts steps without failures', () => {
+    const view = burstView(blocksOf([tool('bash', 'error'), tool('read', 'running')]), true, true);
+    expect(view.running).toBe(true);
+    expect(view.title).toBe('Working · 2 steps');
+  });
+
+  test('settled titles carry the failure clause', () => {
+    expect(burstView(blocksOf([tool('bash', 'error'), tool('read', 'completed')]), false, false).title).toBe(
+      'Completed 1 of 2 steps · 1 failed',
+    );
+    expect(burstView(blocksOf([tool('bash', 'error'), tool('read', 'error')]), false, false).title).toBe(
+      '2 steps failed',
+    );
+  });
+
+  test('a burst of only plumbing renders nothing', () => {
+    const view = burstView(blocksOf([tool('get_mem', 'completed')]), false, false);
+    expect(view.steps).toHaveLength(0);
+    expect(view.hidden).toBe(true);
+  });
+
+  test('an answered question never shares a group row', () => {
+    const answered = () =>
+      tool('question', 'completed', {
+        input: { questions: [{ question: 'Which?' }] },
+        metadata: { answers: [['A']] },
+      });
+    const view = burstView(blocksOf([answered(), answered()]), false, false);
+    expect(view.steps.map((s) => s.kind)).toEqual(['block', 'block']);
+  });
+});
+
+describe('activityIconKey', () => {
+  test('maps tool names to the web icon families', () => {
+    expect(activityIconKey(call('read', 'completed'))).toBe('read');
+    expect(activityIconKey(call('write', 'completed'))).toBe('edit');
+    expect(activityIconKey(call('edit', 'completed'))).toBe('edit');
+    expect(activityIconKey(call('apply_patch', 'completed'))).toBe('edit');
+    expect(activityIconKey(call('bash', 'completed'))).toBe('shell');
+    expect(activityIconKey(call('glob', 'completed'))).toBe('search');
+    expect(activityIconKey(call('grep', 'completed'))).toBe('search');
+    expect(activityIconKey(call('list', 'completed'))).toBe('list');
+    expect(activityIconKey(call('web-search', 'completed'))).toBe('web');
+    expect(activityIconKey(call('webfetch', 'completed'))).toBe('web');
+    expect(activityIconKey(call('scrape-webpage', 'completed'))).toBe('web');
+    expect(activityIconKey(call('task', 'completed'))).toBe('delegate');
+    expect(activityIconKey(call('skill', 'completed'))).toBe('skill');
+    expect(activityIconKey(call('oc-read', 'completed'))).toBe('read');
+    expect(activityIconKey(call('linear/create_issue', 'completed'))).toBe('generic');
+    expect(activityIconKey(blocksOf([reasoning('x')])[0]!)).toBe('generic');
+  });
+});
+
+// ─── Tool row state ──────────────────────────────────────────────────────────
+
+describe('tool row state', () => {
+  test('an input-less pending part is stale only when the turn is not live', () => {
+    const part = call('write', 'pending');
+    expect(isStalePending(part, false)).toBe(true);
+    expect(isStalePending(part, true)).toBe(false);
+    expect(isToolRunning(part, false)).toBe(false);
+    expect(isToolRunning(part, true)).toBe(true);
+  });
+
+  test('a pending part with streamed raw input is not stale', () => {
+    const part = call('write', 'pending', { raw: '{"filePath":"a' });
+    expect(isStalePending(part, false)).toBe(false);
+    expect(isToolRunning(part, false)).toBe(true);
+  });
+
+  test('completed and error parts are not running', () => {
+    expect(isToolRunning(call('bash', 'completed'), true)).toBe(false);
+    expect(isToolRunning(call('bash', 'error'), true)).toBe(false);
+  });
+
+  test('duration only when both ends exist and end > start', () => {
+    expect(toolDurationMs(call('bash', 'completed', { time: { start: 10, end: 2010 } }))).toBe(2000);
+    expect(toolDurationMs(call('bash', 'completed', { time: { start: 10 } }))).toBeUndefined();
+    expect(toolDurationMs(call('bash', 'completed', { time: { start: 10, end: 5 } }))).toBeUndefined();
+  });
+
+  test('error display name splits the MCP server off the tool', () => {
+    expect(toolDisplayName('linear/create_issue')).toEqual({ display: 'Create Issue', server: 'linear' });
+    expect(toolDisplayName('web-search')).toEqual({ display: 'Web Search', server: null });
+  });
+
+  test('permission labels match web PERMISSION_LABELS', () => {
+    expect(permissionLabel('bash')).toBe('Run command');
+    expect(permissionLabel('doom_loop')).toBe('Repeated tool call');
+    expect(permissionLabel('custom_thing')).toBe('custom_thing');
+  });
+});
+
+// ─── Error parsing ───────────────────────────────────────────────────────────
+
+describe('parseErrorContent', () => {
+  test('strips a leading "Error: " and keeps plain text as the summary', () => {
+    expect(parseErrorContent('Error: ENOENT no such file')).toEqual({
+      summary: 'ENOENT no such file',
+      traceback: null,
+      errorType: null,
+      validationIssues: null,
+    });
+  });
+
+  test('splits a Python traceback off the summary', () => {
+    const parsed = parseErrorContent(
+      'Run failed\nTraceback (most recent call last):\n  File "a.py", line 1\nValueError: bad',
+    );
+    expect(parsed.summary).toBe('Run failed');
+    expect(parsed.errorType).toBe('ValueError');
+    expect(parsed.traceback?.startsWith('Traceback')).toBe(true);
+  });
+
+  test('splits a JS stack off the summary', () => {
+    const parsed = parseErrorContent('TypeError: x is undefined\n    at foo (a.js:1:1)');
+    expect(parsed.summary).toBe('TypeError: x is undefined');
+    expect(parsed.traceback).toBe('\n    at foo (a.js:1:1)');
+  });
+
+  test('reads validation issues from a JSON array', () => {
+    const parsed = parseErrorContent(
+      '[{"code":"invalid_enum","message":"Invalid option","path":["mode"],"values":["a","b"]}]',
+    );
+    expect(parsed.errorType).toBe('Validation Error');
+    expect(parsed.summary).toBe('mode: Invalid option');
+    expect(parsed.validationIssues).toEqual([
+      { code: 'invalid_enum', message: 'Invalid option', path: ['mode'], values: ['a', 'b'] },
+    ]);
+  });
+
+  test('a short identifier before ": " is the error type', () => {
+    expect(parseErrorContent('PermissionError: denied').errorType).toBe('PermissionError');
+  });
+});
+
+// ─── Memo comparison ─────────────────────────────────────────────────────────
+
+describe('samePartsList', () => {
+  test('equal when every element is the same reference, even in a new array', () => {
+    const a = tool('bash', 'completed');
+    const b = tool('read', 'completed');
+    expect(samePartsList([a, b], [a, b])).toBe(true);
+  });
+
+  test('different on a replaced element or a length change', () => {
+    const a = tool('bash', 'completed');
+    expect(samePartsList([a], [tool('bash', 'completed')])).toBe(false);
+    expect(samePartsList([a], [a, a])).toBe(false);
+  });
+});
+
+// ─── Text shimmer geometry ───────────────────────────────────────────────────
+
+describe('text shimmer', () => {
+  test('timing matches web: 2s sweep, 0.5s hold, 250% background, 2px per character', () => {
+    expect(SHIMMER.sweepMs).toBe(2000);
+    expect(SHIMMER.holdMs).toBe(500);
+    expect(SHIMMER.backgroundScale).toBe(2.5);
+    expect(SHIMMER.spreadPerChar).toBe(2);
+  });
+
+  test('spread is text length × 2px', () => {
+    expect(shimmerSpread('Thinking')).toBe(16);
+  });
+
+  test('the band centre sweeps from −0.25W to 1.25W (background-position 100% → 0%)', () => {
+    expect(shimmerBandCenter(0, 200)).toBeCloseTo(-50, 5);
+    expect(shimmerBandCenter(0.5, 200)).toBeCloseTo(100, 5);
+    expect(shimmerBandCenter(1, 200)).toBeCloseTo(250, 5);
+  });
+});
+
+// ─── Disclosure body height ──────────────────────────────────────────────────
+
+describe('disclosure body max height', () => {
+  test('fully open is uncapped, so nested opens and streaming growth are never clipped', () => {
+    expect(disclosureBodyMaxHeight(1, 120)).toBe(DISCLOSURE_UNCAPPED_HEIGHT);
+    // The height measured at open time is stale once content grows; it must not cap the body.
+    expect(disclosureBodyMaxHeight(1, 0)).toBe(DISCLOSURE_UNCAPPED_HEIGHT);
+    expect(DISCLOSURE_UNCAPPED_HEIGHT).toBeGreaterThan(100_000);
+  });
+
+  test('closed is 0', () => {
+    expect(disclosureBodyMaxHeight(0, 480)).toBe(0);
+  });
+
+  test('mid-animation follows the latest measured content height × progress', () => {
+    expect(disclosureBodyMaxHeight(0.5, 480)).toBeCloseTo(240, 5);
+    expect(disclosureBodyMaxHeight(0.25, 800)).toBeCloseTo(200, 5);
+  });
+
+  test('out-of-range progress and negative heights clamp', () => {
+    expect(disclosureBodyMaxHeight(-0.2, 480)).toBe(0);
+    expect(disclosureBodyMaxHeight(1.3, 480)).toBe(DISCLOSURE_UNCAPPED_HEIGHT);
+    expect(disclosureBodyMaxHeight(0.5, -10)).toBe(0);
+  });
+});
+
+// ─── Scroll fades ───────────────────────────────────────────────────────────
+
+describe('scroll fades', () => {
+  test('scroll fades: none when content fits, end only at the top, both mid-way, start only at the end', () => {
+    expect(scrollFades(0, 100, 199)).toEqual({ start: false, end: false });
+    expect(scrollFades(0, 400, 199)).toEqual({ start: false, end: true });
+    expect(scrollFades(100, 400, 199)).toEqual({ start: true, end: true });
+    expect(scrollFades(201, 400, 199)).toEqual({ start: true, end: false });
+  });
+
+  test('pinned to the newest text until the reader scrolls up, and again once back at the end', () => {
+    expect(isScrollPinnedToEnd(0, 100, 199)).toBe(true);
+    expect(isScrollPinnedToEnd(201, 400, 199)).toBe(true);
+    expect(isScrollPinnedToEnd(190, 400, 199)).toBe(true);
+    expect(isScrollPinnedToEnd(50, 400, 199)).toBe(false);
+  });
+});

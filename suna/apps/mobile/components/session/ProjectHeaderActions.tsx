@@ -1,0 +1,61 @@
+/**
+ * ProjectHeaderActions — the right end of the floating header on project home,
+ * in a thread, and on a connecting session: the agent pill (`children`), and
+ * optionally a `···` button after it.
+ *
+ * The `···` button opened the project sheet (`CustomizeSheet`), which is
+ * deleted (COR-123/COR-160 Task 3). Project home and the connecting state
+ * pass no `onOpenMore`, so it never renders there. The thread's is back
+ * (COR-140 Task 5): `ProjectScreen` passes `onOpenMore` for the open thread's
+ * project session, opening `SessionActionsSheet`.
+ *
+ * Share has no header button (Jay, 2026-09-27): it is a row in that sheet.
+ *
+ * `-mr-2.5` mirrors `MenuButton`'s `-ml-2.5`: the last control's right edge
+ * sits on the page's 16pt padding edge. When the `···` button is absent, the
+ * pill itself must hold that edge — callers pass `edge={false}` on the pill
+ * only when `onOpenMore` is also passed.
+ *
+ * On iOS 26+ the `···` button sits on a Liquid Glass circle, like the
+ * hamburger across the row (`MenuButton glass`; Jay, 2026-10-20), and drops the
+ * `-mr-2.5` pull so the visible circle sits on the padding edge. Android and
+ * older iOS keep the plain ghost button.
+ */
+import * as React from 'react';
+import { Keyboard, View } from 'react-native';
+
+import { HEADER_BUTTON_SIZE, HEADER_ICON_SIZE } from '@/components/kortix/header-button';
+import { LIQUID_GLASS_AVAILABLE, LiquidGlassCapsule } from '@/components/kortix/liquid-glass-capsule';
+import { Button } from '@/components/ui/button';
+import { Icon } from '@/components/ui/icon';
+import { DotsThreeIcon } from '@/lib/icons';
+
+interface ProjectHeaderActionsProps {
+  /** Omit to hide the `···` button. */
+  onOpenMore?: () => void;
+  /** Controls before the `···` (the thread's `SubAgentHeaderChip`). */
+  children?: React.ReactNode;
+}
+
+export function ProjectHeaderActions({ onOpenMore, children }: ProjectHeaderActionsProps) {
+  return (
+    <View className="shrink flex-row items-center">
+      {children}
+      {onOpenMore ? (
+        <Button
+          variant="ghost"
+          size={HEADER_BUTTON_SIZE}
+          className={LIQUID_GLASS_AVAILABLE ? 'rounded-full' : '-mr-2.5 rounded-full bg-background'}
+          onPress={() => {
+            Keyboard.dismiss();
+            onOpenMore();
+          }}
+          accessibilityLabel="Session actions"
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          {LIQUID_GLASS_AVAILABLE ? <LiquidGlassCapsule /> : null}
+          <Icon as={DotsThreeIcon} size={HEADER_ICON_SIZE} className="text-foreground" />
+        </Button>
+      ) : null}
+    </View>
+  );
+}

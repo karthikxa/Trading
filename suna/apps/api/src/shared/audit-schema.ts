@@ -1,0 +1,90 @@
+import { z } from '@hono/zod-openapi';
+
+/**
+ * Every `actor_type` the writer emits. `anonymous` is a request no
+ * authenticator identified: the request audit writes it instead of skipping
+ * the request. `null` is an older row written before the column existed.
+ */
+export const AUDIT_ACTOR_TYPES = [
+  'human',
+  'agent',
+  'service_account',
+  'system',
+  'anonymous',
+] as const;
+
+export const AuditActorTypeSchema = z.enum(AUDIT_ACTOR_TYPES);
+
+/** Public canonical audit contract shared by account, project, and session routes. */
+export const AuditEventSchema = z
+  .object({
+    event_id: z.string().uuid(),
+    occurred_at: z.string(),
+    account_id: z.string().uuid().nullable(),
+    project_id: z.string().uuid().nullable(),
+    session_id: z.string().nullable(),
+    opencode_session_id: z.string().nullable(),
+    turn_id: z.string().nullable(),
+    message_id: z.string().nullable(),
+    tool_call_id: z.string().nullable(),
+    execution_id: z.string().nullable(),
+    session_sequence: z
+      .number()
+      .int()
+      .nullable()
+      .describe('Deprecated. Set only on rows written before 2026-10; null for newer rows.'),
+    actor_user_id: z.string().uuid().nullable(),
+    actor_type: AuditActorTypeSchema.nullable(),
+    agent_id: z.string().nullable(),
+    agent_name: z.string().nullable(),
+    initiator_actor_type: z.string().nullable(),
+    initiator_actor_id: z.string().nullable(),
+    /** The human an agent session acted on behalf of; null otherwise. */
+    on_behalf_of_user_id: z.string().uuid().nullable(),
+    parent_event_id: z.string().uuid().nullable(),
+    delegation_depth: z.number().int(),
+    source: z.string().nullable(),
+    authoritative_source: z.string().nullable(),
+    client_reported_source: z.string().nullable(),
+    credential_kind: z.string().nullable(),
+    credential_id: z.string().nullable(),
+    credential_name: z.string().nullable(),
+    outcome: z.enum(['success', 'failure', 'denied', 'pending', 'expired']).nullable(),
+    action: z.string(),
+    phase: z.string(),
+    resource_type: z.string(),
+    resource_id: z.string().nullable(),
+    http_status: z.number().int().nullable(),
+    duration_ms: z.number().int().nullable(),
+    request_id: z.string().nullable(),
+    trace_id: z.string().nullable(),
+    correlation_id: z.string().nullable(),
+    causation_id: z.string().nullable(),
+    source_ledger: z.string().nullable(),
+    source_record_id: z.string().nullable(),
+    source_revision: z.string().nullable(),
+    input_summary: z.record(z.unknown()).nullable(),
+    output_summary: z.record(z.unknown()).nullable(),
+    input_sha256: z.string().nullable(),
+    output_sha256: z.string().nullable(),
+    error_code: z.string().nullable(),
+    error_message: z.string().nullable(),
+    integrity_previous_hash: z
+      .string()
+      .nullable()
+      .describe('Deprecated. The hash chain left ingestion in 2026-10; null for newer rows.'),
+    integrity_hash: z.string().nullable().describe('Deprecated. Null for rows written since 2026-10.'),
+    before: z.record(z.unknown()).nullable(),
+    after: z.record(z.unknown()).nullable(),
+    ip: z.string().nullable(),
+    user_agent: z.string().nullable(),
+    metadata: z.record(z.unknown()),
+  })
+  .openapi('AuditEvent');
+
+export const AuditListSchema = z
+  .object({
+    events: z.array(AuditEventSchema),
+    next_cursor: z.string().nullable(),
+  })
+  .openapi('AuditEventList');

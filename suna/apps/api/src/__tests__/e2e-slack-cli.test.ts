@@ -1,0 +1,637 @@
+/**
+ * End-to-end coverage for the in-sandbox channel CLIs, `slack` and `teams`.
+ * Each test runs the real Bun entrypoint against a live fake Kortix API, so
+ * nothing touches real Slack or Microsoft Teams.
+ *
+ * - `slack`: command parsing, project-explicit Connector routing, turn-stream
+ *   relays, file upload and download, manifest fetching, and structured
+ *   upload and download denials.
+ * - `teams`: `download` (owner-only file write, structured denial) and
+ *   `conversations` (listing, structured denial in the shared `API_ERROR`
+ *   envelope).
+ */
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { SLACK_CHANNEL_CONNECTOR_SLUG, undeclaredChannelArg } from '../connectors/channels';
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const SLACK_CLI_ENTRY = resolve(REPO_ROOT, 'apps/sandbox/slack-cli/channels/slack.ts');
+const TEAMS_CLI_ENTRY = resolve(REPO_ROOT, 'apps/sandbox/slack-cli/channels/teams.ts');
+const CONNECTOR_CLI_ENTRY = resolve(REPO_ROOT, 'apps/cli/src/index.ts');
+
+const PROJECT = 'proj-slack-cli';
+const SESSION = 'sess-slack-cli';
+const TOKEN = 'kortix_test_slack_cli';
+
+interface World {
+  connector: Array<{ connector: string; action: string; args: Record<string, unknown> }>;
+  turns: Array<Record<string, unknown>>;
+  uploads: Array<Record<string, unknown>>;
+  downloads: string[];
+  manifests: string[];
+  reservedFailure:
+    | null
+    | 'connector_not_found'
+    | 'action_not_found'
+    | 'needs_auth'
+    | 'missing_auth_token';
+  /** What the file, upload, and conversations routes answer with (403), to
+   *  reproduce the API's structured denial. */
+  denial: Record<string, unknown> | null;
+  /** `thread_binding` the fake connector returns on send_message; null = omitted (older API). */
+  sendBinding: Record<string, unknown> | null;
+  /** thread_ts → owning session, for the fake bind-thread route. */
+  threadOwners: Record<string, string>;
+  binds: Array<Record<string, unknown>>;
+}
+
+// The API's structured denial (apps/api/src/iam/denial-message.ts): `error` is
+// a boolean flag and the reason is in `message`.
+function structuredDenial(action: string): Record<string, unknown> {
+  return {
+    error: true,
+    message: `This agent session is not granted "${action}". Add it to the agent's kortix_permissions in kortix.yaml and merge the change.`,
+    status: 403,
+    code: 'agent_scope_insufficient',
+    action,
+  };
+}
+
+let world: World;
+let server: ReturnType<typeof Bun.serve>;
+let apiUrl: string;
+let tempDir: string;
+
+type CliObject = Record<string, unknown>;
+type CliOutput = CliObject | string;
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function slackDataFor(action: string, args: Record<string, unknown>): unknown {
+  switch (action) {
+    case 'send_message':
+      return { ok: true, ts: '111.222', channel: args.channel };
+    case 'update_message':
+      return { ok: true, ts: args.ts, channel: args.channel };
+    case 'delete_message':
+    case 'add_reaction':
+    case 'remove_reaction':
+      return { ok: true };
+    case 'get_history':
+      return { ok: true, messages: [{ type: 'message', text: 'history', channel: args.channel }] };
+    case 'get_thread':
+      return {
+        ok: true,
+        messages: [
+          { type: 'message', text: 'root', ts: args.ts },
+          { type: 'message', text: 'reply' },
+        ],
+      };
+    case 'list_channels':
+      return { ok: true, channels: [{ id: 'C1', name: 'general' }] };
+    case 'channel_info':
+      return { ok: true, channel: { id: args.channel, name: 'incidents' } };
+    case 'join_channel':
+      return { ok: true, channel: { id: args.channel, name: 'joined' } };
+    case 'list_users':
+      return { ok: true, members: [{ id: 'U1', name: 'alice' }] };
+    case 'user_info':
+      return { ok: true, user: { id: args.user, name: 'alice' } };
+    case 'auth_test':
+      return {
+        ok: true,
+        user_id: 'Ubot',
+        user: 'kortix',
+        team: 'Kortix',
+        team_id: 'T1',
+        bot_id: 'B1',
+      };
+    case 'search_messages':
+      return { ok: true, messages: { matches: [{ text: 'hit', channel: { id: 'C1' } }] } };
+    case 'file_info':
+      return { ok: true, file: { id: args.file, name: 'report.md' } };
+    default:
+      return { ok: false, error: `unhandled_test_action:${action}` };
+  }
+}
+
+function asObject(value: CliOutput): CliObject {
+  expect(typeof value).toBe('object');
+  return value as CliObject;
+}
+
+interface RunOpts {
+  ok?: boolean;
+}
+
+type Run = (args: string[], opts?: RunOpts) => Promise<CliOutput>;
+
+/** Spawns one channel CLI entrypoint (`slack.ts` or `teams.ts`) as a real
+ *  `bun` process against the fake API and parses its stdout. */
+async function runCli(entry: string, args: string[], opts: RunOpts = {}): Promise<CliOutput> {
+  const expectOk = opts.ok ?? true;
+  const proc = Bun.spawn({
+    cmd: ['bun', entry, ...args],
+    cwd: REPO_ROOT,
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      KORTIX_API_URL: apiUrl,
+      KORTIX_TOKEN: TOKEN,
+      KORTIX_PROJECT_ID: PROJECT,
+      KORTIX_SESSION_ID: SESSION,
+      KORTIX_CLI_BIN: CONNECTOR_CLI_ENTRY,
+    },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  expect(stderr).toBe('');
+  if (expectOk) expect(exitCode).toBe(0);
+  else expect(exitCode).not.toBe(0);
+
+  const trimmed = stdout.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return trimmed;
+  return JSON.parse(trimmed);
+}
+
+const runSlack: Run = (args, opts) => runCli(SLACK_CLI_ENTRY, args, opts);
+const runTeams: Run = (args, opts) => runCli(TEAMS_CLI_ENTRY, args, opts);
+
+/** `slack download` and `teams download` fetch through the platform file
+ *  proxy. A denied capability answers with `{ error: true, message, … }`; the
+ *  reason must reach the agent, never the bare boolean. */
+async function expectDownloadDenied(run: Run): Promise<void> {
+  world.denial = structuredDenial('project.connector.read');
+  const outPath = join(tempDir, 'denied', 'file.bin');
+  const out = asObject(
+    await run(['download', '--url', 'https://files.example.com/F1', '--out', outPath], {
+      ok: false,
+    }),
+  );
+  expect(out).toMatchObject({
+    ok: false,
+    error: `Download failed: HTTP 403: ${world.denial.message}`,
+    code: 'API_ERROR',
+    status: 403,
+  });
+  expect(String(out.error)).not.toContain('true');
+  expect(existsSync(outPath)).toBe(false);
+  expect(world.downloads).toHaveLength(0);
+}
+
+beforeEach(() => {
+  tempDir = mkdtempSync(join(tmpdir(), 'kortix-slack-cli-test-'));
+  world = {
+    connector: [],
+    turns: [],
+    uploads: [],
+    downloads: [],
+    manifests: [],
+    reservedFailure: null,
+    denial: null,
+    sendBinding: null,
+    threadOwners: {},
+    binds: [],
+  };
+  server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (req.headers.get('authorization') !== `Bearer ${TOKEN}`) {
+        return json({ error: 'unauthorized' }, 401);
+      }
+
+      if (url.pathname === `/v1/projects/${PROJECT}/turn-stream`) {
+        const body = (await req.json()) as Record<string, unknown>;
+        world.turns.push(body);
+        return json({ ok: true });
+      }
+
+      if (url.pathname === `/v1/connectors/projects/${PROJECT}/call`) {
+        const body = (await req.json()) as {
+          connector: string;
+          action: string;
+          args?: Record<string, unknown>;
+        };
+        const call = { connector: body.connector, action: body.action, args: body.args ?? {} };
+        world.connector.push(call);
+        if (body.connector === SLACK_CHANNEL_CONNECTOR_SLUG && world.reservedFailure) {
+          if (world.reservedFailure === 'missing_auth_token') {
+            return json({ error: true, message: 'Missing authentication token' }, 401);
+          }
+          return json(
+            { ok: false, status: 'denied', reason: world.reservedFailure },
+            world.reservedFailure === 'needs_auth' ? 403 : 404,
+          );
+        }
+        if (body.connector !== SLACK_CHANNEL_CONNECTOR_SLUG && body.connector !== 'slack') {
+          return json({ ok: false, status: 'denied', reason: 'connector_not_found' }, 404);
+        }
+        const data = slackDataFor(body.action, body.args ?? {}) as Record<string, unknown>;
+        if (body.action === 'send_message' && world.sendBinding) data.thread_binding = world.sendBinding;
+        return json({ ok: true, data, risk: 'read' });
+      }
+
+      if (url.pathname === `/v1/projects/${PROJECT}/channels/slack/bind-thread`) {
+        const body = (await req.json()) as { thread_ts: string; force?: boolean };
+        world.binds.push(body);
+        const owner = world.threadOwners[body.thread_ts];
+        if (owner && owner !== SESSION && !body.force) {
+          return json(
+            {
+              error: `this Slack thread is bound to session ${owner}; replies in it go to that session. Re-run with --force`,
+              code: 'THREAD_BOUND_TO_ANOTHER_SESSION',
+              bound: false,
+            },
+            409,
+          );
+        }
+        world.threadOwners[body.thread_ts] = SESSION;
+        return json({
+          ok: true,
+          bound: true,
+          thread_ts: body.thread_ts,
+          session_id: SESSION,
+          ...(owner && owner !== SESSION ? { rebound_from: owner } : {}),
+        });
+      }
+
+      if (url.pathname === `/v1/projects/${PROJECT}/channels/slack/file/upload`) {
+        const body = (await req.json()) as Record<string, unknown>;
+        if (world.denial) return json(world.denial, 403);
+        world.uploads.push(body);
+        return json({ ok: true, files: [{ id: 'F1', name: body.filename }] });
+      }
+
+      const download = url.pathname.match(
+        new RegExp(`^/v1/projects/${PROJECT}/channels/(slack|teams)/file$`),
+      );
+      if (download) {
+        if (world.denial) return json(world.denial, 403);
+        world.downloads.push(url.searchParams.get('url') ?? '');
+        return new Response(`downloaded from ${download[1]}`, { status: 200 });
+      }
+
+      if (url.pathname === `/v1/projects/${PROJECT}/channels/teams/conversations`) {
+        if (world.denial) return json(world.denial, 403);
+        return json({
+          conversations: [{ conversationId: 'a:1', name: 'General', type: 'channel' }],
+        });
+      }
+
+      if (url.pathname === `/v1/webhooks/slack/${PROJECT}/manifest`) {
+        world.manifests.push(url.searchParams.get('name') ?? '');
+        return json({ display_information: { name: url.searchParams.get('name') ?? 'Kortix' } });
+      }
+
+      return json({ error: `unexpected ${url.pathname}` }, 404);
+    },
+  });
+  apiUrl = `http://127.0.0.1:${server.port}`;
+});
+
+afterEach(() => {
+  server.stop(true);
+  rmSync(tempDir, { recursive: true, force: true });
+});
+
+describe('slack CLI', () => {
+  test('maps every Slack Web API command to the reserved channel connector', async () => {
+    const cases: Array<{
+      args: string[];
+      action: string;
+      expectedArgs: Record<string, unknown>;
+      expectOutput?: Record<string, unknown>;
+    }> = [
+      {
+        args: ['send', '--channel', 'C1', '--text', 'hi', '--thread', '123.45'],
+        action: 'send_message',
+        expectedArgs: { channel: 'C1', mrkdwn: true, text: 'hi', thread_ts: '123.45' },
+        expectOutput: { ts: '111.222', channel: 'C1' },
+      },
+      {
+        args: ['edit', '--channel', 'C1', '--ts', '111.222', '--text', 'updated'],
+        action: 'update_message',
+        expectedArgs: { channel: 'C1', ts: '111.222', text: 'updated' },
+      },
+      {
+        args: ['delete', '--channel', 'C1', '--ts', '111.222'],
+        action: 'delete_message',
+        expectedArgs: { channel: 'C1', ts: '111.222' },
+      },
+      {
+        args: ['react', '--channel', 'C1', '--ts', '111.222', '--emoji', 'white_check_mark'],
+        action: 'add_reaction',
+        expectedArgs: { channel: 'C1', timestamp: '111.222', name: 'white_check_mark' },
+      },
+      {
+        args: ['unreact', '--channel', 'C1', '--ts', '111.222', '--emoji', 'eyes'],
+        action: 'remove_reaction',
+        expectedArgs: { channel: 'C1', timestamp: '111.222', name: 'eyes' },
+      },
+      {
+        args: ['history', '--channel', 'C1', '--limit', '3'],
+        action: 'get_history',
+        expectedArgs: { channel: 'C1', limit: '3' },
+      },
+      {
+        args: ['thread', '--channel', 'C1', '--ts', '111.222', '--limit', '2'],
+        action: 'get_thread',
+        expectedArgs: { channel: 'C1', ts: '111.222', limit: '2' },
+      },
+      {
+        args: ['channels', '--limit', '4'],
+        action: 'list_channels',
+        expectedArgs: {
+          limit: '4',
+          types: 'public_channel,private_channel',
+          exclude_archived: 'true',
+        },
+      },
+      {
+        args: ['channel-info', '--channel', 'C1'],
+        action: 'channel_info',
+        expectedArgs: { channel: 'C1' },
+      },
+      {
+        args: ['join', '--channel', 'C1'],
+        action: 'join_channel',
+        expectedArgs: { channel: 'C1' },
+      },
+      { args: ['users', '--limit', '5'], action: 'list_users', expectedArgs: { limit: '5' } },
+      { args: ['user', '--id', 'U1'], action: 'user_info', expectedArgs: { user: 'U1' } },
+      { args: ['me'], action: 'auth_test', expectedArgs: {} },
+      {
+        args: ['search', '--query', 'from:@marko'],
+        action: 'search_messages',
+        expectedArgs: { query: 'from:@marko' },
+      },
+      { args: ['file-info', '--file', 'F1'], action: 'file_info', expectedArgs: { file: 'F1' } },
+    ];
+
+    for (const c of cases) {
+      world.connector = [];
+      const out = asObject(await runSlack(c.args));
+      expect(out.ok).toBe(true);
+      if (c.expectOutput) expect(out).toMatchObject(c.expectOutput);
+      expect(world.connector).toHaveLength(1);
+      expect(world.connector[0]).toEqual({
+        connector: SLACK_CHANNEL_CONNECTOR_SLUG,
+        action: c.action,
+        args: c.expectedArgs,
+      });
+      // The gateway refuses an argument the action does not declare.
+      expect(undeclaredChannelArg('slack', c.action, c.expectedArgs)).toBeNull();
+    }
+    // 15 cases, and `runSlack` spawns a real `bun` process for each one. That
+    // is ~3s on a developer laptop and 29.2s on a GitHub-hosted 4-vCPU runner
+    // (Tests run 38028768393), so a 30s budget timed it out on 2 of 2 runs of
+    // the staging promotion #9512. A timeout kills the child mid-flight and
+    // surfaces as a hang, not as anything wrong with the CLI. Budget 3x.
+  }, 90_000);
+
+  test('covers non-Connector commands: help, typing, turn stream, file upload/download, manifest', async () => {
+    expect(String(await runSlack(['help']))).toContain('slack — Slack Web API adapter');
+
+    const typing = asObject(await runSlack(['typing', '--channel', 'C1']));
+    expect(typing.ok).toBe(true);
+    expect(String(typing.note)).toContain('typing indicators');
+    expect(world.connector).toHaveLength(0);
+
+    const step = asObject(
+      await runSlack([
+        'step',
+        'Reading logs',
+        '--detail',
+        'Last hour',
+        '--output',
+        '2 errors',
+        '--source',
+        'https://example.com/logs|Logs',
+      ]),
+    );
+    expect(step).toMatchObject({ ok: true, relayed: true });
+    expect(world.turns.at(-1)).toMatchObject({
+      session_id: SESSION,
+      kind: 'step',
+      text: 'Reading logs',
+      detail: 'Last hour',
+      output: '2 errors',
+    });
+    expect(world.turns.at(-1)?.sources).toEqual([
+      { url: 'https://example.com/logs', text: 'Logs' },
+    ]);
+
+    const answer = asObject(
+      await runSlack([
+        'send',
+        '--text',
+        'Done',
+        '--blocks',
+        '[{"type":"section","text":{"type":"mrkdwn","text":"*Done*"}}]',
+      ]),
+    );
+    expect(answer).toMatchObject({ ok: true, delivered: 'stream', mode: 'blocks' });
+    expect(world.turns.at(-1)).toMatchObject({ session_id: SESSION, kind: 'answer', text: 'Done' });
+
+    const uploadPath = join(tempDir, 'report.txt');
+    writeFileSync(uploadPath, 'hello slack');
+    const uploaded = asObject(
+      await runSlack([
+        'send',
+        '--channel',
+        'C1',
+        '--thread',
+        '111.222',
+        '--file',
+        uploadPath,
+        '--text',
+        'Report',
+      ]),
+    );
+    expect(uploaded).toMatchObject({ ok: true, channel: 'C1' });
+    expect(world.uploads[0]).toMatchObject({
+      channel: 'C1',
+      filename: 'report.txt',
+      comment: 'Report',
+      thread_ts: '111.222',
+    });
+    expect(Buffer.from(String(world.uploads[0]?.content_base64), 'base64').toString()).toBe(
+      'hello slack',
+    );
+
+    const downloadPath = join(tempDir, 'download.txt');
+    const downloaded = asObject(
+      await runSlack(['download', '--url', 'https://files.slack.com/F1', '--out', downloadPath]),
+    );
+    expect(downloaded).toMatchObject({ ok: true, path: downloadPath, size: 21 });
+    expect(readFileSync(downloadPath, 'utf8')).toBe('downloaded from slack');
+    expect(world.downloads).toEqual(['https://files.slack.com/F1']);
+
+    const manifest = asObject(await runSlack(['manifest', '--name', 'Test Slack App']));
+    expect(manifest).toMatchObject({
+      ok: true,
+      manifest: { display_information: { name: 'Test Slack App' } },
+    });
+    expect(world.manifests).toEqual(['Test Slack App']);
+    // Same reason as above: this one spawns the CLI seven times.
+  }, 30_000);
+
+  test('reports where thread replies go on every send path, and --force moves a foreign thread', async () => {
+    world.sendBinding = { bound: true, thread_ts: '111.222', session_id: SESSION };
+    const bound = asObject(await runSlack(['send', '--channel', 'U1', '--text', 'Approve?']));
+    expect(bound.thread_binding).toEqual({ bound: true, thread_ts: '111.222', session_id: SESSION });
+
+    world.sendBinding = { bound: false, thread_ts: '100.1', reason: 'thread_bound_to_another_session', owner_session_id: 'sess-other' };
+    const foreign = asObject(await runSlack(['send', '--channel', 'C1', '--thread', '100.1', '--text', 'hi']));
+    expect(foreign.thread_binding).toMatchObject({ bound: false, owner_session_id: 'sess-other' });
+    expect(String((foreign.thread_binding as CliObject).hint)).toContain('--force');
+
+    world.sendBinding = null;
+    const older = asObject(await runSlack(['send', '--channel', 'C1', '--text', 'hi']));
+    expect(older.thread_binding).toMatchObject({ bound: 'unknown', thread_ts: '111.222', reason: 'not_reported' });
+    expect(String((older.thread_binding as CliObject).hint)).toContain('slack bind-thread');
+
+    const uploadPath = join(tempDir, 'r.txt');
+    writeFileSync(uploadPath, 'x');
+    const topLevelFile = asObject(await runSlack(['send', '--channel', 'C1', '--file', uploadPath]));
+    expect(topLevelFile.thread_binding).toMatchObject({ bound: false, reason: 'top_level_file' });
+
+    world.threadOwners['200.2'] = 'sess-other';
+    const threadedFile = asObject(await runSlack(['send', '--channel', 'C1', '--thread', '200.2', '--file', uploadPath]));
+    expect(threadedFile.thread_binding).toMatchObject({ bound: false, reason: 'thread_bound_to_another_session' });
+
+    const refused = asObject(await runSlack(['bind-thread', '--channel', 'C1', '--thread', '200.2'], { ok: false }));
+    expect(refused).toMatchObject({ ok: false, code: 'API_ERROR', status: 409 });
+    expect(String(refused.error)).toContain('sess-other');
+    expect(world.threadOwners['200.2']).toBe('sess-other');
+
+    const forced = asObject(await runSlack(['bind-thread', '--channel', 'C1', '--thread', '200.2', '--force']));
+    expect(forced).toMatchObject({ ok: true, bound: true, session_id: SESSION, rebound_from: 'sess-other' });
+    expect(world.binds.at(-1)).toMatchObject({ session_id: SESSION, channel: 'C1', thread_ts: '200.2', force: true });
+  }, 30_000);
+
+  test('manifest reports one /v1 mount when KORTIX_API_URL already includes /v1', async () => {
+    const origin = apiUrl;
+    apiUrl = `${origin}/v1`;
+
+    const manifest = asObject(await runSlack(['manifest']));
+
+    expect(manifest.webhook_url).toBe(`${origin}/v1/webhooks/slack/${PROJECT}`);
+    expect(String(manifest.webhook_url)).not.toContain('/v1/v1/');
+  });
+
+  test('falls back to legacy slack only while the reserved channel connector rolls out', async () => {
+    world.reservedFailure = 'action_not_found';
+    const out = asObject(await runSlack(['thread', '--channel', 'C1', '--ts', '111.222']));
+    expect(out.ok).toBe(true);
+    expect(world.connector.map((c) => `${c.connector}.${c.action}`)).toEqual([
+      `${SLACK_CHANNEL_CONNECTOR_SLUG}.get_thread`,
+      'slack.get_thread',
+    ]);
+  });
+
+  test('does not fall back to a user-defined slack connector when the reserved channel needs auth', async () => {
+    world.reservedFailure = 'needs_auth';
+    const out = asObject(
+      await runSlack(['thread', '--channel', 'C1', '--ts', '111.222'], { ok: false }),
+    );
+    expect(out).toMatchObject({ ok: false, error: 'needs_auth' });
+    expect(world.connector.map((c) => `${c.connector}.${c.action}`)).toEqual([
+      `${SLACK_CHANNEL_CONNECTOR_SLUG}.get_thread`,
+    ]);
+  });
+
+  test('surfaces structured Connector auth errors instead of the boolean error field', async () => {
+    world.reservedFailure = 'missing_auth_token';
+    const out = asObject(
+      await runSlack(['thread', '--channel', 'C1', '--ts', '111.222'], { ok: false }),
+    );
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'Token rejected — Missing authentication token. Run `kortix login` to re-authenticate.',
+    });
+    expect(world.connector.map((c) => `${c.connector}.${c.action}`)).toEqual([
+      `${SLACK_CHANNEL_CONNECTOR_SLUG}.get_thread`,
+    ]);
+  });
+
+  test('surfaces a structured upload denial instead of "HTTP 403: true"', async () => {
+    // `slack send --file` posts through the platform upload proxy. A denied
+    // project capability answers with the structured denial body
+    // `{ error: true, message, code, action }` (iam/denial-message.ts); reading
+    // the boolean `error` as the message printed `HTTP 403: true` and hid the
+    // reason. An agent debugged a real delivery regression off that.
+    world.denial = structuredDenial('project.connector.write');
+    const uploadPath = join(tempDir, 'denied-evidence.txt');
+    writeFileSync(uploadPath, 'evidence');
+    const out = asObject(
+      await runSlack(['send', '--channel', 'C1', '--file', uploadPath, '--text', 'Evidence'], {
+        ok: false,
+      }),
+    );
+    expect(out).toMatchObject({
+      ok: false,
+      error:
+        'HTTP 403: This agent session is not granted "project.connector.write". Add it to the agent\'s kortix_permissions in kortix.yaml and merge the change.',
+    });
+    expect(String(out.error)).not.toContain('403: true');
+    expect(world.uploads).toHaveLength(0);
+  });
+
+  test('surfaces a structured download denial instead of the boolean error field', async () => {
+    await expectDownloadDenied(runSlack);
+  });
+});
+
+describe('teams CLI', () => {
+  test('surfaces a structured download denial instead of the boolean error field', async () => {
+    await expectDownloadDenied(runTeams);
+  });
+
+  test('download writes the file owner-only at the resolved path', async () => {
+    const outPath = join(tempDir, 'teams', 'attachment.txt');
+    const out = asObject(
+      await runTeams([
+        'download',
+        '--url',
+        'https://files.example.com/T1',
+        '--out',
+        `${outPath}  `,
+      ]),
+    );
+    expect(out).toEqual({ ok: true, path: outPath, size: 21 });
+    expect(readFileSync(outPath, 'utf8')).toBe('downloaded from teams');
+    expect(statSync(outPath).mode & 0o777).toBe(0o600);
+    expect(world.downloads).toEqual(['https://files.example.com/T1']);
+  });
+
+  test('conversations lists targets and surfaces a structured denial', async () => {
+    const listed = asObject(await runTeams(['conversations']));
+    expect(listed).toEqual({
+      conversations: [{ conversationId: 'a:1', name: 'General', type: 'channel' }],
+    });
+
+    world.denial = structuredDenial('project.read');
+    const denied = asObject(await runTeams(['conversations'], { ok: false }));
+    expect(denied).toMatchObject({
+      ok: false,
+      error: `HTTP 403: ${world.denial.message}`,
+      code: 'API_ERROR',
+      status: 403,
+    });
+  });
+});

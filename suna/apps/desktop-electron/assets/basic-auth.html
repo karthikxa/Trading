@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+    <title>Sign in</title>
+    <style>
+      /* Kortix tokens: .agents/skills/kortix-brand/references/visual/tokens.css. The CSP
+         blocks web fonts, so Roobert applies only where installed; the system stack follows. */
+      :root { color-scheme: light dark; --background: #ffffff; --card: #f4f4f4; --foreground: #1f1f1f; --muted-foreground: #666666; --border: #e2e2e2; --primary: #1f1f1f; --primary-foreground: #ffffff; --destructive: #e7000b; --font-sans: Roobert, ui-sans-serif, -apple-system, "Segoe UI", "Helvetica Neue", "Noto Sans", sans-serif; }
+      @media (prefers-color-scheme: dark) { :root { --background: #0b0b0b; --card: #141414; --foreground: #ffffff; --muted-foreground: #999999; --border: #262626; --primary: #ffffff; --primary-foreground: #090909; --destructive: #ff6467; } }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--background);
+        color: var(--foreground);
+        font: 13px/1.45 var(--font-sans);
+        -webkit-user-select: none;
+        user-select: none;
+        overflow: hidden;
+      }
+      form {
+        box-sizing: border-box;
+        height: 100%;
+        padding: 20px 20px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 18px;
+      }
+      #host { font-weight: 600; }
+      p.sub {
+        margin: 0 0 4px;
+        color: rgba(0, 0, 0, 0.6);
+      }
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        color: rgba(0, 0, 0, 0.7);
+        font-size: 12px;
+      }
+      input[type="text"], input[type="password"] {
+        box-sizing: border-box;
+        width: 100%;
+        height: 30px;
+        padding: 0 9px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--background);
+        color: inherit;
+        font: inherit;
+        outline: none;
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      input:focus { border-color: rgba(0, 0, 0, 0.5); }
+      .remember {
+        flex-direction: row;
+        align-items: center;
+        gap: 7px;
+        margin-top: 2px;
+      }
+      .remember input { margin: 0; accent-color: var(--primary); }
+      #error {
+        min-height: 16px;
+        font-size: 12px;
+        color: var(--destructive);
+      }
+      .actions {
+        margin-top: auto;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      button {
+        height: 30px;
+        padding: 0 14px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-weight: 500;
+        cursor: default;
+      }
+      button.primary {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: var(--primary-foreground);
+      }
+      button:focus-visible { outline: 2px solid rgba(0, 0, 0, 0.45); outline-offset: 1px; }
+      @media (prefers-color-scheme: dark) {
+        html, body { background: var(--card); color: var(--foreground); }
+        p.sub { color: var(--muted-foreground); }
+        label { color: var(--muted-foreground); }
+        input[type="text"], input[type="password"] {
+          border-color: var(--border);
+          background: var(--background);
+        }
+        input:focus { border-color: rgba(255, 255, 255, 0.45); }
+        button { border-color: var(--border); }
+        button.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+        button:focus-visible { outline-color: rgba(255, 255, 255, 0.45); }
+      }
+    </style>
+  </head>
+  <body>
+    <form id="form" autocomplete="off">
+      <h1>Sign in to <span id="host"></span></h1>
+      <p class="sub" id="realm"></p>
+      <label>
+        Username
+        <input id="user" type="text" name="username" autocapitalize="off" spellcheck="false" />
+      </label>
+      <label>
+        Password
+        <input id="pass" type="password" name="password" />
+      </label>
+      <label class="remember">
+        <input id="remember" type="checkbox" checked />
+        <span id="remember-label">Remember on this device</span>
+      </label>
+      <div id="error" role="alert" aria-live="assertive"></div>
+      <div class="actions">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="submit" class="primary" id="submit">Sign In</button>
+      </div>
+    </form>
+    <script>
+      // Values arrive from the main process via preload (contextBridge); the
+      // page never sees Node. Every string is set with textContent — the host
+      // and realm come from the network and must never be parsed as HTML.
+      const api = window.kortixBasicAuth;
+      const $ = (id) => document.getElementById(id);
+      api.onInit((init) => {
+        $('host').textContent = init.host;
+        $('realm').textContent = init.realm
+          ? `The site says: "${init.realm}"`
+          : 'This site requires a username and password.';
+        $('user').value = init.user || '';
+        $('error').textContent = init.error || '';
+        if (!init.canRemember) {
+          $('remember').checked = false;
+          $('remember').disabled = true;
+          $('remember-label').textContent = 'Remember (unavailable: no OS keychain)';
+        }
+        ($('user').value ? $('pass') : $('user')).focus();
+      });
+      $('form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        api.submit({
+          user: $('user').value,
+          password: $('pass').value,
+          remember: $('remember').checked && !$('remember').disabled,
+        });
+      });
+      $('cancel').addEventListener('click', () => api.cancel());
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') api.cancel();
+      });
+    </script>
+  </body>
+</html>

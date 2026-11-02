@@ -1,0 +1,523 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { execFileSync } from 'node:child_process';
+import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { runSessions } from '../commands/sessions';
+
+const PROJECT_ID = '00000000-0000-4000-a000-000000000111';
+const ACCOUNT_ID = '00000000-0000-4000-a000-000000000222';
+
+let root = '';
+let repo = '';
+let origin = '';
+let originalCwd = '';
+let templateRoot = '';
+let parkedCwd = '';
+let realCwd = '';
+let previousConfigFile: string | undefined;
+let previousCliToken: string | undefined;
+let previousApiUrl: string | undefined;
+let previousProjectId: string | undefined;
+let previousServiceToken: string | undefined;
+let previousBashEnv: string | undefined;
+let previousDisableSandboxEnvFile: string | undefined;
+let server: ReturnType<typeof Bun.serve> | null = null;
+let sessionCreateBody: Record<string, unknown> | null = null;
+let sessionList: Record<string, unknown>[] = [];
+let logRequests: URL[] = [];
+let apiRequests: string[] = [];
+let clientCreatesBranch = false;
+let readinessStage = 'ready';
+let onStart = () => {};
+
+function git(args: string[], cwd?: string): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  }).trim();
+}
+
+describe('sessions new CLI flow', () => {
+  // The fixture repository is built ONCE and copied per test. Building it in
+  // beforeEach cost six `git` processes per test, and on a loaded packages lane
+  // that pushed the hook past its 30s budget (CI run 35322311770): Bun then ran
+  // the test body anyway, with the cwd still parked where beforeEach left it.
+  beforeAll(async () => {
+    realCwd = process.cwd();
+    // Park the process OUTSIDE any git repository for the whole file. A
+    // timed-out beforeEach used to leave cwd inside the checkout, so `sessions
+    // new` pushed the session branch with the CLI's own git credentials and
+    // targeted github.com/kortix-ai/suna. It only failed because the CI
+    // checkout is a detached HEAD with no refs/heads/main. From a non-repo
+    // directory the same path can only produce an immediate local git error.
+    parkedCwd = await mkdtemp(join(tmpdir(), 'kortix-cli-session-parked-'));
+    process.chdir(parkedCwd);
+
+    templateRoot = await mkdtemp(join(tmpdir(), 'kortix-cli-session-template-'));
+    const templateRepo = join(templateRoot, 'repo');
+    const templateOrigin = join(templateRoot, 'origin.git');
+    mkdirSync(templateRepo, { recursive: true });
+    git(['init', '-b', 'main'], templateRepo);
+    git(['config', 'user.email', 'e2e@kortix.test'], templateRepo);
+    git(['config', 'user.name', 'Kortix E2E'], templateRepo);
+    writeFileSync(join(templateRepo, 'README.md'), '# test repo\n', 'utf8');
+    git(['add', 'README.md'], templateRepo);
+    git(['commit', '-m', 'initial'], templateRepo);
+    // Copy the initial repository directly. Repeating a setup push in every
+    // test can wait on Git maintenance locks during the loaded package lane.
+    git(['clone', '--quiet', '--bare', templateRepo, templateOrigin]);
+    mkdirSync(join(templateRepo, '.kortix'), { recursive: true });
+  });
+
+  afterAll(() => {
+    process.chdir(realCwd);
+    if (templateRoot) rmSync(templateRoot, { recursive: true, force: true });
+    if (parkedCwd) rmSync(parkedCwd, { recursive: true, force: true });
+  });
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'kortix-cli-session-e2e-'));
+    repo = join(root, 'repo');
+    origin = join(root, 'origin.git');
+    originalCwd = process.cwd();
+    previousConfigFile = process.env.KORTIX_CONFIG_FILE;
+    previousCliToken = process.env.KORTIX_TOKEN;
+    previousApiUrl = process.env.KORTIX_API_URL;
+    previousProjectId = process.env.KORTIX_PROJECT_ID;
+    previousServiceToken = process.env.KORTIX_TOKEN;
+    previousBashEnv = process.env.BASH_ENV;
+    previousDisableSandboxEnvFile = process.env.KORTIX_DISABLE_SANDBOX_ENV_FILE;
+    delete process.env.KORTIX_TOKEN;
+    delete process.env.KORTIX_API_URL;
+    delete process.env.KORTIX_PROJECT_ID;
+    delete process.env.KORTIX_TOKEN;
+    delete process.env.BASH_ENV;
+    process.env.KORTIX_DISABLE_SANDBOX_ENV_FILE = '1';
+    sessionCreateBody = null;
+    sessionList = [];
+    logRequests = [];
+    apiRequests = [];
+    clientCreatesBranch = false;
+    readinessStage = 'ready';
+    onStart = () => {};
+
+    cpSync(join(templateRoot, 'repo'), repo, { recursive: true });
+    cpSync(join(templateRoot, 'origin.git'), origin, { recursive: true });
+    git(['remote', 'add', 'origin', origin], repo);
+
+    writeFileSync(
+      join(repo, '.kortix', 'link.json'),
+      JSON.stringify({
+        project_id: PROJECT_ID,
+        account_id: ACCOUNT_ID,
+        host: 'default',
+        host_url: 'http://127.0.0.1',
+        linked_at: '2026-01-01T00:00:00.000Z',
+      }),
+      'utf8',
+    );
+
+    server = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        const url = new URL(req.url);
+        apiRequests.push(`${req.method} ${url.pathname}`);
+        if (req.method === 'GET' && url.pathname === `/v1/projects/${PROJECT_ID}`) {
+          return Response.json({
+            project_id: PROJECT_ID,
+            account_id: ACCOUNT_ID,
+            name: 'test',
+            repo_url: origin,
+            default_branch: 'main',
+            manifest_path: 'kortix.yaml',
+            status: 'active',
+            metadata: clientCreatesBranch ? {} : { git: { managed: true } },
+            last_opened_at: null,
+            created_at: '2026-01-01T00:00:00.000Z',
+            updated_at: '2026-01-01T00:00:00.000Z',
+          });
+        }
+        if (req.method === 'POST' && url.pathname === `/v1/projects/${PROJECT_ID}/sessions`) {
+          sessionCreateBody = await req.json() as Record<string, unknown>;
+          const sessionId = (sessionCreateBody.session_id as string | undefined)
+            ?? '00000000-0000-4000-a000-000000000333';
+          return Response.json({
+            session_id: sessionId,
+            account_id: ACCOUNT_ID,
+            project_id: PROJECT_ID,
+            branch_name: sessionId,
+            base_ref: sessionCreateBody.base_ref,
+            sandbox_provider: 'daytona',
+            sandbox_id: `sandbox-${sessionId}`,
+            sandbox_url: null,
+            opencode_session_id: null,
+            name: null,
+            agent_name: 'default',
+            status: 'provisioning',
+            error: null,
+            metadata: {},
+            created_at: '2026-01-01T00:00:00.000Z',
+            updated_at: '2026-01-01T00:00:00.000Z',
+          });
+        }
+        if (req.method === "POST" && url.pathname.endsWith("/start")) {
+          onStart();
+          return Response.json({ stage: readinessStage });
+        }
+        if (
+          req.method === "GET" &&
+          new RegExp(`^/v1/projects/${PROJECT_ID}/sessions/[^/]+$`).test(url.pathname)
+        ) {
+          return Response.json({
+            session_id: "00000000-0000-4000-a000-000000000333",
+            status: readinessStage === "ready" ? "running" : readinessStage,
+          });
+        }
+        if (req.method === 'GET' && url.pathname === `/v1/projects/${PROJECT_ID}/sessions`) {
+          return Response.json(sessionList);
+        }
+        const logMatch = url.pathname.match(new RegExp(`^/v1/projects/${PROJECT_ID}/sessions/([^/]+)/log$`));
+        if (req.method === 'GET' && logMatch) {
+          logRequests.push(url);
+          const common = {
+            schema: 'kortix.session/2', v: 1, thread_id: 'ses_test', kind: 'turn', status: 'complete',
+            in_context: true, model: null, usage: null, finish: 'stop', error: null,
+            producer: { harness: 'pi', harness_version: '1', adapter_version: '1' },
+            created_at: '2026-06-20T00:00:00.000Z', completed_at: '2026-06-20T00:02:00.000Z',
+          };
+          return Response.json({
+            session: { session_id: logMatch[1] }, generation: 0, thread_id: 'ses_test', has_more: false,
+            threads: [{ schema: 'kortix.session/2', v: 1, thread_id: 'ses_test', parent_thread_id: null,
+              spawned_by: null, agent: null, title: null, created_at: common.created_at }],
+            messages: [
+              { ...common, message_id: 'user', seq: 1, role: 'user', blocks: [{ id: 'request', type: 'text', text: 'Review recent sessions' }] },
+              { ...common, message_id: 'assistant', seq: 2, role: 'assistant', blocks: [
+                { id: 'response', type: 'text', text: 'Found the important changes.' },
+                { id: 'reasoning', type: 'reasoning', text: 'must not leak' },
+                { id: 'call', type: 'tool_call', call_id: 'bash-call', name: 'bash', kind: 'shell',
+                  input: { command: 'must not leak' }, status: 'complete',
+                  result: { is_error: false, content: [{ type: 'text', text: 'must not leak' }] } },
+              ] },
+            ],
+          });
+        }
+        return Response.json({ error: `not found ${url.pathname}` }, { status: 404 });
+      },
+    });
+
+    const configPath = join(root, 'config.json');
+    process.env.KORTIX_CONFIG_FILE = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        active: 'default',
+        hosts: {
+          default: {
+            url: `http://127.0.0.1:${server.port}`,
+            token: 'test-token',
+            user_id: 'user-1',
+            user_email: 'user@example.test',
+            account_id: ACCOUNT_ID,
+            logged_in_at: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    process.chdir(repo);
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    if (previousConfigFile === undefined) delete process.env.KORTIX_CONFIG_FILE;
+    else process.env.KORTIX_CONFIG_FILE = previousConfigFile;
+    if (previousCliToken === undefined) delete process.env.KORTIX_TOKEN;
+    else process.env.KORTIX_TOKEN = previousCliToken;
+    if (previousApiUrl === undefined) delete process.env.KORTIX_API_URL;
+    else process.env.KORTIX_API_URL = previousApiUrl;
+    if (previousProjectId === undefined) delete process.env.KORTIX_PROJECT_ID;
+    else process.env.KORTIX_PROJECT_ID = previousProjectId;
+    if (previousServiceToken === undefined) delete process.env.KORTIX_TOKEN;
+    else process.env.KORTIX_TOKEN = previousServiceToken;
+    if (previousBashEnv === undefined) delete process.env.BASH_ENV;
+    else process.env.BASH_ENV = previousBashEnv;
+    if (previousDisableSandboxEnvFile === undefined) delete process.env.KORTIX_DISABLE_SANDBOX_ENV_FILE;
+    else process.env.KORTIX_DISABLE_SANDBOX_ENV_FILE = previousDisableSandboxEnvFile;
+    server?.stop(true);
+    server = null;
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  for (const stage of ["ready", "failed", "stopped"]) {
+    test(`--wait --json reports creation and ${stage} on stderr, leaving stdout as JSON`, async () => {
+      readinessStage = stage;
+      let stderr = "";
+      const output = spyOn(process.stderr, "write").mockImplementation(
+        (chunk) => {
+          stderr += String(chunk);
+          return true;
+        },
+      );
+      onStart = () => {
+        expect(stderr).toContain("created");
+      };
+      try {
+        const { code, stdout } = await captureStdout(() =>
+          runSessions(["new", "--wait", "--json"]),
+        );
+        expect(code).toBe(stage === "ready" ? 0 : 1);
+        expect(stderr).toContain("created");
+        expect(stderr).toContain("00000000-0000-4000-a000-000000000333");
+        expect(stderr).toContain(stage);
+        expect(JSON.parse(stdout)).toMatchObject({
+          status: stage === "ready" ? "running" : stage,
+        });
+      } finally {
+        output.mockRestore();
+      }
+    });
+  }
+
+  test('reports intermediate readiness transitions only once', async () => {
+    let stderr = '';
+    let polls = 0;
+    const output = spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr += String(chunk);
+      return true;
+    });
+    onStart = () => {
+      polls += 1;
+      readinessStage = polls < 3 ? 'provisioning' : 'ready';
+    };
+    try {
+      const { code, stdout } = await captureStdout(() => runSessions(['new', '--wait', '--json']));
+      expect(code).toBe(0);
+      expect(stderr.match(/: provisioning\n/g)).toHaveLength(1);
+      expect(stderr).toContain(': ready\n');
+      expect(JSON.parse(stdout)).toMatchObject({ status: 'running' });
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  test("real CLI keeps progress off JSON stdout", async () => {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        new URL("../index.ts", import.meta.url).pathname,
+        "sessions",
+        "new",
+        "--wait",
+        "--json",
+      ],
+      {
+        cwd: repo,
+        env: process.env,
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ status: "running" });
+    expect(stderr).toContain("created");
+    expect(stderr).toContain("ready");
+  });
+
+  test('creates the session branch with local git credentials before creating the API session', async () => {
+    clientCreatesBranch = true;
+    const code = await runSessions(['new']);
+
+    expect(code).toBe(0);
+    expect(sessionCreateBody).not.toBeNull();
+    const sessionId = sessionCreateBody!.session_id as string;
+    expect(sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(sessionCreateBody).toMatchObject({
+      branch_already_created: true,
+      base_ref: 'main',
+    });
+
+    const baseSha = git(['--git-dir', origin, 'rev-parse', 'refs/heads/main']);
+    const sessionSha = git(['--git-dir', origin, 'rev-parse', `refs/heads/${sessionId}`]);
+    expect(sessionSha).toBe(baseSha);
+  });
+
+  test('--agent forces the session onto an explicit agent instead of the project default', async () => {
+    const code = await runSessions(['new', '--agent', 'release-bot']);
+
+    expect(code).toBe(0);
+    expect(sessionCreateBody).not.toBeNull();
+    expect(sessionCreateBody).toMatchObject({ agent_name: 'release-bot' });
+  });
+
+  test('omitting --agent never sends agent_name (server resolves the project default)', async () => {
+    const code = await runSessions(['new']);
+
+    expect(code).toBe(0);
+    expect(sessionCreateBody).not.toBeNull();
+    expect(sessionCreateBody).not.toHaveProperty('agent_name');
+  });
+
+  test('--prompt from inside a sandbox stores the prompt verbatim and the contract as initial_context', async () => {
+    // The ambient session token is what makes a spawn "from inside a sandbox".
+    process.env.KORTIX_TOKEN = 'test-token';
+    try {
+      const code = await runSessions(['new', '--prompt', 'Reply with the single word pong']);
+
+      expect(code).toBe(0);
+      expect(sessionCreateBody).not.toBeNull();
+      // The stored user message is the caller's words, verbatim.
+      expect(sessionCreateBody!.initial_prompt).toBe('Reply with the single word pong');
+      // The worker contract rides beside it, for the model, not the transcript.
+      expect(sessionCreateBody!.initial_context).toMatch(/Do not spawn other sessions/);
+      expect(sessionCreateBody!.title_source).toBe('Reply with the single word pong');
+    } finally {
+      delete process.env.KORTIX_TOKEN;
+    }
+  });
+
+  test('--prompt from a human host stores the prompt verbatim with no contract', async () => {
+    const code = await runSessions(['new', '--prompt', 'Reply with the single word pong']);
+
+    expect(code).toBe(0);
+    expect(sessionCreateBody).not.toBeNull();
+    expect(sessionCreateBody!.initial_prompt).toBe('Reply with the single word pong');
+    expect(sessionCreateBody).not.toHaveProperty('initial_context');
+  });
+
+  test('creates a session with explicit connector scope', async () => {
+    const code = await runSessions(['new', '--no-connectors']);
+
+    expect(code).toBe(0);
+    expect(sessionCreateBody).toMatchObject({ connector_bindings: {} });
+    // A session cannot REQUIRE a connector any more: the gate refused the next
+    // turn with nothing in the product that could clear it (2026-09-16). Scope
+    // is what a session MAY use; which account a call runs as is chosen at call
+    // time (`kortix connectors call … --account`).
+    expect(sessionCreateBody).not.toHaveProperty('require_connectors');
+  });
+
+  test('the removed --require-connector option exits before an API request', async () => {
+    const code = await runSessions(['new', '--require-connector', 'gmail']);
+
+    expect(code).toBe(2);
+    expect(apiRequests).toEqual([]);
+    expect(sessionCreateBody).toBeNull();
+  });
+
+  test('a removed session attribution option exits before an API request', async () => {
+    const removedFlag = ['--', 'origin', '-ref'].join('');
+    const code = await runSessions(['new', removedFlag, 'customer-42']);
+
+    expect(code).toBe(2);
+    expect(apiRequests).toEqual([]);
+    expect(sessionCreateBody).toBeNull();
+  });
+
+  test('digest reads the stored session log for running and stopped sessions', async () => {
+    const runningId = '11111111-1111-4111-8111-111111111111';
+    const stoppedId = '22222222-2222-4222-8222-222222222222';
+    sessionList = [
+      {
+        session_id: runningId,
+        account_id: ACCOUNT_ID,
+        project_id: PROJECT_ID,
+        branch_name: runningId,
+        base_ref: 'main',
+        sandbox_provider: 'daytona',
+        sandbox_id: runningId,
+        sandbox_url: `http://127.0.0.1/v1/p/external-${runningId}/8000`,
+        opencode_session_id: 'ses_test',
+        name: 'Digest target',
+        agent_name: 'harness-reflector',
+        status: 'running',
+        error: null,
+        metadata: { opencode_sessions: [{ title: 'Digest target' }] },
+        created_at: '2026-06-20T00:00:00.000Z',
+        updated_at: '2026-06-20T00:05:00.000Z',
+      },
+      {
+        session_id: stoppedId,
+        account_id: ACCOUNT_ID,
+        project_id: PROJECT_ID,
+        branch_name: stoppedId,
+        base_ref: 'main',
+        sandbox_provider: 'daytona',
+        sandbox_id: stoppedId,
+        sandbox_url: null,
+        opencode_session_id: null,
+        name: 'Stopped target',
+        agent_name: 'default',
+        status: 'stopped',
+        error: null,
+        metadata: {},
+        created_at: '2026-06-20T00:00:00.000Z',
+        updated_at: '2026-06-20T00:03:00.000Z',
+      },
+    ];
+
+    const { code, stdout } = await captureStdout(() =>
+      runSessions(['digest', '--all', '--messages', '5', '--chars', '120', '--json']),
+    );
+
+    expect(code).toBe(0);
+    expect(logRequests).toHaveLength(2);
+    expect(logRequests.map((url) => url.pathname)).toEqual(expect.arrayContaining([
+      `/v1/projects/${PROJECT_ID}/sessions/${runningId}/log`,
+      `/v1/projects/${PROJECT_ID}/sessions/${stoppedId}/log`,
+    ]));
+    for (const request of logRequests) expect(request.searchParams.get('limit')).toBe('5');
+    expect(apiRequests.filter((request) => request.includes('/transcript'))).toEqual([]);
+
+    const parsed = JSON.parse(stdout) as {
+      sessions: Array<{
+        transcript: {
+          available: boolean;
+          source: string;
+          complete: boolean;
+          messages: Array<{ tools: unknown[] }>;
+        };
+      }>;
+    };
+    expect(parsed.sessions).toHaveLength(2);
+    // The API here predates W4 (only opencode_* names); the digest still
+    // serves the neutral keys, with the pre-W4 ones beside them.
+    expect((parsed.sessions[0] as unknown as { session: unknown }).session).toMatchObject({
+      runtime_session_id: 'ses_test',
+      runtime_titles: ['Digest target'],
+      opencode_session_id: 'ses_test',
+      opencode_titles: ['Digest target'],
+    });
+    for (const session of parsed.sessions) {
+      expect(session.transcript).toMatchObject({ available: true, source: 'log', complete: true });
+    }
+    expect(JSON.stringify(parsed)).not.toContain('must not leak');
+    expect(parsed.sessions[0]!.transcript.messages[1]!.tools).toEqual([
+      { tool: 'bash', status: 'complete' },
+    ]);
+  });
+});
+
+async function captureStdout(fn: () => Promise<number>): Promise<{ code: number; stdout: string }> {
+  const originalWrite = process.stdout.write;
+  let stdout = '';
+  process.stdout.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+    stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    const code = await fn();
+    return { code, stdout };
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+}

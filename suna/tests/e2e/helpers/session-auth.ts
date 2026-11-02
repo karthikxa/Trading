@@ -1,0 +1,249 @@
+import type { Page, Response } from "@playwright/test";
+import { supabaseAdminHeaders } from "../../src/core/supabase-admin";
+
+import { clearCookiesPreservingBypass } from "./deployment-bypass";
+import { optionalEnvValue, requireEnvValue } from "./env";
+import { json } from "./http";
+
+export interface AuthUser {
+  id: string;
+  email?: string;
+}
+
+export interface AuthSession {
+  access_token: string;
+  refresh_token: string;
+  expires_at: number;
+  expires_in: number;
+  token_type: string;
+  user: AuthUser;
+}
+
+interface AuthOptions {
+  supabaseUrl: string;
+  password: string;
+  envFiles?: string[];
+  /** Leave the mobile app promo to the page: not pre-closed, no Escape handler. */
+  showMobileAppPromo?: boolean;
+}
+
+function envFiles(options: AuthOptions): string[] {
+  return options.envFiles ?? ["apps/web/.env", "apps/api/.env"];
+}
+
+function authCookieName(options: AuthOptions): string {
+  const files = envFiles(options);
+  const appUrl =
+    optionalEnvValue("KORTIX_PUBLIC_APP_URL", ...files) ||
+    optionalEnvValue("NEXT_PUBLIC_APP_URL", ...files) ||
+    optionalEnvValue("NEXT_PUBLIC_URL", ...files) ||
+    optionalEnvValue("PUBLIC_URL", ...files);
+  if (!appUrl) return "sb-kortix-auth-token";
+  try {
+    const url = new URL(appUrl);
+    if (["localhost", "127.0.0.1"].includes(url.hostname) && url.port) {
+      return `sb-kortix-auth-token-${url.port}`;
+    }
+  } catch {
+    // Match the application fallback for invalid or missing app URLs.
+  }
+  return "sb-kortix-auth-token";
+}
+
+function trustedAuthHeader(value: string, name: string): string {
+  if (!/^[A-Za-z0-9._~+/=-]+$/.test(value)) {
+    throw new Error(
+      `${name} contains characters that are not valid in an auth header`,
+    );
+  }
+  return value;
+}
+
+export async function createAuthUser(
+  email: string,
+  options: AuthOptions,
+): Promise<AuthUser> {
+  const serviceRoleKey = trustedAuthHeader(
+    requireEnvValue("SUPABASE_SERVICE_ROLE_KEY", ...envFiles(options)),
+    "SUPABASE_SERVICE_ROLE_KEY",
+  );
+  let timedOut = false;
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    const response = await fetch(`${options.supabaseUrl}/auth/v1/admin/users`, {
+      method: "POST",
+      headers: supabaseAdminHeaders(serviceRoleKey, { json: true }),
+      body: JSON.stringify({
+        email,
+        password: options.password,
+        email_confirm: true,
+      }),
+    });
+    if (response.status === 504 && attempt < 6) {
+      timedOut = true;
+      await response.text();
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      continue;
+    }
+    // A 504 is the proxy giving up, not GoTrue: the timed-out create can
+    // still commit. The resend then meets that user (422 `email_exists`, or
+    // 500 `23505` while the first insert is in flight). The email is unique
+    // to this journey, so that user is ours: resolve it by signing in.
+    if (timedOut && (response.status === 422 || response.status === 500)) {
+      const text = await response.text();
+      if (/email_exists|23505/.test(text)) return (await signIn(email, options)).user;
+      throw new Error(
+        `Expected 200 from ${response.url}, got ${response.status}: ${text}`,
+      );
+    }
+    const body = await json<{ user?: AuthUser } & AuthUser>(response, 200);
+    return body.user ?? body;
+  }
+  throw new Error("unreachable");
+}
+
+export async function deleteAuthUser(
+  userId: string,
+  options: Omit<AuthOptions, "password">,
+): Promise<void> {
+  const serviceRoleKey = optionalEnvValue(
+    "SUPABASE_SERVICE_ROLE_KEY",
+    ...(options.envFiles ?? ["apps/web/.env", "apps/api/.env"]),
+  );
+  if (!serviceRoleKey) return;
+  const trustedServiceRoleKey = trustedAuthHeader(
+    serviceRoleKey,
+    "SUPABASE_SERVICE_ROLE_KEY",
+  );
+  await fetch(`${options.supabaseUrl}/auth/v1/admin/users/${userId}`, {
+    method: "DELETE",
+    headers: supabaseAdminHeaders(trustedServiceRoleKey),
+  }).catch(() => {});
+}
+
+export async function signIn(
+  email: string,
+  options: AuthOptions,
+): Promise<AuthSession> {
+  const files = envFiles(options);
+  const anonKey = trustedAuthHeader(
+    optionalEnvValue("SUPABASE_ANON_KEY", ...files) ||
+      requireEnvValue("NEXT_PUBLIC_SUPABASE_ANON_KEY", ...files),
+    "SUPABASE_ANON_KEY",
+  );
+  const url = `${options.supabaseUrl}/auth/v1/token?grant_type=password`;
+  const retryableStatuses = new Set([429, 502, 503, 504]);
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        apikey: anonKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email, password: options.password }),
+    });
+    if (!retryableStatuses.has(response.status) || attempt === maxAttempts) {
+      return json<AuthSession>(response, 200);
+    }
+    await response.body?.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** (attempt - 1)));
+  }
+  throw new Error("Supabase password grant exhausted its retry budget");
+}
+
+/**
+ * The project page opens the mobile-app introduction once per browser
+ * (`packages/ui/src/workspace/home/mobile-app-promo.tsx`).
+ * It is a modal: on a journey's first project page it covers the page, hides
+ * it from role queries and blocks its clicks.
+ *
+ * A journey's browser is new, and the app wipes every persisted store on the
+ * first sign-in it sees (`shouldResetClientState`: no identity marker reads as
+ * another user), so a "closed" flag alone is wiped too. This writes what a
+ * returning user's browser holds: the identity marker for the user being
+ * installed and the closed flag. Then no reset runs and the flag holds.
+ *
+ * A journey that signs out and back in gets the reset again. For that case the
+ * promo is closed with Escape whenever it stands in front of an action or an
+ * assertion (`page.addLocatorHandler`). Its App Store link identifies it in
+ * every language.
+ */
+const promoHandled = new WeakSet<Page>();
+
+export async function closeMobileAppPromo(page: Page, userId: string): Promise<void> {
+  await page.evaluate((id) => {
+    try {
+      localStorage.setItem("kortix-last-user-id", id);
+      localStorage.setItem(
+        "kortix.mobileAppPromo",
+        JSON.stringify({ state: { closed: true }, version: 1 }),
+      );
+    } catch {
+      // No storage, no persisted promo state either.
+    }
+  }, userId);
+  if (promoHandled.has(page)) return;
+  promoHandled.add(page);
+  await page.addLocatorHandler(
+    page.getByRole("dialog").filter({ has: page.locator('a[href^="https://apps.apple.com/"]') }),
+    async () => {
+      await page.keyboard.press("Escape");
+    },
+  );
+}
+
+/**
+ * Install an already-minted Supabase password-grant session into the browser.
+ *
+ * Use this when the test target is an authenticated product flow rather than
+ * the magic-link/password auth UI. The cookie format matches @supabase/ssr.
+ */
+export async function installBrowserSessionDirect(
+  page: Page,
+  session: AuthSession,
+  returnUrl: string,
+  options: AuthOptions,
+): Promise<Response | null> {
+  // Drops any previous app session but keeps the deployment-protection cookie:
+  // a plain clearCookies() sends the next navigation to vercel.com/sso-api.
+  await clearCookiesPreservingBypass(page.context());
+  // Electron contexts have no Playwright baseURL. Absolute return URLs carry
+  // their origin; browser journeys can keep using relative destinations.
+  const faviconUrl = /^https?:\/\//.test(returnUrl)
+    ? new URL("/favicon.png", returnUrl).href
+    : "/favicon.png";
+  await page.goto(faviconUrl, { waitUntil: "domcontentloaded" });
+  if (!options.showMobileAppPromo) await closeMobileAppPromo(page, session.user.id);
+
+  const origin = new URL(page.url()).origin;
+  const encoded = `base64-${Buffer.from(JSON.stringify(session), "utf8").toString("base64url")}`;
+  const originUrl = new URL(origin);
+  const key =
+    ["localhost", "127.0.0.1"].includes(originUrl.hostname) && originUrl.port
+      ? `sb-kortix-auth-token-${originUrl.port}`
+      : authCookieName(options);
+  const chunks = encoded.match(/.{1,3180}/g) ?? [];
+  await page.context().addCookies(
+    chunks.map((value, index) => ({
+      name: chunks.length === 1 ? key : `${key}.${index}`,
+      value,
+      url: origin,
+      sameSite: "Lax" as const,
+    })),
+  );
+  // Retry the authenticated landing navigation on a transient origin 5xx. Under
+  // the concurrent deployed load the edge launders an overloaded origin into a
+  // 503 MAINTENANCE_MODE page; a fresh goto a moment later renders the real app.
+  // A 4xx (e.g. a genuine 404) is NOT retried — only origin overload is.
+  const maxNav = 4;
+  for (let attempt = 1; attempt <= maxNav; attempt += 1) {
+    const response = await page.goto(returnUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 180_000,
+    });
+    const status = response?.status() ?? 0;
+    if (status < 500 || attempt === maxNav) return response;
+    await page.waitForTimeout(Math.min(2_000 * attempt, 8_000));
+  }
+  return null;
+}

@@ -1,0 +1,238 @@
+---
+title: "How we coordinate interview loops"
+description: The interview-scheduling agent we run on Kortix — daily, it finds candidates ready to schedule in Greenhouse, checks interviewer availability on Google Calendar, and drafts a slot proposal to the candidate and the calendar invites for a coordinator to confirm.
+date: "2026-06-20"
+author: team
+tags:
+  - HR
+  - Case Study
+  - Enterprise
+template: interview-scheduler
+---
+
+Once a candidate clears a screen, scheduling the next round becomes its own small
+project: read the interview plan to see who's on the panel, find a time when every
+one of those interviewers is actually free, propose it to the candidate, and get
+invites onto everyone's calendar before the slot goes stale. None of it is hard,
+but it's tedious across several interviewers and several candidates at once, and
+every day it sits undone is a day the loop stalls.
+
+We run an interview-scheduling agent on Kortix that does the coordination every
+day. For every candidate marked ready to schedule in Greenhouse, it reads the
+interview plan, checks the panel's availability on Google Calendar, and drafts a
+slot proposal to the candidate plus the calendar invites for each interviewer. It
+never sends anything and never touches a hiring decision — a coordinator reviews
+every proposal and invite before it goes out. This is how we keep our own interview
+loops moving.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Daily cron</Fact>
+  <Fact label="Connected systems">Greenhouse · Google Calendar · Email</Fact>
+  <Fact label="Mode">Proposes and drafts only · coordinator confirms and sends</Fact>
+</KeyFacts>
+
+## The problem
+
+Scheduling an interview loop means combining two things that live in different
+systems: the interview plan — who's on the panel, how many rounds, how long each
+one runs — sits in Greenhouse, while whether those people are actually free sits in
+their calendars. Checking both by hand, for every candidate who clears a screen,
+is the kind of coordination work that's easy to fall behind on the moment more than
+one requisition is open at once.
+
+The usual workarounds don't hold up. A shared scheduling link only works if every
+interviewer keeps it current, and it says nothing about who the panel actually is
+for this candidate. A coordinator juggling several calendar tabs and a Greenhouse
+tab in parallel can do it, but it doesn't scale past a handful of loops, and a
+slipped invite reads as disorganized to a candidate who's interviewing elsewhere
+too.
+
+## What we built
+
+On Kortix, a daily cron triggers an agent. It spawns a fresh session (a cloud
+sandbox) that reads every candidate marked ready to schedule in Greenhouse, pulls
+that candidate's interview plan to see who's on the panel, checks each panelist's
+Google Calendar for open slots, and drafts a slot proposal for the candidate along
+with a calendar invite per interviewer. Every draft lands with the coordinator; the
+agent sends nothing and decides nothing about the candidate.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the interview-scheduling skill and the
+daily trigger, and opens a change request for you to review.
+Prefer clicks? Choose **Use this template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a daily interview scheduling agent in this project.
+
+1. Create the agent agents/interview-scheduler.md. Its job is to draft interview slot proposals and calendar invites for the coordinator to review. It may use the Greenhouse and Google Calendar connectors and the coordinator review email channel.
+
+2. Create the skill skills/interview-scheduling/SKILL.md with these rules:
+   - Read candidates in the Onsite, Ready to Schedule stage in Greenhouse who have no drafted proposal yet.
+   - The panel, round and duration come only from the candidate's interview plan. Never add or drop an interviewer.
+   - Propose 2 to 3 slots in the next few business days, and only slots where every panelist is free on their primary calendar.
+   - Draft one proposal email to the candidate and one invite per interviewer, and put the batch in the coordinator review inbox.
+   - Never send a proposal, never create a calendar event, and never change a candidate's stage or make a hiring decision.
+
+3. Add a cron trigger interview-scheduling-sweep to kortix.yaml. It runs the interview-scheduler agent every day at 08:00 with the prompt "Load the interview-scheduling skill and run one complete scheduling sweep."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect Greenhouse and Google
+Calendar, then connect the coordinator review inbox under **Channels**.
+Credentials are brokered server-side and never enter the agent's machine.
+
+<ToolList>
+  <ToolNeed name="Greenhouse" domain="greenhouse.com" tag="Required" alternatives={[['Lever', 'lever.co'], ['Ashby', 'ashbyhq.com']]}>
+    Reads candidates ready to schedule and their interview plans.
+  </ToolNeed>
+  <ToolNeed name="Google Calendar" domain="calendar.google.com" tag="Required" alternatives={[['Outlook', 'outlook.com']]}>
+    Checks panel availability and drafts each interviewer's invite.
+  </ToolNeed>
+  <ToolNeed name="Gmail" domain="gmail.com" tag="Required" alternatives={[['Slack', 'slack.com']]}>
+    Delivers drafted slot proposals to the coordinator for review.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **interview-scheduler** agent
+and send this prompt. Check the proposed slots against the panel's
+calendars before you let the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one interview scheduling sweep.
+
+1. Find candidates in the Onsite, Ready to Schedule stage in Greenhouse with no drafted proposal.
+2. Read each candidate's interview plan: panel, round and duration.
+3. Find 2 to 3 slots where every panelist is free on their primary calendar.
+4. Draft a proposal email to the candidate and an invite for each interviewer.
+5. Put the batch in the coordinator review inbox. Do not send anything, create any event or change any stage.`}
+/>
+
+</Step>
+<Step title="Let the daily schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every day at 08:00, each run in a new session on its own cloud computer.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: interview-scheduling-sweep
+    name: Daily interview-scheduling sweep
+    on:
+      cron: "0 0 8 * * *"
+    run:
+      agent: interview-scheduler
+      prompt: Load the interview-scheduling skill and run one complete scheduling sweep.`}
+/>
+
+</Step>
+<Step title="Hold every proposal and invite for the coordinator">
+
+The agent has no send action and no action that creates a live calendar
+event. Every proposal and invite waits in the coordinator review inbox. The
+coordinator confirms the time with the candidate and sends everything. The
+agent never rejects a candidate, moves a stage or drafts an offer.
+
+</Step>
+<Step title="Read the morning batch">
+
+Each run ends with one batch in the coordinator review inbox. This is what a run looks like in the session:
+
+<ExampleRun
+  title="Daily interview-scheduling sweep · 08:00"
+  message="Load the interview-scheduling skill and run one complete scheduling sweep."
+  worked="Worked for 2m 19s"
+  tools={[
+    'greenhouse · list candidates',
+    'greenhouse · get interview plan × 4',
+    'google_calendar · find free busy × 4',
+    'email · send → coordinator review',
+  ]}
+  note="Illustrative example. Your counts depend on your pipeline."
+>
+  Found **4** candidates ready to schedule. Drafted proposals with **3** open
+  slots each for **3** of them. **1** panel has no common free slot in the
+  next 5 business days, so that candidate is listed for the coordinator to
+  handle.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A daily **cron** spawns a fresh session with **connectors** into Greenhouse for
+  the interview plan and Google Calendar for panel availability. The scheduling
+  conventions live as **skills** and **memory**. The agent drafts the candidate
+  proposal and the invites and stops — the coordinator confirms and sends.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Suggest a backup panelist"
+  code="When a panel has no common free slot, name the interviewer who blocks the most slots so the coordinator can ask for a swap."
+/>
+
+<CopyBlock
+  title="Respect time zones"
+  code="Show each proposed slot in the candidate's time zone from Greenhouse, and in the interviewers' time zone in the invite drafts."
+/>
+
+<CopyBlock
+  title="Weekly pipeline note"
+  code="Every Friday, send the coordinator a list of candidates who have waited more than 5 business days for a confirmed slot."
+/>
+
+## Guardrails
+
+The agent touches a candidate's next step in the hiring process, so the boundary
+between "proposed" and "confirmed" is the control that matters:
+
+- **Isolation.** Every run happens in its own isolated sandbox. Only the drafted
+  proposal and invites are written back out.
+- **Scoped secrets.** The Greenhouse and Google Calendar credentials are encrypted
+  in the Secrets Manager and injected into the sandbox at runtime, scoped to the agents you grant them to.
+- **Human approval gate.** The agent never sends the candidate proposal and never
+  sends a calendar invite. Every draft is held for the coordinator to review,
+  adjust, and send.
+- **No hiring decisions, ever.** The agent cannot reject a candidate, advance a
+  stage, or send an offer. It schedules the next conversation; it never decides
+  whether that conversation happens.
+- **Everything is code.** The scheduling conventions and per-system permissions are
+  files in the repo, versioned and changed through a reviewed **change request**
+  rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every day" label="Ready-to-schedule candidates matched to real panel availability" />
+  <Stat value="Zero" label="Invites or candidate emails sent without coordinator review" />
+  <Stat value="3 systems" label="Greenhouse, Google Calendar, and email in one agent" />
+</StatGrid>
+
+Scheduling an interview loop now starts with a proposal and a set of invites
+already drafted against the panel's real calendars, instead of a coordinator
+opening five tabs to find one time that works. The coordinator's day starts with a
+review instead of a hunt, and every send and every hiring call still stays with a
+person.

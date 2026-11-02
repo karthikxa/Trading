@@ -1,0 +1,240 @@
+---
+title: "How we run our month-end close"
+description: The finance agent we run on Kortix — connected to Stripe, the close checklist and revenue ledger in Google Sheets, and Slack. Each month it walks the checklist, reconciles revenue against the ledger, flags anomalies and missing docs, and posts the open items — never touching a journal entry or closing the books itself.
+date: "2026-06-01"
+author: team
+tags:
+  - Finance
+  - Case Study
+  - Enterprise
+template: month-end-close
+---
+
+Month-end close runs the same way every month and takes days anyway: walk a
+checklist of a few dozen items, reconcile revenue against the ledger, chase
+down whatever documentation is missing, and sanity-check the numbers against
+the trend before anyone signs off. None of it is hard. All of it is slow, and
+most of the time goes to confirming that the easy 90% is actually fine so the
+close team can focus on the 10% that isn't.
+
+We run a close agent on Kortix that does that first pass every month. It
+reconciles our Stripe revenue against the ledger, works the rest of the
+checklist for missing docs, flags anything that looks off against prior
+months, and posts the open items to our finance Slack channel. It never
+writes a journal entry and it never marks a period closed — a human owns the
+close.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Monthly cron</Fact>
+  <Fact label="Connected systems">Stripe · Google Sheets · Slack</Fact>
+  <Fact label="Mode">Assemble and flag · human closes the books</Fact>
+</KeyFacts>
+
+## The problem
+
+The close checklist itself isn't the bottleneck — it's re-confirming the same
+categories of thing every month: does recognized revenue tie out to what
+Stripe actually processed, does every line have the supporting document it's
+supposed to, and does anything look different enough from the last few months
+to need an explanation before the numbers go out. Each check is quick in
+isolation. Doing all of them, consistently, on top of everything else close
+week involves, is where the days go.
+
+A reconciliation formula in the sheet catches the exact ties but not the near
+ones, and doesn't know what "looks anomalous" means without a person
+supplying that judgment fresh each time. So the checklist gets worked start to
+finish by hand, at the same cost, every single month, and it only happens as
+carefully as there's time for.
+
+## What we built
+
+On Kortix, a monthly **cron** triggers a close agent after the period closes.
+Each run spawns its own isolated session — a cloud sandbox — with read access
+to Stripe revenue and to the close checklist and ledger tabs in a Google
+Sheet. It reconciles Stripe revenue against what the ledger recorded, works
+the rest of the checklist for missing supporting docs, compares this month's
+figures against the trailing months for anomalies, and posts a close-status
+summary with every open item to Slack. It assembles and flags; it never
+enters a journal line and never marks the close done.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the close checklist skill and the monthly trigger, and
+opens a change request for you to review. Prefer clicks? Choose **Use this
+template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a month-end close agent in this project.
+
+1. Create the agent agents/month-end-close.md. Its job is to walk the close checklist, reconcile Stripe revenue against the ledger and post the open items. It may use the Stripe and Google Sheets connectors and post to Slack.
+
+2. Create the skill skills/close-checklist/SKILL.md with these rules:
+   - Read the checklist tab and last month's notes in the Month-end close sheet before you pull new data.
+   - Reconcile every Stripe revenue line for the closed month against the ledger tab. Exact matches, and differences that a note on the sheet explains, tie out. Everything else is unreconciled.
+   - A checklist item without its supporting document linked is an open item. Name the row and what is missing.
+   - A figure is an anomaly when it moves more than 15% against the trailing average and no note on the sheet explains it.
+   - Write only the status and flag columns of the checklist tab. Never write a journal entry, never edit a ledger amount and never mark the period closed.
+
+3. Add a cron trigger monthly-close to kortix.yaml. It runs the month-end-close agent on the 2nd of each month at 07:00 with the prompt "Load the close-checklist skill and run one complete month-end close pass."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your billing system, the sheet
+that holds your checklist and ledger, and Slack. Credentials are brokered
+server-side and never enter the agent's machine.
+
+<ToolList>
+  <ToolNeed name="Stripe" domain="stripe.com" tag="Required" alternatives={[['Chargebee', 'chargebee.com']]}>
+    Reads the month's revenue to reconcile against the ledger.
+  </ToolNeed>
+  <ToolNeed name="Google Sheets" domain="sheets.google.com" tag="Required" alternatives={[['QuickBooks', 'quickbooks.intuit.com'], ['Xero', 'xero.com'], ['NetSuite', 'netsuite.com']]}>
+    Walks the close checklist and reads the ledger.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com']]}>
+    Posts the close summary and the open items.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **month-end-close** agent
+and send this prompt. Compare its flags with your own close notes before you let
+the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one month-end close pass for last month.
+
+1. Read the checklist tab and last month's notes in the Month-end close sheet.
+2. Pull Stripe charges, refunds and payouts for last month and reconcile them against the ledger tab.
+3. Check every other checklist item for its supporting document.
+4. Flag any figure that moved more than 15% against the trailing months with no note that explains it.
+5. Write status flags to the checklist tab only, and post every open item to #finance-close. Do not write a journal entry or mark the period closed.`}
+/>
+
+</Step>
+<Step title="Let the monthly schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs on the 2nd of each month at 07:00, each run in a new session on its own cloud computer.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: monthly-close
+    name: Monthly close checklist run
+    on:
+      cron: "0 0 7 2 * *"
+    run:
+      agent: month-end-close
+      prompt: Load the close-checklist skill and run one complete month-end close pass.`}
+/>
+
+</Step>
+<Step title="Leave the close to a person">
+
+The agent reads Stripe and the ledger, and writes only the checklist status
+and flag columns. It never writes a journal entry, never edits a ledger amount
+and never marks the period closed, even when every line ties out. The finance
+team works the open items and closes the books.
+
+</Step>
+<Step title="Read the close status">
+
+Each run ends with one close-status message in the channel. This is what a
+run looks like in the session:
+
+<ExampleRun
+  title="Monthly close checklist run · 07:00"
+  message="Load the close-checklist skill and run one complete month-end close pass."
+  worked="Worked for 6m 05s"
+  tools={[
+    'google sheets · read checklist tab',
+    'stripe · list charges',
+    'stripe · list refunds',
+    'stripe · list payouts',
+    'google sheets · read ledger tab',
+    'google sheets · update checklist × 23',
+    'slack · post message → #finance-close',
+  ]}
+  note="Illustrative example. Your figures depend on your books."
+>
+  Worked **23** checklist items and **19** are clean. **2** revenue lines are
+  unreconciled, **$1,240** in total, and **1** item is missing its bank
+  statement. Marketing spend is up **22%** against the trailing average with no
+  note on the sheet.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A monthly **cron** spawns a fresh session with read access to Stripe and
+  read-and-flag access to the checklist and ledger in Google Sheets. The
+  reconciliation tolerances and anomaly rules live as **skills** and
+  **memory**. The agent assembles and flags every open item; a human closes
+  the books.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Name the owner of each gap"
+  code="For each checklist item that is missing a document, add its owner from the checklist tab to the Slack summary."
+/>
+
+<CopyBlock
+  title="Mid-month dry run"
+  code="On the 15th of each month, run only the revenue reconciliation for the month to date and post any unreconciled lines to #finance-close."
+/>
+
+<CopyBlock
+  title="Show what drives a swing"
+  code="For each anomaly, list the three ledger lines that contribute most to the swing in the Slack summary."
+/>
+
+## Guardrails
+
+Touching a company's close process is a trust question first, so the access
+is scoped tightly and one direction only:
+
+- **Isolation.** Every run happens in its own isolated sandbox. The session is granted access only to the systems it's scoped to, and only the checklist flags and the
+  Slack post are written back out.
+- **Scoped secrets.** The Stripe and Sheets credentials are encrypted in the
+  secrets manager and injected into the sandbox at runtime, scoped to the agents you grant them to.
+- **No journal entries, no closing the books.** The agent never writes a
+  journal line, never edits a recorded ledger amount, and never marks a
+  checklist item or period as closed. It flags; a human closes.
+- **Everything is code.** The agent's checklist rules, tolerances, and
+  per-system permissions are files in the repo, versioned and changed through
+  a reviewed **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every month" label="Checklist worked end to end on the current data" />
+  <Stat value="Flag only" label="No journal entries, no period ever marked closed by the agent" />
+  <Stat value="One post" label="Every open item — unreconciled, missing doc, anomaly — in one place" />
+</StatGrid>
+
+The days that used to go to confirming the easy 90% of the checklist now go to
+the handful of items the agent actually flagged. The close still runs on the
+same schedule whether or not anyone has gotten to it yet, and the open-items
+list is waiting in Slack when the finance team sits down to close the books.

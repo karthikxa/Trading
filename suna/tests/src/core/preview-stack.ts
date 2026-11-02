@@ -1,0 +1,494 @@
+export const PREVIEW_RUNTIME_SECRET_ALLOWLIST = [
+  'KE2E_STRIPE_SECRET_KEY',
+  'KE2E_STRIPE_WEBHOOK_SECRET',
+  'KORTIX_GITHUB_APP_ID',
+  'KORTIX_GITHUB_APP_PRIVATE_KEY',
+  'KORTIX_GITHUB_APP_SLUG',
+  'MANAGED_GIT_GITHUB_INSTALL_ID',
+  'MANAGED_GIT_GITHUB_OWNER',
+  'MANAGED_GIT_GITHUB_TOKEN',
+  'PLATINUM_INFERENCE_API_KEY',
+  'PLATINUM_API_KEY',
+] as const;
+
+export type PreviewRuntimeSecretName = (typeof PREVIEW_RUNTIME_SECRET_ALLOWLIST)[number];
+export type PreviewRuntimeSecrets = Partial<Record<PreviewRuntimeSecretName, string>>;
+
+export function readPreviewRuntimeSecrets(
+  environment: Readonly<Record<string, string | undefined>>,
+): PreviewRuntimeSecrets {
+  return Object.fromEntries(
+    PREVIEW_RUNTIME_SECRET_ALLOWLIST.map((key) => [key, environment[key]?.trim() ?? '']),
+  );
+}
+
+export interface PreviewStackInput {
+  origin: string;
+  sha: string;
+  apiImage: string;
+  gatewayImage: string;
+  frontendImage: string;
+  /** Platinum API base URL. Platinum is the only preview session provider. */
+  platinumApiUrl?: string;
+  /**
+   * The name of the host sandbox this stack runs in (`kortix-preview-pr-<n>` or
+   * `kortix-env-<branch>`). It becomes `KORTIX_INSTANCE_ID`, which the API
+   * writes onto every session box as the Platinum metadata `kortix.instance`.
+   * That tag is the only link from a session box back to the preview that owns
+   * it, and it scopes this stack's orphan reaper to its own boxes. Without it,
+   * the reaper stays off: see previewWorkerEnvironment().
+   */
+  instanceId?: string;
+}
+
+const PREVIEW_INSTANCE_ID = /^kortix-(preview-pr-[1-9][0-9]*|env-[a-z0-9][a-z0-9-]*)$/;
+
+/**
+ * Background workers for a preview API.
+ *
+ * Every preview API used to run with `KORTIX_WORKERS_ENABLED=false`. That also
+ * turned off project maintenance, which owns the `deadline_at` reaper: the
+ * primary stop for an idle session box. The provider's idle timer (720 min) was
+ * the only stop, and on 2026-09-23 87 idle 4 GB preview session boxes filled
+ * the shared 512 GB Platinum pool.
+ *
+ * The reaper runs only when the stack has its instance id. All previews share
+ * one Platinum org and one `kortix.env=preview` tag, and each has its own
+ * database. The orphan reaper stops every running box of its env that has no
+ * row in its own database. Without an instance scope, preview A would stop
+ * preview B's live sessions.
+ *
+ * Singleton work the preview does not need stays off: cron triggers, legacy
+ * migration workers, and the startup image pre-build (the first session builds
+ * the image lazily, as before).
+ */
+export function previewWorkerEnvironment(instanceId: string | undefined): Record<string, string> {
+  if (!instanceId) {
+    return {
+      KORTIX_WORKERS_ENABLED: 'false',
+    };
+  }
+  if (!PREVIEW_INSTANCE_ID.test(instanceId)) {
+    throw new Error(`invalid preview instance id: ${instanceId}`);
+  }
+  return {
+    KORTIX_INSTANCE_ID: instanceId,
+    KORTIX_WORKERS_ENABLED: 'true',
+    KORTIX_PROJECT_MAINTENANCE_ENABLED: 'true',
+    KORTIX_ACTIVE_TURN_RENEWAL_ENABLED: 'true',
+    KORTIX_LEGACY_MIGRATION_WORKER_ENABLED: 'false',
+    KORTIX_SUNA_MIGRATION_WORKER_ENABLED: 'false',
+    KORTIX_SKIP_STARTUP_PREBUILD: 'true',
+  };
+}
+
+function validatedOrigin(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('preview origin must be an HTTPS origin without a path');
+  }
+  return url.origin;
+}
+
+function validatedValue(value: string, key: string): string {
+  if (/[\r\n\0]/.test(value)) throw new Error(`${key} contains an invalid control character`);
+  return value;
+}
+
+function parseEnvironment(text: string): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const raw of text.split(/\r?\n/)) {
+    if (!raw || raw.startsWith('#') || !raw.includes('=')) continue;
+    const separator = raw.indexOf('=');
+    environment[raw.slice(0, separator)] = raw.slice(separator + 1);
+  }
+  return environment;
+}
+
+function renderEnvironment(environment: Record<string, string>): string {
+  return `${Object.entries(environment)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${validatedValue(value, key)}`)
+    .join('\n')}\n`;
+}
+
+export function validatePreviewRuntimeSecrets(
+  secrets: Record<string, string>,
+): asserts secrets is PreviewRuntimeSecrets {
+  const allowed = new Set<string>(PREVIEW_RUNTIME_SECRET_ALLOWLIST);
+  const unexpected = Object.keys(secrets).filter((key) => !allowed.has(key));
+  if (unexpected.length > 0) {
+    throw new Error(`preview runtime secret is not allowlisted: ${unexpected.sort().join(', ')}`);
+  }
+  for (const [key, value] of Object.entries(secrets)) {
+    if (key === 'KORTIX_GITHUB_APP_PRIVATE_KEY') {
+      if (value.includes('\0')) throw new Error(`${key} contains an invalid control character`);
+    } else {
+      validatedValue(value, key);
+    }
+  }
+}
+
+export function buildPreviewCaddyfile(publicHost: string): string {
+  // Ride out a redeploy instead of 502ing through it.
+  //
+  // A branch environment is REUSED in place: \`compose up -d\` recreates
+  // \`frontend\` and \`kortix-api\` while \`preview-edge\` keeps running. For the
+  // ~10-30s that takes, Caddy's dial to the upstream is refused and every
+  // request — the browser's own document included — answers 502. Observed on
+  // the pi-worker branch environment repeatedly: the edge started 19:08:58, the app containers
+  // were recreated at 22:12:45, and the 502 screenshot is stamped 22:12:52.
+  //
+  // \`lb_try_duration\` makes Caddy hold the request and re-dial until the new
+  // container listens, so a deploy costs latency rather than an error page. It
+  // retries CONNECTION failures only — a 502 the app itself returns is passed
+  // straight through, so this cannot mask a real upstream fault.
+  //
+  // A snippet is a TOP-LEVEL form: declaring it inside the site block fails the
+  // adapter with \`File to import not found: swap_tolerant\`.
+  return `(swap_tolerant) {
+  lb_try_duration 30s
+  lb_try_interval 250ms
+}
+
+:8080 {
+  encode zstd gzip
+
+  # A deployed environment gives the API a host of its own, so EVERY path it
+  # serves reaches it. A preview shares ONE origin with the frontend and splits
+  # by prefix, so each API route mounted outside \`/v1\` has to be listed here or
+  # it falls through to the frontend, which answers 307 -> /auth. Keep in sync
+  # with the non-\`/v1\` mounts in \`apps/api/src/index.ts\`.
+  @api path /v1* /health /health/* /metrics /scim/v2/* /internal/* /.well-known/oauth-authorization-server
+  handle @api {
+    reverse_proxy kortix-api:8008 {
+      import swap_tolerant
+    }
+  }
+
+  @supabase path /auth/v1* /rest/v1* /storage/v1* /realtime/v1* /functions/v1* /graphql/v1*
+  handle @supabase {
+    reverse_proxy supabase-kong:8000 {
+      import swap_tolerant
+    }
+  }
+
+  handle_path /_gateway/* {
+    reverse_proxy llm-gateway:8090 {
+      import swap_tolerant
+    }
+  }
+
+  handle_path /_tests/* {
+    root * /reports
+    file_server browse
+  }
+
+  handle_path /_mailpit/* {
+    reverse_proxy mailpit:8025 {
+      import swap_tolerant
+    }
+  }
+
+  # Only reached when the retry budget above is exhausted — i.e. the upstream is
+  # really gone, not merely restarting. A plain page beats the provider's raw
+  # 502, and \`Retry-After\` tells a client this is transient.
+  handle_errors {
+    header Retry-After 15
+    header Cache-Control "no-store"
+    respond "Deploying. This environment is restarting - retry in a few seconds." {http.error.status_code}
+  }
+
+  handle {
+    reverse_proxy frontend:3000 {
+      # Next.js Server Actions reject a request whose \`x-forwarded-host\` does
+      # not match its \`origin\` (CSRF guard). The sandbox ingress sets
+      # \`x-forwarded-host\` to the INTERNAL host (\`*.aec.local\`) while the
+      # browser's origin is the PUBLIC one, so every Server Action — the whole
+      # auth flow included — died with \`Invalid Server Actions request\` (500,
+      # surfaced in the browser as minified React error #441). Pin the public
+      # host so the guard compares like with like.
+      header_up X-Forwarded-Host ${publicHost}
+      header_up X-Forwarded-Proto https
+      import swap_tolerant
+    }
+  }
+}
+`;
+}
+
+export function buildPreviewComposeOverlay(
+  reportPath: string,
+  caddyfilePath = '/workspace/kortix-preview/Caddyfile.preview',
+): string {
+  if (!reportPath.startsWith('/') || !caddyfilePath.startsWith('/')) {
+    throw new Error('preview bind mounts require absolute paths');
+  }
+  validatedValue(reportPath, 'reportPath');
+  validatedValue(caddyfilePath, 'caddyfilePath');
+  return `services:
+  # A branch preview keeps its database across pushes. A migration added on
+  # main can predate one already applied by this branch, so use the scoped
+  # preview command without changing self-host, staging, or production rules.
+  kortix-migrate:
+    command: ["bun", "/app/packages/db/scripts/migrate.ts", "preview-up"]
+    environment:
+      KORTIX_PREVIEW_MIGRATION: "1"
+  preview-edge:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    ports:
+      - "0.0.0.0:8080:8080"
+    volumes:
+      - "${caddyfilePath}:/etc/caddy/Caddyfile:ro"
+      - "${reportPath}:/reports:ro"
+    depends_on:
+      frontend:
+        condition: service_healthy
+      kortix-api:
+        condition: service_healthy
+      supabase-kong:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    restart: unless-stopped
+  mailpit:
+    image: axllent/mailpit:v1.27.8@sha256:6abc8e633df15eaf785cfcf38bae48e66f64beecdc03121e249d0f9ec15f0707
+    restart: unless-stopped
+  supabase-auth:
+    environment:
+      GOTRUE_RATE_LIMIT_EMAIL_SENT: "10000"
+      GOTRUE_RATE_LIMIT_SMS_SENT: "10000"
+      GOTRUE_RATE_LIMIT_VERIFY: "10000"
+      GOTRUE_RATE_LIMIT_TOKEN_REFRESH: "10000"
+      GOTRUE_RATE_LIMIT_OTP: "10000"
+      GOTRUE_RATE_LIMIT_ANONYMOUS_USERS: "10000"
+  supabase-db:
+    ports:
+      - "127.0.0.1:15432:5432"
+  # The git mirror must outlive the container.
+  #
+  # \`cacheRoot()\` (apps/api/src/projects/git/mirror.ts) is
+  # \`/tmp/kortix/git-cache\`, and kortix-api runs with NO volumes — so every
+  # redeploy recreates the container and deletes every project's mirror. On a
+  # deployment whose managed repos exist on GitHub that is only a slow re-clone.
+  # On a PREVIEW it is data loss: the preview's GitHub App cannot create repos
+  # (403 \`Resource not accessible by integration\`), so a seeded project's
+  # history lives ONLY in that cache. Losing it leaves the project unopenable —
+  # \`POST /sessions\` answers 500 \`could not read Username for
+  # 'https://github.com'\` because the re-clone has no upstream to clone from.
+  #
+  # Measured on the pi-worker branch environment 2026-09-01: container restarted 10:14:06, and
+  # every session create for the branch's own test project failed from 10:12
+  # onward with that exact error; \`ls /tmp/kortix/git-cache\` -> no such
+  # directory, and the managed org held none of the preview's repos.
+  kortix-api:
+    volumes:
+      - "kortix-git-cache:/tmp/kortix"
+
+volumes:
+  kortix-git-cache:
+`;
+}
+
+/**
+ * Managed git has two supported shapes, and the API prefers the PAT when both
+ * are present (see managedGithubToken in projects/git-backends/github.ts):
+ *
+ *   1. a GitHub App — short-lived, repo-scoped, auto-rotating installation
+ *      tokens, but it only works if the App is installed on the owner org AND
+ *      carries `administration: write`, or it cannot create a repo at all;
+ *   2. a single org PAT — no install/permission dance, at the cost of a
+ *      long-lived org-wide token.
+ *
+ * Accept either. Requiring the App shape made a preview whose App lacks the
+ * permission unfixable without a code change, which is what blocked every
+ * preview from creating ANY project.
+ */
+function derivePreviewCapabilities(rawSecrets: Record<string, string>): {
+  managedGitEnabled: boolean;
+} {
+  const owner = rawSecrets.MANAGED_GIT_GITHUB_OWNER?.trim();
+  const managedGitApp = [
+    rawSecrets.KORTIX_GITHUB_APP_ID,
+    rawSecrets.KORTIX_GITHUB_APP_PRIVATE_KEY,
+    rawSecrets.KORTIX_GITHUB_APP_SLUG,
+    rawSecrets.MANAGED_GIT_GITHUB_INSTALL_ID,
+  ].every((value) => Boolean(value?.trim()));
+  const managedGitPat = Boolean(rawSecrets.MANAGED_GIT_GITHUB_TOKEN?.trim());
+  const managedGitEnabled = Boolean(owner) && (managedGitApp || managedGitPat);
+  if (!managedGitEnabled) {
+    throw new Error(
+      'preview target-full requires MANAGED_GIT_GITHUB_OWNER plus either the complete GitHub App configuration or MANAGED_GIT_GITHUB_TOKEN',
+    );
+  }
+  return { managedGitEnabled };
+}
+
+function buildPreviewRuntimeEnvironment(
+  runtime: Record<string, string>,
+  input: PreviewStackInput,
+  origin: string,
+  platinumApiKey: string,
+  rawSecrets: Record<string, string>,
+  postgresPassword: string,
+): void {
+  Object.assign(runtime, {
+    API_IMAGE: input.apiImage,
+    GATEWAY_IMAGE: input.gatewayImage,
+    FRONTEND_IMAGE: input.frontendImage,
+    // The full browser suite exhausted V8's heap under the 512 MiB self-host default.
+    KORTIX_FRONTEND_MEMORY_LIMIT: '2048m',
+    KORTIX_VERSION: `pr-${input.sha}`,
+    KORTIX_COMMIT: input.sha,
+    INTERNAL_KORTIX_ENV: 'preview',
+    ENV_MODE: 'local',
+    PUBLIC_URL: origin,
+    API_PUBLIC_URL: origin,
+    SUPABASE_PUBLIC_URL: origin,
+    // The preview edge drops request bodies above ~124 KiB, and browser Storage
+    // uploads cross the same origin. Attachments use bounded API chunks here.
+    PROMPT_ATTACHMENT_UPLOAD_MODE: 'chunked',
+    KORTIX_URL: origin,
+    FRONTEND_URL: origin,
+    SITE_URL: origin,
+    API_EXTERNAL_URL: `${origin}/auth/v1`,
+    // kortix://: the mobile app signs in to a preview as a private deployment.
+    ADDITIONAL_REDIRECT_URLS: `${origin}/auth/callback,kortix://**`,
+    CORS_ALLOWED_ORIGINS: origin,
+    KORTIX_PUBLIC_APP_URL: origin,
+    KORTIX_PUBLIC_AUTH_METHODS: 'magic,password',
+    KORTIX_PUBLIC_DISABLE_LANDING_PAGE: 'false',
+    KORTIX_RESTRICT_ACCOUNT_CREATION: 'false',
+    KORTIX_PUBLIC_RESTRICT_ACCOUNT_CREATION: 'false',
+    // Billing ON, with the Stripe SANDBOX (test-mode) keys below — the same
+    // posture as dev, so the subscribe -> entitlement -> managed-models path is
+    // exercised here rather than bypassed. An account that has not subscribed
+    // is free-tier and therefore NOT entitled to managed models, which is what
+    // makes an agent fall back to the faux provider: subscribe with a Stripe
+    // test card (or connect a BYOK key) to get real model answers.
+    KORTIX_BILLING_INTERNAL_ENABLED: 'true',
+    KORTIX_PUBLIC_BILLING_ENABLED: 'true',
+    ...previewWorkerEnvironment(input.instanceId),
+    // The Platinum idle timer is the backstop behind the deadline reaper, and
+    // the only stop when the reaper is off. At the 720 min default, one day of
+    // preview runs held 87 idle 4 GB boxes and filled the shared 512 GB org
+    // pool on 2026-09-23: every preview and dev session got 429
+    // pool_exceeded. 60 is the floor of providerAutoStopBackstopMinutes().
+    KORTIX_SANDBOX_PROVIDER_AUTOSTOP_MINUTES: '60',
+    SCHEDULER_ENABLED: 'false',
+    KORTIX_TRIGGER_SCHEDULER_ENABLED: 'false',
+    EMAIL_PROVIDER_ORDER: 'mailpit',
+    MAILPIT_API_URL: 'http://mailpit:8025',
+    SMTP_HOST: 'mailpit',
+    SMTP_PORT: '1025',
+    SMTP_USER: 'unused',
+    SMTP_PASS: 'unused',
+    ENABLE_EMAIL_AUTOCONFIRM: 'false',
+    // Preview sessions run on Platinum, the reference provider. Daytona is a
+    // legacy fallback and never runs in a preview.
+    ALLOWED_SANDBOX_PROVIDERS: 'platinum',
+    PLATINUM_API_URL: input.platinumApiUrl?.trim() || 'https://api.platinum.dev',
+    PLATINUM_API_KEY: platinumApiKey,
+    DATABASE_URL: `postgresql://postgres:${postgresPassword}@supabase-db:5432/postgres`,
+    MANAGED_GIT_PROVIDER: 'github',
+    MANAGED_GIT_GITHUB_OWNER: rawSecrets.MANAGED_GIT_GITHUB_OWNER ?? '',
+    MANAGED_GIT_GITHUB_INSTALL_ID: rawSecrets.MANAGED_GIT_GITHUB_INSTALL_ID ?? '',
+    MANAGED_GIT_GITHUB_TOKEN: rawSecrets.MANAGED_GIT_GITHUB_TOKEN ?? '',
+    KORTIX_GITHUB_APP_ID: rawSecrets.KORTIX_GITHUB_APP_ID ?? '',
+    KORTIX_GITHUB_APP_PRIVATE_KEY:
+      rawSecrets.KORTIX_GITHUB_APP_PRIVATE_KEY?.replace(/\r?\n/g, '\\n') ?? '',
+    KORTIX_GITHUB_APP_SLUG: rawSecrets.KORTIX_GITHUB_APP_SLUG ?? '',
+    PLATINUM_INFERENCE_API_KEY: rawSecrets.PLATINUM_INFERENCE_API_KEY ?? '',
+    STRIPE_SECRET_KEY: rawSecrets.KE2E_STRIPE_SECRET_KEY ?? '',
+    STRIPE_WEBHOOK_SECRET: rawSecrets.KE2E_STRIPE_WEBHOOK_SECRET ?? '',
+  });
+}
+
+function buildPreviewTestEnvironment(
+  input: PreviewStackInput,
+  origin: string,
+  runtime: Record<string, string>,
+  rawSecrets: Record<string, string>,
+  postgresPassword: string,
+  anonKey: string,
+  serviceRoleKey: string,
+  internalServiceKey: string,
+  managedGitEnabled: boolean,
+): Record<string, string> {
+  return {
+    CI: '1',
+    KE2E_TARGET: 'preview',
+    KE2E_LIVE_CONFIRM: 'preview',
+    KE2E_PREVIEW_ORIGIN: origin,
+    KE2E_PREVIEW_AUTHORIZATION: `approved:${input.sha}`,
+    KE2E_EXPECT_SHA: input.sha,
+    KE2E_API_URL: `${origin}/v1`,
+    E2E_API_URL: `${origin}/v1`,
+    KE2E_BASE_URL: origin,
+    E2E_BASE_URL: origin,
+    KE2E_GATEWAY_URL: `${origin}/_gateway`,
+    KE2E_SUPABASE_URL: origin,
+    E2E_SUPABASE_URL: origin,
+    E2E_MAILPIT_URL: `${origin}/_mailpit`,
+    E2E_APPS_BASE_DOMAIN: runtime.KORTIX_APPS_BASE_DOMAIN || `apps.${new URL(origin).hostname.split('.').slice(1).join('.')}`,
+    KE2E_DATABASE_URL: `postgresql://postgres:${postgresPassword}@127.0.0.1:15432/postgres`,
+    E2E_DATABASE_URL: `postgresql://postgres:${postgresPassword}@127.0.0.1:15432/postgres`,
+    KE2E_SUPABASE_ANON_KEY: anonKey,
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: anonKey,
+    KE2E_SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
+    SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
+    KE2E_INTERNAL_SERVICE_KEY: internalServiceKey,
+    KE2E_STRIPE_SECRET_KEY: rawSecrets.KE2E_STRIPE_SECRET_KEY ?? '',
+    KE2E_STRIPE_WEBHOOK_SECRET: rawSecrets.KE2E_STRIPE_WEBHOOK_SECRET ?? '',
+    E2E_RESEND_API_KEY: '',
+    KE2E_CAP_SANDBOX: rawSecrets.PLATINUM_API_KEY ? '1' : '0',
+    KE2E_CAP_MANAGED_GIT: managedGitEnabled ? '1' : '0',
+    KE2E_CAP_MANAGED_GIT_PUSH: managedGitEnabled ? '1' : '0',
+    // A preview publishes no project snapshots (no KORTIX_PROJECT_SNAPSHOT_S3_BUCKET).
+    KE2E_CAP_PROJECT_SNAPSHOTS: '0',
+    KE2E_DEFAULT_FLOW_ATTEMPTS: '1',
+  };
+}
+
+export function applyPreviewEnvironment(
+  baseEnvironmentText: string,
+  input: PreviewStackInput,
+  rawSecrets: Record<string, string>,
+): { runtimeEnv: string; testEnv: string } {
+  validatePreviewRuntimeSecrets(rawSecrets);
+  if (!/^[0-9a-f]{40}$/.test(input.sha))
+    throw new Error('preview SHA must contain 40 hex characters');
+  const origin = validatedOrigin(input.origin);
+  const runtime = parseEnvironment(baseEnvironmentText);
+  const postgresPassword = runtime.POSTGRES_PASSWORD;
+  const anonKey = runtime.SUPABASE_ANON_KEY;
+  const serviceRoleKey = runtime.SUPABASE_SERVICE_ROLE_KEY;
+  const internalServiceKey = runtime.INTERNAL_SERVICE_KEY;
+  if (!postgresPassword || !anonKey || !serviceRoleKey || !internalServiceKey) {
+    throw new Error('self-host environment is missing generated preview credentials');
+  }
+  const { managedGitEnabled } = derivePreviewCapabilities(rawSecrets);
+  // Sessions in a preview run on Platinum only. Without its key the preview
+  // could run no session at all, so fail before boot rather than fall back.
+  const platinumApiKey = rawSecrets.PLATINUM_API_KEY?.trim() ?? '';
+  if (!platinumApiKey) {
+    throw new Error('preview sessions run on Platinum only; PLATINUM_API_KEY is required');
+  }
+  buildPreviewRuntimeEnvironment(runtime, input, origin, platinumApiKey, rawSecrets, postgresPassword);
+  return {
+    runtimeEnv: renderEnvironment(runtime),
+    testEnv: renderEnvironment(
+      buildPreviewTestEnvironment(
+        input,
+        origin,
+        runtime,
+        rawSecrets,
+        postgresPassword,
+        anonKey,
+        serviceRoleKey,
+        internalServiceKey,
+        managedGitEnabled,
+      ),
+    ),
+  };
+}

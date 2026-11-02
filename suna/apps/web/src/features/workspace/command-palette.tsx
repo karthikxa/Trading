@@ -1,0 +1,3453 @@
+'use client';
+
+import { useChromeOffered } from '@kortix/ui/internal/chrome/use-chrome-offered';
+import { SessionSharedIcon } from '@kortix/ui/workspace/projects/session-shared-icon';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@kortix/ui/alert-dialog';
+import { Badge } from '@kortix/ui/badge';
+import {
+  CommandDialog,
+  CommandFooter,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandShortcut,
+} from '@kortix/ui/command';
+import { useCommandState } from 'cmdk';
+import { EntityAvatar } from '@kortix/ui/entity-avatar';
+import { AgentMark } from '@kortix/ui/internal/components/agent-mark';
+import { FadedScrollArea } from '@kortix/ui/faded-scroll-area';
+import { Kbd } from '@kortix/ui/kbd';
+import Loading from '@kortix/ui/loading';
+import { SidebarContext } from '@kortix/ui/sidebar';
+import { TextShimmer } from '@kortix/ui/text-shimmer';
+import { errorToast, successToast } from '@kortix/ui/toast';
+import { preloadAccountHub } from '@kortix/ui/internal/account-hub/account-hub-entry';
+import { useAccountHubAccess } from '@kortix/ui/internal/account-hub/use-account-hub-access';
+import {
+  useWorkspaceSearch,
+  ChangeRequestDetailDialog,
+  ProjectFilesProvider,
+  openChangeRequestListQuery,
+} from '@kortix/ui/files';
+import {
+  ThemeSwatch,
+  useInterfaceTheme,
+  useInterfaceThemePreview,
+} from '@/features/layout/interface-theme';
+import { useAuth } from '@/features/providers/auth-provider';
+import { MODEL_SELECTOR_PROVIDER_IDS, ProviderLogo } from '@kortix/ui/internal/lib/provider-branding';
+import { buildAgentGitReconciliationPrompt } from '@kortix/ui/session/status/agent-git-reconciliation';
+import { DiffDialog, openSessionQuickView } from '@kortix/ui/session-panel';
+import {
+  CompactModal,
+  sessionLastActivityAt,
+  sortSessionsByLastActivity,
+} from '@kortix/ui/session';
+import { pickerGroupId, pickerGroupLabel } from '@kortix/ui/session/models/model-grouping';
+import {
+  activeCapabilityTab,
+  useCapabilityAccess,
+  useProjectNavRows,
+  PROJECT_ACTIONS,
+  useProjectCan,
+  useProjectPageCans,
+} from '@kortix/ui/workspace';
+import {
+  LEGACY_PALETTE_HIDDEN,
+  paletteRowPermitted,
+} from '@/features/workspace/command-palette-visibility';
+import { useAppsRowVisible } from '@kortix/ui/workspace/sidebar/footer/project-apps-nav';
+import { agentLabel, ChannelGlyph, useMemoryPageHref } from '@kortix/ui/workspace';
+import { ModelCapabilityIcons } from '@kortix/ui/customize/sections/llm-provider/model-capability-icons';
+import { modelIdAddsInformation } from '@/features/workspace/model-id-display';
+import {
+  OPEN_COMMAND_PALETTE_EVENT,
+  consumePendingCommandPalette,
+} from '@kortix/ui/internal/layout/open-command-palette';
+import {
+  PALETTE_NO_PROJECT_DEFAULT_TAB,
+  filterSettingsPaletteGroups,
+  settingsPaletteGroups,
+  settingsPaletteSearchText,
+} from '@/features/workspace/settings-palette-items';
+import {
+  DEFAULT_SETTINGS_TAB,
+  type SettingsTab,
+  resolveSettingsOverlayHref,
+} from '@kortix/ui/customize/settings/settings-tabs';
+import { useSettingsAccountId } from '@/features/workspace/settings/use-settings-account-id';
+import {
+  type WorkspacePaletteRow,
+  buildWorkspacePaletteRows,
+  groupWorkspacePaletteRows,
+  recentWorkspaceRows,
+  rootWorkspaceResults,
+  workspacePageResults,
+  workspacePaletteValue,
+} from '@/features/workspace/workspace-palette';
+import { useAccountsList } from '@kortix/ui/internal/hooks/account/use-accounts-list';
+import { useDebounce } from '@kortix/ui/internal/hooks/use-debounced-value';
+import { useNewProjectSession } from '@kortix/ui/internal/hooks/projects/use-new-project-session';
+import { useLocalizedUiCatalog } from '@kortix/ui/i18n';
+import { useTranslations } from '@/i18n/use-translations';
+import { copyToClipboard } from '@kortix/ui/internal/lib/utils/clipboard';
+import { isDesktop } from '@kortix/ui/internal/lib/desktop';
+import { performSignOut } from '@/lib/auth/perform-sign-out';
+import { isBillingEnabled } from '@/lib/config';
+import type { InterfaceThemeId } from '@/lib/interface-themes';
+import {
+  type MenuItemDef,
+  type SettingsTabId,
+  getItemsForSurface,
+  translateMenuItem,
+} from '@/lib/menu-registry';
+import { PROJECT_LANDING_PATH } from '@kortix/ui/internal/lib/onboarding/landing-destination';
+import { track } from '@/lib/track';
+import { useProjectFeatureFlags } from '@kortix/ui/internal/lib/use-project-feature-flags';
+import { cn, uiRoutes } from '@kortix/ui';
+import { DEFAULT_WALLPAPER_ID } from '@kortix/ui/theme';
+import { openCustomizeSidebar } from '@kortix/ui/internal/stores/sidebar-nav-store';
+import { hubTarget, openAccountPanel } from '@kortix/ui/internal/stores/account-panel-store';
+import { useChatSendStore } from '@kortix/ui/internal/stores/chat-send-store';
+import { firstChatHref, useFirstChatPending } from '@kortix/ui/internal/stores/first-chat-store';
+import { useCurrentAccountStore } from '@kortix/ui/internal/stores/current-account-store';
+import { useProjectSessionTabsStore } from '@/stores/project-session-tabs-store';
+import { useProjectSwitchStore } from '@kortix/ui/internal/stores/project-switch-store';
+import { useSettingsPanelStore } from '@kortix/ui/internal/stores/settings-panel-store';
+import { openTabAndNavigate } from '@kortix/ui/internal/stores/tab-store';
+import { useUpgradeDialogStore } from '@kortix/ui/internal/stores/upgrade-dialog-store';
+import { type ConversationDensity, useUserPreferencesStore } from '@kortix/ui/internal/stores/user-preferences-store';
+import {
+  type FeatureFlagKey,
+  type KortixAccount,
+  type KortixProject,
+  type ProjectDetail,
+  type ProjectSession,
+  type ProjectSessionPage,
+  getProject,
+  getProjectDetail,
+  listProjectSessions,
+  PROJECT_SESSION_NAME_LOOKUP_LIMIT,
+  listProjectsForAccount,
+  normalizeAppPathname,
+  runtimeSupports,
+  systemReload,
+  updateFeatureFlag,
+} from '@kortix/sdk';
+import {
+  agentScopedModelSelectionKey,
+  contract,
+  flattenModels,
+  flattenProjectSessionPages,
+  invalidateProject,
+  modelProviderMode,
+  qk,
+  useCreatePty,
+  useCreateRuntimeSession,
+  useModelStore,
+  useProjectMemorySearch,
+  useProjectSessions,
+  useProjectSpaces,
+  useRuntimeConnectionStore,
+  useRuntimeProviders,
+  useVisibleAgents,
+} from '@kortix/sdk/react';
+import { capitalizeWords, formatRelativeTime } from '@kortix/shared';
+import {
+  ArrowDownIcon as ArrowDown,
+  ArrowUpIcon as ArrowUp,
+  RobotIcon as Bot,
+  CheckIcon as Check,
+  CaretLeftIcon as ChevronLeft,
+  CaretRightIcon as ChevronRight,
+  ArrowElbowDownLeftIcon as CornerDownLeft,
+  CpuIcon as Cpu,
+  FileTextIcon as FileText,
+  FlaskIcon as Flask,
+  HashIcon as Hash,
+  ChatCircleIcon as MessageCircle,
+  MinusIcon as Minus,
+  MagnifyingGlassIcon as Search,
+  SunDimIcon,
+  TextAlignLeftIcon as TextAlignLeft,
+  UsersIcon as UsersSolid,
+  XIcon as X,
+} from '@phosphor-icons/react';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useParams, usePathname, useRouter } from 'next/navigation';
+import { Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Copy,
+  SidebarGlyph as PanelLeftClose,
+  SidebarGlyph as PanelLeftIcon,
+} from '@kortix/ui/icons';
+
+type PalettePage =
+  | 'root'
+  | 'agents'
+  | 'models'
+  | 'workspaces'
+  | 'accounts'
+  | 'sessions'
+  | 'files'
+  | 'density'
+  | 'changes'
+  | 'flags';
+
+/**
+ * The palette's one empty state: a line of muted text, and an optional smaller
+ * hint under it. No glyph, no tile — the query the person just typed is the
+ * context, and the row they were looking for is the only thing worth drawing.
+ * Every page renders this, so "nothing here" reads the same everywhere.
+ */
+function PaletteEmpty({ children, hint }: { children: React.ReactNode; hint?: React.ReactNode }) {
+  return (
+    <div cmdk-empty="" className="flex flex-col items-center gap-1 px-4 py-8 text-center">
+      <p className="text-muted-foreground text-sm">{children}</p>
+      {hint && <p className="text-muted-foreground text-xs">{hint}</p>}
+    </div>
+  );
+}
+
+/** A value ⌘K search can copy: shown as "Copy <label>", matched on `keywords`. */
+type CopyItem = { id: string; label: string; value: string; keywords: string };
+
+function sanitizeCmdkValue(value: string): string {
+  return value
+    .replace(/["'\\[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * The searchable text of a registry-backed palette row — and, because cmdk
+ * scores a row by its `value` and nothing else, its cmdk `value` too.
+ *
+ * **Label plus curated keywords. Never `id`, never `group`.** Both used to be
+ * in here. `id` made `nav-accounts`, `proj-secrets`, `pref-general` and
+ * `account-tokens` searchable, so "nav", "proj", "pref" and "account" each
+ * returned a whole family of rows by a string the user has never seen. `group`
+ * made every row in the `account` group answer "account" whatever it meant.
+ * Neither is user-visible, so neither can be what the user meant.
+ *
+ * **This is also the row's cmdk selection identity**, which cmdk requires to
+ * be unique — two rows sharing a `value` are both marked `aria-selected` and
+ * Enter always fires the first one. cmdk 0.2.1 (the installed version, checked
+ * against `node_modules/cmdk/dist/index.d.ts`) has no separate `keywords` prop
+ * to move the search text onto, and `CommandDialog` in `packages/ui/src/primitives/command`
+ * forwards neither `filter` nor `shouldFilter`, so the value is the only lever.
+ * Uniqueness therefore rests on the curated text itself, which is safe because
+ * a collision means two rows with the SAME label and the SAME keywords — rows
+ * a user could not tell apart either. `command-palette-search.test.ts` asserts
+ * it for every row the palette can render at once.
+ */
+/**
+ * Previews the theme of the highlighted row (↑/↓ or pointer) on the whole
+ * page; Enter keeps it. Leaving theme rows, changing page or closing the
+ * palette (it unmounts with the dialog) puts the saved theme back.
+ */
+function ThemeHighlightPreview({
+  themeByValue,
+  onPreview,
+}: {
+  themeByValue: ReadonlyMap<string, InterfaceThemeId>;
+  onPreview: (id: InterfaceThemeId | null) => void;
+}) {
+  const highlighted = useCommandState((state) => state.value);
+  const themeId = themeByValue.get(highlighted) ?? null;
+
+  useEffect(() => {
+    onPreview(themeId);
+  }, [themeId, onPreview]);
+  useEffect(() => () => onPreview(null), [onPreview]);
+
+  return null;
+}
+
+export function buildPaletteSearchText(item: { label: string; keywords?: string }): string {
+  return sanitizeCmdkValue(`${item.label} ${item.keywords ?? ''}`);
+}
+
+/**
+ * Legacy `SettingsTabId` (menu-registry's vocabulary) -> new `SettingsTab`
+ * (settings-tabs.ts), for the command-palette items whose `kind` is
+ * `'settings'`. Task 10 retired the legacy user-settings modal these items
+ * used to open directly, in favor of `useSettingsPanelStore` — the same
+ * overlay the `'navigate'` branch below already opens via
+ * `resolveSettingsOverlayHref`.
+ *
+ * `tokens` -> `api-keys` and `transactions` -> `usage` mirror
+ * `RENAMED_TABS` in `settings-tabs.ts` (same rename, same source
+ * vocabulary). `appearance`, `sounds`, and `shortcuts` all merged into the
+ * new `preferences` tab — `tabs/preferences-tab.tsx` already hosts all
+ * three (wallpaper/theme, sound-pack controls, and a full "Keyboard
+ * shortcuts" section with the modifier picker and shortcut list).
+ *
+ * NOTE: no palette entry uses `kind: 'settings'` any more — every settings
+ * destination is now derived from the rail (`settings-palette-items.ts`), so
+ * `handleOpenSettings` below is unreachable from the current registry. The
+ * map and the branch stay because `MenuItemDef.kind` still admits
+ * `'settings'` and the `userMenu` surface still declares entries with it; if
+ * one is re-added to `showIn: ['commandPalette']` it must open through
+ * `openSettingsTab`, not through a raw `openSettings` call.
+ *
+ * `referrals` is deliberately absent: there is no `referrals` member of
+ * `SettingsTab`, and the API has no referral routes. Its registry entry was
+ * removed rather than mapped — see `menu-registry.ts`.
+ */
+export const LEGACY_SETTINGS_TAB_MAP: Partial<Record<SettingsTabId, SettingsTab>> = {
+  // `billing`, `tokens` and `transactions` are gone. They mapped onto the
+  // overlay's `billing` / `api-keys` / `usage` tabs, and all three tabs left
+  // the overlay for `/accounts/[id]`. There is no `SettingsTab` to map them
+  // to any more, and mapping them to a survivor would open Settings on an
+  // unrelated pane — so the registry rows that spoke those ids became plain
+  // `kind: 'navigate'` rows pointed straight at the account page instead
+  // (`account-billing`, `account-tokens`, `account-usage` in
+  // `lib/menu-registry.ts`).
+  // Since 2026-09-02 each legacy id has a tab of its own name again:
+  // theme/wallpaper live on Appearance, sound packs on Sessions, and the
+  // shortcut list stayed on Preferences.
+  appearance: 'appearance',
+  sounds: 'sessions',
+  shortcuts: 'preferences',
+};
+
+/**
+ * How many rows the no-query root page offers under "Suggestions".
+ * `rootSuggestionItems` and `buildRootSuggestions` are the only readers.
+ */
+export const ROOT_SUGGESTION_LIMIT = 8;
+
+/** The registry id of the workspace switcher row. */
+export const WORKSPACE_SWITCHER_ITEM_ID = 'nav-projects';
+
+/**
+ * Registry rows kept out of the no-query Suggestions. They stay in the
+ * registry and in search ("new session", "audit"); they only stop spending a
+ * suggestion slot. New session has its own button and shortcut, and the
+ * session audit is a deep link, not a first move.
+ */
+export const SEARCH_ONLY_ITEM_IDS: ReadonlySet<string> = new Set([
+  'new-session',
+  'open-session-audit',
+  // Home and the session list are one click away in the sidebar already.
+  'proj-home',
+  'proj-sessions',
+]);
+
+/**
+ * The no-query Suggestions order: the everyday moves first — where am I
+ * working, which session, then the session's own surfaces, then review — and
+ * the registry's order only after them. Registry order put "Compact Session"
+ * second and the session's Files/Browser last, behind rarer actions. An id
+ * missing from the palette (no session, a flag off) is skipped, not a hole.
+ */
+export const SUGGESTION_PRIORITY: readonly string[] = [
+  WORKSPACE_SWITCHER_ITEM_ID,
+  'open-session-files',
+  'open-session-browser',
+  'open-session-terminal',
+  'view-changes',
+  'review-changes',
+  'nav-accounts',
+];
+
+/**
+ * How many rows of one page the palette warms (see the prefetch effects in
+ * `CommandPalette`). The sessions page renders up to 50 rows; firing 50 RSC
+ * requests because a project has 50 sessions costs more than the cold fetch it
+ * saves. Eight is the same slice the root page shows.
+ */
+const PALETTE_PREFETCH_LIMIT = 8;
+
+/**
+ * The rows the palette offers before anything is typed.
+ *
+ * `SUGGESTION_PRIORITY` first — "Switch workspace" leads it — then the
+ * registry's own order, then the cap. Unpinned it sits at index 11 of the actions+navigation list
+ * and the cap is {@link ROOT_SUGGESTION_LIMIT} — so opening ⌘K and typing
+ * nothing showed eight session and terminal actions and no way to change
+ * workspace at all. Every other top-level move in this product has a control
+ * you can see without knowing its name; this one did not, which is most of why
+ * people reached for the trackpad instead.
+ *
+ * Pinned rather than raising the cap: indexes 9 and 10 are `restart-config`
+ * and `sync-session-branch`, so a bigger slice buys this row's visibility with
+ * two rows of noise.
+ *
+ * Deduped by id, so the row appears exactly once even if the registry order
+ * changes underneath this — a pin that also duplicated would be a worse bug
+ * than the one it fixes, and `key={item.id}` would collide.
+ */
+export function buildRootSuggestions(
+  items: MenuItemDef[],
+  limit: number = ROOT_SUGGESTION_LIMIT,
+): MenuItemDef[] {
+  const candidates = items.filter(
+    (item) =>
+      (item.group === 'actions' || item.group === 'navigation') &&
+      !SEARCH_ONLY_ITEM_IDS.has(item.id),
+  );
+  const rank = (item: MenuItemDef) => {
+    const index = SUGGESTION_PRIORITY.indexOf(item.id);
+    return index === -1 ? SUGGESTION_PRIORITY.length : index;
+  };
+  // A stable sort: unranked rows keep the registry's relative order.
+  return [...candidates].sort((a, b) => rank(a) - rank(b)).slice(0, limit);
+}
+
+export const SUBMENU_PAGE_BY_ID: Record<string, PalettePage> = {
+  // The dedicated Switch Workspace page. The registry row's `href` stays a
+  // routed fallback for the same reason every other entry here keeps one — if
+  // this map loses the id, the row navigates instead of dead-ending.
+  'nav-projects': 'workspaces',
+  'nav-accounts': 'accounts',
+  'proj-sessions': 'sessions',
+  'conversation-density': 'density',
+  // "Review changes" lists this workspace's OPEN change requests in-palette;
+  // picking one opens its detail dialog. The registry row is `kind: 'action'`
+  // and its `reviewChanges` handler is the fallback for the same reason
+  // `conversation-density`'s is — if this entry is ever removed the row still
+  // opens the picker instead of dead-ending.
+  'review-changes': 'changes',
+};
+
+/**
+ * Same idea, for the rows the palette DERIVES from the Settings overlay's rail
+ * (`settingsPaletteGroups`) rather than reads from the registry. "Feature
+ * flags" opens the in-palette flag list — every experimental feature with its
+ * switch, so a flag can be found and flipped by name without
+ * three navigations. Selecting any other settings row opens the overlay on
+ * that tab, which is also this row's fallback if the map loses the key.
+ */
+export const SETTINGS_TAB_SUBMENU_PAGE: Partial<Record<SettingsTab, PalettePage>> = {
+  'feature-flags': 'flags',
+};
+
+/**
+ * The density page's two rows. Same shape and copy as `VERBOSITY_OPTIONS`
+ * in `tabs/preferences-tab.tsx` — the palette page and the Preferences cards
+ * are the same choice through two doors, so the words must not drift.
+ */
+const DENSITY_PAGE_OPTIONS: {
+  id: ConversationDensity;
+  label: string;
+  description: string;
+}[] = [
+  {
+    id: 'normal',
+    label: 'Normal',
+    description: 'Steps and thinking stream live while Kortix works',
+  },
+  {
+    id: 'minimal',
+    label: 'Minimal',
+    description: 'One status line until you expand it',
+  },
+];
+
+/**
+ * One workspace row, wherever the palette shows one — root recents, root
+ * search results, and the dedicated Switch Workspace page all render this.
+ *
+ * It exists because those three used to be three copies of the same JSX that
+ * had already drifted: all of them painted the same grey `FolderGit2` for
+ * every workspace, in the one control whose entire job is being fast to scan.
+ * The sidebar switcher had carried each workspace's own emoji/initials tile
+ * since it was written. This brings the palette level with it, and does so in
+ * one place so the next divergence has nowhere to happen.
+ *
+ * `glyph` before `emoji` matches `EntityAvatar`'s own precedence and
+ * `project-card.tsx`: a workspace has an emoji XOR a named glyph, never both,
+ * and passing only `emoji` (as the sidebar still does) silently renders a
+ * glyph-iconed workspace as bare initials.
+ *
+ * The account label is trailing, muted and conditional — see
+ * `showAccount`. With one account it is the same word on every row, which is
+ * noise; with two it is the only thing separating two workspaces that share a
+ * name.
+ */
+function WorkspaceCommandItem({
+  row,
+  showAccount,
+  onSelect,
+  trailing,
+}: {
+  row: WorkspacePaletteRow;
+  showAccount: boolean;
+  onSelect: () => void;
+  trailing?: React.ReactNode;
+}) {
+  return (
+    <CommandItem value={sanitizeCmdkValue(workspacePaletteValue(row))} onSelect={onSelect}>
+      <EntityAvatar
+        label={row.workspace.name}
+        glyph={row.workspace.icon_glyph}
+        emoji={row.workspace.icon}
+        size="sm"
+      />
+      <span className="min-w-0 flex-1 truncate">{row.workspace.name}</span>
+      {showAccount && (
+        <span className="text-muted-foreground/40 max-w-[9rem] shrink-0 truncate text-xs">
+          {row.accountName}
+        </span>
+      )}
+      {trailing}
+    </CommandItem>
+  );
+}
+
+function FileSearchPage({
+  query,
+  onSelect,
+}: {
+  query: string;
+  onSelect: (filePath: string, lineNumber?: number) => void;
+}) {
+  const tHardcodedUi = useTranslations('hardcodedUi');
+  const { results, textResults, isLoading, isContentSearch, effectiveQuery, hasResults } =
+    useWorkspaceSearch(query, { minQueryLength: 1, maxResults: 50, maxTextResults: 50 });
+
+  const fileResults = useMemo(() => results.filter((r) => !r.isDir), [results]);
+
+  if (!effectiveQuery) {
+    return (
+      <PaletteEmpty
+        hint={
+          <>
+            {tHardcodedUi.raw('componentsCommandPalette.line185JsxTextPrefixWith')}{' '}
+            <Kbd>{tHardcodedUi.raw('componentsCommandPalette.line186JsxTextText')}</Kbd>{' '}
+            {tHardcodedUi.raw('componentsCommandPalette.line186JsxTextToSearchFileContents')}
+          </>
+        }
+      >
+        {tHardcodedUi.raw('componentsCommandPalette.line183JsxTextSearchFilesInThisProjectSRepo')}
+      </PaletteEmpty>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-8">
+        <TextShimmer>
+          {isContentSearch
+            ? tHardcodedUi.raw('i18nComplete.textde0825bcf9bc')
+            : tHardcodedUi.raw('i18nComplete.text0d9498215681')}
+        </TextShimmer>
+      </div>
+    );
+  }
+
+  if (!hasResults) {
+    return (
+      <PaletteEmpty>
+        {tHardcodedUi.raw('i18nComplete.text1ea442a134b2')}{' '}
+        {isContentSearch ? tHardcodedUi.raw('i18nComplete.text7aea792d4556') : 'files'}{' '}
+        {tHardcodedUi.raw('componentsCommandPalette.line213JsxTextFor')}
+        {effectiveQuery}
+        {tHardcodedUi.raw('componentsCommandPalette.line213JsxTextText')}
+      </PaletteEmpty>
+    );
+  }
+
+  if (isContentSearch) {
+    const grouped = new Map<string, typeof textResults>();
+    for (const r of textResults) {
+      const arr = grouped.get(r.path) ?? [];
+      arr.push(r);
+      grouped.set(r.path, arr);
+    }
+    return (
+      <>
+        {Array.from(grouped.entries()).map(([filePath, matches]) => (
+          <CommandGroup
+            key={filePath}
+            heading={
+              <span className="inline-flex items-center gap-1.5 font-mono text-xs">
+                <FileText className="size-3 shrink-0" />
+                <span className="text-foreground">{filePath}</span>
+              </span>
+            }
+            forceMount
+          >
+            {matches.map((match) => (
+              <CommandItem
+                key={`${filePath}:${match.line_number}:${match.lines || ''}`}
+                value={sanitizeCmdkValue(`content ${filePath} ${match.lines} ${match.line_number}`)}
+                onSelect={() => onSelect(filePath, match.line_number)}
+              >
+                <Hash className="text-muted-foreground/40 h-3.5 w-3.5 shrink-0" />
+                <span className="text-muted-foreground w-8 shrink-0 text-right text-xs tabular-nums">
+                  {match.line_number}
+                </span>
+                <span className="text-muted-foreground/60 flex-1 truncate font-mono text-sm">
+                  {(match.lines || '').trim()}
+                </span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        ))}
+      </>
+    );
+  }
+
+  return (
+    <CommandGroup heading="Files" forceMount>
+      {fileResults.map((item) => (
+        <CommandItem
+          key={item.path}
+          value={sanitizeCmdkValue(`file ${item.name} ${item.path}`)}
+          onSelect={() => onSelect(item.path)}
+        >
+          <FileText className="text-muted-foreground size-4 shrink-0" />
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+            <span className="shrink-0 text-sm font-medium">{item.name}</span>
+            <span className="text-muted-foreground/35 min-w-0 flex-1 truncate font-mono text-xs">
+              {item.path}
+            </span>
+          </div>
+        </CommandItem>
+      ))}
+    </CommandGroup>
+  );
+}
+
+/**
+ * The 'changes' page — this workspace's OPEN change requests, listed by number
+ * and title, each opening its own detail dialog.
+ *
+ * **Why it reads the list itself instead of `useOpenChangeRequestList`.** That
+ * hook takes its project id from `ProjectFilesContext`, and the palette mounts
+ * outside every provider that supplies one (`AppHeader` and `ProjectShell`
+ * both render it as a sibling of the file explorer, not inside it). Wrapping
+ * the whole palette in a `ProjectFilesProvider` to satisfy one page would put
+ * the file feature's context on every route the palette mounts on. Reading
+ * `openChangeRequestListQuery` (the hook's own key and read) costs nothing
+ * extra: the count badge's cache entry is reused when it is mounted, and
+ * populated for it when it is not.
+ *
+ * The detail dialog DOES need the context (it resolves the project id for the
+ * manifest filename and every mutation), so it — and only it — is wrapped, in
+ * `CommandPalette` below.
+ */
+function ChangeRequestsPage({
+  projectId,
+  query,
+  onSelect,
+}: {
+  projectId: string;
+  query: string;
+  onSelect: (crId: string) => void;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const { data, isLoading } = useQuery({
+    ...openChangeRequestListQuery(projectId),
+    staleTime: 5_000,
+  });
+
+  const changeRequests = useMemo(() => {
+    const all = data?.change_requests ?? [];
+    const q = query.trim().toLowerCase();
+    if (!q) return all;
+    return all.filter((cr) =>
+      `#${cr.number} ${cr.title} ${cr.base_ref} ${cr.head_ref}`.toLowerCase().includes(q),
+    );
+  }, [data?.change_requests, query]);
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-8">
+        <TextShimmer>{tI18nComplete.raw('text73d66adbfd39')}</TextShimmer>
+      </div>
+    );
+  }
+
+  if (changeRequests.length === 0) {
+    return (
+      <PaletteEmpty>
+        {query.trim()
+          ? tI18nComplete('textd717d6d02f4f', { value0: query.trim() })
+          : tI18nComplete.raw('text1a60b0977a4f')}
+      </PaletteEmpty>
+    );
+  }
+
+  return (
+    <CommandGroup heading={tI18nComplete.raw('text7190acb3b105')} forceMount>
+      {changeRequests.map((cr) => (
+        <CommandItem
+          key={cr.cr_id}
+          value={sanitizeCmdkValue(`change request ${cr.number} ${cr.title} ${cr.base_ref}`)}
+          onSelect={() => onSelect(cr.cr_id)}
+        >
+          <span className="text-muted-foreground shrink-0 font-mono text-sm tabular-nums">
+            #{cr.number}
+          </span>
+          <span className="flex-1 truncate text-sm">{cr.title}</span>
+          <span className="text-muted-foreground/40 max-w-[140px] shrink-0 truncate font-mono text-xs">
+            {cr.base_ref}
+          </span>
+        </CommandItem>
+      ))}
+    </CommandGroup>
+  );
+}
+
+/**
+ * The 'flags' page — every experimental feature this deployment exposes for
+ * the current workspace, by name, with its switch.
+ *
+ * Same data, same route, same permission gate as the Feature flags section of
+ * `/projects/<id>/config` (`settings/tabs/experimental-tab.tsx`): the project
+ * summary's `experimental_features`, `PATCH /projects/:id/features` through
+ * `updateFeatureFlag`, and `PROJECT_SETTINGS_WRITE`. Two doors onto one
+ * behaviour, not a second implementation of it — the cache writes below are
+ * the same set that tab performs, so the flag-gated rail, sidebar and palette
+ * rows all re-resolve together either way.
+ *
+ * **Why toggling here rather than linking there.** Every other flag surface
+ * costs three navigations to answer "is Voice on for this workspace?". The
+ * flags are also the one settings list whose ROWS are what people search for
+ * ("warm sessions", "us_region" out of a changelog) — a single row pointing
+ * at a page they then have to search again is the defect this whole change
+ * exists to remove. Selecting a row when the permission probe denies (or is
+ * still in flight) navigates to the section instead of failing silently.
+ */
+function FeatureFlagsPage({
+  projectId,
+  query,
+  onNavigate,
+}: {
+  projectId: string;
+  query: string;
+  onNavigate: () => void;
+}) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const queryClient = useQueryClient();
+  const projectQuery = useQuery({
+    queryKey: qk.project.summary(projectId),
+    queryFn: () => getProject(projectId),
+    ...contract('config'),
+  });
+
+  const writeCap = useProjectCan(projectId, PROJECT_ACTIONS.PROJECT_SETTINGS_WRITE);
+  // Fail-closed while the probe is in flight — the same rule `ExperimentalTab`
+  // applies, so a slow probe never offers a toggle the server would reject.
+  const canEdit = !writeCap.isLoading && writeCap.allowed === true;
+
+  const [pendingValues, setPendingValues] = useState<Record<string, boolean>>({});
+
+  const toggleMutation = useMutation({
+    mutationFn: ({ key, next }: { key: FeatureFlagKey; next: boolean }) =>
+      updateFeatureFlag(projectId, key, next),
+    onSettled: (_data, _error, variables) => {
+      setPendingValues((prev) => {
+        if (!(variables.key in prev)) return prev;
+        const next = { ...prev };
+        delete next[variables.key];
+        return next;
+      });
+    },
+    onSuccess: (updated, variables) => {
+      queryClient.setQueryData(qk.project.summary(projectId), updated);
+      queryClient.setQueryData<ProjectDetail | undefined>(
+        qk.project.detail(projectId),
+        (current) => (current ? { ...current, project: updated } : current),
+      );
+      void invalidateProject(queryClient, projectId);
+      queryClient.invalidateQueries({ queryKey: qk.projects.scope() });
+      successToast(
+        `${variables.key} ${variables.next ? tI18nComplete.raw('textfb9cf75606b4') : tI18nComplete.raw('text17eb3c0168d0')}`,
+      );
+    },
+    onError: (error: Error, variables) => {
+      errorToast(error.message || tI18nComplete('text6926cad8145a', { value0: variables.key }));
+    },
+  });
+
+  const features = useMemo(() => {
+    const available = (projectQuery.data?.experimental_features ?? []).filter((f) => f.available);
+    const withPending = available.map((f) => ({
+      ...f,
+      enabled: pendingValues[f.key] ?? f.enabled,
+    }));
+    const q = query.trim().toLowerCase();
+    if (!q) return withPending;
+    // Matches `key` as well as `name`/`description`, for the same reason
+    // `filterFeatures` in experimental-tab.tsx does: flags get turned on from
+    // docs and changelogs that name the raw key (`warm_sessions`).
+    return withPending.filter(
+      (f) =>
+        f.name.toLowerCase().includes(q) ||
+        f.key.toLowerCase().includes(q) ||
+        (f.description ?? '').toLowerCase().includes(q),
+    );
+  }, [projectQuery.data?.experimental_features, pendingValues, query]);
+
+  if (projectQuery.isLoading) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-8">
+        <TextShimmer>{tI18nComplete.raw('text38839cc3827c')}</TextShimmer>
+      </div>
+    );
+  }
+
+  if (features.length === 0) {
+    return (
+      <PaletteEmpty>
+        {query.trim()
+          ? tI18nComplete('textdb41b06d8460', { value0: query.trim() })
+          : tI18nComplete.raw('textcc5de74822b5')}
+      </PaletteEmpty>
+    );
+  }
+
+  return (
+    <CommandGroup heading={tI18nComplete.raw('text20a2e59ba129')} forceMount>
+      {features.map((feature) => {
+        const pending = feature.key in pendingValues;
+        return (
+          <CommandItem
+            key={feature.key}
+            value={sanitizeCmdkValue(`flag ${feature.name} ${feature.key} ${feature.description}`)}
+            onSelect={() => {
+              if (!canEdit) {
+                onNavigate();
+                return;
+              }
+              setPendingValues((prev) => ({ ...prev, [feature.key]: !feature.enabled }));
+              toggleMutation.mutate({
+                key: feature.key as FeatureFlagKey,
+                next: !feature.enabled,
+              });
+            }}
+          >
+            <Flask className="text-muted-foreground size-4 shrink-0" />
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+              <span className="truncate text-sm">{feature.name}</span>
+              <span className="text-muted-foreground/40 truncate font-mono text-xs">
+                {feature.key}
+              </span>
+            </div>
+            {pending ? (
+              <Loading className="text-muted-foreground size-3.5 shrink-0" />
+            ) : (
+              <span
+                className={cn(
+                  'shrink-0 text-xs font-medium tabular-nums',
+                  feature.enabled ? 'text-primary/70' : 'text-muted-foreground/40',
+                )}
+              >
+                {feature.enabled ? 'On' : 'Off'}
+              </span>
+            )}
+          </CommandItem>
+        );
+      })}
+    </CommandGroup>
+  );
+}
+
+const sessionName = (s: ProjectSession) =>
+  s.name ||
+  (typeof s.metadata?.session_name === 'string' ? s.metadata.session_name : '') ||
+  s.branch_name ||
+  s.session_id.slice(0, 8);
+
+export function sessionMatchesPaletteQuery(session: ProjectSession, query: string): boolean {
+  return (
+    sessionName(session).toLowerCase().includes(query) ||
+    session.session_id.toLowerCase().startsWith(query)
+  );
+}
+
+/**
+ * The welcome chat (KRTX-2476). The sidebar lists "Your first chat with
+ * Kortix" under Sessions while it is pending, but it is not a session yet, so
+ * the server search never returns it. Search finds it by its title instead.
+ */
+export function firstChatMatchesPaletteQuery(pending: boolean, title: string, query: string): boolean {
+  return pending && query.length > 0 && title.toLowerCase().includes(query);
+}
+
+export function CommandPalette() {
+  const tHardcodedUi = useTranslations('hardcodedUi');
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const tPalette = useTranslations('commandPalette');
+  const { user } = useAuth();
+  const tSettingsRail = useTranslations('settings.rail');
+  const densityPageOptions = useLocalizedUiCatalog(DENSITY_PAGE_OPTIONS);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState<PalettePage>('root');
+  const [isCreating, setIsCreating] = useState(false);
+  const [compactOpen, setCompactOpen] = useState(false);
+  const [diffOpen, setDiffOpen] = useState(false);
+  /** The change request whose detail dialog is open, picked on the 'changes' page. */
+  const [selectedCrId, setSelectedCrId] = useState<string | null>(null);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  // Never cleared: `performSignOut` ends on a document load, so this component
+  // is discarded rather than re-rendered.
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const reopenPaletteRef = useRef(false);
+  const openUpgradeDialog = useUpgradeDialogStore((s) => s.openUpgradeDialog);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const router = useRouter();
+  const rawPathname = usePathname();
+  const pathname = normalizeAppPathname(rawPathname);
+  const params = useParams<{ id?: string; sessionId?: string }>();
+  const queryClient = useQueryClient();
+  const openProjectTab = useProjectSessionTabsStore((s) => s.openTab);
+  const projectId = rawPathname?.startsWith('/projects/') ? (params?.id ?? null) : null;
+  const currentSessionId = useMemo(() => {
+    if (params?.sessionId) return params.sessionId;
+    const match = pathname?.match(/^\/sessions\/([^/]+)/);
+    return match ? match[1] : null;
+  }, [params?.sessionId, pathname]);
+  const sidebarCtx = useContext(SidebarContext);
+  const sidebarOpen = sidebarCtx?.open ?? false;
+  const createSession = useCreateRuntimeSession();
+  const createPty = useCreatePty();
+  const {
+    selected: activeInterfaceTheme,
+    select: selectInterfaceTheme,
+    choice: themeChoice,
+  } = useInterfaceTheme();
+  const { preview: previewInterfaceTheme, commit: commitThemePreview } =
+    useInterfaceThemePreview(themeChoice);
+  const activeWallpaperId = useUserPreferencesStore(
+    (s) => s.preferences.wallpaperId ?? DEFAULT_WALLPAPER_ID,
+  );
+  const panelMode = useUserPreferencesStore((s) => s.preferences.panelMode ?? 'easy');
+  const conversationDensity = useUserPreferencesStore(
+    (s) => s.preferences.conversationDensity ?? 'normal',
+  );
+  const billingEnabled = isBillingEnabled();
+  // What the active session's runtime serves (E1): a control shows only with its capability.
+  const runtimeCapabilities = useRuntimeConnectionStore((s) => s.runtimeCapabilities);
+
+  // The project's own agents from the Kortix project config, filtered by the
+  // SDK's one selectable-agent rule: the same list the composer offers. Never
+  // the sandbox runtime's list, which adds its built-ins (`build`, `plan`, …).
+  const agents = useVisibleAgents({ projectId });
+  const { data: providers } = useRuntimeProviders();
+
+  const selectedAccountId = useCurrentAccountStore((s) => s.selectedAccountId);
+  const { data: accountsList } = useAccountsList({ enabled: open });
+  const activeAccount =
+    accountsList?.find((account) => account.account_id === selectedAccountId) ??
+    accountsList?.[0] ??
+    null;
+  const activeAccountId = activeAccount?.account_id ?? null;
+  /**
+   * EVERY account's workspaces, not just the active account's.
+   *
+   * This used to be one `listProjectsForAccount(activeAccountId)`. That made
+   * the palette strictly weaker than the mouse: the sidebar switcher
+   * (`workspace-menu-section.tsx`) already fans out over every account, so a
+   * workspace in a second account was reachable by trackpad and invisible to
+   * ⌘K. There is no single unscoped call that returns everything — `GET
+   * /projects` with no `account_id` resolves server-side to ONE default
+   * account (apps/api `resolveProjectAccount`) — so it is one request per
+   * account, exactly as the sidebar does it.
+   *
+   * Same `qk.projects.list(accountId)` keys and same `contract('inventory')`
+   * as the sidebar, so the two controls share cache entries and this costs no
+   * extra request when the sidebar menu has already been opened. `enabled` on
+   * `open` keeps all of it off every route the palette merely mounts on.
+   */
+  const workspaceQueries = useQueries({
+    queries: (accountsList ?? []).map((account) => ({
+      queryKey: qk.projects.list(account.account_id),
+      queryFn: () => listProjectsForAccount(account.account_id),
+      enabled: open,
+      ...contract('inventory'),
+    })),
+  });
+  // Not memoised, and deliberately: `useQueries` hands back a fresh array
+  // every render, so a `useMemo` over it would recompute anyway while adding a
+  // dependency array whose LENGTH varies with the account count — which React
+  // rejects outright. The work is a flatMap plus a group-and-sort over tens of
+  // rows; the palette's per-keystroke cost is dominated by cmdk scoring every
+  // row in the list, not by this.
+  const allWorkspaces = workspaceQueries.flatMap((q) => q.data ?? []);
+  const workspacesLoading =
+    workspaceQueries.length === 0 || workspaceQueries.some((q) => q.isLoading);
+  const { data: paletteSessions, isPending: projectSessionsPending } = useQuery({
+    queryKey: qk.project.sessions(projectId ?? ''),
+    queryFn: () => listProjectSessions(projectId!, { limit: PROJECT_SESSION_NAME_LOOKUP_LIMIT }),
+    enabled: open && !!projectId,
+    ...contract('inventory'),
+  });
+  // The sidebar's pages are usually cached already. Their rows stand in until
+  // this lookup-sized list answers, and when it fails, so recent sessions show
+  // the moment the palette opens instead of "No sessions yet". Not
+  // `placeholderData`: TanStack drops a placeholder when the fetch errors.
+  const sidebarPages = queryClient.getQueryData<{
+    pages: ProjectSessionPage[];
+    pageParams: unknown[];
+  }>(qk.project.sessionsPaged(projectId ?? ''));
+  const sidebarSessions = useMemo(
+    () => (sidebarPages ? flattenProjectSessionPages(sidebarPages) : undefined),
+    [sidebarPages],
+  );
+  const projectSessionsList = paletteSessions ?? sidebarSessions;
+  // Search is the server's: `q` reaches every session the viewer may open, not
+  // only the newest `PROJECT_SESSION_NAME_LOOKUP_LIMIT` the lookup above holds.
+  const serverSessionQuery = useDebounce(query.trim(), 250);
+  const { sessions: serverSessionMatches } = useProjectSessions(projectId ?? '', {
+    q: serverSessionQuery,
+    limit: 20,
+    enabled: open && !!projectId && serverSessionQuery.length > 0,
+  });
+  // Same query key every other project surface fetches (page.tsx,
+  // project-shell.tsx) — dedupes against that cache entry. Resolves the
+  // account the "Invite members" command lands on, via the same fallback
+  // `project-shell.tsx` uses for its account-scoped tabs.
+  const { data: paletteProjectDetail } = useQuery({
+    queryKey: qk.project.detail(projectId ?? ''),
+    queryFn: () => getProjectDetail(projectId!),
+    enabled: open && !!projectId,
+    ...contract('config'),
+  });
+  const inviteMembersAccountId = useSettingsAccountId(paletteProjectDetail?.project?.account_id);
+  /**
+   * The open change requests, for the count on the "Review changes" row.
+   *
+   * Same key and read as the count badge and the 'changes' page
+   * (`openChangeRequestListQuery`), so the three share one cache entry and one
+   * request. `enabled` on `open` keeps it off every route the palette merely
+   * mounts on.
+   */
+  const { data: openChangeRequests } = useQuery({
+    ...openChangeRequestListQuery(projectId ?? ''),
+    enabled: open && !!projectId,
+    staleTime: 5_000,
+  });
+  const openChangeRequestCount = openChangeRequests?.change_requests.length ?? 0;
+  const sendToSession = useChatSendStore((state) => state.sendToSession);
+  const currentProjectSession = projectSessionsList?.find(
+    (session) => session.session_id === currentSessionId,
+  );
+
+  // The registry's `requiresFlag` gate. One primitive (`useFeatureFlag`, via
+  // `useProjectFeatureFlags`) decides for every surface, so a palette entry can
+  // never survive a flag its rail item does not. Fail-closed: unresolved detail
+  // ⇒ every flag reads false.
+  // `projectFlags`, not `featureFlags` — the SDK's `featureFlags` is the
+  // DEPLOYMENT flag set (build-time capabilities like `enableProjects`), a
+  // different concept from the
+  // per-project feature flags this gates on.
+  const { flags: projectFlags } = useProjectFeatureFlags(open ? projectId : null);
+
+  // Memory pages (`project_channels`): the server's search, at 2 characters
+  // or more. Hits of an older query stay in the hook while the next loads, so
+  // a query cut below 2 characters shows none.
+  const tMemory = useTranslations('spaces.memory');
+  const memoryOn = open && !!projectId && projectFlags.project_channels === true && page === 'root';
+  const memorySearch = useProjectMemorySearch(
+    projectId ?? '',
+    { q: serverSessionQuery, limit: 5 },
+    { enabled: memoryOn },
+  );
+  const memoryHref = useMemoryPageHref(projectId, memoryOn);
+  const memoryQueryLongEnough = query.trim().length >= 2 && serverSessionQuery.length >= 2;
+  const rootMemoryResults = useMemo(
+    () =>
+      memoryOn && memoryQueryLongEnough
+        ? (memorySearch.data?.hits ?? []).flatMap((hit) => {
+            const href = memoryHref({ scope: hit.scope, key: hit.layer_key }, hit.page_id);
+            const place =
+              hit.scope === 'company'
+                ? tMemory('used.company')
+                : hit.scope === 'dm'
+                  ? capitalizeWords(hit.layer_name)
+                  : hit.layer_name;
+            return href ? [{ hit, href, place }] : [];
+          })
+        : [],
+    [memoryOn, memoryQueryLongEnough, memorySearch.data, memoryHref, tMemory],
+  );
+
+  const allModels = useMemo(
+    () => flattenModels(providers, { providerMode: modelProviderMode(providers) }),
+    [providers],
+  );
+  // Only for the persisted selection state (session agent, per-agent model,
+  // recents) — model visibility is the server's `enabled` flag on each model,
+  // never a store heuristic.
+  const modelStore = useModelStore(allModels);
+
+  const currentAgentName = useMemo(() => {
+    if (!currentSessionId) return undefined;
+    return modelStore.getSessionAgentName(currentSessionId);
+  }, [currentSessionId, modelStore]);
+
+  const currentAgent = useMemo(() => {
+    if (!currentAgentName) return agents[0];
+    return agents.find((a) => a.name === currentAgentName) ?? agents[0];
+  }, [currentAgentName, agents]);
+
+  const currentModelKey = useMemo(() => {
+    if (!currentAgent) return undefined;
+    return modelStore.getSelectedModel(currentAgent.name);
+  }, [currentAgent, modelStore]);
+
+  const close = useCallback(() => setOpen(false), []);
+
+  const goToPage = useCallback((p: PalettePage, preserveQuery?: boolean) => {
+    setPage(p);
+    if (!preserveQuery) setQuery('');
+  }, []);
+
+  const goBack = useCallback(() => {
+    setPage('root');
+    setQuery('');
+  }, []);
+
+  const handleOpenTerminal = useCallback(async () => {
+    try {
+      const pty = await createPty.mutateAsync({
+        env: { TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+      });
+      openTabAndNavigate({
+        id: `terminal:${pty.id}`,
+        title: pty.title || pty.command || 'Terminal',
+        type: 'terminal',
+        // `/terminal/<id>` is not a route.
+        href: `/terminal/${pty.id}`,
+      });
+    } catch {
+      errorToast(tHardcodedUi.raw('i18nComplete.text6300be841ac6'));
+    }
+    close();
+  }, [createPty, close, tHardcodedUi]);
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setOpen((prev) => !prev);
+      }
+      if (e.key === '`' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        handleOpenTerminal();
+      }
+      // Straight onto the workspace switcher, skipping the root page.
+      // Switching workspaces is a top-level move — the sidebar gives it a
+      // dedicated control — and making it the ONLY top-level move with no
+      // keystroke is what pushed people onto the trackpad for it. `o` for
+      // "open", the same letter the platform uses for it; `preventDefault`
+      // takes it back from the browser's Open File dialog. Not a toggle: this
+      // key names a destination, and pressing it while the palette sits on
+      // some other page should go there, not close.
+      if ((e.key === 'o' || e.key === 'O') && (e.metaKey || e.ctrlKey) && !e.shiftKey) {
+        e.preventDefault();
+        setQuery('');
+        setPage('workspaces');
+        setOpen(true);
+      }
+    };
+    document.addEventListener('keydown', down);
+    return () => document.removeEventListener('keydown', down);
+  }, [handleOpenTerminal]);
+
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (!open) {
+      setQuery('');
+      setPage('root');
+    }
+  }
+
+  useEffect(() => {
+    const openFileSearch = () => {
+      setQuery('');
+      setPage('files');
+      setOpen(true);
+    };
+    window.addEventListener('kortix:open-file-search', openFileSearch);
+    return () => window.removeEventListener('kortix:open-file-search', openFileSearch);
+  }, []);
+
+  // Same door as ⌘K, for surfaces that have a button instead of a keystroke
+  // (the sidebar's search control). Opens rather than toggles: a click on a
+  // control you can only see while the palette is closed always means "open".
+  useEffect(() => {
+    const openPalette = () => {
+      consumePendingCommandPalette();
+      setQuery('');
+      setPage('root');
+      setOpen(true);
+    };
+    window.addEventListener(OPEN_COMMAND_PALETTE_EVENT, openPalette);
+    // This component is lazily mounted, so a click can land before the
+    // listener above exists. Anything requested in that window is replayed
+    // here instead of being silently dropped.
+    if (consumePendingCommandPalette()) openPalette();
+    return () => window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, openPalette);
+  }, []);
+
+  useEffect(() => {
+    if (page === 'root') return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Backspace' && query === '') {
+        e.preventDefault();
+        goBack();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [page, query, goBack]);
+
+  const fuzzyMatch = useCallback((text: string, q: string): boolean => {
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const haystack = text.toLowerCase();
+    return words.every((w) => haystack.includes(w));
+  }, []);
+
+  const hasQuery = query.trim().length > 0;
+  const queryLongEnough = query.trim().length >= 2;
+  // Joined so the memo below keys on the answer, not on a fresh array.
+  const customizeTabs = useCapabilityAccess(projectId ?? undefined).tabs.join(' ');
+  // A row is offered only when the caller can act on it: the same verdicts
+  // the account hub nav and the sidebar rows read, joined so the memo keys on
+  // the answers. Every one is false until its probe lands.
+  const { sectionVisible } = useAccountHubAccess(selectedAccountId ?? undefined);
+  const accountSections = Object.entries(sectionVisible)
+    .filter(([, visible]) => visible)
+    .map(([section]) => section)
+    .join(' ');
+  const navRows = useProjectNavRows(projectId ?? undefined);
+  const customizeRow = navRows.customize !== null;
+  const repoRow = navRows.files === 'repo';
+  const canInvite =
+    useProjectPageCans(projectId ?? undefined)[PROJECT_ACTIONS.PROJECT_MEMBERS_MANAGE]?.allowed ===
+    true;
+  const appsRow = useAppsRowVisible(projectId ?? undefined);
+  const allPaletteItems = useMemo(() => {
+    const gates = {
+      accountSections: Object.fromEntries(
+        accountSections.split(' ').map((section) => [section, true]),
+      ),
+      rows: {
+        'proj-customize': customizeRow,
+        'proj-files': repoRow,
+        'proj-apps': appsRow,
+        'proj-invite': canInvite,
+        // The roster is read-only without the leaf that changes it.
+        'proj-members': canInvite,
+        // Open change requests are the Review tab's business: only a caller
+        // who can act on reviews gets the list.
+        'review-changes': customizeTabs.split(' ').includes('review'),
+        // Customize tabs with their own row: shown exactly when the tab is.
+        'proj-repo': customizeTabs.split(' ').includes('files'),
+      },
+    };
+    const customizeTabSet = new Set(customizeTabs.split(' '));
+    const result: MenuItemDef[] = [];
+    for (const sourceItem of getItemsForSurface('commandPalette')) {
+      const item = translateMenuItem(sourceItem, tI18nComplete);
+      if (LEGACY_PALETTE_HIDDEN.has(item.id)) continue;
+      if (item.id === 'toggle-sidebar' && !sidebarCtx) continue;
+      if (item.requiresBilling && !billingEnabled) continue;
+      if (item.requiresSession && !currentSessionId) continue;
+      if (item.requiresRuntime && !runtimeSupports(runtimeCapabilities, item.requiresRuntime)) continue;
+      if (item.requiresProject && !projectId) continue;
+      if (item.requiresFlag && !projectFlags[item.requiresFlag]) continue;
+      // Channels replace New session: a thread starts from a channel's composer.
+      if (item.id === 'new-session' && projectFlags.project_channels) continue;
+      // Token substitution. An href that still holds an UNRESOLVED token after
+      // this is dropped, not offered: navigating to a literal
+      // `/accounts/{accountId}?tab=billing` is a 404, and offering a row that
+      // cannot go anywhere is worse than not offering it. `{projectId}` rows
+      // already declare `requiresProject: true` and are filtered above;
+      // `{accountId}` rows are filtered here, off the token itself, so a new
+      // account-scoped row can never ship without the guard.
+      // An account row cannot resolve without a selected account, exactly as
+      // an `{accountId}` href could not. Same guard, off the kind instead of
+      // off a token, so a new account row can never ship without it.
+      if (item.kind === 'account' && !selectedAccountId) continue;
+      if (!paletteRowPermitted(item, gates)) continue;
+      let href = item.href;
+      if (href?.includes('{projectId}')) {
+        if (!projectId) continue;
+        href = href.replaceAll('{projectId}', projectId);
+        // A Customize tab is offered only when `capabilityAccess()` lists it:
+        // the same rule the sidebar row and the tab bar follow.
+        const tab = activeCapabilityTab(href.split('?')[0]);
+        if (tab && !customizeTabSet.has(tab)) continue;
+      }
+      if (href?.includes('{accountId}')) {
+        if (!selectedAccountId) continue;
+        href = href.replaceAll('{accountId}', selectedAccountId);
+      }
+      result.push(href === item.href ? item : { ...item, href });
+    }
+    return result;
+  }, [
+    billingEnabled,
+    currentSessionId,
+    runtimeCapabilities,
+    projectId,
+    selectedAccountId,
+    sidebarCtx,
+    projectFlags,
+    tI18nComplete,
+    customizeTabs,
+    accountSections,
+    customizeRow,
+    repoRow,
+    appsRow,
+    canInvite,
+  ]);
+
+  const filteredNavItems = useMemo(() => {
+    if (!hasQuery) return allPaletteItems;
+    const q = query.trim().toLowerCase();
+    const words = q.split(/\s+/).filter(Boolean);
+    return allPaletteItems.filter((item) => {
+      // Exactly the string that becomes the cmdk `value` below, so the two
+      // filters in play read the same text.
+      //
+      // THIS FILTER DECIDES WHAT IS VISIBLE, not cmdk's. Every CommandGroup in
+      // this file passes `forceMount`, and cmdk 0.2.1 propagates a group's
+      // `forceMount` to its items through the group context
+      // (`g = props.forceMount ?? groupContext.forceMount` in
+      // `cmdk/dist/index.mjs`), so cmdk's own scorer never removes one of
+      // these rows — it only RANKS them, by scoring the same `value`. That is
+      // why a stale keyword here is a wrong ANSWER rather than a wrong order,
+      // and why the two can never disagree about which rows exist.
+      //
+      // They do still disagree about the query: this is a per-word substring
+      // test, cmdk's is an ordered-subsequence score. "session terminal" keeps
+      // Open Terminal here and scores 0 in cmdk, which sorts it last instead
+      // of dropping it. Do NOT remove `forceMount` from a group without
+      // replacing this filter — that is what turns the disagreement into
+      // rows vanishing under a heading that is still rendered.
+      const haystack = buildPaletteSearchText(item).toLowerCase();
+      return words.every((w) => haystack.includes(w));
+    });
+  }, [allPaletteItems, hasQuery, query]);
+
+  // No `flags` argument any more: Marketplace, Review and Voice were the only
+  // flag-gated rail rows and all three moved to `/projects/<id>/config`, whose
+  // own sub-nav composes them. Nothing left in the rail varies by flag.
+  const chromeOffered = useChromeOffered(open);
+  const allSettingsGroups = useMemo(
+    () => settingsPaletteGroups({ hasProject: !!projectId, chromeOffered }, (key) => tSettingsRail(key as never)),
+    [projectId, chromeOffered, tSettingsRail],
+  );
+
+  const filteredSettingsGroups = useMemo(
+    () => (hasQuery ? filterSettingsPaletteGroups(allSettingsGroups, query) : []),
+    [allSettingsGroups, hasQuery, query],
+  );
+
+  const settingsResultCount = useMemo(
+    () => filteredSettingsGroups.reduce((total, group) => total + group.items.length, 0),
+    [filteredSettingsGroups],
+  );
+
+  const filteredAgents = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return agents.filter(
+      (a) =>
+        (a.name || '').toLowerCase().includes(q) || (a.description || '').toLowerCase().includes(q),
+    );
+  }, [agents, query]);
+
+  const visibleModels = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    // Same rule as the session picker: only what the project OFFERS
+    // (server-resolved `enabled`, `/model-picker`). Searching does not resurface
+    // a disabled model — "Manage models" is where the full catalog lives.
+    return allModels
+      .filter((m) => {
+        if (m.enabled === false) return false;
+        return (
+          !q ||
+          (m.modelName || '').toLowerCase().includes(q) ||
+          (m.modelID || '').toLowerCase().includes(q) ||
+          (m.providerName || '').toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => (a.modelName || '').localeCompare(b.modelName || ''));
+  }, [allModels, query]);
+
+  const groupedModels = useMemo(() => {
+    const groups = new Map<
+      string,
+      { providerID: string; providerName: string; models: typeof visibleModels }
+    >();
+    for (const m of visibleModels) {
+      // Under the gateway every model is registered as opencode provider
+      // `kortix`, so `m.providerName` is always "Kortix" — even for a BYOK
+      // Anthropic/Bedrock model. Group/label by the resolved REAL upstream
+      // provider instead. Safe to call unconditionally: for a native
+      // (non-gateway) model `pickerGroupId` already returns `m.providerID`
+      // as-is. See model-grouping.ts's doc comment.
+      const groupID = pickerGroupId(m);
+      const existing = groups.get(groupID);
+      if (existing) {
+        existing.models.push(m);
+      } else {
+        groups.set(groupID, {
+          providerID: groupID,
+          providerName: pickerGroupLabel(groupID, m),
+          models: [m],
+        });
+      }
+    }
+    const entries = Array.from(groups.values());
+    entries.sort((a, b) => {
+      const ai = MODEL_SELECTOR_PROVIDER_IDS.indexOf(a.providerID);
+      const bi = MODEL_SELECTOR_PROVIDER_IDS.indexOf(b.providerID);
+      if (ai >= 0 && bi < 0) return -1;
+      if (ai < 0 && bi >= 0) return 1;
+      if (ai >= 0 && bi >= 0) return ai - bi;
+      return a.providerName.localeCompare(b.providerName);
+    });
+    return entries;
+  }, [visibleModels]);
+
+  const sessionActionItems = useMemo(() => {
+    if (!hasQuery) return [];
+    const q = query.trim().toLowerCase();
+    const words = q.split(/\s+/).filter(Boolean);
+    const items: { id: string; label: string; keywords: string; targetPage: PalettePage }[] = [];
+    if (currentSessionId) {
+      items.push({
+        id: 'change-agent',
+        label: tHardcodedUi.raw('i18nComplete.text6fb2caa0ee1c'),
+        keywords: 'change agent worker switch select bot assistant',
+        targetPage: 'agents',
+      });
+      items.push({
+        id: 'change-model',
+        label: tHardcodedUi.raw('i18nComplete.text9cb6d01d8b29'),
+        keywords: 'change model llm switch select provider anthropic openai claude gpt',
+        targetPage: 'models',
+      });
+    }
+    return items.filter((item) => {
+      const haystack = [item.label, item.keywords].join(' ').toLowerCase();
+      return words.every((w) => haystack.includes(w));
+    });
+  }, [hasQuery, query, currentSessionId, tHardcodedUi]);
+
+  const hasNavResults = filteredNavItems.length > 0;
+  const hasSessionActionResults = sessionActionItems.length > 0;
+
+  const newSession = useNewProjectSession(projectId ?? undefined);
+  const handleNewSession = useCallback(() => {
+    if (projectId) {
+      newSession();
+      close();
+      return;
+    }
+
+    if (isCreating) return;
+    setIsCreating(true);
+    createSession
+      .mutateAsync()
+      .then((session) => {
+        // LEGACY, unreachable in the product: this branch runs only when
+        // there is NO projectId, and every authed route is `/projects/[id]/*`.
+        // `/sessions/<id>` is not a route — see `packages/ui/src/internal/lib/navigation/session-href.ts`.
+        openTabAndNavigate({
+          id: session.id,
+          title: tHardcodedUi.raw('i18nComplete.textcffdba22adf2'),
+          type: 'session',
+          href: `/sessions/${session.id}`,
+        });
+        requestAnimationFrame(() => {
+          window.dispatchEvent(new CustomEvent('focus-session-textarea'));
+        });
+        close();
+      })
+      .catch(() => errorToast(tHardcodedUi.raw('i18nComplete.textb6f7df17e0a2')))
+      .finally(() => setIsCreating(false));
+  }, [isCreating, projectId, newSession, createSession, close, tHardcodedUi]);
+
+  const setSelectedAccountId = useCurrentAccountStore((s) => s.setSelectedAccountId);
+
+  const beginSwitch = useProjectSwitchStore((s) => s.beginSwitch);
+
+  /**
+   * Switch to a workspace — the same three steps the sidebar picker takes
+   * (`workspace-menu-section.tsx`'s `openWorkspaceRow`), because a switch that
+   * behaves differently depending on which control started it is a bug waiting
+   * for a bug report nobody can reproduce.
+   *
+   * 1. `beginSwitch` marks the switch in flight. The palette then closes, so
+   *    it cannot be what ENDS one — `ProjectSwitchWatcher`, mounted once above
+   *    every route, owns that (arrival, diversion, or a 20s backstop). Skipping
+   *    this left the switch unnarrated everywhere.
+   * 2. `setSelectedAccountId` re-points the account store when the target lives
+   *    in another account. This was previously unreachable from the palette —
+   *    it only listed one account's workspaces — and became reachable the
+   *    moment the fan-out above landed. Without it, account-scoped surfaces
+   *    keep answering for the account you just left.
+   * 3. Navigate.
+   *
+   * Selecting the active workspace also opens its home page, including when
+   * the user is currently viewing a session or settings inside it.
+   */
+  const handleSelectWorkspace = useCallback(
+    (workspace: KortixProject) => {
+      beginSwitch(workspace.project_id);
+      if (workspace.account_id !== selectedAccountId) setSelectedAccountId(workspace.account_id);
+      // nav-contract: prefetch-only — a cmdk row activated by keyboard, and the
+      // push must follow `beginSwitch`. The workspace-rows effect warms it.
+      router.push(`/projects/${workspace.project_id}`);
+      close();
+    },
+    [beginSwitch, selectedAccountId, setSelectedAccountId, router, close],
+  );
+
+  const handleSelectAccount = useCallback(
+    (a: KortixAccount) => {
+      setSelectedAccountId(a.account_id);
+      // The landing door for THIS account (`?account=`). The plain door
+      // reopened the project the browser remembered, in the account just
+      // left, and set the selected account back to it (KRTX-1731).
+      // nav-contract: prefetch-only — a cmdk row activated by keyboard, and the
+      // push must follow `setSelectedAccountId`. The 'accounts' page effect
+      // warms it.
+      router.push(`${PROJECT_LANDING_PATH}?account=${encodeURIComponent(a.account_id)}`);
+      close();
+    },
+    [setSelectedAccountId, router, close],
+  );
+
+  const handleSelectProjectSession = useCallback(
+    (s: ProjectSession) => {
+      if (!projectId) return close();
+      openProjectTab(projectId, s.session_id);
+      // nav-contract: prefetch-only — a cmdk row activated by keyboard, and the
+      // push must follow `openProjectTab`. The session-rows effect warms it.
+      router.push(`/projects/${projectId}/sessions/${s.session_id}`);
+      close();
+    },
+    [projectId, openProjectTab, router, close],
+  );
+
+  /**
+   * Every workspace the user can switch to, in the sidebar's order — active
+   * account first, then alphabetical, most-recently-opened first inside each.
+   *
+   * Derived through `workspace-palette.ts`, which wraps the SAME
+   * `groupWorkspacesByAccount` the sidebar uses. The two controls previously
+   * sorted independently (this one by `last_opened_at || updated_at`, flat),
+   * so the same set of workspaces came out in two different orders depending
+   * on which one you opened.
+   */
+  const workspaceRows = useMemo(
+    () =>
+      buildWorkspacePaletteRows({
+        accounts: accountsList ?? [],
+        workspaces: allWorkspaces,
+        activeWorkspaceId: projectId,
+      }),
+    // `allWorkspaces` is a fresh array each render (see the `useQueries` note
+    // above), so this memo recomputes with it. Kept as a memo anyway for the
+    // referential stability the memos below depend on within a single render.
+    [accountsList, allWorkspaces, projectId],
+  );
+
+  const rootSuggestionItems = useMemo(
+    () => buildRootSuggestions(allPaletteItems),
+    [allPaletteItems],
+  );
+
+  /** Whether a row should say which account it is in. One account, no noise. */
+  const showWorkspaceAccount = (accountsList?.length ?? 0) > 1;
+
+  const workspacePageRows = useMemo(
+    () => workspacePageResults(workspaceRows, query),
+    [workspaceRows, query],
+  );
+
+  const workspacePageGroups = useMemo(
+    () => groupWorkspacePaletteRows(workspacePageRows),
+    [workspacePageRows],
+  );
+
+  const recentProjectSessions = useMemo(() => {
+    return sortSessionsByLastActivity(projectSessionsList ?? []).slice(0, 5);
+  }, [projectSessionsList]);
+
+  const recentWorkspaces = useMemo(() => recentWorkspaceRows(workspaceRows), [workspaceRows]);
+
+  const filteredAccountsList = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const sorted = [...(accountsList ?? [])].sort((a, b) =>
+      (a.name || '').localeCompare(b.name || ''),
+    );
+    return q ? sorted.filter((a) => (a.name || '').toLowerCase().includes(q)) : sorted;
+  }, [accountsList, query]);
+
+  const filteredDensityOptions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return densityPageOptions;
+    return densityPageOptions.filter((option) =>
+      `${option.label} ${option.description}`.toLowerCase().includes(q),
+    );
+  }, [densityPageOptions, query]);
+
+  const filteredProjectSessionsList = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const sorted = sortSessionsByLastActivity(projectSessionsList ?? []);
+    if (!q) return sorted.slice(0, 50);
+    // Instant local matches first, then the server's answer for the rest.
+    const local = sorted.filter((s) => sessionMatchesPaletteQuery(s, q));
+    const seen = new Set(local.map((s) => s.session_id));
+    const remote = serverSessionMatches.filter((s) => !seen.has(s.session_id));
+    return [...local, ...remote].slice(0, 50);
+  }, [projectSessionsList, query, serverSessionMatches]);
+
+  const rootSessionResults = useMemo(() => {
+    if (!hasQuery || !projectId) return [];
+    return filteredProjectSessionsList.slice(0, 8);
+  }, [hasQuery, projectId, filteredProjectSessionsList]);
+
+  // Channels (`project_channels`): sessions are threads, and channels and DMs
+  // are found by name, as the sidebar lists them (its DMs are the visible agents).
+  const channelsOn = projectFlags.project_channels === true;
+  const tSidebar = useTranslations('sidebar');
+  const projectSpaces = useProjectSpaces(projectId, { enabled: open && channelsOn });
+  const rootSpaceResults = useMemo(() => {
+    const q = query.trim().toLowerCase().replace(/^#/, '');
+    if (!q || !projectId || !channelsOn) return { channels: [], dms: [] };
+    const channels = (projectSpaces.data ?? [])
+      .filter((space) => space.kind === 'channel' && !space.archived_at && space.slug)
+      .filter((space) => `${space.slug} ${space.name}`.toLowerCase().includes(q))
+      .slice(0, 5);
+    const dms = agents.filter((agent) => `${agentLabel(agent.name)} ${agent.name}`.toLowerCase().includes(q)).slice(0, 5);
+    return { channels, dms };
+  }, [query, projectId, channelsOn, projectSpaces.data, agents]);
+  const sessionsHeading = channelsOn ? tPalette('threads') : 'Sessions';
+
+  const tFirstChat = useTranslations('firstChat');
+  const firstChatPending = useFirstChatPending(projectId ?? '');
+  const firstChatTitle = tFirstChat('title');
+  const firstChatResult =
+    !!projectId &&
+    firstChatMatchesPaletteQuery(firstChatPending, firstChatTitle, query.trim().toLowerCase());
+
+  /**
+   * Workspaces matching a ROOT query.
+   *
+   * This was `if (!hasQuery || projectId) return []` — workspaces were
+   * suppressed the moment a workspace was open, which is where the palette
+   * lives essentially all the time. The effect was that typing a workspace
+   * name into ⌘K found nothing, and the switcher was reachable only by first
+   * selecting a row buried in Navigation. Removing the `projectId` clause is
+   * the single change that makes ⌘K → name → Enter work.
+   *
+   * `rootWorkspaceResults` includes the active workspace and caps matches,
+   * so workspaces take a slice of the mixed root page rather than owning it.
+   */
+  const rootWorkspaceRows = useMemo(
+    () => (hasQuery ? rootWorkspaceResults(workspaceRows, query) : []),
+    [hasQuery, workspaceRows, query],
+  );
+
+  /*
+   * Warm the destinations the rows on screen can reach.
+   *
+   * A palette row can never be an anchor. cmdk 0.2.1 activates a row on Enter
+   * by dispatching its own `cmdk-item-select` event — not a DOM click — and
+   * `Command.Item` renders a hard-coded div with no `asChild`, so wrapping the
+   * row in a `<Link>` leaves keyboard activation dead. Every navigation below
+   * is therefore a `router.push`, which runs the RSC fetch cold at click time.
+   * A cold fetch turns into a full document load whenever it comes back a
+   * redirect, a non-2xx (the middleware /auth bounce), or from a newer build.
+   * Prefetching puts the payload in the segment cache, so the push stays soft.
+   *
+   * Each effect warms only what its page renders, capped at
+   * PALETTE_PREFETCH_LIMIT.
+   */
+
+  // Root — registry Navigation rows. Only /projects and /accounts hrefs reach
+  // `router.push` in `handleRegistryItem`; the rest open the settings overlay
+  // or a workspace tab.
+  useEffect(() => {
+    if (!open || page !== 'root') return;
+    const rows = hasQuery ? filteredNavItems : rootSuggestionItems;
+    for (const item of rows.slice(0, PALETTE_PREFETCH_LIMIT)) {
+      const href = item.href;
+      // An account row opens a modal, so what it needs warmed is the hub's JS
+      // chunk, not an RSC payload.
+      if (item.kind === 'account') {
+        preloadAccountHub();
+        continue;
+      }
+      if (item.kind !== 'navigate' || !href) continue;
+      if (href.startsWith('/projects')) router.prefetch(href);
+    }
+  }, [open, page, hasQuery, filteredNavItems, rootSuggestionItems, router]);
+
+  // Root — Settings rows. With a project open `openSettingsTab` opens the
+  // overlay in place and never routes, so only the project-less branch needs
+  // warming.
+  useEffect(() => {
+    if (!open || page !== 'root' || projectId) return;
+    for (const group of filteredSettingsGroups) {
+      for (const item of group.items) router.prefetch(`/settings/${item.tab}`);
+    }
+  }, [open, page, projectId, filteredSettingsGroups, router]);
+
+  // Workspace rows — the root hits and the dedicated page both land on
+  // /projects/<id>.
+  useEffect(() => {
+    if (!open) return;
+    const rows =
+      page === 'workspaces' ? workspacePageRows : page === 'root' ? rootWorkspaceRows : [];
+    for (const row of rows.slice(0, PALETTE_PREFETCH_LIMIT)) {
+      router.prefetch(`/projects/${row.workspace.project_id}`);
+    }
+  }, [open, page, workspacePageRows, rootWorkspaceRows, router]);
+
+  // Session rows — the root hits and the dedicated page both land on
+  // /projects/<projectId>/sessions/<id>.
+  useEffect(() => {
+    if (!open || !projectId) return;
+    const rows =
+      page === 'sessions' ? filteredProjectSessionsList : page === 'root' ? rootSessionResults : [];
+    for (const s of rows.slice(0, PALETTE_PREFETCH_LIMIT)) {
+      router.prefetch(`/projects/${projectId}/sessions/${s.session_id}`);
+    }
+  }, [open, page, projectId, filteredProjectSessionsList, rootSessionResults, router]);
+
+  // Pages whose every row shares one destination. One prefetch each, as the
+  // page opens.
+  useEffect(() => {
+    if (!open) return;
+    if (page === 'accounts') router.prefetch(PROJECT_LANDING_PATH);
+    if (page === 'files' && projectId) router.prefetch(`/projects/${projectId}/files`);
+  }, [open, page, projectId, router]);
+
+  // "Invite members" and "Workspace members". The account id arrives from
+  // `paletteProjectDetail`, whose query only runs once the palette opens, so
+  // warm the common branch the moment it resolves. The `/projects/<id>/members`
+  // fallback stays cold on purpose: it exists only for the window before that.
+  useEffect(() => {
+    if (!open || !projectId || !inviteMembersAccountId) return;
+    // The destination is the account hub, which is a modal: what needs warming
+    // is its chunk, not an RSC payload.
+    preloadAccountHub();
+  }, [open, projectId, inviteMembersAccountId]);
+
+  /**
+   * The identifiers people paste into support threads, CLI flags, and bug
+   * reports. Each row exists only when its value does: off a session there
+   * is no session id to offer, and a row that copies nothing is worse than
+   * no row. The session link is read from the address bar at copy time, not
+   * here, so a query string or tab change since render is kept.
+   */
+  const copyItems = useMemo(() => {
+    const items: CopyItem[] = [
+      {
+        id: 'email',
+        label: tPalette('copyEmail'),
+        value: user?.email ?? '',
+        keywords: 'email mail address me',
+      },
+      { id: 'user-id', label: tPalette('copyUserId'), value: user?.id ?? '', keywords: 'user id me' },
+      {
+        id: 'account-id',
+        label: tPalette('copyAccountId'),
+        value: activeAccountId ?? '',
+        keywords: 'account id team organization org',
+      },
+      {
+        id: 'project-id',
+        label: tPalette('copyProjectId'),
+        value: projectId ?? '',
+        keywords: 'project id',
+      },
+      {
+        id: 'session-id',
+        label: tPalette('copySessionId'),
+        value: currentSessionId ?? '',
+        keywords: 'session id sandbox',
+      },
+      {
+        id: 'session-link',
+        label: tPalette('copySessionLink'),
+        value: currentSessionId ? pathname : '',
+        keywords: 'session link url share',
+      },
+      {
+        id: 'session-title',
+        label: tPalette('copySessionTitle'),
+        value: currentSessionId ? (currentProjectSession?.name ?? '') : '',
+        keywords: 'session title name',
+      },
+    ];
+    return items.filter((item) => item.value);
+  }, [
+    tPalette,
+    user?.email,
+    user?.id,
+    activeAccountId,
+    projectId,
+    currentSessionId,
+    currentProjectSession?.name,
+    pathname,
+  ]);
+
+  /**
+   * "Copy session ID" in the no-query Suggestions, fourth row: it is what a
+   * user in a session reaches for most (support threads, CLI flags), so it
+   * should not need a search. Off a session there is none, and no row.
+   */
+  const suggestedSessionIdCopy = copyItems.find((item) => item.id === 'session-id') ?? null;
+  /**
+   * Desktop only, right under it: the Electron shell has no address bar, so
+   * there is no other way to take a session's link out of the app. The copy
+   * is `window.location.href` — the shell loads the real web origin, so the
+   * link opens in any browser. The web keeps its address bar and one row.
+   */
+  const suggestedSessionLinkCopy = isDesktop()
+    ? (copyItems.find((item) => item.id === 'session-link') ?? null)
+    : null;
+
+  // Copy rows ride along with ordinary root search: "email" offers the email,
+  // "project" offers the project id under the projects it finds, "session" the
+  // session id and link. Every typed word must START a keyword (or a word of
+  // the label), so one stray letter does not light up six rows. They render
+  // after the other groups — the thing searched for stays the first pick, and
+  // the copy is one arrow away.
+  const rootCopyResults = useMemo(() => {
+    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.length === 0) return [];
+    return copyItems.filter((item) => {
+      const vocabulary = `copy ${item.keywords} ${item.label}`.toLowerCase().split(/\s+/);
+      return words.every((word) => vocabulary.some((candidate) => candidate.startsWith(word)));
+    });
+  }, [copyItems, query]);
+
+  const handleCopyValue = useCallback(
+    async (item: CopyItem) => {
+      const text = item.id === 'session-link' ? window.location.href : item.value;
+      const ok = await copyToClipboard(text);
+      if (ok) successToast(tPalette('copied', { label: item.label }));
+      else errorToast(tPalette('copyFailed'));
+      close();
+    },
+    [tPalette, close],
+  );
+
+  const hasSessionResults = rootSessionResults.length > 0 || firstChatResult;
+  const hasSpaceResults = rootSpaceResults.channels.length + rootSpaceResults.dms.length > 0;
+  const hasMemoryResults = rootMemoryResults.length > 0;
+  const hasWorkspaceResults = rootWorkspaceRows.length > 0;
+  const hasSettingsResults = settingsResultCount > 0;
+  const hasAnyResults =
+    rootCopyResults.length > 0 ||
+    hasNavResults ||
+    hasSessionResults ||
+    hasSpaceResults ||
+    hasMemoryResults ||
+    hasWorkspaceResults ||
+    hasSessionActionResults ||
+    hasSettingsResults;
+
+  const showNoResults = hasQuery && queryLongEnough && !hasAnyResults;
+
+  const handleNavigate = useCallback(
+    (path: string, label?: string) => {
+      const type = path.startsWith('/settings') ? ('settings' as const) : ('page' as const);
+      openTabAndNavigate(
+        {
+          id: `page:${path}`,
+          title: label || path.split('/').pop() || '',
+          type,
+          href: path,
+        },
+        router,
+      );
+      close();
+    },
+    [router, close],
+  );
+
+  const handleSelectFile = useCallback(
+    (_filePath: string, _lineNumber?: number) => {
+      if (!projectId) return close();
+      // nav-contract: prefetch-only — a cmdk row activated by keyboard. The
+      // 'files' page effect warms this one destination as the page opens.
+      router.push(`/projects/${projectId}/files`);
+      close();
+    },
+    [projectId, router, close],
+  );
+
+  const handleToggleSidebar = useCallback(() => {
+    // Reached by keyboard, from a palette the user is already typing in — the
+    // panel must be there the moment the palette closes, not 240ms later.
+    sidebarCtx?.toggleSidebar({ instant: true });
+    close();
+  }, [sidebarCtx, close]);
+
+  const handleCustomizeSidebar = useCallback(() => {
+    close();
+    openCustomizeSidebar();
+  }, [close]);
+
+  const handleTogglePanelMode = useCallback(() => {
+    close();
+    const nextMode = panelMode === 'easy' ? 'advanced' : 'easy';
+    track('panel_mode_switched', { to: nextMode });
+    useUserPreferencesStore.getState().togglePanelMode();
+  }, [close, panelMode]);
+
+  /**
+   * A row on the 'density' submenu page. Re-picking the current mode writes
+   * nothing and tracks nothing — it is a confirmation, not a switch. The toast
+   * is the only immediate feedback this preference has: unlike theme or
+   * wallpaper, nothing on screen changes until the next working turn.
+   */
+  const handleSelectDensity = useCallback(
+    (next: ConversationDensity) => {
+      close();
+      if (next === conversationDensity) return;
+      track('conversation_density_switched', { to: next });
+      useUserPreferencesStore.getState().setConversationDensity(next);
+      successToast(
+        tHardcodedUi('i18nComplete.textca094a828cb9', {
+          value0:
+            next === tHardcodedUi.raw('i18nComplete.texta703788f8320')
+              ? tHardcodedUi.raw('i18nComplete.text057b5de48d7b')
+              : tHardcodedUi.raw('i18nComplete.texta7248eeb45eb'),
+        }),
+      );
+    },
+    [close, conversationDensity, tHardcodedUi],
+  );
+
+  /**
+   * "Open Terminal" / "Open Audit" / "Open Browser" / "Open Files" (Easy: the
+   * Easy panel's detail layer, Advanced: the panel's corresponding tab). The
+   * id-space-sensitive branching lives in `openSessionQuickView` — shared
+   * with the session header's terminal/browser/files buttons, so it can never
+   * drift between them.
+   */
+  const handleOpenQuickView = useCallback(
+    (view: 'terminal' | 'audit' | 'browser' | 'files') => {
+      close();
+      openSessionQuickView(view, 'palette');
+    },
+    [close],
+  );
+
+  const handleOpenSessionTerminal = useCallback(
+    () => handleOpenQuickView('terminal'),
+    [handleOpenQuickView],
+  );
+  const handleOpenSessionAudit = useCallback(
+    () => handleOpenQuickView('audit'),
+    [handleOpenQuickView],
+  );
+  const handleOpenSessionBrowser = useCallback(
+    () => handleOpenQuickView('browser'),
+    [handleOpenQuickView],
+  );
+  const handleOpenSessionFiles = useCallback(
+    () => handleOpenQuickView('files'),
+    [handleOpenQuickView],
+  );
+
+  /**
+   * The ONE door every settings destination goes through.
+   *
+   * **The rule: open the overlay only where it is mounted, otherwise
+   * navigate.** `SettingsPanel` has exactly two mounts — `ProjectShell`
+   * (`project-layout/project-shell.tsx`, every `/projects/*` route) and
+   * `StandaloneSettingsRoute` (`/settings`, which mounts no palette). This
+   * palette also mounts under `AppHeader`, whose only route group is
+   * `/accounts/**`, and that layout renders no panel. `projectId` is non-null
+   * exactly on `/projects/*` (see its definition above), so it is precisely
+   * the "is the panel mounted?" signal.
+   *
+   * Calling `openSettings()` where no panel is mounted did two things, both
+   * bad: the click did nothing, AND `open: true` stuck in the module-level
+   * store (`packages/ui/src/internal/stores/settings-panel-store.ts`), so the overlay sprang open
+   * unrequested on the next client-side navigation into a project.
+   */
+  const openSettingsTab = useCallback(
+    (tab: SettingsTab) => {
+      close();
+      if (projectId) {
+        useSettingsPanelStore.getState().openSettings(tab);
+        return;
+      }
+      // nav-contract: prefetch-only — a cmdk row activated by keyboard, and the
+      // branch is only known here: with a project open this returns above and
+      // never routes. The root-settings effect warms the project-less branch.
+      router.push(`/settings/${tab}`);
+    },
+    [close, projectId, router],
+  );
+
+  const handleOpenSettings = useCallback(
+    (tab: SettingsTabId) => {
+      openSettingsTab(LEGACY_SETTINGS_TAB_MAP[tab] ?? DEFAULT_SETTINGS_TAB);
+    },
+    [openSettingsTab],
+  );
+
+  const handleOpenPlan = useCallback(() => {
+    close();
+    // Previously opened NewInstanceModal, which no surface mounts — this
+    // command was a no-op. GlobalUpgradeModal is the live plan surface.
+    openUpgradeDialog({ reason: 'subscription_required' });
+  }, [close, openUpgradeDialog]);
+
+  const handleLogout = useCallback(() => {
+    reopenPaletteRef.current = true;
+    close();
+    setLogoutConfirmOpen(true);
+  }, [close]);
+
+  // This used to clear `localStorage` and the IDB cache — two of the four
+  // things a logout owes, missing the React Query cache and the persisted
+  // account selection. It is `performSignOut` now, the same call every other
+  // logout control makes, and it leaves on a DOCUMENT load rather than a
+  // `router.push`: nothing else discards the App Router route cache across an
+  // identity change.
+  const performLogout = useCallback((event: React.MouseEvent) => {
+    // `preventDefault` keeps the confirm dialog UP. Radix closes it on click,
+    // which left the palette gone, the dialog gone, and the unchanged app on
+    // screen for as long as the sign-out took — up to the full step budget when
+    // the network is broken — with nothing saying anything was happening.
+    event.preventDefault();
+    reopenPaletteRef.current = false;
+    setLoggingOut(true);
+    void performSignOut();
+  }, []);
+
+  const handleSetTheme = useCallback(
+    (newTheme: InterfaceThemeId) => {
+      // `<html>` already shows `newTheme` (the highlighted row's preview):
+      // keep it, so no restore runs after the store write.
+      commitThemePreview();
+      selectInterfaceTheme(newTheme);
+      close();
+    },
+    [commitThemePreview, selectInterfaceTheme, close],
+  );
+
+  // cmdk's highlighted value (`buildPaletteSearchText`, trimmed and lowercased
+  // the way cmdk stores it) -> the theme that row picks.
+  const themeByHighlightValue = useMemo(() => {
+    const map = new Map<string, InterfaceThemeId>();
+    for (const item of filteredNavItems) {
+      if (item.kind === 'theme' && item.themeValue) {
+        map.set(buildPaletteSearchText(item).trim().toLowerCase(), item.themeValue);
+      }
+    }
+    return map;
+  }, [filteredNavItems]);
+
+  const handleSetWallpaper = useCallback(
+    (newWallpaperId: string) => {
+      useUserPreferencesStore.getState().setWallpaperId(newWallpaperId);
+      close();
+    },
+    [close],
+  );
+
+  const handleCompactSession = useCallback(() => {
+    if (!currentSessionId) return;
+    reopenPaletteRef.current = true;
+    close();
+    setCompactOpen(true);
+  }, [currentSessionId, close]);
+
+  const handleViewChanges = useCallback(() => {
+    if (!currentSessionId) return;
+    reopenPaletteRef.current = true;
+    close();
+    setDiffOpen(true);
+  }, [currentSessionId, close]);
+
+  /**
+   * "Invite members" — the project Members capability tab is gone; access
+   * for a project is now granted from the account hub's Access tab, scoped to
+   * this project via `?project=`. There is no one-shot "open the grant
+   * dialog" intent to carry across (the old `membersTab: 'invite'` field
+   * belonged to the deleted page's sub-tab model, with no equivalent here) —
+   * landing pre-filtered on this project's row is enough. Nice-to-have: wire
+   * a real "open grant dialog" intent once `AccessProjectsTab` exposes a prop
+   * for it.
+   */
+  const handleInviteMembers = useCallback(() => {
+    if (!projectId) return;
+    // The account id comes from `paletteProjectDetail`, whose query is only
+    // `enabled` once the palette opens — so on the FIRST ⌘K it can still be in
+    // flight, and this used to return silently and leave the palette sitting
+    // open with nothing having happened. `/projects/<id>/members` exists to
+    // redirect to exactly this destination (it resolves the account id itself
+    // and appends the same `&project=` scoping), so the unresolved case costs
+    // one extra hop instead of the click doing nothing.
+    if (inviteMembersAccountId) {
+      // The hub over the page you are on — no navigation at all.
+      openAccountPanel(
+        hubTarget(inviteMembersAccountId, { tab: 'access-projects', project: projectId }),
+      );
+      close();
+      return;
+    }
+    // nav-contract: prefetch-only — the fallback only runs in the window
+    // before `inviteMembersAccountId` resolves; that route redirects to the
+    // same hub destination, resolving the account id itself.
+    router.push(`/projects/${projectId}/members`);
+    close();
+  }, [close, projectId, inviteMembersAccountId, router]);
+
+  /**
+   * "Workspace members" — the same destination `handleInviteMembers` reaches,
+   * from the other half of the vocabulary. The account hub's Access pane
+   * scoped to this workspace IS the workspace roster: `/projects/<id>/members`
+   * exists only to redirect here (see that route), so linking it directly
+   * would cost a second navigation and paint the capabilities shell first.
+   *
+   * Two rows, one URL, deliberately: "invite" is a verb a person types when
+   * they want to add someone, "members" is a noun they type when they want to
+   * see who is already there. Both are true of this pane, and neither query
+   * had a correct answer before — "member" returned the project SETTINGS row
+   * and the organization roster, never the workspace one.
+   */
+  const handleOpenProjectMembers = handleInviteMembers;
+
+  const handleReviewChanges = useCallback(() => {
+    goToPage('changes');
+  }, [goToPage]);
+
+  /**
+   * Picking a change request off the 'changes' page. The palette closes so the
+   * detail dialog owns the screen, and `reopenPaletteRef` brings it back on
+   * the SAME page when the dialog closes — reviewing two change requests in a
+   * row is the normal case, and dropping back to `root` would make the second
+   * one cost a fresh search.
+   */
+  const handleSelectChangeRequest = useCallback(
+    (crId: string) => {
+      reopenPaletteRef.current = true;
+      close();
+      setSelectedCrId(crId);
+    },
+    [close],
+  );
+
+  const handleCloseChangeRequest = useCallback(() => {
+    setSelectedCrId(null);
+    if (!reopenPaletteRef.current) return;
+    reopenPaletteRef.current = false;
+    setOpen(true);
+    // After `setOpen(true)`, because the close already ran the effect that
+    // resets `page` to 'root'.
+    setPage('changes');
+  }, []);
+
+  /** The 'flags' page's fallback when the caller may not write feature flags:
+   *  the Settings overlay's Feature flags tab, the pane the picker mirrors. */
+  const handleOpenFeatureFlagsSection = useCallback(() => {
+    if (!projectId) return;
+    openSettingsTab('feature-flags');
+  }, [projectId, openSettingsTab]);
+
+  const handleOverlayClose = useCallback(
+    (set: (open: boolean) => void) => (overlayOpen: boolean) => {
+      set(overlayOpen);
+      if (!overlayOpen && reopenPaletteRef.current) {
+        reopenPaletteRef.current = false;
+        setOpen(true);
+      }
+    },
+    [],
+  );
+
+  const handleOpenProviderModal = useCallback(() => {
+    close();
+    import('@kortix/ui/internal/stores/provider-modal-store').then(({ useProviderModalStore }) => {
+      useProviderModalStore.getState().openProviderModal('connected');
+    });
+  }, [close]);
+
+  // A rejected promise is not guaranteed to carry an Error, and a toast reading
+  // "undefined" is worse than a generic one.
+  const reloadErrorMessage = (err: unknown): string =>
+    err instanceof Error && err.message ? err.message : 'Restart failed';
+
+  const handleRestartConfig = useCallback(() => {
+    close();
+    systemReload('dispose-only')
+      .then((r) =>
+        r.success
+          ? successToast(tHardcodedUi.raw('i18nComplete.textd46e628bda3a'))
+          : errorToast(r.errors[0] ?? tHardcodedUi.raw('i18nComplete.text42b8d7c5357a')),
+      )
+      .catch((err: unknown) => errorToast(reloadErrorMessage(err)));
+  }, [close, tHardcodedUi]);
+
+  const handleReconcileSession = useCallback(() => {
+    if (!currentSessionId) return;
+    close();
+    sendToSession(
+      currentSessionId,
+      buildAgentGitReconciliationPrompt(currentProjectSession?.base_ref),
+    )
+      .then((disposition) =>
+        successToast(
+          disposition === tHardcodedUi.raw('i18nComplete.textd36be6494248')
+            ? tHardcodedUi.raw('i18nComplete.textb11e0f2cb028')
+            : tHardcodedUi.raw('i18nComplete.texta56be319eda4'),
+        ),
+      )
+      .catch((err: unknown) =>
+        errorToast(
+          err instanceof Error ? err.message : tHardcodedUi.raw('i18nComplete.text29490fc13cfc'),
+        ),
+      );
+  }, [close, currentProjectSession?.base_ref, currentSessionId, sendToSession, tHardcodedUi]);
+
+  const actionHandlers: Record<string, () => void> = useMemo(
+    () => ({
+      newSession: handleNewSession,
+      openTerminal: handleOpenTerminal,
+      compactSession: handleCompactSession,
+      viewChanges: handleViewChanges,
+      inviteMembers: handleInviteMembers,
+      openProjectMembers: handleOpenProjectMembers,
+      // Fallback only: SUBMENU_PAGE_BY_ID intercepts `review-changes` before
+      // the action branch runs — same arrangement as `conversationDensity`.
+      reviewChanges: handleReviewChanges,
+      toggleSidebar: handleToggleSidebar,
+      customizeSidebar: handleCustomizeSidebar,
+      togglePanelMode: handleTogglePanelMode,
+      // Fallback only: SUBMENU_PAGE_BY_ID intercepts `activity-density`
+      // before the action branch runs. If that map entry is ever removed, the
+      // row still opens the picker instead of dead-ending.
+      conversationDensity: () => goToPage('density'),
+      openSessionTerminal: handleOpenSessionTerminal,
+      openSessionAudit: handleOpenSessionAudit,
+      openSessionBrowser: handleOpenSessionBrowser,
+      openSessionFiles: handleOpenSessionFiles,
+      logout: handleLogout,
+      openPlan: handleOpenPlan,
+      openProviderModal: handleOpenProviderModal,
+      restartConfig: handleRestartConfig,
+      reconcileSession: handleReconcileSession,
+    }),
+    [
+      handleNewSession,
+      handleOpenTerminal,
+      handleCompactSession,
+      handleViewChanges,
+      handleInviteMembers,
+      handleOpenProjectMembers,
+      handleReviewChanges,
+      handleToggleSidebar,
+      handleCustomizeSidebar,
+      handleTogglePanelMode,
+      goToPage,
+      handleOpenSessionTerminal,
+      handleOpenSessionAudit,
+      handleOpenSessionBrowser,
+      handleOpenSessionFiles,
+      handleLogout,
+      handleOpenPlan,
+      handleOpenProviderModal,
+      handleRestartConfig,
+      handleReconcileSession,
+    ],
+  );
+
+  const handleRegistryItem = useCallback(
+    (item: MenuItemDef) => {
+      switch (item.kind) {
+        // The account hub has no route: it is `?accountId=` over the page you
+        // are on, so this row opens a modal rather than navigating. `close()`
+        // then leaves the palette, and the hub is already there — no fetch, no
+        // transition, and Escape puts you back on this same page.
+        case 'account': {
+          if (!selectedAccountId) break;
+          openAccountPanel(hubTarget(selectedAccountId, { tab: item.accountTab }));
+          close();
+          break;
+        }
+        case 'navigate': {
+          const href = item.href || '';
+
+          // See resolveSettingsOverlayHref's doc comment for why a stale
+          // `/settings/<graduated-or-unknown-tab>` href must fall through
+          // to router.push below instead of opening the overlay.
+          const overlayMatch = resolveSettingsOverlayHref(href);
+          if (overlayMatch.opensOverlay) {
+            // A tab-less `/settings` href resolves to `tab: undefined`, which
+            // `openSettings` reads as "keep whatever was last open" — a
+            // non-deterministic destination for a deterministic click. Name
+            // the tab instead: the project workspace default with a project,
+            // the account-scoped default without one (`general` is itself a
+            // project tab and is filtered out of a project-less rail).
+            openSettingsTab(
+              overlayMatch.tab ??
+                (projectId ? DEFAULT_SETTINGS_TAB : PALETTE_NO_PROJECT_DEFAULT_TAB),
+            );
+            break;
+          }
+
+          if (href.startsWith('/projects')) {
+            // nav-contract: prefetch-only — a cmdk row activated by keyboard,
+            // and `href` is resolved from the registry item at click time. The
+            // root-navigation effect warms the rendered rows.
+            router.push(href);
+            close();
+            break;
+          }
+
+          const tabType = (item.tabType ||
+            (href.startsWith('/settings') ? 'settings' : 'page')) as any;
+          const tabId = item.tabId || `page:${href}`;
+          openTabAndNavigate(
+            {
+              id: tabId,
+              title: item.label || href.split('/').pop() || '',
+              type: tabType,
+              href,
+              ...(item.tabType === 'preview'
+                ? { metadata: { url: '', port: 0, originalUrl: '', path: '/' } }
+                : {}),
+            },
+            router,
+          );
+          close();
+          break;
+        }
+        case 'settings':
+          handleOpenSettings(item.settingsTab!);
+          break;
+        case 'theme':
+          handleSetTheme(item.themeValue!);
+          break;
+        case 'wallpaper':
+          handleSetWallpaper(item.wallpaperValue!);
+          break;
+        case 'action': {
+          const handler = actionHandlers[item.actionId!];
+          if (handler) handler();
+          break;
+        }
+      }
+    },
+    [
+      router,
+      close,
+      projectId,
+      openSettingsTab,
+      handleOpenSettings,
+      handleSetTheme,
+      handleSetWallpaper,
+      actionHandlers,
+      selectedAccountId,
+    ],
+  );
+
+  const handleSelectAgent = useCallback(
+    (agentName: string) => {
+      if (!currentSessionId) return;
+      modelStore.setSessionAgentName(currentSessionId, agentName);
+      successToast(tHardcodedUi('i18nComplete.text8a85cfbe71eb', { value0: agentName }));
+      close();
+    },
+    [currentSessionId, modelStore, tHardcodedUi, close],
+  );
+
+  const handleSelectModel = useCallback(
+    (providerID: string, modelID: string) => {
+      if (!currentAgent) return;
+      // The SAME slot the composer reads/writes (use-opencode-local.ts):
+      // scoped by provider mode + agent. The bare-agent-name slot is the
+      // legacy shared fallback — writing there lets a pick made in gateway
+      // mode resurface as a candidate after the project flips to native.
+      modelStore.setSelectedModel(
+        agentScopedModelSelectionKey(modelProviderMode(providers), currentAgent.name),
+        { providerID, modelID },
+      );
+      modelStore.pushRecent({ providerID, modelID });
+      const model = allModels.find((m) => m.providerID === providerID && m.modelID === modelID);
+      successToast(
+        tHardcodedUi('i18nComplete.text8d5ee8fe6a2e', { value0: model?.modelName || modelID }),
+      );
+      close();
+    },
+    [currentAgent, modelStore, providers, allModels, tHardcodedUi, close],
+  );
+
+  const totalSearchResults = useMemo(() => {
+    if (page === 'agents') return filteredAgents.length;
+    if (page === 'models') return visibleModels.length;
+    if (page === 'workspaces') return workspacePageRows.length;
+    if (page === 'accounts') return filteredAccountsList.length;
+    if (page === 'sessions') return filteredProjectSessionsList.length;
+    if (page === 'density') return filteredDensityOptions.length;
+    // 0: these pages fetch and filter their own rows, so the count lives
+    // inside them (the 'changes' group heading carries it) rather than being
+    // lifted here only to be recomputed.
+    if (page === 'changes' || page === 'flags') return 0;
+    if (!hasQuery) return 0;
+    return (
+      filteredNavItems.length +
+      rootSessionResults.length +
+      (firstChatResult ? 1 : 0) +
+      rootSpaceResults.channels.length +
+      rootSpaceResults.dms.length +
+      rootMemoryResults.length +
+      rootWorkspaceRows.length +
+      sessionActionItems.length +
+      settingsResultCount +
+      rootCopyResults.length
+    );
+  }, [
+    page,
+    hasQuery,
+    filteredNavItems,
+    rootSessionResults,
+    firstChatResult,
+    rootSpaceResults,
+    rootMemoryResults,
+    rootWorkspaceRows,
+    sessionActionItems,
+    settingsResultCount,
+    filteredAgents,
+    visibleModels,
+    workspacePageRows,
+    filteredAccountsList,
+    filteredProjectSessionsList,
+    filteredDensityOptions,
+    rootCopyResults,
+  ]);
+
+  const placeholder = useMemo(() => {
+    if (page === 'agents') return tI18nComplete.raw('text32f4468b0b6f');
+    if (page === 'models') return tI18nComplete.raw('text37b90680b842');
+    if (page === 'files') return tI18nComplete.raw('text19608ade89b8');
+    if (page === 'workspaces') return tI18nComplete.raw('text5c192a3e6f23');
+    if (page === 'accounts') return tI18nComplete.raw('text72eb3689cab9');
+    if (page === 'sessions') return tI18nComplete.raw('textf41875714fdc');
+    if (page === 'density') return tI18nComplete.raw('textf0f41388d721');
+    if (page === 'changes') return tI18nComplete.raw('text3db1f0d55a5b');
+    if (page === 'flags') return tI18nComplete.raw('textfd20bd366efb');
+    return channelsOn ? tPalette('searchChannels') : tI18nComplete.raw('text7b355872be1c');
+  }, [page, tI18nComplete, channelsOn, tPalette]);
+
+  const pageTitle = useMemo(() => {
+    if (page === 'agents') return tI18nComplete.raw('text6fb2caa0ee1c');
+    if (page === 'models') return tI18nComplete.raw('text9cb6d01d8b29');
+    if (page === 'files') return tI18nComplete.raw('text5a5bc0c4ce6e');
+    if (page === 'workspaces') return tI18nComplete.raw('text9ad6baffd025');
+    if (page === 'accounts') return tI18nComplete.raw('text4ecda5e7a644');
+    if (page === 'sessions') return tI18nComplete.raw('text113463edeb06');
+    if (page === 'density') return tI18nComplete.raw('textd0fffb7fa940');
+    if (page === 'changes') return tI18nComplete.raw('text6a47708f4e14');
+    if (page === 'flags') return tI18nComplete.raw('text20a2e59ba129');
+    return null;
+  }, [page, tI18nComplete]);
+
+  return (
+    <>
+      <CommandDialog
+        open={open}
+        onOpenChange={setOpen}
+        // Pinned at 17vh, not centred: the input stays put while the list
+        // under it grows or shrinks between pages, so the eye never has to
+        // re-find the field after a page change.
+        className="top-[17vh] translate-y-0 sm:max-w-[600px]"
+        showCloseButton={false}
+      >
+        <CommandInput
+          ref={inputRef}
+          leftElement={
+            page === 'root' || !pageTitle ? (
+              <Search className="text-muted-foreground size-4 shrink-0" />
+            ) : (
+              <button
+                type="button"
+                aria-label={tI18nComplete.raw('text76900f1bfd16')}
+                title={tI18nComplete.raw('text76900f1bfd16')}
+                onClick={() => {
+                  goBack();
+                  inputRef.current?.focus();
+                }}
+                className="text-muted-foreground hover:bg-hover hover:text-foreground -ml-1 flex size-6 shrink-0 items-center justify-center rounded-md"
+              >
+                <ChevronLeft className="size-4" />
+              </button>
+            )
+          }
+          rightElement={
+            query ? (
+              <button
+                type="button"
+                aria-label={tI18nComplete.raw('text3b7ea51793e9')}
+                title={tI18nComplete.raw('text3b7ea51793e9')}
+                onClick={() => {
+                  setQuery('');
+                  inputRef.current?.focus();
+                }}
+                className="text-muted-foreground hover:bg-hover hover:text-foreground -mr-1 flex size-6 shrink-0 items-center justify-center rounded-md"
+              >
+                <X className="size-4" />
+              </button>
+            ) : null
+          }
+          placeholder={placeholder}
+          value={query}
+          onValueChange={setQuery}
+        />
+
+        <FadedScrollArea fadeColor="from-popover" className="max-h-[min(60vh,380px)]">
+          {/* `scroll-my-10` = the fade's `h-10`: cmdk scrolls the highlighted
+              row with `scrollIntoView({ block: 'nearest' })`, which stops at
+              the edge — under the fade. The margin stops it clear of it. */}
+          <CommandList className="max-h-none overflow-visible [&_[cmdk-item]]:scroll-my-10">
+            <ThemeHighlightPreview
+              themeByValue={themeByHighlightValue}
+              onPreview={previewInterfaceTheme}
+            />
+            {page === 'root' && (
+              <>
+                {!hasQuery && (
+                  <>
+                    <CommandGroup heading="Suggestions" forceMount>
+                      <div className="space-y-0.5">
+                        {rootSuggestionItems.map((item, index) => {
+                          const Icon = item.icon;
+                          const isToggleSidebar = item.id === 'toggle-sidebar';
+                          const DisplayIcon = isToggleSidebar
+                            ? sidebarOpen
+                              ? PanelLeftClose
+                              : PanelLeftIcon
+                            : Icon;
+                          const displayLabel = isToggleSidebar
+                            ? sidebarOpen
+                              ? tHardcodedUi.raw('i18nComplete.text9da0bf42ad07')
+                              : tHardcodedUi.raw('i18nComplete.text2060803eeb71')
+                            : item.label;
+
+                          const submenuPage = SUBMENU_PAGE_BY_ID[item.id];
+                          return (
+                            <Fragment key={item.id}>
+                              <CommandItem
+                                value={sanitizeCmdkValue(
+                                  `suggestion ${buildPaletteSearchText(item)}`,
+                                )}
+                                onSelect={() =>
+                                  submenuPage ? goToPage(submenuPage) : handleRegistryItem(item)
+                                }
+                                disabled={item.id === 'new-session' && isCreating}
+                              >
+                                {item.id === 'new-session' && isCreating ? (
+                                  <Loading className="text-muted-foreground size-4 shrink-0" />
+                                ) : (
+                                  <DisplayIcon className="size-4" />
+                                )}
+                                <span className="flex-1">{displayLabel}</span>
+                                {item.id === 'review-changes' && openChangeRequestCount > 0 && (
+                                  <span className="text-muted-foreground/40 text-xs tabular-nums">
+                                    {openChangeRequestCount}
+                                  </span>
+                                )}
+                                {submenuPage === 'density' && (
+                                  <span className="text-muted-foreground/40 text-xs">
+                                    {
+                                      densityPageOptions.find(
+                                        (option) => option.id === conversationDensity,
+                                      )?.label
+                                    }
+                                  </span>
+                                )}
+                                {item.shortcut && <CommandShortcut>{item.shortcut}</CommandShortcut>}
+                                {submenuPage && (
+                                  <ChevronRight className="text-muted-foreground/30 size-3" />
+                                )}
+                              </CommandItem>
+                              {index === 2 && suggestedSessionIdCopy ? (
+                                <CommandItem
+                                  value={sanitizeCmdkValue(
+                                    `suggestion copy-session-id ${suggestedSessionIdCopy.keywords}`,
+                                  )}
+                                  onSelect={() => void handleCopyValue(suggestedSessionIdCopy)}
+                                >
+                                  <Copy className="size-4" />
+                                  <span className="flex-1">
+                                    {tPalette('copyAction', { label: suggestedSessionIdCopy.label })}
+                                  </span>
+                                  <span className="text-muted-foreground max-w-40 truncate font-mono text-xs">
+                                    {suggestedSessionIdCopy.value}
+                                  </span>
+                                </CommandItem>
+                              ) : null}
+                              {index === 2 && suggestedSessionLinkCopy ? (
+                                <CommandItem
+                                  value={sanitizeCmdkValue(
+                                    `suggestion copy-session-link ${suggestedSessionLinkCopy.keywords}`,
+                                  )}
+                                  onSelect={() => void handleCopyValue(suggestedSessionLinkCopy)}
+                                >
+                                  <Copy className="size-4" />
+                                  <span className="flex-1">
+                                    {tPalette('copyAction', { label: suggestedSessionLinkCopy.label })}
+                                  </span>
+                                </CommandItem>
+                              ) : null}
+                            </Fragment>
+                          );
+                        })}
+                      </div>
+
+                      {currentSessionId && (
+                        <>
+                          <CommandItem
+                            value="suggestion change agent worker switch"
+                            onSelect={() => goToPage('agents')}
+                          >
+                            {currentAgent ? <AgentMark slug={currentAgent.name} /> : <Bot className="size-4" />}
+                            <span className="flex-1">
+                              {tHardcodedUi.raw(
+                                'componentsCommandPalette.line1209JsxTextChangeAgent',
+                              )}
+                            </span>
+                            {currentAgent && (
+                              <span className="text-muted-foreground/40 text-xs">
+                                {currentAgent.name}
+                              </span>
+                            )}
+                            <ChevronRight className="text-muted-foreground/30 size-3" />
+                          </CommandItem>
+                          <CommandItem
+                            value="suggestion change model llm switch"
+                            onSelect={() => goToPage('models')}
+                          >
+                            <Cpu className="size-4" />
+                            <span className="flex-1">
+                              {tHardcodedUi.raw(
+                                'componentsCommandPalette.line1220JsxTextChangeModel',
+                              )}
+                            </span>
+                            {currentModelKey && (
+                              <span className="text-muted-foreground/40 max-w-[160px] truncate text-xs">
+                                {allModels.find(
+                                  (m) =>
+                                    m.providerID === currentModelKey.providerID &&
+                                    m.modelID === currentModelKey.modelID,
+                                )?.modelName || currentModelKey.modelID}
+                              </span>
+                            )}
+                            <ChevronRight className="text-muted-foreground/30 size-3" />
+                          </CommandItem>
+                        </>
+                      )}
+
+                      {/* `currentSessionId`, not `projectId`. File search runs
+                          against the SESSION's sandbox daemon
+                          (`useWorkspaceSearch` -> `getActiveServerUrl()` ->
+                          `findFiles`/`findText`), so with no session mounted
+                          every query resolved to a swallowed fetch error and
+                          rendered "No files for …" — indistinguishable from a
+                          real zero-result search. A project id is not enough
+                          to make this row work; a session is. */}
+                      {currentSessionId && (
+                        <CommandItem
+                          value="suggestion search files find file grep repo content"
+                          onSelect={() => goToPage('files')}
+                        >
+                          <Search />
+                          <span className="flex-1">
+                            {tHardcodedUi.raw(
+                              'componentsCommandPalette.line1248JsxTextSearchFiles',
+                            )}
+                          </span>
+                          <Badge variant="kortix" size="sm">
+                            {tHardcodedUi.raw('i18nComplete.text071ca2227754')}
+                          </Badge>
+                          <ChevronRight className="text-muted-foreground/40 size-3" />
+                        </CommandItem>
+                      )}
+                    </CommandGroup>
+
+                    {projectId && recentProjectSessions.length > 0 && (
+                      <CommandGroup
+                        heading={
+                          channelsOn
+                            ? tPalette('recentThreads')
+                            : tHardcodedUi.raw('componentsCommandPalette.line1260JsxAttrHeadingRecentSessions')
+                        }
+                        forceMount
+                      >
+                        {recentProjectSessions.map((session) => (
+                          <CommandItem
+                            key={session.session_id}
+                            value={sanitizeCmdkValue(
+                              `recent ${sessionName(session)} ${session.session_id}`,
+                            )}
+                            onSelect={() => handleSelectProjectSession(session)}
+                          >
+                            <MessageCircle className="size-4 shrink-0" />
+                            <span className="flex-1 truncate">{sessionName(session)}</span>
+                            <SessionSharedIcon session={session} />
+                            <span className="text-muted-foreground/30 shrink-0 text-xs tabular-nums">
+                              {formatRelativeTime(
+                                new Date(sessionLastActivityAt(session)).getTime(),
+                              )}
+                            </span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+
+                    {/* Only OUTSIDE a workspace. Inside one, recent SESSIONS
+                        take this space — a user who is already somewhere wants
+                        a thread in it far more often than a different
+                        workspace, and search now reaches the other case from
+                        in here too. */}
+                    {!projectId && recentWorkspaces.length > 0 && (
+                      <CommandGroup
+                        heading={tHardcodedUi.raw(
+                          'componentsCommandPalette.line1281JsxAttrHeadingRecentProjects',
+                        )}
+                        forceMount
+                      >
+                        {recentWorkspaces.map((row) => (
+                          <WorkspaceCommandItem
+                            key={row.workspace.project_id}
+                            row={row}
+                            showAccount={showWorkspaceAccount}
+                            onSelect={() => handleSelectWorkspace(row.workspace)}
+                            trailing={
+                              (row.workspace.last_opened_at || row.workspace.updated_at) && (
+                                <span className="text-muted-foreground/30 shrink-0 text-xs tabular-nums">
+                                  {formatRelativeTime(
+                                    new Date(
+                                      row.workspace.last_opened_at || row.workspace.updated_at,
+                                    ).getTime(),
+                                  )}
+                                </span>
+                              )
+                            }
+                          />
+                        ))}
+                      </CommandGroup>
+                    )}
+                  </>
+                )}
+
+                {hasQuery && (
+                  <>
+                    {/* Channels and DMs lead: with Channels on they are where work lives. */}
+                    {rootSpaceResults.channels.length > 0 && projectId && (
+                      <CommandGroup heading={tSidebar('spaces.channels')} forceMount>
+                        {rootSpaceResults.channels.map((channel) => (
+                          <CommandItem
+                            key={channel.space_id}
+                            value={sanitizeCmdkValue(`channel ${channel.slug} ${channel.name}`)}
+                            onSelect={() => {
+                              router.push(uiRoutes().channel(projectId, channel.slug ?? ''));
+                              close();
+                            }}
+                          >
+                            <ChannelGlyph visibility={channel.visibility} className="size-4 shrink-0" />
+                            <span className="flex-1 truncate">{channel.slug}</span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+
+                    {rootSpaceResults.dms.length > 0 && projectId && (
+                      <CommandGroup heading={tSidebar('spaces.directMessages')} forceMount>
+                        {rootSpaceResults.dms.map((agent) => (
+                          <CommandItem
+                            key={agent.name}
+                            value={sanitizeCmdkValue(`dm ${agentLabel(agent.name)} ${agent.name}`)}
+                            onSelect={() => {
+                              router.push(uiRoutes().dm(projectId, agent.name));
+                              close();
+                            }}
+                          >
+                            <AgentMark slug={agent.name} />
+                            <span className="flex-1 truncate">{agentLabel(agent.name)}</span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+
+                    {hasSessionActionResults && (
+                      <CommandGroup heading="Session" forceMount>
+                        {sessionActionItems.map((item) => (
+                          <CommandItem
+                            key={item.id}
+                            value={`${item.label} ${item.keywords}`}
+                            onSelect={() => goToPage(item.targetPage)}
+                          >
+                            {item.id === 'change-agent' ? (
+                              currentAgent ? <AgentMark slug={currentAgent.name} /> : <Bot className="size-4" />
+                            ) : (
+                              <Cpu className="size-4" />
+                            )}
+                            <span className="flex-1">{item.label}</span>
+                            <ChevronRight className="text-muted-foreground/30 size-3" />
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+
+                    {hasNavResults && (
+                      <CommandGroup heading="Navigation" forceMount>
+                        {filteredNavItems.map((item) => {
+                          const Icon = item.icon;
+                          const isToggleSidebar = item.id === 'toggle-sidebar';
+                          const isTogglePanelMode = item.id === 'toggle-panel-mode';
+                          const SidebarIcon = isToggleSidebar
+                            ? sidebarOpen
+                              ? PanelLeftClose
+                              : PanelLeftIcon
+                            : Icon;
+                          const displayLabel = isToggleSidebar
+                            ? sidebarOpen
+                              ? tHardcodedUi.raw('i18nComplete.text9da0bf42ad07')
+                              : tHardcodedUi.raw('i18nComplete.text2060803eeb71')
+                            : isTogglePanelMode
+                              ? panelMode === 'easy'
+                                ? tHardcodedUi.raw('i18nComplete.text5f7c8d97889a')
+                                : tHardcodedUi.raw('i18nComplete.text9b21dbb9a947')
+                              : item.label;
+                          const isActiveTheme =
+                            item.kind === 'theme' && activeInterfaceTheme === item.themeValue;
+                          const isActiveWallpaper =
+                            item.kind === 'wallpaper' && activeWallpaperId === item.wallpaperValue;
+                          const submenuPage = SUBMENU_PAGE_BY_ID[item.id];
+
+                          return (
+                            <CommandItem
+                              key={item.id}
+                              value={buildPaletteSearchText(item)}
+                              onSelect={() =>
+                                submenuPage ? goToPage(submenuPage) : handleRegistryItem(item)
+                              }
+                              disabled={item.id === 'new-session' && isCreating}
+                            >
+                              {item.id === 'new-session' && isCreating ? (
+                                <Loading className="text-muted-foreground size-4 shrink-0" />
+                              ) : item.kind === 'theme' && item.themeValue ? (
+                                // The same live palette preview the Appearance tab shows.
+                                <ThemeSwatch value={item.themeValue} choice={themeChoice} />
+                              ) : (
+                                <SidebarIcon className="size-4" />
+                              )}
+                              <span className="flex-1">{displayLabel}</span>
+                              {item.id === 'review-changes' && openChangeRequestCount > 0 && (
+                                <span className="text-muted-foreground/40 text-xs tabular-nums">
+                                  {openChangeRequestCount}
+                                </span>
+                              )}
+                              {item.shortcut && <CommandShortcut>{item.shortcut}</CommandShortcut>}
+                              {(isActiveTheme || isActiveWallpaper) && (
+                                <span className="text-primary/60 text-xs font-medium">
+                                  {tHardcodedUi.raw('i18nComplete.text92340695899b')}
+                                </span>
+                              )}
+                              {submenuPage && (
+                                <ChevronRight className="text-muted-foreground/30 size-3" />
+                              )}
+                            </CommandItem>
+                          );
+                        })}
+                      </CommandGroup>
+                    )}
+
+                    {/* One group per rail group, headings and order intact.
+                        Flattening them would strip the only thing that tells
+                        Workspace › General and Organization › General apart —
+                        the same reason `filterRailGroups` keeps the rail's
+                        groups through a search. */}
+                    {filteredSettingsGroups.map((group) => (
+                      <CommandGroup
+                        key={group.label}
+                        heading={`Preferences · ${group.label}`}
+                        forceMount
+                      >
+                        {group.items.map((item) => {
+                          const SettingsIcon = item.icon;
+                          const submenuPage = SETTINGS_TAB_SUBMENU_PAGE[item.tab];
+                          return (
+                            <CommandItem
+                              key={item.id}
+                              // `item.tab` is deliberately absent — an internal
+                              // slug, same class as the registry `id` dropped
+                              // from the Navigation rows above.
+                              value={sanitizeCmdkValue(
+                                `settings ${settingsPaletteSearchText(item)}`,
+                              )}
+                              onSelect={() =>
+                                submenuPage ? goToPage(submenuPage) : openSettingsTab(item.tab)
+                              }
+                            >
+                              <SettingsIcon className="size-4" />
+                              <span className="flex-1">{item.label}</span>
+                            </CommandItem>
+                          );
+                        })}
+                      </CommandGroup>
+                    ))}
+
+                    {hasSessionResults && (
+                      <CommandGroup heading={sessionsHeading} forceMount>
+                        {rootSessionResults.map((session) => (
+                          <CommandItem
+                            key={session.session_id}
+                            value={sanitizeCmdkValue(
+                              `session ${sessionName(session)} ${session.initiator?.label ?? ''} ${session.session_id}`,
+                            )}
+                            onSelect={() => handleSelectProjectSession(session)}
+                          >
+                            <MessageCircle className="size-4 shrink-0" />
+                            <span className="flex-1 truncate">{sessionName(session)}</span>
+                            <SessionSharedIcon session={session} />
+                            {session.session_id === params?.sessionId && (
+                              <Check className="text-primary h-3.5 w-3.5 shrink-0" />
+                            )}
+                            <span className="text-muted-foreground/40 shrink-0 text-xs tabular-nums">
+                              {formatRelativeTime(
+                                new Date(sessionLastActivityAt(session)).getTime(),
+                              )}
+                            </span>
+                          </CommandItem>
+                        ))}
+                        {firstChatResult && projectId && (
+                          <CommandItem
+                            value={sanitizeCmdkValue(`session ${firstChatTitle}`)}
+                            onSelect={() => {
+                              // nav-contract: prefetch-only — a cmdk row activated by keyboard.
+                              router.push(firstChatHref(projectId));
+                              close();
+                            }}
+                          >
+                            <MessageCircle className="size-4 shrink-0" />
+                            <span className="flex-1 truncate">{firstChatTitle}</span>
+                          </CommandItem>
+                        )}
+                      </CommandGroup>
+                    )}
+
+                    {hasMemoryResults && (
+                      <CommandGroup heading={tMemory('palette.heading')} forceMount>
+                        {rootMemoryResults.map(({ hit, href, place }) => (
+                          <CommandItem
+                            key={hit.page_id}
+                            // The server matched the body too; cmdk scores only `value`, so a
+                            // body-only hit would unmount. The value stays its selection identity.
+                            forceMount
+                            // Label plus curated keywords: the title, its layer, its summary.
+                            value={sanitizeCmdkValue(`memory ${hit.title} ${place} ${hit.summary}`)}
+                            onSelect={() => {
+                              router.push(href);
+                              close();
+                            }}
+                          >
+                            <SunDimIcon aria-hidden className="size-4 shrink-0" />
+                            <span className="flex-1 truncate">{hit.title}</span>
+                            <span className="text-muted-foreground max-w-40 shrink-0 truncate text-xs">{place}</span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+
+                    {/* Shown whether or not a workspace is open. The old
+                        version returned no rows at all while one was, which
+                        is the entire time the palette is used. */}
+                    {hasWorkspaceResults && (
+                      <CommandGroup heading="Workspaces" forceMount>
+                        {rootWorkspaceRows.map((row) => (
+                          <WorkspaceCommandItem
+                            key={row.workspace.project_id}
+                            row={row}
+                            showAccount={showWorkspaceAccount}
+                            onSelect={() => handleSelectWorkspace(row.workspace)}
+                            trailing={
+                              (row.workspace.last_opened_at || row.workspace.updated_at) && (
+                                <span className="text-muted-foreground/40 shrink-0 text-xs tabular-nums">
+                                  {formatRelativeTime(
+                                    new Date(
+                                      row.workspace.last_opened_at || row.workspace.updated_at,
+                                    ).getTime(),
+                                  )}
+                                </span>
+                              )
+                            }
+                          />
+                        ))}
+                      </CommandGroup>
+                    )}
+
+                    {queryLongEnough && currentSessionId && (
+                      <CommandGroup
+                        heading={tHardcodedUi.raw(
+                          'componentsCommandPalette.line1437JsxAttrHeadingFileSearch',
+                        )}
+                        forceMount
+                      >
+                        <CommandItem
+                          value={sanitizeCmdkValue(
+                            `search files ${query.trim()} repo grep find open`,
+                          )}
+                          onSelect={() => goToPage('files', true)}
+                        >
+                          <span className="flex-1">
+                            {tHardcodedUi.raw(
+                              'componentsCommandPalette.line1444JsxTextSearchFilesFor',
+                            )}
+                            {query.trim()}
+                            {tHardcodedUi.raw('componentsCommandPalette.line1444JsxTextText')}
+                          </span>
+                          <Badge variant="kortix" size="sm">
+                            {tHardcodedUi.raw('i18nComplete.text071ca2227754')}
+                          </Badge>
+                          <ChevronRight className="text-muted-foreground/40 size-3" />
+                        </CommandItem>
+                      </CommandGroup>
+                    )}
+
+                    {rootCopyResults.length > 0 && (
+                      <CommandGroup heading={tPalette('copyTitle')} forceMount>
+                        {rootCopyResults.map((item) => (
+                          <CommandItem
+                            key={item.id}
+                            value={sanitizeCmdkValue(`copy-${item.id} ${item.keywords}`)}
+                            onSelect={() => void handleCopyValue(item)}
+                          >
+                            <Copy className="text-muted-foreground shrink-0" />
+                            <span className="shrink-0">
+                              {tPalette('copyAction', { label: item.label })}
+                            </span>
+                            <span className="text-muted-foreground min-w-0 flex-1 truncate text-right font-mono text-xs">
+                              {item.value}
+                            </span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+
+                    {showNoResults && (
+                      // The "Search files" half of the hint points at a row
+                      // that only exists on a session — see the
+                      // `currentSessionId` guards above. Off a session it
+                      // named a control that was not on screen, so the
+                      // generic half is all that is offered there.
+                      <PaletteEmpty
+                        hint={
+                          currentSessionId
+                            ? tHardcodedUi.raw(
+                                'componentsCommandPalette.line1465JsxTextTrySearchFilesOrADifferentTerm',
+                              )
+                            : tHardcodedUi.raw('i18nComplete.textce18e358bf01')
+                        }
+                      >
+                        {tHardcodedUi.raw('componentsCommandPalette.line1462JsxTextNoResultsFor')}
+                        {query.trim()}
+                        {tHardcodedUi.raw('componentsCommandPalette.line1462JsxTextText')}
+                      </PaletteEmpty>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+
+            {page === 'agents' && (
+              <>
+                {filteredAgents.length > 0 && (
+                  <CommandGroup heading="Agents" forceMount>
+                    {filteredAgents.map((agent) => {
+                      const isActive = currentAgent?.name === agent.name;
+                      return (
+                        <CommandItem
+                          key={agent.name}
+                          value={sanitizeCmdkValue(
+                            `agent ${agent.name} ${agent.description || ''}`,
+                          )}
+                          onSelect={() => handleSelectAgent(agent.name)}
+                        >
+                          {/* The agent's pixel mark, its face on every surface. */}
+                          <AgentMark slug={agent.name} size={21} />
+                          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                            <span className="truncate text-sm font-medium">
+                              {capitalizeWords(agent.name)}
+                            </span>
+                            {agent.description && (
+                              <span className="text-muted-foreground/50 truncate text-xs">
+                                {agent.description}
+                              </span>
+                            )}
+                          </div>
+                          {isActive && <Check className="text-primary h-3.5 w-3.5 shrink-0" />}
+                        </CommandItem>
+                      );
+                    })}
+                  </CommandGroup>
+                )}
+
+                {filteredAgents.length === 0 && (
+                  <PaletteEmpty>
+                    {query
+                      ? tI18nComplete('text20caf3bcf39b', { value0: query })
+                      : tHardcodedUi.raw('i18nComplete.textda9108359944')}
+                  </PaletteEmpty>
+                )}
+              </>
+            )}
+
+            {page === 'models' && (
+              <>
+                {groupedModels.map((group) => (
+                  <CommandGroup
+                    key={group.providerID}
+                    heading={
+                      <span className="inline-flex items-center gap-2">
+                        {/* `xs`, not `small`: a group heading is one line of
+                            13px text, and the 32px tiled logo it used to carry
+                            was 2.5× its cap height — it read as a row of its
+                            own rather than a label on the rows below. */}
+                        <ProviderLogo providerID={group.providerID} size="xs" />
+                        {group.providerName}
+                      </span>
+                    }
+                    forceMount
+                  >
+                    {group.models.map((model) => {
+                      const isActive =
+                        currentModelKey?.providerID === model.providerID &&
+                        currentModelKey?.modelID === model.modelID;
+                      return (
+                        <CommandItem
+                          key={`${model.providerID}:${model.modelID}`}
+                          value={sanitizeCmdkValue(
+                            `model ${model.providerName} ${model.modelName} ${model.modelID}`,
+                          )}
+                          onSelect={() => handleSelectModel(model.providerID, model.modelID)}
+                        >
+                          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                            <span className="truncate text-sm">{model.modelName}</span>
+                            {/* Only when it says something the name does not —
+                                see `modelIdAddsInformation`. Printed on every
+                                row, it was the display name again in
+                                kebab-case, and it doubled the height of a list
+                                that is scanned by name. */}
+                            {modelIdAddsInformation(model.modelName, model.modelID) && (
+                              <span className="text-muted-foreground/40 truncate font-mono text-xs">
+                                {model.modelID}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            {/* Icons, not word badges. Two `reasoning`/`vision`
+                                pills competed with the model name for the eye
+                                on every row that had them, and the palette is
+                                scanned by name. Same component the model
+                                catalog in Customize uses, so a capability
+                                looks the same wherever it is shown. */}
+                            <ModelCapabilityIcons
+                              reasoning={model.capabilities?.reasoning}
+                              toolCall={model.capabilities?.toolcall}
+                              vision={model.capabilities?.vision}
+                            />
+                            {isActive && <Check className="text-primary h-3.5 w-3.5" />}
+                          </div>
+                        </CommandItem>
+                      );
+                    })}
+                  </CommandGroup>
+                ))}
+
+                {visibleModels.length === 0 && (
+                  <PaletteEmpty>
+                    {query
+                      ? tI18nComplete('textfc89d36d845d', { value0: query })
+                      : tHardcodedUi.raw('i18nComplete.texta5a9895b0241')}
+                  </PaletteEmpty>
+                )}
+              </>
+            )}
+
+            {page === 'files' && currentSessionId && (
+              <FileSearchPage query={query} onSelect={handleSelectFile} />
+            )}
+
+            {/* The dedicated directory. Grouped by account like the sidebar
+                switcher, and for the same reason: two workspaces can share a
+                name, and the account is the only thing that tells them apart.
+                One account gets a single "Workspaces" heading instead — a lone
+                account heading over the only list is noise, not structure.
+
+                Like the root results this includes the workspace you are in,
+                marked here with a check. */}
+            {page === 'workspaces' &&
+              (workspacePageRows.length > 0 ? (
+                workspacePageGroups.map((group) => (
+                  <CommandGroup
+                    key={group.accountId}
+                    heading={workspacePageGroups.length > 1 ? group.accountName : 'Workspaces'}
+                    forceMount
+                  >
+                    {group.rows.map((row) => (
+                      <WorkspaceCommandItem
+                        key={row.workspace.project_id}
+                        row={row}
+                        // Never on this page: the heading already says which
+                        // account, so repeating it on every row under it is
+                        // the same word twice.
+                        showAccount={false}
+                        onSelect={() => handleSelectWorkspace(row.workspace)}
+                        trailing={
+                          row.isActive ? (
+                            <Check className="text-primary h-3.5 w-3.5 shrink-0" />
+                          ) : null
+                        }
+                      />
+                    ))}
+                  </CommandGroup>
+                ))
+              ) : (
+                workspacesLoading ? (
+                  // "No workspaces yet" over a list that has not arrived is a
+                  // lie the sidebar already learned not to tell.
+                  <div className="flex justify-center py-8">
+                    <Loading className="text-muted-foreground size-4" />
+                  </div>
+                ) : (
+                  <PaletteEmpty>
+                    {query
+                      ? tI18nComplete('textbe27a86a69e5', { value0: query })
+                      : tHardcodedUi.raw('i18nComplete.text97d0b1171f3e')}
+                  </PaletteEmpty>
+                )
+              ))}
+
+            {page === 'accounts' &&
+              (filteredAccountsList.length > 0 ? (
+                <CommandGroup heading="Accounts" forceMount>
+                  {filteredAccountsList.map((account) => {
+                    const label = account.name || 'Account';
+                    return (
+                      <CommandItem
+                        key={account.account_id}
+                        value={sanitizeCmdkValue(`account ${label} ${account.account_id}`)}
+                        onSelect={() => handleSelectAccount(account)}
+                      >
+                        <UsersSolid
+                          weight="fill"
+                          className="text-muted-foreground size-4 shrink-0"
+                        />
+                        <span className="flex-1 truncate">{label}</span>
+                        {account.account_id === activeAccountId && (
+                          <Check className="text-primary h-3.5 w-3.5 shrink-0" />
+                        )}
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              ) : (
+                <PaletteEmpty>
+                  {query
+                    ? tI18nComplete('text7433280153b9', { value0: query })
+                    : tHardcodedUi.raw('i18nComplete.text177116ee5177')}
+                </PaletteEmpty>
+              ))}
+
+            {page === 'density' &&
+              (filteredDensityOptions.length > 0 ? (
+                <CommandGroup
+                  heading={tHardcodedUi.raw('i18nComplete.textd0fffb7fa940')}
+                  forceMount
+                >
+                  {filteredDensityOptions.map((option) => {
+                    // Minimal is one line, Normal is many — let the glyphs say so.
+                    const OptionIcon = option.id === 'minimal' ? Minus : TextAlignLeft;
+                    return (
+                      <CommandItem
+                        key={option.id}
+                        value={sanitizeCmdkValue(`density ${option.label}`)}
+                        onSelect={() => handleSelectDensity(option.id)}
+                      >
+                        <OptionIcon className="text-muted-foreground size-4 shrink-0" />
+                        <span className="shrink-0">{option.label}</span>
+                        <span className="text-muted-foreground/60 flex-1 truncate text-xs">
+                          {option.description}
+                        </span>
+                        {option.id === conversationDensity && (
+                          <Check className="text-primary h-3.5 w-3.5 shrink-0" />
+                        )}
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              ) : (
+                <PaletteEmpty>{tI18nComplete('textec0ea7563cde', { value0: query })}</PaletteEmpty>
+              ))}
+
+            {page === 'sessions' &&
+              (filteredProjectSessionsList.length > 0 ? (
+                <CommandGroup heading={sessionsHeading} forceMount>
+                  {filteredProjectSessionsList.map((session) => (
+                    <CommandItem
+                      key={session.session_id}
+                      value={sanitizeCmdkValue(
+                        `session ${sessionName(session)} ${session.initiator?.label ?? ''} ${session.session_id}`,
+                      )}
+                      onSelect={() => handleSelectProjectSession(session)}
+                    >
+                      <MessageCircle className="text-muted-foreground size-4 shrink-0" />
+                      <span className="flex-1 truncate">{sessionName(session)}</span>
+                      <SessionSharedIcon session={session} />
+                      <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+                        {formatRelativeTime(new Date(sessionLastActivityAt(session)).getTime())}
+                      </span>
+                      {session.session_id === params?.sessionId && (
+                        <Check className="text-primary h-3.5 w-3.5 shrink-0" />
+                      )}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              ) : projectSessionsPending ? (
+                // No list and no sidebar pages to stand in: loading, not
+                // "No sessions yet". Same frame as the workspaces page.
+                <div className="flex justify-center py-8">
+                  <Loading className="text-muted-foreground size-4" />
+                </div>
+              ) : (
+                <PaletteEmpty>
+                  {query
+                    ? tI18nComplete('text6e51f320662f', { value0: query })
+                    : tHardcodedUi.raw('i18nComplete.textf502267deff4')}
+                </PaletteEmpty>
+              ))}
+
+            {page === 'changes' && projectId && (
+              <ChangeRequestsPage
+                projectId={projectId}
+                query={query}
+                onSelect={handleSelectChangeRequest}
+              />
+            )}
+
+            {page === 'flags' && projectId && (
+              <FeatureFlagsPage
+                projectId={projectId}
+                query={query}
+                onNavigate={handleOpenFeatureFlagsSection}
+              />
+            )}
+          </CommandList>
+        </FadedScrollArea>
+
+        <CommandFooter>
+          <div className="flex items-center gap-1">
+            <ArrowUp className="size-3" />
+            <ArrowDown className="size-3" />
+            <span>{tHardcodedUi.raw('i18nComplete.textd0cda6559bb3')}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <CornerDownLeft className="size-3" />
+            <span>{tHardcodedUi.raw('i18nComplete.textb1a36d25d963')}</span>
+          </div>
+          {page === 'files' && (
+            <div className="flex items-center justify-center gap-1">
+              <Kbd>{tHardcodedUi.raw('componentsCommandPalette.line1744JsxTextText')}</Kbd>
+              <span>
+                {tHardcodedUi.raw('componentsCommandPalette.line1745JsxTextContentSearch')}
+              </span>
+            </div>
+          )}
+          <div className="ml-auto flex items-center gap-4">
+            {totalSearchResults > 0 && (
+              <span className="tabular-nums">
+                {totalSearchResults} {tHardcodedUi.raw('i18nComplete.textf6a214f7a5fc')}
+                {totalSearchResults !== 1 ? 's' : ''}
+              </span>
+            )}
+            {page !== 'root' && (
+              <div className="flex items-center gap-1">
+                <Kbd>{tI18nComplete.raw('text177b7cb06867')}</Kbd>
+                <span>{tI18nComplete.raw('text3c482346f375')}</span>
+              </div>
+            )}
+          </div>
+        </CommandFooter>
+      </CommandDialog>
+
+      {currentSessionId && (
+        <>
+          <CompactModal
+            sessionId={currentSessionId}
+            open={compactOpen}
+            onOpenChange={handleOverlayClose(setCompactOpen)}
+            onCompactStart={() => {
+              reopenPaletteRef.current = false;
+            }}
+          />
+          <DiffDialog
+            sessionId={currentSessionId}
+            open={diffOpen}
+            onOpenChange={handleOverlayClose(setDiffOpen)}
+          />
+        </>
+      )}
+
+      {/* The one consumer of `ProjectFilesContext` in this file — see
+          `ChangeRequestsPage`'s header for why the list does not need it and
+          this does. */}
+      {projectId && (
+        <ProjectFilesProvider value={{ projectId, ref: '' }}>
+          <ChangeRequestDetailDialog crId={selectedCrId} onClose={handleCloseChangeRequest} />
+        </ProjectFilesProvider>
+      )}
+
+      <AlertDialog open={logoutConfirmOpen} onOpenChange={handleOverlayClose(setLogoutConfirmOpen)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {tHardcodedUi.raw('autoFeaturesLayoutUserMenuJsxTextLogOutOfYour4770ea0c')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {tHardcodedUi.raw('autoFeaturesLayoutUserMenuJsxTextYouLlNeedToee9fad67')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={loggingOut}>
+              {tHardcodedUi.raw('i18nComplete.text19766ed6ccb2')}
+            </AlertDialogCancel>
+            <AlertDialogAction variant="destructive" disabled={loggingOut} onClick={performLogout}>
+              {loggingOut ? <Loading className="size-4 shrink-0" /> : null}
+              {tHardcodedUi.raw('componentsLayoutUserMenu.line248JsxAttrLabelLogOut')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}

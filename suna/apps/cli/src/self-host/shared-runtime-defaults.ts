@@ -1,0 +1,109 @@
+// Single source of truth for the target-AGNOSTIC runtime env defaults shared by
+// every self-host flavor (docker "this machine", AWS EC2 appliance, bare VPS).
+// These are semantic product defaults — auth behavior, sandbox provider, feature
+// flags — that must be IDENTICAL everywhere. Only genuinely target-specific
+// values (public URLs, image refs, host ports, AWS ARNs) live in the per-target
+// generators, which spread these in.
+//
+// Historically the docker and AWS paths each hard-coded their own copy; they
+// drifted (the AWS copy required email confirmation while docker auto-confirmed),
+// which made the first account impossible on a fresh appliance with no SMTP. One
+// object prevents that class of drift.
+
+/**
+ * Auth behavior. Defaults make a fresh install usable with NO SMTP configured:
+ * email signups auto-confirm and the sign-in UI leads with password (not
+ * magic-link, which needs email). Operators enable email/magic-link — and flip
+ * ENABLE_EMAIL_AUTOCONFIRM to 'false' — once they configure real SMTP.
+ */
+export const SHARED_AUTH_DEFAULTS: Record<string, string> = {
+  DISABLE_SIGNUP: 'false',
+  ENABLE_EMAIL_SIGNUP: 'true',
+  ENABLE_EMAIL_AUTOCONFIRM: 'true',
+  ENABLE_ANONYMOUS_USERS: 'false',
+  ENABLE_PHONE_SIGNUP: 'false',
+  ENABLE_PHONE_AUTOCONFIRM: 'false',
+  // Sign-in UI method order. Password-first so no email is required out of the
+  // box; add 'magic' after SMTP is configured.
+  KORTIX_PUBLIC_AUTH_METHODS: 'password',
+  // Social providers: none (the web auth page's default). Explicitly empty,
+  // not unset: the API's GET /v1/auth/client-config reports unset as null,
+  // which the mobile app reads as "use the build's Google + Apple buttons".
+  KORTIX_PUBLIC_AUTH_PROVIDERS: '',
+  // GoTrue redirect allow-list (GOTRUE_URI_ALLOW_LIST). The Kortix mobile app
+  // (app.json scheme `kortix`) finishes magic-link, OAuth and SSO sign-in on
+  // kortix://auth/callback; without this entry GoTrue drops the redirect and
+  // the phone lands on the web SITE_URL instead of back in the app.
+  ADDITIONAL_REDIRECT_URLS: 'kortix://**',
+};
+
+/**
+ * Agent code-execution sandbox provider: Platinum. The two DAYTONA_* values
+ * apply only to an instance whose env still names the legacy provider.
+ */
+export const SHARED_SANDBOX_DEFAULTS: Record<string, string> = {
+  ALLOWED_SANDBOX_PROVIDERS: 'platinum',
+  DAYTONA_SERVER_URL: 'https://app.daytona.io/api',
+  DAYTONA_TARGET: 'us',
+};
+
+/**
+ * Configuration feature flags: landing-page disable, enterprise license, and
+ * billing. A fresh self-host runs on the free-tier entitlement set and has
+ * billing disabled (no Stripe keys to configure). The marketing/landing site
+ * is DEACTIVATED by default (KORTIX_PUBLIC_DISABLE_LANDING_PAGE='true') — a
+ * self-host is an app deployment, not a marketing site, so every marketing
+ * route auto-redirects to the app (see apps/web middleware). `kortix self-host
+ * configure` / the init wizard / --landing, --no-landing, --enterprise-license
+ * flip these; they are ordinary runtime env, so they survive
+ * `kortix self-host update` unchanged (only the image tags move) and are
+ * explicit in .env instead of only hard-coded into the compose template.
+ */
+export const SHARED_FEATURE_FLAG_DEFAULTS: Record<string, string> = {
+  // Marketing site off by default on self-host — redirect straight to the app.
+  KORTIX_PUBLIC_DISABLE_LANDING_PAGE: 'true',
+  ENTERPRISE_LICENSE_AVAILABLE: 'false',
+  KORTIX_BILLING_INTERNAL_ENABLED: 'false',
+  KORTIX_PUBLIC_BILLING_ENABLED: 'false',
+  // Connector UI (the "Connect your tools" onboarding step,
+  // the "Easy connect" app catalogue) off by default — a fresh self-host has
+  // no COMPOSIO_API_KEY configured, and those surfaces
+  // would otherwise dead-end in a 501. `kortix self-host configure` flips
+  // this to 'true' once connector credentials are set (see selfHostConfigure
+  // in commands/self-host.ts). Custom connectors (OpenAPI/GraphQL/MCP/HTTP)
+  // and Slack/email channels are unaffected.
+  KORTIX_PUBLIC_CONNECTORS_ENABLED: 'false',
+  // Account-creation restriction: DEFAULT ON for self-host — a VPS operator
+  // usually wants to be the only one who can spin up new organizations on
+  // their own instance. Signups, existing teams, and SSO/JIT membership are
+  // entirely unaffected; only POST /v1/accounts (creating an ADDITIONAL/org
+  // account) is gated to platform admins (KORTIX_PLATFORM_ADMIN_EMAILS) — see
+  // registerAccountRoutes() in apps/api/src/accounts/core/accounts.ts.
+  // KORTIX_PUBLIC_RESTRICT_ACCOUNT_CREATION mirrors it on the frontend to
+  // hide "New account" UI for non-admins. `kortix self-host init/configure`'s
+  // deployment-shape question (promptFeatureFlags) flips both; disable via
+  // `env set KORTIX_RESTRICT_ACCOUNT_CREATION=false
+  // KORTIX_PUBLIC_RESTRICT_ACCOUNT_CREATION=false` or `--no-restrict-account-creation`.
+  KORTIX_RESTRICT_ACCOUNT_CREATION: 'true',
+  KORTIX_PUBLIC_RESTRICT_ACCOUNT_CREATION: 'true',
+};
+
+/**
+ * Kortix Capture's object store. `bundled` (the default) runs the on-box
+ * `capture-store` MinIO service and wires the API at it — zero config.
+ * `external` drops that service and points the API at an operator-owned
+ * S3-compatible store (AWS S3, Cloudflare R2, ...) via the KORTIX_CAPTURE_S3_* /
+ * KORTIX_CAPTURE_STS_* keys in .env. See compose-assets.ts
+ * renderFullDockerCompose() and references/self-host.md.
+ */
+export const SHARED_CAPTURE_DEFAULTS: Record<string, string> = {
+  KORTIX_CAPTURE_STORE: 'bundled',
+};
+
+/** Every target-agnostic default in one object, for a single spread. */
+export const SHARED_SELF_HOST_DEFAULTS: Record<string, string> = {
+  ...SHARED_AUTH_DEFAULTS,
+  ...SHARED_SANDBOX_DEFAULTS,
+  ...SHARED_FEATURE_FLAG_DEFAULTS,
+  ...SHARED_CAPTURE_DEFAULTS,
+};

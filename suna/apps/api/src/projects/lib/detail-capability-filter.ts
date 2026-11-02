@@ -1,0 +1,66 @@
+// GET /:projectId/detail bundles several read surfaces (the config summary's
+// agents/skills/commands + raw customization config, and the repo file list)
+// behind ONE coarse project.read floor. To keep each capability checkbox
+// authoritative WITHOUT 403-ing the whole workspace load, the handler resolves
+// the caller's per-leaf read capabilities and passes them here to blank out the
+// sections they can't read. Pure + exported so the gating is unit-tested
+// independent of git/DB (the handler just supplies the resolved booleans).
+
+import { manifestHealthWithout } from './manifest-health';
+
+export interface DetailCaps {
+  /** project.file.read — the repo file list. */
+  canFiles: boolean;
+  /** project.agent.read — the agents summary + discovery mode. */
+  canAgents: boolean;
+  /** project.skill.read — the skills summary. */
+  canSkills: boolean;
+  /** project.command.read — the slash-commands summary. */
+  canCommands: boolean;
+}
+
+/**
+ * Blank out the /detail sections the caller lacks the leaf for. Structural
+ * signals (is_kortix_repo, signals) are always preserved so the shell renders;
+ * only the resource lists / raw config are emptied. Files are capped at 300 (the
+ * same cap the handler used inline) and dropped entirely without file.read.
+ */
+// `C extends object` (not Record<string, unknown>): the handler's config is a
+// concrete interface (ProjectConfigSummary), which TS won't implicitly widen to
+// a Record index signature. `object` accepts both interfaces and literals.
+export function applyDetailCapabilityFilter<C extends object, F>(
+  config: C,
+  visibleFiles: F[],
+  caps: DetailCaps,
+): { config: C; files: F[]; file_count: number } {
+  const gatedConfig = {
+    ...config,
+    // The default agent is a NAME from that same roster, so agent.read governs
+    // it, not file.read. A member may hold agent.read without file.read;
+    // blanking it for them made the composer fall back to the first agent
+    // alphabetically and run it instead of the project default.
+    ...(caps.canAgents
+      ? {}
+      : { agents: [], agent_discovery: null, default_agent: null, open_code_default_agent: null }),
+    ...(caps.canSkills ? {} : { skills: [] }),
+    ...(caps.canCommands ? {} : { commands: [] }),
+    // The raw manifest and OpenCode config are repository files, so
+    // project.file.read governs them like every other file.
+    ...(caps.canFiles
+      ? {}
+      : {
+          manifest_raw: null,
+          manifest: {},
+          env: [],
+          open_code_raw: null,
+          // The health is derived FROM the raw manifest, so it is blanked with
+          // it: a caller who cannot read the config must not learn its issues.
+          manifest_health: manifestHealthWithout('restricted'),
+        }),
+  } as C;
+  return {
+    config: gatedConfig,
+    files: caps.canFiles ? visibleFiles.slice(0, 300) : [],
+    file_count: caps.canFiles ? visibleFiles.length : 0,
+  };
+}

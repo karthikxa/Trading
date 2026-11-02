@@ -1,0 +1,468 @@
+// Accounts — account CRUD, members, and account-level invitations.
+
+import { backendApi } from '../../http/api-client';
+import type { ApiError } from '../../http/api/errors';
+import {
+  type AccountRole,
+  type ProjectRole,
+  type ServerTokenOptions,
+  serverTokenGet,
+  unwrap,
+} from './shared';
+
+/**
+ * Organization branding (Enterprise `branding` entitlement). Every URL is
+ * API-owned — it points into the public `branding` Storage bucket and is
+ * written only by `uploadAccountBrandingAsset`. `null` on a field = default
+ * Kortix mark for that slot.
+ */
+export interface AccountBranding {
+  /** Product name shown in place of "Kortix" (document title). */
+  app_name: string | null;
+  /** Wide brandmark (symbol + wordmark) — replaces the `brandmark` logo variant. */
+  logo_url: string | null;
+  /** Square symbol — replaces the `icon` logo variant. */
+  icon_url: string | null;
+  /** Browser-tab icon. Hosts fall back to `icon_url` when this is null. */
+  favicon_url: string | null;
+  /** Dark-scheme variants — optional; each falls back to its light
+   *  counterpart. In-app marks follow the app theme; the favicon follows the
+   *  OS scheme (`prefers-color-scheme`). */
+  logo_dark_url: string | null;
+  icon_dark_url: string | null;
+  favicon_dark_url: string | null;
+}
+
+/** One of the uploadable marks: three slots × light/dark. */
+export type AccountBrandingAssetKind =
+  | 'logo'
+  | 'icon'
+  | 'favicon'
+  | 'logo_dark'
+  | 'icon_dark'
+  | 'favicon_dark';
+
+/** `GET /accounts/:id/branding` — the STORED record plus whether the plan
+ *  currently allows it. Settings surfaces read this; rendering surfaces read
+ *  `KortixAccount.branding` (the effective value) instead. */
+export interface AccountBrandingState {
+  branding: AccountBranding;
+  entitled: boolean;
+}
+
+export interface KortixAccount {
+  account_id: string;
+  name: string;
+  slug?: string;
+  /** Absent from APIs older than these fields. */
+  created_at?: string;
+  updated_at?: string;
+  account_role?: string;
+  is_primary_owner?: boolean;
+  /** Effective branding for members: the stored record when the account is
+   *  entitled, `null`/absent otherwise (nothing set, or the entitlement has
+   *  lapsed — the API decides, hosts just render). */
+  branding?: AccountBranding | null;
+}
+
+export interface AccountDetail {
+  account_id: string;
+  name: string;
+  member_count: number;
+  project_count: number;
+  role: AccountRole;
+  /** Account-wide MFA enforcement is on — drives the members-list MFA badges. */
+  mfa_required?: boolean;
+  /** Effective branding — same semantics as `KortixAccount.branding`. */
+  branding?: AccountBranding | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AccountMemberGroup {
+  group_id: string;
+  name: string;
+}
+
+export interface AccountMemberProject {
+  project_id: string;
+  name: string;
+  role: ProjectRole;
+}
+
+export interface AccountMember {
+  user_id: string;
+  email: string | null;
+  account_role: AccountRole;
+  is_super_admin?: boolean;
+  explicit_project_count?: number;
+  /** Direct project grants — same scope as explicit_project_count. Powers
+   *  the "N projects" chip and its "which ones" popover. */
+  projects?: AccountMemberProject[];
+  groups?: AccountMemberGroup[];
+  /** Number of active CLI Personal Access Tokens this user owns in
+   *  this account. Lets the UI flag members with API automation. */
+  active_pat_count?: number;
+  /** True when the user has at least one verified MFA factor in
+   *  Supabase Auth. */
+  has_verified_mfa?: boolean;
+  joined_at: string;
+}
+
+export interface InviteProjectGrant {
+  project_id: string;
+  role?: ProjectRole;
+}
+
+export type InviteMemberResult =
+  | {
+      status: 'added';
+      user_id: string;
+      email: string;
+      account_role: AccountRole;
+      project_grants: Array<{ project_id: string; role: ProjectRole }>;
+    }
+  | {
+      status: 'pending';
+      invite_id: string;
+      email: string;
+      account_role: AccountRole;
+      project_grants: Array<{ project_id: string; role: ProjectRole }>;
+      expires_at: string;
+      invite_url: string;
+      email_sent: boolean;
+      email_skip_reason: string | null;
+    };
+
+export interface AccountInvitation {
+  invite_id: string;
+  email: string;
+  initial_role: AccountRole;
+  invited_by: string;
+  created_at: string;
+  expires_at: string;
+  invite_url: string;
+}
+
+export interface ResendInviteResult {
+  ok: boolean;
+  expires_at: string;
+  invite_url: string;
+  email_sent: boolean;
+  email_skip_reason: string | null;
+}
+
+export interface AccountInviteDescribeFull {
+  invite_id: string;
+  account_id: string;
+  account_name: string | null;
+  email: string;
+  initial_role: AccountRole;
+  inviter_email: string | null;
+  created_at: string;
+  expires_at: string;
+  expired: boolean;
+  accepted_at: string | null;
+  email_matches_caller: true;
+  /** Projects the invite grants on accept, named. Empty for a workspace
+   *  invite; absent from an older API. */
+  projects?: Array<{ project_id: string; name: string; role: string }>;
+}
+
+export interface AccountInviteDescribeRedacted {
+  invite_id: string;
+  expired: boolean;
+  accepted_at: string | null;
+  email_matches_caller: false;
+  /** Why the invite is not the caller's; absent from an older API. The same
+   *  codes a refused accept or decline returns as `code`:
+   *  - `email_unconfirmed`: the caller holds the address, but the instance
+   *    cannot prove it (a self-host with no email). The person signs in through
+   *    `sso_provider_id`, or an account admin resends the invite.
+   *  - `sso_email_domain_unverified`: an SSO login whose IdP did not verify the
+   *    address's domain. The person signs in with the email address instead.
+   *  - `wrong_account`: the invite names another address. */
+  reason?: 'email_unconfirmed' | 'sso_email_domain_unverified' | 'wrong_account';
+  /** With `email_unconfirmed`: the Supabase SSO provider of the invite's
+   *  account, for `signInWithSSO({ providerId })`. Null when it has none. */
+  sso_provider_id?: string | null;
+  account_id?: null;
+  account_name?: null;
+  email?: null;
+  initial_role?: null;
+  inviter_email?: null;
+  created_at?: null;
+  expires_at?: null;
+}
+
+export type AccountInviteDescribe = AccountInviteDescribeFull | AccountInviteDescribeRedacted;
+
+/** A pending invite addressed to the caller's own email. */
+export interface MyAccountInvite {
+  invite_id: string;
+  account_id: string;
+  account_name: string | null;
+  initial_role: AccountRole;
+  inviter_email: string | null;
+  created_at: string;
+  expires_at: string;
+  /** Projects the invite grants on accept. Empty for a plain workspace invite. */
+  projects: Array<{ project_id: string; name: string; role: string }>;
+}
+
+export async function listAccounts() {
+  return unwrap(await backendApi.get<KortixAccount[]>('/accounts'));
+}
+
+export async function createAccount(input: { name: string }) {
+  return unwrap(await backendApi.post<KortixAccount>('/accounts', input));
+}
+
+export async function getAccount(accountId: string) {
+  return unwrap(await backendApi.get<AccountDetail>(`/accounts/${accountId}`));
+}
+
+export async function updateAccountName(accountId: string, name: string) {
+  return unwrap(await backendApi.patch<AccountDetail>(`/accounts/${accountId}`, { name }));
+}
+
+// ─── Organization branding ──────────────────────────────────────────────────
+
+/** Stored branding + entitlement state. Any member may read it. */
+export async function getAccountBranding(accountId: string) {
+  return unwrap(await backendApi.get<AccountBrandingState>(`/accounts/${accountId}/branding`));
+}
+
+
+/**
+ * Set (or clear with `null`) the product name. `account.write` + the
+ * `branding` entitlement — a non-entitled account gets a 402
+ * `entitlement_required`, which the host surfaces as the Enterprise upsell.
+ */
+export async function updateAccountBranding(
+  accountId: string,
+  input: { app_name: string | null },
+) {
+  return unwrap(
+    await backendApi.put<AccountBrandingState>(`/accounts/${accountId}/branding`, input),
+  );
+}
+
+/**
+ * Upload one mark. The API sniffs the bytes (PNG / JPEG / WebP / SVG / ICO,
+ * ≤ 1 MiB), stores it content-addressed in the public `branding` bucket, and
+ * returns the new record — the URL is never chosen by the client.
+ */
+export async function uploadAccountBrandingAsset(
+  accountId: string,
+  kind: AccountBrandingAssetKind,
+  file: Blob,
+  filename?: string,
+) {
+  const form = new FormData();
+  form.append('file', file, filename ?? (file instanceof File ? file.name : kind));
+  return unwrap(
+    await backendApi.upload<AccountBrandingState>(
+      `/accounts/${accountId}/branding/assets/${kind}`,
+      form,
+    ),
+  );
+}
+
+/** Remove one mark (permission only — always possible, entitled or not). */
+export async function removeAccountBrandingAsset(
+  accountId: string,
+  kind: AccountBrandingAssetKind,
+) {
+  return unwrap(
+    await backendApi.delete<AccountBrandingState>(
+      `/accounts/${accountId}/branding/assets/${kind}`,
+    ),
+  );
+}
+
+/** Reset every mark and the name to Kortix defaults (permission only). */
+export async function resetAccountBranding(accountId: string) {
+  return unwrap(await backendApi.delete<AccountBrandingState>(`/accounts/${accountId}/branding`));
+}
+
+export async function listAccountMembers(accountId: string) {
+  return unwrap(await backendApi.get<AccountMember[]>(`/accounts/${accountId}/members`));
+}
+
+export async function inviteAccountMember(
+  accountId: string,
+  input: { email: string; role?: AccountRole; project_grants?: InviteProjectGrant[] },
+) {
+  return unwrap(
+    await backendApi.post<InviteMemberResult>(`/accounts/${accountId}/members`, input, {
+      // 409 (already member) is an expected business error; page surfaces it inline.
+      showErrors: false,
+    }),
+  );
+}
+
+export async function listAccountInvites(accountId: string) {
+  return unwrap(await backendApi.get<AccountInvitation[]>(`/accounts/${accountId}/invites`));
+}
+
+export async function cancelAccountInvite(accountId: string, inviteId: string) {
+  return unwrap(
+    await backendApi.delete<{ ok: boolean }>(`/accounts/${accountId}/invites/${inviteId}`),
+  );
+}
+
+export async function resendAccountInvite(accountId: string, inviteId: string) {
+  return unwrap(
+    await backendApi.post<ResendInviteResult>(
+      `/accounts/${accountId}/invites/${inviteId}/resend`,
+      {},
+    ),
+  );
+}
+
+/**
+ * The unexpired, unaccepted invites addressed to the caller's email — so an
+ * invitee who signed up without the email link can still find and accept them.
+ */
+export async function listMyAccountInvites() {
+  const res = unwrap(
+    await backendApi.get<{ invites: MyAccountInvite[] }>('/account-invites', { showErrors: false }),
+  );
+  return res.invites;
+}
+
+export async function describeAccountInvite(inviteId: string) {
+  return unwrap(
+    await backendApi.get<AccountInviteDescribe>(`/account-invites/${inviteId}`, {
+      // The redirect/landing page handles "not for you" / expired states inline.
+      showErrors: false,
+    }),
+  );
+}
+
+export async function acceptAccountInvite(inviteId: string) {
+  return unwrap(
+    await backendApi.post<{
+      account_id: string;
+      account_role: AccountRole;
+      already_accepted?: boolean;
+      /** The projects the invite granted, in order: where to land (KRTX-1731). */
+      bootstrap_grants_applied?: Array<{ project_id: string; role: string }>;
+    }>(
+      `/account-invites/${inviteId}/accept`,
+      {},
+    ),
+  );
+}
+
+/** Where an accepted invite lands: a project, or the account joined. */
+export type AccountInviteLanding =
+  | { kind: 'project'; projectId: string; accountId: string }
+  | { kind: 'account'; accountId: string };
+
+/**
+ * Where an accepted invite lands (KRTX-1731): the first project the accept
+ * granted; else the first project the invite names (an admin invite, whose
+ * grants the API skips, or an invite accepted before); else the account
+ * joined. Every host reads this one rule and maps it to its own route.
+ */
+export function accountInviteLanding(
+  accepted: { account_id: string; bootstrap_grants_applied?: ReadonlyArray<{ project_id: string }> },
+  invite?: { projects?: ReadonlyArray<{ project_id: string }> } | null,
+): AccountInviteLanding {
+  const project = accepted.bootstrap_grants_applied?.[0] ?? invite?.projects?.[0];
+  return project
+    ? { kind: 'project', projectId: project.project_id, accountId: accepted.account_id }
+    : { kind: 'account', accountId: accepted.account_id };
+}
+
+/**
+ * `acceptAccountInvite`, then `accountInviteLanding`. Pass the invite the
+ * host already read (`describeAccountInvite` or `listMyAccountInvites`) so an
+ * accept that grants nothing still lands in the project the invite names.
+ */
+export async function acceptAccountInviteAndLand(
+  inviteId: string,
+  invite?: { projects?: ReadonlyArray<{ project_id: string }> } | null,
+) {
+  const accepted = await acceptAccountInvite(inviteId);
+  return { accepted, landing: accountInviteLanding(accepted, invite) };
+}
+
+export async function declineAccountInvite(inviteId: string) {
+  return unwrap(await backendApi.post<{ ok: boolean }>(`/account-invites/${inviteId}/decline`, {}));
+}
+
+export async function removeAccountMember(accountId: string, userId: string) {
+  return unwrap(
+    await backendApi.delete<{ ok: boolean }>(`/accounts/${accountId}/members/${userId}`),
+  );
+}
+
+export async function updateAccountMemberRole(
+  accountId: string,
+  userId: string,
+  role: AccountRole,
+) {
+  return unwrap(
+    await backendApi.patch<AccountMember>(`/accounts/${accountId}/members/${userId}`, { role }),
+  );
+}
+
+export async function leaveAccount(accountId: string) {
+  return unwrap(await backendApi.post<{ ok: boolean }>(`/accounts/${accountId}/leave`, {}));
+}
+
+/**
+ * Server-side / explicit-token variant of {@link listAccounts}. Next.js
+ * server actions and route handlers (e.g. the post-signup first-project
+ * bootstrap) run per-request and already hold the caller's access token —
+ * they must not rely on the SDK's process-wide `configureKortix()` seam.
+ * Returns `null` on any failure.
+ */
+export async function fetchAccountsWithToken(
+  opts: ServerTokenOptions,
+): Promise<KortixAccount[] | null> {
+  return serverTokenGet<KortixAccount[]>(opts, '/v1/accounts');
+}
+
+/** The identity `GET /accounts/me` resolves — the authenticated user + their account memberships. */
+export interface AccountIdentity {
+  user_id: string;
+  email: string;
+  token_context?: {
+    auth_type: string | null;
+    project_id: string | null;
+    session_id: string | null;
+    agent: string | null;
+    connectors: 'all' | string[] | null;
+    /** The agent's Kortix permissions (`project.*` actions): `'all'`, a list,
+     *  or null (not an agent token). Absent on servers released before
+     *  2026-09-22 — fall back to `kortix_cli`. */
+    kortix_permissions?: 'all' | string[] | null;
+    /** @deprecated Renamed to `kortix_permissions` (same value). Removed in the next major. */
+    kortix_cli: 'all' | string[] | null;
+  };
+  accounts: Array<{ account_id: string; slug: string; name: string; role: string }>;
+}
+
+export interface ValidateTokenResult {
+  valid: boolean;
+  identity?: AccountIdentity;
+  error?: ApiError;
+}
+
+/**
+ * The "did I paste a valid API key?" check — hits `GET /accounts/me` and
+ * NEVER throws, unlike every other call in this module. Built for a
+ * pasted-token UX (a CLI/SDK setup screen) that wants to render "invalid
+ * token" inline rather than catch an exception.
+ */
+export async function validateToken(): Promise<ValidateTokenResult> {
+  const res = await backendApi.get<AccountIdentity>('/accounts/me', { showErrors: false });
+  if (!res.success || !res.data) {
+    return { valid: false, error: res.error };
+  }
+  return { valid: true, identity: res.data };
+}

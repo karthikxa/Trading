@@ -1,0 +1,243 @@
+---
+title: "How we recover failed subscription payments"
+description: An hourly agent tracks every failed Stripe invoice on a per-subscription ledger, escalating from a smart retry through a payment reminder, an update-your-card notice, and a final notice, alerting the revenue team on Slack and stopping the moment the invoice is paid.
+date: "2026-05-12"
+author: team
+tags:
+  - Finance
+  - Case Study
+  - Enterprise
+template: payment-recovery
+---
+
+Most churn isn't a customer deciding to leave. It's a card that expired, a bank
+that flagged a charge, a payment that failed for a reason that has nothing to do
+with whether the customer still wants the product. Left alone, that failed
+invoice quietly turns into a canceled subscription. This is involuntary churn,
+and it's recoverable if someone catches it fast and follows up consistently.
+
+We run a payment-recovery agent on Kortix that watches every failed Stripe
+invoice, works it through a fixed escalation ladder — smart retry, reminder,
+update-your-card notice, final notice — and stops the instant the invoice is
+paid. It never cancels a subscription, issues a credit, or refunds anything;
+those decisions stay with a human.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Hourly cron, reusable session</Fact>
+  <Fact label="Connected systems">Stripe · Slack · Email</Fact>
+  <Fact label="Mode">Smart-retry + dunning only · escalation, never cancellation</Fact>
+</KeyFacts>
+
+## The problem
+
+A failed payment isn't one event, it's the start of a countdown. Stripe will
+retry automatically for a while, but a generic retry schedule doesn't know that
+this customer just had a fraud hold, or that another one hasn't opened an email
+in a week. Handled with a single blunt reminder, some customers churn who would
+have paid if asked the right way at the right time; handled with silence, the
+subscription lapses and support finds out only when the customer complains that
+their access disappeared.
+
+The common approaches don't hold state well. Stripe's built-in retry logic is
+useful but generic — it doesn't loop in a human, escalate the tone as time
+passes, or tell the revenue team which accounts are about to fall off a cliff.
+A spreadsheet tracking who got which email decays within a week. And a blanket
+policy of "cancel after N failures" trades a recoverable customer for a clean
+queue.
+
+## What we built
+
+On Kortix, an hourly cron re-prompts one **persistent session** that keeps a
+per-subscription ledger of where every failed invoice sits on the recovery
+ladder: smart retry, payment reminder, update-your-card notice, or final
+notice. Each run it reads Stripe for failed invoices and subscription state,
+advances any subscription whose wait time has elapsed to the next rung, sends
+the matching email, and posts a summary of everything in flight to the revenue
+team's Slack channel. Any subscription that pays at any point is closed out on
+the ledger and never contacted again.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the dunning skill and the hourly trigger, and
+opens a change request for you to review. Prefer clicks? Choose **Use this
+template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up an hourly payment recovery agent in this project.
+
+1. Create the agent agents/payment-recovery.md. Its job is to work each failed Stripe invoice through a fixed dunning ladder and stop when it is paid. It may use the Stripe connector, send email through the dunning email channel and post to Slack. It keeps its state in memory/payment-recovery-ledger.md.
+
+2. Create the skill skills/dunning-escalation/SKILL.md with these rules:
+   - The ladder is a smart retry on first failure, a payment reminder 24 hours later, an update-your-card notice 48 hours after that, and a final notice 72 hours after that.
+   - Advance a subscription at most one rung per run, and only after its wait has passed. Never resend a rung.
+   - Check Stripe every run. When an invoice is paid, mark it recovered and stop emailing it.
+   - After the final notice, mark the subscription awaiting-human. Never cancel, credit or refund.
+   - Post one summary to #revenue per run: what advanced, what waits for a person and what recovered. Update the ledger before the run ends.
+
+3. Add a cron trigger hourly-payment-recovery-sweep to kortix.yaml. It runs the payment-recovery agent every hour, on the hour, with the prompt "Load the dunning-escalation skill and run one payment-recovery pass."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your billing system and Slack.
+Connect the email account that sends the dunning email under **Settings →
+Channels**. Credentials are brokered server-side and never enter the agent's
+machine.
+
+<ToolList>
+  <ToolNeed name="Stripe" domain="stripe.com" tag="Required" alternatives={[['Chargebee', 'chargebee.com'], ['Recurly', 'recurly.com']]}>
+    Reads failed payments and retries the charge.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com']]}>
+    Posts the recovery summary and cases that need a human.
+  </ToolNeed>
+  <ToolNeed name="Gmail" domain="gmail.com" tag="Required" alternatives={[['Microsoft Outlook', 'outlook.com']]}>
+    Sends the reminder, card-update and final-notice emails.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **payment-recovery** agent
+and send this prompt. Read the ledger and the emails it sent before you let the
+schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one payment-recovery pass.
+
+1. Read memory/payment-recovery-ledger.md for each subscription's rung and next-eligible time.
+2. Pull failed and past-due invoices from Stripe.
+3. Start each new failure with a smart retry. Advance each tracked subscription one rung if its wait has passed, and send that rung's email.
+4. Mark any paid invoice recovered and stop emailing it. Mark any subscription past the final notice awaiting-human. Do not cancel, credit or refund.
+5. Post a summary to #revenue and update the ledger.`}
+/>
+
+</Step>
+<Step title="Let the hourly schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every hour, on the hour. Each run reads the ledger in
+`memory/payment-recovery-ledger.md` first, so it picks up where the last run
+stopped. To change the time, edit the cron line, or open **Triggers** in the
+project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: hourly-payment-recovery-sweep
+    name: Hourly payment-recovery sweep
+    on:
+      cron: "0 0 * * * *"
+    run:
+      agent: payment-recovery
+      prompt: Load the dunning-escalation skill and run one payment-recovery pass.`}
+/>
+
+</Step>
+<Step title="Stop at the final notice">
+
+The agent may retry a failed charge and send the four ladder emails, and
+nothing else. After the final notice, the subscription waits in the #revenue
+summary for a person. Cancelling, crediting and refunding are always a
+person's decision and a person's action.
+
+</Step>
+<Step title="Read the summary">
+
+Each run ends with one message in the channel. This is what a run looks like
+in the session:
+
+<ExampleRun
+  title="Hourly payment-recovery sweep · 14:00"
+  message="Load the dunning-escalation skill and run one payment-recovery pass."
+  worked="Worked for 2m 03s"
+  tools={[
+    'stripe · list invoices',
+    'stripe · retry payment × 3',
+    'email · send × 5',
+    'slack · post message → #revenue',
+  ]}
+  note="Illustrative example. Your counts depend on your failed payments."
+>
+  Started **3** new failures with a smart retry and sent **5** ladder emails.
+  **2** subscriptions recovered this hour, worth **$1,180** a month. **1**
+  subscription passed its final notice and is waiting for a person.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  An hourly cron re-prompts one **reusable session** holding a per-subscription
+  ledger. A read-mostly Stripe **connector** supplies the state; a **skill**
+  encodes the escalation ladder; **email** and **Slack** are the only outputs.
+  The ladder stops at a final notice — cancellation, credits, and refunds
+  always wait for a human.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Weekly recovery report"
+  code="Every Monday, post last week's recovered revenue, the rung each payment cleared at, and the open awaiting-human list to #revenue."
+/>
+
+<CopyBlock
+  title="Flag high-value accounts"
+  code="When a subscription worth more than $1,000 a month fails, mention its account owner in the #revenue summary on the first run."
+/>
+
+<CopyBlock
+  title="Warn before cards expire"
+  code="Every Monday, list the subscriptions whose card expires this month and draft a short update-your-card email for each, held for my review."
+/>
+
+## Guardrails
+
+The agent can retry a payment and send an email on its own; anything that moves
+money or ends a subscription is out of its hands:
+
+- **Smart-retry and dunning only.** The agent may retry a failed charge and send
+  the four ladder emails. It never cancels a subscription, issues a credit, or
+  processes a refund — those require a human, no exceptions.
+- **One rung at a time.** The skill enforces a minimum wait between rungs so no
+  customer is double-messaged, and every subscription escalates on its own
+  schedule rather than everyone moving in lockstep.
+- **Stops on payment.** The moment an invoice clears, the ledger closes it out
+  and no further email goes out.
+- **Scoped secrets.** The Stripe credential is encrypted in the Secrets Manager
+  and injected into the sandbox at runtime, scoped to the agents you grant them to or the
+  logs.
+- **Everything is code.** The ladder, the wait times, and the agent's grants are
+  files in the repo, versioned and changed through a reviewed **change
+  request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Hourly" label="Every failed invoice re-checked against the ladder" />
+  <Stat value="4 rungs" label="Smart retry → reminder → update-card → final notice" />
+  <Stat value="0" label="Cancellations, credits, or refunds issued by the agent" />
+</StatGrid>
+
+Failed payments that used to sit unattended until a subscription quietly lapsed
+now work through a consistent, escalating recovery ladder the moment they
+happen, with the revenue team seeing exactly what's in flight and what needs
+their decision. The agent chases the payment; the people decide when to give up
+on it.

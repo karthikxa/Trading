@@ -1,0 +1,246 @@
+/**
+ * QuestionPrompt — the agent's question, shown in place of the chat input.
+ *
+ * The card is the `Composer` card (`rounded-3xl border border-border
+ * bg-background p-2`, same `px-4 pb-3 pt-1` inset), so answering reads as
+ * typing a reply. One question at a time: the question, its options as plain
+ * rows, a text field for your own answer, then the composer's control row
+ * (Skip · Back · step · send).
+ *
+ * A single-choice option answers on tap and moves on. Multi-choice options
+ * toggle; send moves on. The last step sends every answer. Rules live in
+ * `lib/session/question-prompt.ts`.
+ */
+
+import React, { useCallback, useRef, useState } from 'react';
+import { ScrollView, TextInput, View } from 'react-native';
+import { Text } from '@/components/ui/text';
+import { Button } from '@/components/ui/button';
+import { Icon } from '@/components/ui/icon';
+import { COMPOSER_CONTROL_HIT_SLOP } from '@/components/kortix/composer';
+import { PressableSurface } from '@/components/kortix/pressable-surface';
+import { INPUT_FONT_FAMILY, INPUT_FONT_SIZE } from '@/components/kortix/pill-input';
+import { ArrowUpIcon, CheckIcon } from '@/lib/icons';
+import { BUTTON_LABEL_MAX_FONT_SCALE } from '@/lib/ui/font-scale';
+import { THEME } from '@/lib/utils/theme';
+import { useTone } from '@/lib/utils/tone';
+import {
+  pickQuestionOption,
+  questionStepAnswer,
+  questionStepLabel,
+} from '@/lib/session/question-prompt';
+import type { QuestionAnswer, QuestionRequest } from '@/lib/session/types';
+
+/** About five option rows, then the list scrolls. */
+const MAX_OPTIONS_HEIGHT = 260;
+
+interface QuestionPromptProps {
+  request: QuestionRequest;
+  onReply: (requestId: string, answers: QuestionAnswer[]) => void | Promise<void>;
+  onReject: (requestId: string) => void | Promise<void>;
+  /** Focus the answer field at mount: the card replaces a composer that had the keyboard up. */
+  autoFocus?: boolean;
+}
+
+export function QuestionPrompt({ request, onReply, onReject, autoFocus }: QuestionPromptProps) {
+  const tone = useTone();
+  const colors = THEME[tone];
+
+  const questions = request.questions;
+  const [step, setStep] = useState(0);
+  const [answers, setAnswers] = useState<QuestionAnswer[]>(() => questions.map(() => []));
+  const [drafts, setDrafts] = useState<string[]>(() => questions.map(() => ''));
+  const [replying, setReplying] = useState(false);
+  const inFlight = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = useCallback(async (action: () => void | Promise<void>) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setReplying(true);
+    setError(null);
+    try {
+      await action();
+      // The SDK removes the request; stay locked until the parent unmounts us.
+    } catch {
+      inFlight.current = false;
+      setReplying(false);
+      setError('Could not send your response. Please try again.');
+    }
+  }, []);
+
+  const question = questions[step];
+  const options = question?.options ?? [];
+  const isMulti = question?.multiple ?? false;
+  const showCustom = question?.custom !== false;
+  const picked = answers[step] ?? [];
+  const draft = drafts[step] ?? '';
+  const isLast = step === questions.length - 1;
+  const stepAnswer = question ? questionStepAnswer(question, picked, draft) : [];
+  const canSend = stepAnswer.length > 0;
+  const stepLabel = questionStepLabel(step, questions.length);
+
+  const advance = useCallback(
+    (answer: QuestionAnswer) => {
+      if (inFlight.current) return;
+      const next = answers.map((a, i) => (i === step ? answer : a));
+      if (!isLast || !isMulti) setAnswers(next);
+      if (isLast) {
+        void submit(() => onReply(request.id, next));
+        return;
+      }
+      setStep(step + 1);
+    },
+    [answers, step, isLast, isMulti, onReply, request.id, submit],
+  );
+
+  const pick = useCallback(
+    (label: string) => {
+      if (!question || inFlight.current) return;
+      const next = pickQuestionOption(question, picked, label);
+      if (isMulti) {
+        setAnswers(answers.map((a, i) => (i === step ? next : a)));
+        return;
+      }
+      if (!isLast) setDrafts(drafts.map((d, i) => (i === step ? '' : d)));
+      advance(next);
+    },
+    [question, picked, isMulti, answers, drafts, step, advance, isLast],
+  );
+
+  const send = useCallback(() => {
+    if (canSend) advance(stepAnswer);
+  }, [canSend, advance, stepAnswer]);
+
+  const skip = useCallback(() => {
+    void submit(() => onReject(request.id));
+  }, [onReject, request.id, submit]);
+
+  if (!question) return null;
+
+  return (
+    <View className="px-4 pb-3 pt-1">
+      <View className="rounded-3xl border border-border bg-background p-2">
+        <View className="gap-0.5 px-2 pb-2 pt-1">
+          <Text className="font-roobert-medium text-base leading-6">{question.question}</Text>
+          {isMulti ? (
+            <Text className="font-roobert text-sm text-muted-foreground">Select all that apply</Text>
+          ) : null}
+        </View>
+
+        {options.length > 0 ? (
+          <ScrollView
+            style={{ maxHeight: MAX_OPTIONS_HEIGHT }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {options.map((opt) => {
+              const isPicked = picked.includes(opt.label);
+              return (
+                <PressableSurface
+                  key={opt.label}
+                  onPress={() => pick(opt.label)}
+                  accessibilityRole={isMulti ? 'checkbox' : 'button'}
+                  disabled={replying}
+                  accessibilityState={{ disabled: replying, ...(isMulti ? { checked: isPicked } : {}) }}
+                  style={({ pressed }) => ({
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 12,
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    borderRadius: 16,
+                    backgroundColor: isPicked || pressed ? colors.secondary : 'transparent',
+                  })}
+                >
+                  <View className="flex-1 gap-0.5">
+                    <Text className="font-roobert text-base leading-6">{opt.label}</Text>
+                    {opt.description ? (
+                      <Text className="font-roobert text-sm text-muted-foreground" numberOfLines={2}>
+                        {opt.description}
+                      </Text>
+                    ) : null}
+                  </View>
+                  {isMulti && isPicked ? <Icon as={CheckIcon} size={16} /> : null}
+                </PressableSurface>
+              );
+            })}
+          </ScrollView>
+        ) : null}
+
+        {showCustom ? (
+          <TextInput
+            value={draft}
+            editable={!replying}
+            onChangeText={(t) => {
+              if (!inFlight.current) setDrafts(drafts.map((d, i) => (i === step ? t : d)));
+            }}
+            onSubmitEditing={send}
+            placeholder={options.length > 0 ? 'Or type your own answer' : 'Type your answer'}
+            placeholderTextColor={colors.mutedForeground}
+            // Never raises the keyboard on its own: a question arrives while the
+            // user reads. The return key sends and keeps the focus, so the
+            // keyboard stays for the next step or for the composer.
+            autoFocus={autoFocus}
+            returnKeyType="send"
+            submitBehavior="submit"
+            accessibilityLabel="Your answer"
+            className="text-foreground"
+            style={{
+              fontFamily: INPUT_FONT_FAMILY,
+              fontSize: INPUT_FONT_SIZE,
+              minHeight: 40,
+              paddingHorizontal: 12,
+              paddingTop: 10,
+              paddingBottom: 12,
+            }}
+          />
+        ) : null}
+
+        {error ? <Text variant="muted">{error}</Text> : null}
+
+        <View className="flex-row items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            className="rounded-full"
+            hitSlop={COMPOSER_CONTROL_HIT_SLOP}
+            disabled={replying}
+            onPress={skip}
+          >
+            <Text maxFontSizeMultiplier={BUTTON_LABEL_MAX_FONT_SCALE.sm}>Skip</Text>
+          </Button>
+          {step > 0 ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="rounded-full"
+              hitSlop={COMPOSER_CONTROL_HIT_SLOP}
+              disabled={replying}
+              onPress={() => { if (!inFlight.current) setStep(step - 1); }}
+            >
+              <Text maxFontSizeMultiplier={BUTTON_LABEL_MAX_FONT_SCALE.sm}>Back</Text>
+            </Button>
+          ) : null}
+          <View className="flex-1" />
+          {stepLabel ? (
+            <Text className="font-roobert text-sm text-muted-foreground">{stepLabel}</Text>
+          ) : null}
+          {showCustom || isMulti ? (
+            <Button
+              variant={canSend ? 'default' : 'secondary'}
+              size="icon-md"
+              className="rounded-full"
+              hitSlop={COMPOSER_CONTROL_HIT_SLOP}
+              onPress={send}
+              disabled={replying || !canSend}
+              accessibilityLabel={isLast ? 'Send answer' : 'Next question'}
+            >
+              <Icon as={ArrowUpIcon} size={18} />
+            </Button>
+          ) : null}
+        </View>
+      </View>
+    </View>
+  );
+}

@@ -1,0 +1,198 @@
+import type { Agent, Session } from '@kortix/sdk/react';
+import { translateUiCatalogText } from '../../../i18n/ui-catalog/localize-ui-catalog';
+import { REMAINING_UI_TRANSLATION_KEYS } from '../../../i18n/ui-catalog/remaining-ui-translation-keys.generated';
+import type { UiTranslator } from '../../../i18n';
+
+import type { MentionKind } from '../types';
+
+export interface MenuRow {
+  index: number;
+  kind: MentionKind;
+  label: string;
+  value: string;
+  description?: string;
+}
+
+export interface MentionSection {
+  kind: MentionKind;
+  heading: string;
+  items: MenuRow[];
+}
+
+export function formatRelativeTime(timestamp: number, now: number): string {
+  const minutes = Math.floor((now - timestamp) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return `${Math.floor(days / 7)}w ago`;
+}
+
+export interface BuildMentionSectionsInput {
+  agents: Agent[];
+  sessions: Session[];
+  files: string[];
+  query: string;
+  currentSessionId: string | undefined;
+  /** Injected so the test is deterministic. */
+  now?: number;
+  tI18nComplete?: UiTranslator;
+}
+
+const SESSION_LIMIT = 5;
+const FILE_LIMIT = 20;
+
+/**
+ * A session also matches when the query hits a file path it changed
+ * (`summary.diffs[].file`) — not just its title or id. This preserves a real
+ * discovery path from the live implementation
+ * (session-chat-input.tsx:669-684): typing `@auth.ts` surfaces past sessions
+ * that touched `auth.ts` even when neither the title nor the id mentions it.
+ */
+function sessionMatchesQuery(session: Session, q: string): boolean {
+  const title = (session.title || '').toLowerCase();
+  if (title.includes(q)) return true;
+  if (session.id.toLowerCase().includes(q)) return true;
+  const diffs = session.summary?.diffs;
+  if (Array.isArray(diffs)) {
+    return diffs.some((d) => (d.file || '').toLowerCase().includes(q));
+  }
+  return false;
+}
+
+export function buildMentionSections({
+  agents,
+  sessions,
+  files,
+  query,
+  currentSessionId,
+  now = 0,
+  tI18nComplete,
+}: BuildMentionSectionsInput): MentionSection[] {
+  const heading = (value: string) =>
+    tI18nComplete
+      ? translateUiCatalogText(value, tI18nComplete, REMAINING_UI_TRANSLATION_KEYS)
+      : value;
+  const q = query.toLowerCase();
+  let index = 0;
+  const sections: MentionSection[] = [];
+
+  // Deliberately no `hidden` / `mode` filter here — this mirrors
+  // session-chat-input.tsx:665 (`agents.filter((a) => (a.name || '')
+  // .toLowerCase().includes(q))`, nothing else). `primaryAgents`
+  // (session-chat-input.tsx:312-314, `!a.hidden && a.mode !== 'subagent'`)
+  // exists in the same component but feeds Tab-cycling and the toolbar's
+  // `AgentSelector` only — never the `@` menu. So hidden agents and
+  // subagents ARE listed here today, which is plausibly how you delegate to
+  // a subagent by name. Changing that is a product decision for Jay, not
+  // something to fold into this refactor — see the pinning test below.
+  const agentRows: MenuRow[] = [];
+
+  // Swarm Broadcast @all
+  if ('all'.includes(q) || '@all'.includes(q) || !q) {
+    agentRows.push({
+      index: index++,
+      kind: 'agent',
+      label: 'all',
+      value: 'all',
+      description: 'Broadcast to all agents in workspace',
+    });
+  }
+
+  // Swarm Groups (dynamic from localStorage + default)
+  let dynamicGroups: Array<{ id: string; name: string; description?: string; agentIds?: string[] }> = [
+    {
+      id: 'offsite_crew',
+      name: 'Offsite crew',
+      description: 'Group (Lead, Fundamentals, Execution)',
+      agentIds: ['fundamentals_analyst', 'trader_agent', 'portfolio_manager'],
+    },
+  ];
+  if (typeof window !== 'undefined') {
+    try {
+      const saved = localStorage.getItem('tauric_trading_groups_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          dynamicGroups = parsed;
+        }
+      }
+    } catch {}
+  }
+
+  for (const group of dynamicGroups) {
+    if (group.name.toLowerCase().includes(q) || (group.description || '').toLowerCase().includes(q) || !q) {
+      agentRows.push({
+        index: index++,
+        kind: 'agent',
+        label: group.name,
+        value: group.id,
+        description: group.description || 'Custom Agent Group',
+        ...(group.agentIds ? { agentIds: group.agentIds } : {}),
+      } as any);
+    }
+  }
+
+  // Tauric Swarm Agents
+  const TAURIC_SWARM_NAMES = [
+    { id: 'portfolio_manager', name: 'Chief of Staff', role: 'Capital Allocation & Swarm Lead' },
+    { id: 'ea_agent', name: 'EA', role: 'Executive & Workflow Automation' },
+    { id: 'fundamentals_analyst', name: 'Inbox Manager', role: 'Financials & Intrinsic Value' },
+    { id: 'market_analyst', name: 'Sales Outbound', role: 'Technicals & Price Momentum' },
+    { id: 'news_analyst', name: 'Talent Scout', role: 'Global Wire & Headlines' },
+    { id: 'bull_researcher', name: 'Growth Marketer', role: 'Growth Catalyst Identification' },
+    { id: 'sentiment_analyst', name: 'Customer Support', role: 'Social & Institutional Flow' },
+    { id: 'conservative_risk', name: 'Expense Manager', role: 'Capital Preservation & Tail Hedge' },
+    { id: 'neutral_risk', name: 'Invoice Collector', role: 'Collections & Cashflow Ops' },
+    { id: 'bear_researcher', name: 'Bear Researcher', role: 'Downside Scenarios & Vulnerabilities' },
+    { id: 'research_manager', name: 'Research Manager', role: 'Debate Synthesis & Consensus' },
+    { id: 'aggressive_risk', name: 'Aggressive Risk Debator', role: 'Alpha Maximization' },
+  ];
+
+  for (const bot of TAURIC_SWARM_NAMES) {
+    if (bot.name.toLowerCase().includes(q) || bot.role.toLowerCase().includes(q)) {
+      agentRows.push({
+        index: index++,
+        kind: 'agent',
+        label: bot.name,
+        value: bot.id,
+        description: bot.role,
+      });
+    }
+  }
+
+  for (const a of agents) {
+    if (!(a.name || '').toLowerCase().includes(q)) continue;
+    if (agentRows.some((r) => r.label.toLowerCase() === (a.name || '').toLowerCase())) continue;
+    agentRows.push({ index: index++, kind: 'agent', label: a.name || '', value: a.name || '' });
+  }
+  if (agentRows.length) sections.push({ kind: 'agent', heading: heading('Agents'), items: agentRows });
+
+  const sessionRows: MenuRow[] = [];
+  for (const s of sessions) {
+    if (sessionRows.length >= SESSION_LIMIT) break;
+    if (s.parentID || s.time.archived || s.id === currentSessionId) continue;
+    if (!sessionMatchesQuery(s, q)) continue;
+    const ago = formatRelativeTime(s.time.updated, now);
+    const count = s.summary?.files;
+    sessionRows.push({
+      index: index++,
+      kind: 'session',
+      label: s.title || s.id,
+      value: s.id,
+      description: count ? `${ago} · ${count} file${count === 1 ? '' : 's'} changed` : ago,
+    });
+  }
+  if (sessionRows.length)
+    sections.push({ kind: 'session', heading: heading('Sessions'), items: sessionRows });
+
+  const fileRows: MenuRow[] = files
+    .filter((f) => q.length === 0 || f.toLowerCase().includes(q))
+    .slice(0, FILE_LIMIT)
+    .map((f) => ({ index: index++, kind: 'file' as const, label: f, value: f }));
+  if (fileRows.length) sections.push({ kind: 'file', heading: heading('Files'), items: fileRows });
+
+  return sections;
+}

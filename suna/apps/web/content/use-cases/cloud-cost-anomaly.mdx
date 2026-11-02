@@ -1,0 +1,236 @@
+---
+title: "How we catch cloud cost spikes before the bill lands"
+description: The cloud-cost anomaly agent we run on Kortix — connected to AWS Cost Explorer and Slack. Every day it keeps a running spend baseline per service and account, flags whatever breaks out of that baseline, attributes the likely driver, and alerts with the delta. Read-only and alert-only; it never touches a resource or a budget.
+date: "2026-04-08"
+author: team
+tags:
+  - Engineering
+  - Case Study
+  - Enterprise
+template: cloud-cost-anomaly
+---
+
+Cloud bills surprise people because nobody is watching spend as it accrues.
+Cost Explorer shows the truth eventually, but by default a spike surfaces at
+the end of the month, in the invoice, long after the resource that caused it
+has been running for weeks. A new instance type left on overnight, a service
+that started scaling past its usual ceiling, a region nobody meant to deploy
+to — each one is a small decision that turns into a line item nobody
+recognizes.
+
+We run a cloud-cost anomaly agent on Kortix that watches AWS spend every day,
+one persistent session that remembers what "normal" looks like per service and
+per account. It only reads billing data; the single output is a Slack alert
+with the delta and its best guess at what caused it. This is how we catch a
+cost problem while it's still one day old, not one invoice old.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Daily cron, reusable session</Fact>
+  <Fact label="Connected systems">AWS Cost Explorer · Slack</Fact>
+  <Fact label="Mode">Read-only · alert only, never modifies a resource or a budget</Fact>
+</KeyFacts>
+
+## The problem
+
+Cloud spend is easy to see and hard to watch. Cost Explorer will answer "how
+much did we spend" for any window you ask about, but it won't tell you,
+unprompted, that yesterday's spend on one service was 40% above its normal
+range. Nobody opens the console every morning to eyeball forty line items
+across a dozen accounts, so a spike sits there accruing until someone notices
+the invoice.
+
+The common approaches don't close the gap. A monthly budget alert fires only
+after the month's total crosses a threshold, by which point the overspend has
+already happened many times over. A flat per-service alert threshold treats a
+service that normally costs $50/day the same as one that normally costs
+$5,000/day, so it's either too noisy or too blind. And none of it tells you
+*why* — a dashboard shows the number moved, not what moved it.
+
+## What we built
+
+On Kortix, a daily cron re-prompts one persistent agent session with read-only
+access to AWS Cost Explorer. It pulls the prior day's spend broken out by
+service and by linked account, updates its running baseline for each, and
+flags anything that breaks out of its own normal range — not a flat threshold,
+but a deviation from what that specific service in that specific account
+usually costs. For each anomaly it works out the likely driver — a newly
+launched resource, a traffic surge, a region the spend wasn't previously in —
+and posts one alert to Slack with the delta and the suspected cause. It writes
+nothing back to AWS: no resource is touched, no budget is changed.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the cost-anomaly-detection skill and the daily
+trigger, and opens a change request for you to review. Prefer clicks? Choose
+**Use this template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a daily cloud-cost anomaly agent in this project.
+
+1. Create the agent agents/cloud-cost-anomaly.md. Its job is to compare each day's AWS spend with its baseline and alert on anomalies. It may use the AWS and Slack connectors. It only reads AWS.
+
+2. Create the skill skills/cost-anomaly-detection/SKILL.md with these rules:
+   - Keep a baseline per service and linked account in memory/cloud-cost-baseline.md. On the first run, build it from up to 90 days of Cost Explorer history and send no alerts.
+   - Flag a service and account pair when its daily spend is more than 30% above its own baseline. Never use one flat dollar threshold.
+   - Skip any spike that matches a known or planned pattern in the ledger.
+   - Name the likely driver with its evidence: a new resource, a traffic surge, a new region or a price change.
+   - Post nothing when there is no anomaly. Never modify or delete a resource, and never change a budget.
+
+3. Add a cron trigger daily-cost-anomaly-scan to kortix.yaml. It runs the cloud-cost-anomaly agent every day at 07:00 UTC with the prompt "Load the cost-anomaly-detection skill and run today's cloud-cost anomaly sweep."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect AWS with read-only access to
+Cost Explorer, and Slack. Credentials are brokered server-side and never enter the
+agent's machine.
+
+<ToolList>
+  <ToolNeed name="AWS" domain="aws.amazon.com" tag="Required" alternatives={[['Google Cloud', 'cloud.google.com'], ['Azure', 'azure.microsoft.com']]}>
+    Reads daily spend by service and account from Cost Explorer.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com'], ['PagerDuty', 'pagerduty.com']]}>
+    Posts each anomaly with its suspected driver.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **cloud-cost-anomaly**
+agent and send this prompt. The first run builds the baseline, so check it
+before you let the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one cloud-cost anomaly sweep on AWS. Read only.
+
+1. Read memory/cloud-cost-baseline.md for each baseline and the known patterns.
+2. Pull yesterday's spend from Cost Explorer by service and linked account, and update each baseline.
+3. Flag every pair more than 30% above its own baseline, unless it matches a known pattern.
+4. For each anomaly, check resource-level detail and name the likely driver with its evidence.
+5. Post the anomalies to #cloud-costs, or nothing if there are none. Then update the ledger.`}
+/>
+
+</Step>
+<Step title="Let the daily schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every day at 07:00 UTC and picks up from its ledger in `memory/`. To change the time, edit the cron line, or open
+**Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: daily-cost-anomaly-scan
+    name: Daily cloud-cost anomaly scan
+    on:
+      cron: "0 0 7 * * *"
+    run:
+      agent: cloud-cost-anomaly
+      prompt: Load the cost-anomaly-detection skill and run today's cloud-cost anomaly sweep.`}
+/>
+
+</Step>
+<Step title="Alert, never touch a resource">
+
+The AWS connector is read-only. The agent never launches, resizes, stops or
+deletes a resource, and never changes a budget. It posts the delta and the
+suspected driver, and an engineer decides what to do.
+
+</Step>
+<Step title="Read the alert">
+
+A run with an anomaly ends with one message in the channel. This is what a
+run looks like in the session:
+
+<ExampleRun
+  title="Daily cloud-cost anomaly scan · 07:00"
+  message="Load the cost-anomaly-detection skill and run today's cloud-cost anomaly sweep."
+  worked="Worked for 2m 52s"
+  tools={[
+    'aws · get cost and usage',
+    'aws · get cost and usage by region',
+    'aws · describe instances',
+    'slack · post message → #cloud-costs',
+  ]}
+  note="Illustrative example. Your numbers depend on your AWS accounts."
+>
+  Found **1** anomaly. EC2 spend in one linked account is up **$412** (**62%**)
+  over its baseline, and **6** new instances appeared in a region with no prior
+  spend. The likely driver is a new deployment in that region, not a traffic
+  surge.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A daily **cron** re-prompts one persistent **session** with a read-only
+  **connector** into AWS Cost Explorer. The baseline lives as **skills** and
+  **memory** that carry forward run to run. The agent reads everything and
+  writes nothing but the Slack alert.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Mark planned spend"
+  code="When I tell you a spike is planned, add it to the known patterns in the ledger with an end date, and stop alerting on it until then."
+/>
+
+<CopyBlock
+  title="Weekly cost summary"
+  code="Every Monday, post the 5 services with the largest week-over-week spend change to #cloud-costs."
+/>
+
+<CopyBlock
+  title="Mention the owner"
+  code="For each anomaly, read the owner tag on the resources behind it and mention that team in the alert."
+/>
+
+## Guardrails
+
+The agent reads across every linked AWS account's billing data, so its access
+is scoped and strictly one-directional:
+
+- **Isolation.** Every run happens in its own isolated sandbox. The session is granted access only to AWS Cost Explorer, and only the Slack alert is written back out.
+- **Scoped secrets.** The AWS connector credential is encrypted in the Secrets
+  Manager and injected into the sandbox at runtime, scoped to the agents you grant them to
+  or the logs.
+- **Read-only, no exceptions.** The AWS connector is read-only. The agent
+  cannot launch, modify, or delete a resource, and it cannot change a budget
+  or any spending control — it can only alert.
+- **Alert only.** The Slack post is the only output. No remediation, no
+  auto-scaling change, no resource shutdown — a human decides what, if
+  anything, to do about a spike.
+- **Everything is code.** The agent's baseline logic, thresholds, and
+  per-system permissions are files in the repo, versioned and changed through
+  a reviewed **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every day" label="Spend baselined per service and account against its own history" />
+  <Stat value="Read-only" label="Nothing modified, launched, or deleted in AWS, ever" />
+  <Stat value="1 alert" label="Delta + suspected driver, posted only when spend breaks the baseline" />
+</StatGrid>
+
+A cost problem that used to surface as a surprising line item at the end of
+the month now surfaces the next morning, with the service, the account, the
+size of the spike, and a suspected cause already attached. The agent only
+reads and alerts; the engineering team decides what to do about each one.

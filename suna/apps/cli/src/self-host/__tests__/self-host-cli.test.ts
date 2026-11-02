@@ -1,0 +1,908 @@
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { parse } from 'yaml';
+
+// Black-box tests for the generic (Docker-only) `kortix self-host` CLI: no
+// "target" flag, no AWS coordinates — `init`/`env set` only ever write a
+// docker-compose.yml + .env for this machine. These exercise the real CLI
+// entrypoint so they catch wiring mistakes a unit test on an unexported
+// function would miss.
+//
+// None of these tests configure PLATINUM_API_KEY (the sandbox key `init` asks
+// about — managed git and the LLM key are configured in the dashboard after
+// `start`, not by this CLI). `init`/`start` never hard-fail on a missing
+// secret — they warn and proceed; see secrets.test.ts for coverage of that
+// warning behavior.
+const CLI_ENTRY = resolve(import.meta.dir, '..', '..', 'index.ts');
+
+// Several black-box cases intentionally execute more than one bounded Docker
+// liveness probe. Keep the suite above Bun's 5s default while production probes
+// remain individually capped at 3s.
+setDefaultTimeout(15_000);
+
+describe('kortix self-host (generic Docker CLI)', () => {
+  let tmp: string;
+  let configRoot: string;
+  let instance: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'kortix-self-host-cli-'));
+    configRoot = join(tmp, 'self-host');
+    // Compose project identity is based only on --instance. Never let a test
+    // that exercises `env set` inspect or recreate a developer's real
+    // `kortix-default` services merely because its files use a temp root.
+    instance = `kortixtest${randomUUID().replaceAll('-', '')}`;
+  });
+
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  async function run(args: string[], extraEnv: Record<string, string> = {}) {
+    const proc = Bun.spawn({
+      cmd: [process.execPath, CLI_ENTRY, 'self-host', ...args, '--instance', instance],
+      cwd: tmp,
+      env: {
+        ...process.env,
+        KORTIX_SELF_HOST_CONFIG_DIR: configRoot,
+        KORTIX_CONFIG_FILE: join(tmp, 'cli-config.json'),
+        KORTIX_NO_UPDATE_CHECK: '1',
+        NO_COLOR: '1',
+        FORCE_COLOR: '0',
+        ...extraEnv,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [code, stdout, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
+  }
+
+  test.each([true, false])('status --json emits only JSON with updater available=%s', async (available) => {
+    expect((await run(['init', '--yes'])).code).toBe(0);
+    const bin = join(tmp, 'bin');
+    mkdirSync(bin);
+    const report = {
+      status: { outcome: 'ok', from_version: '0.9.71', to_version: '0.9.72' },
+      drift: [],
+      lock: { locked: false, holder: '' },
+    };
+    // Stub only the external Docker boundary; execute the real CLI process.
+    writeFileSync(join(bin, 'docker'), `#!/bin/sh
+case " $* " in
+  *" ps "*) printf 'NAME IMAGE STATUS\\nfixture-api fixture:stable Up\\n' ;;
+  *" report "*) ${available ? `printf '%s\\n' '${JSON.stringify(report)}'` : 'exit 1'} ;;
+esac
+`, { mode: 0o755 });
+    const env = { PATH: `${bin}:${process.env.PATH}` };
+    const human = await run(['status'], env);
+    expect(human.code).toBe(0);
+    expect(human.stdout).toContain('NAME IMAGE STATUS');
+    const result = await run(['status', '--json'], env);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({
+      instance,
+      auto_update: true,
+      update_time: '02:00',
+      update_tz: 'America/New_York',
+      update: available ? report.status : null,
+      drift: available ? report.drift : null,
+      lock: available ? report.lock : null,
+    });
+  });
+
+  function readEnv(instanceName = instance): Record<string, string> {
+    const content = readFileSync(join(configRoot, instanceName, '.env'), 'utf8');
+    const out: Record<string, string> = {};
+    for (const line of content.split(/\r?\n/)) {
+      if (!line.trim() || !line.includes('=')) continue;
+      const idx = line.indexOf('=');
+      out[line.slice(0, idx)] = line.slice(idx + 1);
+    }
+    return out;
+  }
+
+  function readCompose(instanceName = instance): { services: Record<string, unknown> } {
+    return parse(readFileSync(join(configRoot, instanceName, 'docker-compose.yml'), 'utf8'));
+  }
+
+  test('frontend memory override survives env set and a later init', async () => {
+    expect((await run(['init', '--yes'])).code).toBe(0);
+    expect((readCompose().services.frontend as { mem_limit: string }).mem_limit)
+      .toBe('${KORTIX_FRONTEND_MEMORY_LIMIT:-512m}');
+    const configured = await run(['env', 'set', 'KORTIX_FRONTEND_MEMORY_LIMIT=1024m']);
+    expect(configured.code).toBe(0);
+    expect(readEnv().KORTIX_FRONTEND_MEMORY_LIMIT).toBe('1024m');
+    expect((await run(['init', '--yes'])).code).toBe(0);
+    expect(readEnv().KORTIX_FRONTEND_MEMORY_LIMIT).toBe('1024m');
+    expect((readCompose().services.frontend as { mem_limit: string }).mem_limit)
+      .toBe('${KORTIX_FRONTEND_MEMORY_LIMIT:-512m}');
+  });
+
+  test('switching to an external capture store drops the on-box MinIO and survives re-init', async () => {
+    expect((await run(['init', '--yes'])).code).toBe(0);
+    // Default: the bundled MinIO store and its generated root pair.
+    expect(readCompose().services['capture-store']).toBeDefined();
+    expect(readEnv().CAPTURE_STORE_ROOT_USER).toBeTruthy();
+    expect(readEnv().KORTIX_CAPTURE_STORE).toBe('bundled');
+
+    const set = await run([
+      'env', 'set',
+      'KORTIX_CAPTURE_STORE=external',
+      'KORTIX_CAPTURE_S3_BUCKET=acme-capture',
+      'KORTIX_CAPTURE_STS_ROLE_ARN=arn:aws:iam::123456789012:role/kortix-capture-device',
+    ]);
+    expect(set.code).toBe(0);
+
+    // .env holds the durable switch + external values; the dead MinIO root pair
+    // is shed so it never persists on an external instance.
+    const env = readEnv();
+    expect(env.KORTIX_CAPTURE_STORE).toBe('external');
+    expect(env.KORTIX_CAPTURE_S3_BUCKET).toBe('acme-capture');
+    expect(env.CAPTURE_STORE_ROOT_USER).toBeUndefined();
+    expect(env.CAPTURE_STORE_ROOT_PASSWORD).toBeUndefined();
+
+    // Compose: no on-box store; the API reads the operator's S3 from .env and
+    // never creates the bucket.
+    const after = readCompose();
+    expect(after.services['capture-store']).toBeUndefined();
+    const apiEnv = (after.services['kortix-api'] as { environment: Record<string, string> }).environment;
+    expect(apiEnv.KORTIX_CAPTURE_S3_BUCKET).toBe('${KORTIX_CAPTURE_S3_BUCKET:-}');
+    expect(apiEnv.KORTIX_CAPTURE_S3_CREATE_BUCKET).toBe('false');
+    expect(apiEnv).not.toHaveProperty('KORTIX_CAPTURE_S3_PROXY_TARGET');
+
+    // Durable across `update`: a later re-init keeps the external mode.
+    expect((await run(['init', '--yes'])).code).toBe(0);
+    expect(readEnv().KORTIX_CAPTURE_STORE).toBe('external');
+    expect(readCompose().services['capture-store']).toBeUndefined();
+  });
+
+  test('init defaults to the shared auth+sandbox defaults and the stable channel', async () => {
+    const { code } = await run(['init', '--yes']);
+    expect(code).toBe(0);
+
+    const env = readEnv();
+    // Shared defaults (SHARED_SELF_HOST_DEFAULTS) must be wired, not duplicated.
+    expect(env.DISABLE_SIGNUP).toBe('false');
+    expect(env.ENABLE_EMAIL_SIGNUP).toBe('true');
+    expect(env.ENABLE_EMAIL_AUTOCONFIRM).toBe('true');
+    expect(env.KORTIX_PUBLIC_AUTH_METHODS).toBe('password');
+    // GET /v1/auth/client-config is complete on a fresh install: the API loads
+    // every .env key (env_file), so it reports the anon key, the auth methods
+    // and an explicit empty provider list (none, like the web auth page).
+    expect(env.KORTIX_PUBLIC_AUTH_PROVIDERS).toBe('');
+    expect(env.SUPABASE_ANON_KEY).toBeTruthy();
+    expect(env.SUPABASE_PUBLIC_URL).toBeTruthy();
+    expect((readCompose().services['kortix-api'] as { env_file: string[] }).env_file).toContain('.env');
+    // Platinum is the reference provider; E2B support is discontinued.
+    expect(env.ALLOWED_SANDBOX_PROVIDERS).toBe('platinum');
+    expect(env).not.toHaveProperty('E2B_API_KEY');
+    expect(env).not.toHaveProperty('E2B_DOMAIN');
+
+    // Default channel is "stable" — a plain moving Docker tag, no signing/TUF.
+    expect(env.KORTIX_CHANNEL).toBe('stable');
+    expect(env.KORTIX_VERSION).toBe('stable');
+    expect(env.FRONTEND_IMAGE).toBe('kortix/kortix-frontend:stable');
+    expect(env.API_IMAGE).toBe('kortix/kortix-api:stable');
+    expect(env.GATEWAY_IMAGE).toBe('kortix/kortix-gateway:stable');
+    expect(env.KORTIX_AUTO_UPDATE).toBe('true');
+    expect(env.KORTIX_UPDATE_TIME).toBe('02:00');
+    expect(env.KORTIX_UPDATE_TZ).toBe('America/New_York');
+    expect(env.KORTIX_ALLOW_DOWNTIME).toBe('0');
+    expect(env.CONNECTOR_AUTH_PROVIDER).toBe('composio');
+    expect(env.KORTIX_SELF_HOST_CONNECTIONS_REVIEWED).toBe('false');
+    expect(env.COMPOSIO_API_KEY).toBe('');
+    expect(env.PIPEDREAM_CLIENT_ID).toBe('');
+    expect(env.PIPEDREAM_CLIENT_SECRET).toBe('');
+    expect(env.PIPEDREAM_PROJECT_ID).toBe('');
+    expect(env.KORTIX_PUBLIC_CONNECTORS_ENABLED).toBe('false');
+    expect(env.INTEGRATION_AUTH_PROVIDER).toBeUndefined();
+    expect(env.KORTIX_SELF_HOST_INTEGRATIONS_REVIEWED).toBeUndefined();
+
+    // Laptop mode (no domain): single replica, no LB needed.
+    expect(env.KORTIX_APP_REPLICAS).toBe('1');
+
+    // No local-source-build leftovers.
+    expect(env.KORTIX_LOCAL_IMAGES).toBeUndefined();
+  });
+
+  test('auth accepts the mobile app callback (kortix://) on a fresh and an upgraded instance', async () => {
+    expect((await run(['init', '--yes'])).code).toBe(0);
+    expect(readEnv().ADDITIONAL_REDIRECT_URLS).toBe('kortix://**');
+
+    // An instance created before this default has the key empty; its next
+    // write fills it in.
+    const envFile = join(configRoot, instance, '.env');
+    writeFileSync(
+      envFile,
+      readFileSync(envFile, 'utf8').replace(/^ADDITIONAL_REDIRECT_URLS=.*$/m, 'ADDITIONAL_REDIRECT_URLS='),
+    );
+    expect(readEnv().ADDITIONAL_REDIRECT_URLS).toBe('');
+    expect((await run(['env', 'set', 'KORTIX_ALLOW_DOWNTIME=1'])).code).toBe(0);
+    expect(readEnv().ADDITIONAL_REDIRECT_URLS).toBe('kortix://**');
+
+    // An operator's own allow-list is theirs: never rewritten.
+    const custom = 'https://kortix.example.com/auth/callback';
+    expect((await run(['env', 'set', `ADDITIONAL_REDIRECT_URLS=${custom}`])).code).toBe(0);
+    expect(readEnv().ADDITIONAL_REDIRECT_URLS).toBe(custom);
+  });
+
+  test('--channel latest tracks the :latest tag instead of :stable', async () => {
+    const { code } = await run(['init', '--yes', '--channel', 'latest']);
+    expect(code).toBe(0);
+    const env = readEnv();
+    expect(env.KORTIX_CHANNEL).toBe('latest');
+    expect(env.API_IMAGE).toBe('kortix/kortix-api:latest');
+  });
+
+  test('--tag pins an explicit version regardless of channel', async () => {
+    const { code } = await run(['init', '--yes', '--tag', '0.9.72']);
+    expect(code).toBe(0);
+    const env = readEnv();
+    expect(env.KORTIX_VERSION).toBe('0.9.72');
+    expect(env.API_IMAGE).toBe('kortix/kortix-api:0.9.72');
+    // Pinning an explicit version doesn't invent a channel name for it.
+    expect(env.KORTIX_CHANNEL).toBe('stable');
+  });
+
+  // Auto-update defaults ON everywhere, including a pinned --version/--tag —
+  // the nightly updater re-pulling the SAME immutable pinned tag is a
+  // harmless no-op (nothing to roll), not silent drift, so pinning alone is
+  // no longer a reason to default it off. --local-images (a locally-built
+  // image never pushed to any registry) is the one real exception — see the
+  // --local-images test below.
+  test('--version is an alias for --tag: pins the image ref, auto-update still defaults ON (a no-op nightly re-pull of the same pinned tag)', async () => {
+    const { code } = await run(['init', '--yes', '--version', 'dev-a1b2c3d']);
+    expect(code).toBe(0);
+    const env = readEnv();
+    expect(env.KORTIX_VERSION).toBe('dev-a1b2c3d');
+    expect(env.API_IMAGE).toBe('kortix/kortix-api:dev-a1b2c3d');
+    expect(env.FRONTEND_IMAGE).toBe('kortix/kortix-frontend:dev-a1b2c3d');
+    expect(env.KORTIX_AUTO_UPDATE).toBe('true');
+  });
+
+  test('--channel latest (channel tracking) also keeps auto-update on by default', async () => {
+    const { code } = await run(['init', '--yes', '--channel', 'latest']);
+    expect(code).toBe(0);
+    expect(readEnv().KORTIX_AUTO_UPDATE).toBe('true');
+  });
+
+  test('an explicit --auto-update off wins even without --local-images', async () => {
+    const { code } = await run(['init', '--yes', '--version', '0.9.99', '--auto-update', 'off']);
+    expect(code).toBe(0);
+    expect(readEnv().KORTIX_AUTO_UPDATE).toBe('false');
+  });
+
+  test('--local-images (dev mode): sets KORTIX_IMAGE_PULL=never and forces auto-update off, even over --auto-update on', async () => {
+    const { code } = await run([
+      'init', '--yes',
+      '--version', 'branch-local', '--local-images', '--auto-update', 'on',
+    ]);
+    expect(code).toBe(0);
+    const env = readEnv();
+    expect(env.KORTIX_IMAGE_PULL).toBe('never');
+    expect(env.KORTIX_AUTO_UPDATE).toBe('false');
+    expect(env.API_IMAGE).toBe('kortix/kortix-api:branch-local');
+  });
+
+  test('--no-pull is an alias for --local-images', async () => {
+    const { code } = await run(['init', '--yes', '--no-pull']);
+    expect(code).toBe(0);
+    expect(readEnv().KORTIX_IMAGE_PULL).toBe('never');
+  });
+
+  test('without --local-images, KORTIX_IMAGE_PULL stays unset (normal pull behavior)', async () => {
+    const { code } = await run(['init', '--yes']);
+    expect(code).toBe(0);
+    expect(readEnv().KORTIX_IMAGE_PULL).toBe('');
+  });
+
+  test('rejects an invalid --channel value', async () => {
+    const { code, stderr } = await run(['init', '--yes', '--channel', 'nightly']);
+    expect(code).toBe(2);
+    expect(stderr).toContain('--channel must be "stable" or "latest"');
+  });
+
+  test('--update-time / --update-tz configure the nightly auto-update schedule', async () => {
+    const { code } = await run(['init', '--yes', '--update-time', '03:30', '--update-tz', 'UTC']);
+    expect(code).toBe(0);
+    const env = readEnv();
+    expect(env.KORTIX_UPDATE_TIME).toBe('03:30');
+    expect(env.KORTIX_UPDATE_TZ).toBe('UTC');
+  });
+
+  test('rejects an invalid --update-time value', async () => {
+    const { code, stderr } = await run(['init', '--yes', '--update-time', '9pm']);
+    expect(code).toBe(2);
+    expect(stderr).toContain('--update-time must be HH:MM');
+  });
+
+  // There is deliberately no `--allow-downtime` flag: KORTIX_ALLOW_DOWNTIME is
+  // env-only — a release that needs a brief downtime window says so, and the
+  // operator sets it directly (`env set KORTIX_ALLOW_DOWNTIME=1`).
+  test('KORTIX_ALLOW_DOWNTIME defaults off and is set directly via env set', async () => {
+    await run(['init', '--yes']);
+    expect(readEnv().KORTIX_ALLOW_DOWNTIME).toBe('0');
+    const { code } = await run(['env', 'set', 'KORTIX_ALLOW_DOWNTIME=1']);
+    expect(code).toBe(0);
+    expect(readEnv().KORTIX_ALLOW_DOWNTIME).toBe('1');
+    // A later plain re-init must not reset it.
+    const reinit = await run(['init', '--yes']);
+    expect(reinit.code).toBe(0);
+    expect(readEnv().KORTIX_ALLOW_DOWNTIME).toBe('1');
+  });
+
+  test('Composio enables connectors while legacy Pipedream rollback requires all credentials', async () => {
+    await run(['init', '--yes']);
+
+    await run(['env', 'set', 'CONNECTOR_AUTH_PROVIDER=pipedream', 'PIPEDREAM_CLIENT_ID=legacy-client-id']);
+    expect(readEnv().KORTIX_PUBLIC_CONNECTORS_ENABLED).toBe('false');
+
+    await run(['env', 'set', 'PIPEDREAM_CLIENT_SECRET=legacy-client-secret', 'PIPEDREAM_PROJECT_ID=legacy-project-id']);
+    expect(readEnv().KORTIX_PUBLIC_CONNECTORS_ENABLED).toBe('true');
+
+    await run(['env', 'set', 'PIPEDREAM_PROJECT_ID=', 'CONNECTOR_AUTH_PROVIDER=composio', 'COMPOSIO_API_KEY=not-a-real-composio-key']);
+    const configured = readEnv();
+    expect(configured.CONNECTOR_AUTH_PROVIDER).toBe('composio');
+    expect(configured.COMPOSIO_API_KEY).toBe('not-a-real-composio-key');
+    expect(configured.KORTIX_PUBLIC_CONNECTORS_ENABLED).toBe('true');
+  });
+
+  test('configure keeps an instance whose env still names the legacy sandbox provider', async () => {
+    await run(['init', '--yes']);
+    await run(['env', 'set', 'ALLOWED_SANDBOX_PROVIDERS=daytona', 'DAYTONA_API_KEY=not-a-real-key']);
+
+    const configured = await run(['configure', '--yes']);
+    expect(configured.code).toBe(0);
+    expect(configured.stdout).toContain('Agent sandbox runtime (daytona): configured');
+    expect(readEnv().ALLOWED_SANDBOX_PROVIDERS).toBe('daytona');
+  });
+
+  test('KORTIX_APP_REPLICAS flips to 2 once a domain is configured, back to 1 without one', async () => {
+    await run(['init', '--yes']);
+    expect(readEnv().KORTIX_APP_REPLICAS).toBe('1');
+
+    await run(['env', 'set', 'KORTIX_DOMAIN=kortix.example.com']);
+    expect(readEnv().KORTIX_APP_REPLICAS).toBe('2');
+
+    await run(['env', 'set', 'KORTIX_DOMAIN=']);
+    expect(readEnv().KORTIX_APP_REPLICAS).toBe('1');
+  });
+
+  test('KORTIX_INSTANCE_DIR is the absolute instance directory and is wired into the rendered kortix-updater service (DinD self-referential mount)', async () => {
+    // Regression coverage for the "mounts denied" self-host update bug: the
+    // in-compose kortix-updater runs `docker compose` against the HOST daemon
+    // over the mounted socket, so any relative bind mount elsewhere in this
+    // compose file only resolves correctly if the updater container sees the
+    // instance directory at the SAME absolute path the host does. That path
+    // is KORTIX_INSTANCE_DIR — recomputed from the real on-disk instance dir
+    // on every render (see normalizeFullSupabaseEnv in commands/self-host.ts).
+    await run(['init', '--yes']);
+    const instanceDir = join(configRoot, instance);
+    expect(readEnv().KORTIX_INSTANCE_DIR).toBe(instanceDir);
+
+    const compose = readCompose() as { services: Record<string, {
+      volumes?: string[];
+      working_dir?: string;
+    }> };
+    const updater = compose.services['kortix-updater'];
+    expect(updater?.working_dir).toBe('${KORTIX_INSTANCE_DIR}');
+    expect(updater?.volumes).toContain('${KORTIX_INSTANCE_DIR}:${KORTIX_INSTANCE_DIR}');
+  });
+
+  test('the rendered compose has no Caddy service until KORTIX_DOMAIN is set', async () => {
+    await run(['init', '--yes']);
+    const before = readCompose();
+    expect(before.services).not.toHaveProperty('caddy');
+    expect(before.services).toHaveProperty('kortix-updater');
+
+    const { code } = await run(['env', 'set', 'KORTIX_DOMAIN=kortix.example.com']);
+    expect(code).toBe(0);
+
+    const after = readCompose();
+    expect(after.services).toHaveProperty('caddy');
+
+    const env = readEnv();
+    expect(env.KORTIX_API_DOMAIN).toBe('api.kortix.example.com');
+    expect(env.PUBLIC_URL).toBe('https://kortix.example.com');
+    expect(env.API_PUBLIC_URL).toBe('https://api.kortix.example.com');
+  });
+
+  test('no AWS/target concepts remain reachable from the CLI', async () => {
+    const { stdout } = await run(['-h']);
+    expect(stdout).not.toContain('aws-ec2');
+    expect(stdout).not.toContain('--aws-profile');
+    expect(stdout).not.toContain('--target');
+    expect(stdout).not.toContain('Terraform');
+  });
+
+  describe('configuration feature flags (landing / enterprise-license / billing)', () => {
+    test('default to off (except the landing page, off by default too), and are explicit in .env (not just hard-coded in the compose template)', async () => {
+      const { code } = await run(['init', '--yes']);
+      expect(code).toBe(0);
+      const env = readEnv();
+      // Self-host is an app deployment, not a marketing site — the marketing
+      // landing page is DISABLED by default (unlike Kortix Cloud).
+      expect(env.KORTIX_PUBLIC_DISABLE_LANDING_PAGE).toBe('true');
+      expect(env.ENTERPRISE_LICENSE_AVAILABLE).toBe('false');
+      expect(env.KORTIX_BILLING_INTERNAL_ENABLED).toBe('false');
+      expect(env.KORTIX_PUBLIC_BILLING_ENABLED).toBe('false');
+    });
+
+    // Account-creation restriction is the one feature flag that defaults ON
+    // for self-host (every other flag in this describe block defaults off) —
+    // a VPS operator usually wants to be the only one who can spin up new
+    // organizations on their own instance.
+    test('account-creation restriction defaults ON (both the api and frontend-mirroring vars)', async () => {
+      const { code } = await run(['init', '--yes']);
+      expect(code).toBe(0);
+      const env = readEnv();
+      expect(env.KORTIX_RESTRICT_ACCOUNT_CREATION).toBe('true');
+      expect(env.KORTIX_PUBLIC_RESTRICT_ACCOUNT_CREATION).toBe('true');
+    });
+
+    test('--no-restrict-account-creation opts out of the default (both vars)', async () => {
+      const { code } = await run(['init', '--yes', '--no-restrict-account-creation']);
+      expect(code).toBe(0);
+      const env = readEnv();
+      expect(env.KORTIX_RESTRICT_ACCOUNT_CREATION).toBe('false');
+      expect(env.KORTIX_PUBLIC_RESTRICT_ACCOUNT_CREATION).toBe('false');
+    });
+
+    test('--restrict-account-creation and --no-restrict-account-creation together is a usage error', async () => {
+      const { code, stderr } = await run([
+        'init',
+        '--yes',
+        '--restrict-account-creation',
+        '--no-restrict-account-creation',
+      ]);
+      expect(code).not.toBe(0);
+      expect(stderr).toContain('mutually exclusive');
+    });
+
+    test('a re-run of init without the flag does not reset a previously opted-out account-creation restriction', async () => {
+      await run(['init', '--yes', '--no-restrict-account-creation']);
+      expect(readEnv().KORTIX_RESTRICT_ACCOUNT_CREATION).toBe('false');
+
+      const { code } = await run(['init', '--yes']);
+      expect(code).toBe(0);
+      expect(readEnv().KORTIX_RESTRICT_ACCOUNT_CREATION).toBe('false');
+      expect(readEnv().KORTIX_PUBLIC_RESTRICT_ACCOUNT_CREATION).toBe('false');
+    });
+
+    // There is deliberately no `--landing`/`--no-landing` flag: the landing
+    // page isn't a guided-flow decision (self-host is an app deployment, not
+    // a marketing site — full stop), it's just an ordinary env var an
+    // operator can flip directly if they genuinely want it back.
+    test('re-enabling the landing page is a plain `env set`, no dedicated flag', async () => {
+      await run(['init', '--yes']);
+      expect(readEnv().KORTIX_PUBLIC_DISABLE_LANDING_PAGE).toBe('true');
+
+      const { code } = await run(['env', 'set', 'KORTIX_PUBLIC_DISABLE_LANDING_PAGE=false']);
+      expect(code).toBe(0);
+      expect(readEnv().KORTIX_PUBLIC_DISABLE_LANDING_PAGE).toBe('false');
+
+      // A later plain re-init must not silently flip it back off.
+      const reinit = await run(['init', '--yes']);
+      expect(reinit.code).toBe(0);
+      expect(readEnv().KORTIX_PUBLIC_DISABLE_LANDING_PAGE).toBe('false');
+    });
+
+    test('--enterprise-license sets ENTERPRISE_LICENSE_AVAILABLE', async () => {
+      const { code } = await run(['init', '--yes', '--enterprise-license']);
+      expect(code).toBe(0);
+      expect(readEnv().ENTERPRISE_LICENSE_AVAILABLE).toBe('true');
+    });
+
+    test('a re-run of init without the flag does not reset a previously-set flag', async () => {
+      await run(['init', '--yes', '--enterprise-license']);
+      expect(readEnv().ENTERPRISE_LICENSE_AVAILABLE).toBe('true');
+
+      // Plain re-init (e.g. a config refresh) must not silently turn it back off.
+      const { code } = await run(['init', '--yes']);
+      expect(code).toBe(0);
+      expect(readEnv().ENTERPRISE_LICENSE_AVAILABLE).toBe('true');
+    });
+
+    // Note: `kortix self-host update` shells out to a real `docker compose`
+    // (zero-downtime rollout) and isn't exercised by this black-box CLI
+    // harness for that reason — same scope limit as the rest of this file,
+    // which never invokes `start`/`update` either. Preservation across a
+    // later invocation is instead proven via `init` above and `env set`
+    // below: `update` merges env with the exact same
+    // `{ ...defaultEnv(flags), ...existing }` pattern (loadEnvWithDefaults)
+    // and the exact same `applyFeatureFlags()` conditional-overwrite helper
+    // as `init` — see selfHostUpdate() in commands/self-host.ts.
+
+    test('env set also works directly and survives a later plain init', async () => {
+      await run(['init', '--yes']);
+      await run(['env', 'set', 'KORTIX_BILLING_INTERNAL_ENABLED=true', 'KORTIX_PUBLIC_BILLING_ENABLED=true']);
+      expect(readEnv().KORTIX_BILLING_INTERNAL_ENABLED).toBe('true');
+
+      const { code } = await run(['init', '--yes']);
+      expect(code).toBe(0);
+      const env = readEnv();
+      expect(env.KORTIX_BILLING_INTERNAL_ENABLED).toBe('true');
+      expect(env.KORTIX_PUBLIC_BILLING_ENABLED).toBe('true');
+    });
+
+    test('the rendered compose passes the flags through as runtime env, not hard-coded literals', async () => {
+      await run(['init', '--yes']);
+      const compose = readCompose();
+      const frontendEnv = (compose.services.frontend as any).environment;
+      expect(frontendEnv.KORTIX_PUBLIC_BILLING_ENABLED).toBe('${KORTIX_PUBLIC_BILLING_ENABLED}');
+      expect(frontendEnv.KORTIX_PUBLIC_DISABLE_LANDING_PAGE).toBe('${KORTIX_PUBLIC_DISABLE_LANDING_PAGE}');
+      expect(frontendEnv.KORTIX_PUBLIC_RESTRICT_ACCOUNT_CREATION).toBe('${KORTIX_PUBLIC_RESTRICT_ACCOUNT_CREATION}');
+
+      // kortix-api gets these via `env_file: .env` (loads every .env key) —
+      // no explicit `environment:` entry, since one would win over env_file
+      // and re-introduce the old "billing hard-pinned false" bug.
+      const apiEnv = (compose.services['kortix-api'] as any).environment;
+      expect(apiEnv.KORTIX_BILLING_INTERNAL_ENABLED).toBeUndefined();
+      expect(apiEnv.ENTERPRISE_LICENSE_AVAILABLE).toBeUndefined();
+      expect(apiEnv.KORTIX_RESTRICT_ACCOUNT_CREATION).toBeUndefined();
+      // The API reads the same ENABLE_EMAIL_AUTOCONFIRM GoTrue does: while it
+      // is on, a password email proves nothing (KRTX-1715). A pinned entry here
+      // would let the two disagree after `env set EMAIL_URL=…` flips it.
+      expect(apiEnv.ENABLE_EMAIL_AUTOCONFIRM).toBeUndefined();
+      expect((compose.services['supabase-auth'] as any).environment.GOTRUE_MAILER_AUTOCONFIRM)
+        .toBe('${ENABLE_EMAIL_AUTOCONFIRM}');
+      expect((compose.services['kortix-api'] as any).env_file).toContain('.env');
+    });
+  });
+
+  describe('reachability (KORTIX_URL, --domain, --tunnel)', () => {
+    test('the rendered compose templates KORTIX_URL instead of hard-coding the internal Docker hostname', async () => {
+      await run(['init', '--yes']);
+      const compose = readCompose();
+      const apiEnv = (compose.services['kortix-api'] as any).environment;
+      expect(apiEnv.KORTIX_URL).toBe('${KORTIX_URL}');
+      expect(apiEnv.KORTIX_URL).not.toContain('kortix-api:8008');
+    });
+
+    test('default (local-only) mode: KORTIX_URL mirrors the loopback API_PUBLIC_URL, not the internal hostname', async () => {
+      const { code } = await run(['init', '--yes']);
+      expect(code).toBe(0);
+      const env = readEnv();
+      expect(env.KORTIX_URL).toBe(env.API_PUBLIC_URL);
+      expect(env.KORTIX_URL).toStartWith('http://localhost:');
+      expect(env.KORTIX_REACHABILITY_MODE).toBe('local');
+      expect(readCompose().services).not.toHaveProperty('cloudflared');
+    });
+
+    test('--domain sets KORTIX_DOMAIN and KORTIX_URL follows API_PUBLIC_URL (https://api.<domain>)', async () => {
+      const { code } = await run(['init', '--yes', '--domain', 'kortix.example.com']);
+      expect(code).toBe(0);
+      const env = readEnv();
+      expect(env.KORTIX_DOMAIN).toBe('kortix.example.com');
+      expect(env.API_PUBLIC_URL).toBe('https://api.kortix.example.com');
+      expect(env.KORTIX_URL).toBe('https://api.kortix.example.com');
+      expect(env.KORTIX_REACHABILITY_MODE).toBe('domain');
+      expect(readCompose().services).toHaveProperty('caddy');
+      expect(readCompose().services).not.toHaveProperty('cloudflared');
+    });
+
+    test('--domain= clears a previously configured domain, falling back out of "domain" mode', async () => {
+      await run(['init', '--yes', '--domain', 'kortix.example.com']);
+      expect(readEnv().KORTIX_DOMAIN).toBe('kortix.example.com');
+
+      // The `--flag=value` form (not `--flag value`) is required to pass an
+      // explicit empty string — takeFlagValue treats a bare falsy next-arg as
+      // "no value provided" and errors, but `--domain=` with nothing after
+      // the `=` is unambiguous.
+      const { code } = await run(['init', '--yes', '--domain=']);
+      expect(code).toBe(0);
+      const env = readEnv();
+      expect(env.KORTIX_DOMAIN).toBe('');
+      // KORTIX_URL always mirrors API_PUBLIC_URL outside tunnel mode — whatever
+      // that resolves to (API_PUBLIC_URL/PUBLIC_URL are otherwise-sticky
+      // operator-configurable values, unrelated to this feature, that are not
+      // reset to loopback just because KORTIX_DOMAIN was cleared).
+      expect(env.KORTIX_URL).toBe(env.API_PUBLIC_URL);
+      expect(readCompose().services).not.toHaveProperty('caddy');
+    });
+
+    test('--tunnel cloudflare renders the cloudflared service and defers KORTIX_URL to the live capture step', async () => {
+      const { code } = await run(['init', '--yes', '--tunnel', 'cloudflare']);
+      expect(code).toBe(0);
+      const env = readEnv();
+      expect(env.KORTIX_REACHABILITY_MODE).toBe('tunnel');
+      expect(env.KORTIX_DOMAIN).toBe('');
+      const compose = readCompose();
+      expect(compose.services).toHaveProperty('cloudflared');
+      expect(compose.services).not.toHaveProperty('caddy');
+      // init never runs docker compose, so KORTIX_URL can't be the real tunnel
+      // URL yet — reconcileTunnelReachability() (part of `start`/`update`)
+      // captures and rewrites it after the cloudflared container boots.
+      expect(env.KORTIX_URL).toBeTruthy();
+    });
+
+    test('a re-init does not reset an already-configured reachability mode', async () => {
+      await run(['init', '--yes', '--tunnel', 'cloudflare']);
+      const { code } = await run(['init', '--yes']);
+      expect(code).toBe(0);
+      expect(readEnv().KORTIX_REACHABILITY_MODE).toBe('tunnel');
+      expect(readCompose().services).toHaveProperty('cloudflared');
+    });
+
+    test('rejects an unsupported --tunnel provider', async () => {
+      const { code, stderr } = await run(['init', '--yes', '--tunnel', 'ngrok']);
+      expect(code).not.toBe(0);
+      expect(stderr).toContain('cloudflare');
+    });
+
+    test('a named tunnel (token + hostname) can be configured via env set, restarting only cloudflared when active', async () => {
+      await run(['init', '--yes', '--tunnel', 'cloudflare']);
+      const { code } = await run([
+        'env', 'set',
+        'CLOUDFLARE_TUNNEL_TOKEN=faketoken',
+        'CLOUDFLARE_TUNNEL_HOSTNAME=kortix-tunnel.example.com',
+      ]);
+      expect(code).toBe(0);
+      const env = readEnv();
+      expect(env.CLOUDFLARE_TUNNEL_TOKEN).toBe('faketoken');
+      expect(env.CLOUDFLARE_TUNNEL_HOSTNAME).toBe('kortix-tunnel.example.com');
+    });
+
+    test('setting CLOUDFLARE_TUNNEL_TOKEN via env set before tunnel mode is selected does not error (stack not running)', async () => {
+      await run(['init', '--yes']);
+      const { code } = await run(['env', 'set', 'CLOUDFLARE_TUNNEL_TOKEN=faketoken']);
+      expect(code).toBe(0);
+    });
+  });
+
+  test('help shows the grant-platform-admin-later env set example', async () => {
+    // The guided flows (init once, configure always) ask for the admin email,
+    // but an operator who declined both needs a discoverable non-interactive
+    // path — the help example is that path.
+    const { code, stdout } = await run(['--help']);
+    expect(code).toBe(0);
+    expect(stdout).toContain('env set KORTIX_PLATFORM_ADMIN_EMAILS=');
+  });
+
+  test('doctor flags a stale KORTIX_INSTANCE_DIR (instance directory moved since the last render) and passes it fresh otherwise', async () => {
+    await run(['init', '--yes']);
+
+    const fresh = await run(['doctor', '--json']);
+    const freshCheck = (JSON.parse(fresh.stdout).checks as Array<{ name: string; ok: boolean }>)
+      .find((c) => c.name === 'instance-dir');
+    expect(freshCheck?.ok).toBe(true);
+
+    // Simulate the instance directory having moved on disk (or
+    // KORTIX_SELF_HOST_CONFIG_DIR having changed) since the last
+    // init/start/update/configure/env-set render — hand-edit .env the way
+    // `env set` itself refuses to (see secrets.test.ts's updater-managed
+    // refusal coverage for KORTIX_INSTANCE_DIR).
+    const envFile = join(configRoot, instance, '.env');
+    writeFileSync(
+      envFile,
+      readFileSync(envFile, 'utf8').replace(
+        /^KORTIX_INSTANCE_DIR=.*$/m,
+        'KORTIX_INSTANCE_DIR=/tmp/stale-path-from-before-a-move',
+      ),
+    );
+
+    const stale = await run(['doctor', '--json']);
+    const staleCheck = (JSON.parse(stale.stdout).checks as Array<{ name: string; ok: boolean; detail: string }>)
+      .find((c) => c.name === 'instance-dir');
+    expect(staleCheck?.ok).toBe(false);
+    expect(staleCheck?.detail).toContain('stale');
+  });
+
+  // Sandbox preview origins are a MUST on a public domain, and their absence is
+  // invisible at runtime: the /v1/p/ path proxy answers 200 and the app inside
+  // it quietly loses every root-absolute link. `doctor` is the gate that turns
+  // that silence into a non-zero exit. It stays silent on a laptop instance,
+  // where the path form (and the client-built *.localhost origin) is correct.
+  test('doctor FAILS when a domain instance has no preview base domain, and passes once it is set', async () => {
+    await run(['init', '--yes', '--domain', 'kortix.example.com']);
+
+    const missing = await run(['doctor', '--json']);
+    const missingCheck = (JSON.parse(missing.stdout).checks as Array<{ name: string; ok: boolean; detail: string }>)
+      .find((c) => c.name === 'preview-origins');
+    expect(missingCheck?.ok).toBe(false);
+    expect(missingCheck?.detail).toContain('KORTIX_PREVIEW_BASE_DOMAIN');
+    // The whole point: a degraded preview setup must make `doctor` exit non-zero.
+    expect(JSON.parse(missing.stdout).ok).toBe(false);
+    expect(missing.code).not.toBe(0);
+    // And it must hand the operator the exact command, not just a complaint.
+    expect(missingCheck?.detail).toContain('kortix self-host env set KORTIX_PREVIEW_BASE_DOMAIN=p.kortix.example.com');
+
+    await run(['env', 'set', 'KORTIX_PREVIEW_BASE_DOMAIN=p.kortix.example.com']);
+    const set = await run(['doctor', '--json']);
+    const setCheck = (JSON.parse(set.stdout).checks as Array<{ name: string; ok: boolean; detail: string }>)
+      .find((c) => c.name === 'preview-origins');
+    expect(setCheck?.ok).toBe(true);
+    expect(setCheck?.detail).toBe('p.kortix.example.com');
+  }, 60_000);
+
+  test('doctor does NOT raise preview-origins on a domain-less (laptop) instance — the path form is correct there', async () => {
+    await run(['init', '--yes']);
+    const { stdout } = await run(['doctor', '--json']);
+    const checks = JSON.parse(stdout).checks as Array<{ name: string }>;
+    expect(checks.find((c) => c.name === 'preview-origins')).toBeUndefined();
+  });
+
+  // KRTX-1715. The shipped auth defaults (open sign-up, email autoconfirm) let
+  // anyone who reaches a public instance create a confirmed account for any
+  // address, including the admin address. `doctor` fails until email
+  // confirmation or DISABLE_SIGNUP closes that, and names both commands.
+  type DoctorCheck = { name: string; ok: boolean; detail: string };
+  const signUpCheck = async () => {
+    const result = await run(['doctor', '--json']);
+    const check = (JSON.parse(result.stdout).checks as DoctorCheck[]).find((c) => c.name === 'open-sign-up');
+    return { result, check };
+  };
+
+  test('doctor FAILS open sign-up on a domain instance, and passes once email confirmation is on', async () => {
+    await run(['init', '--yes', '--domain', 'kortix.example.com']);
+
+    const open = await signUpCheck();
+    expect(open.check?.ok).toBe(false);
+    expect(open.check?.detail).toContain('create a confirmed account for any email address');
+    expect(open.check?.detail).toContain('kortix self-host env set EMAIL_URL=');
+    expect(open.check?.detail).toContain('kortix self-host env set DISABLE_SIGNUP=true');
+    expect(JSON.parse(open.result.stdout).ok).toBe(false);
+    expect(open.result.code).not.toBe(0);
+
+    // An email provider turns autoconfirm off (email-wiring.ts), which closes it.
+    await run(['env', 'set', 'EMAIL_URL=smtp://user:secret@smtp.example.com:587']);
+    const confirmed = await signUpCheck();
+    expect(confirmed.check).toEqual({ name: 'open-sign-up', ok: true, detail: 'new accounts must confirm their email' });
+  }, 60_000);
+
+  test('doctor passes open sign-up once self sign-up is off', async () => {
+    await run(['init', '--yes', '--domain', 'kortix.example.com']);
+    await run(['env', 'set', 'DISABLE_SIGNUP=true']);
+
+    const { check } = await signUpCheck();
+    expect(check).toEqual({ name: 'open-sign-up', ok: true, detail: 'self sign-up is off (DISABLE_SIGNUP=true)' });
+  }, 60_000);
+
+  // `init` says the same thing `doctor` fails on, at the moment the operator
+  // creates the instance, and `--disable-signup` closes it from the first boot.
+  const SIGN_UP_RISK = 'anyone who reaches this instance can create a confirmed account for any email address';
+
+  test('init on a domain instance prints the open sign-up risk and both ways to close it', async () => {
+    const { code, stdout } = await run(['init', '--yes', '--domain', 'kortix.example.com']);
+    expect(code).toBe(0);
+    expect(stdout).toContain(SIGN_UP_RISK);
+    expect(stdout).toContain('kortix self-host env set DISABLE_SIGNUP=true');
+    expect(stdout).toContain('kortix self-host env set EMAIL_URL=');
+    expect(readEnv().DISABLE_SIGNUP).toBe('false');
+  }, 60_000);
+
+  test('init --disable-signup turns self sign-up off, prints no risk, and a later plain init keeps it off', async () => {
+    const first = await run(['init', '--yes', '--domain', 'kortix.example.com', '--disable-signup']);
+    expect(first.code).toBe(0);
+    expect(first.stdout).not.toContain(SIGN_UP_RISK);
+    expect(readEnv().DISABLE_SIGNUP).toBe('true');
+    expect((await signUpCheck()).check).toEqual({
+      name: 'open-sign-up',
+      ok: true,
+      detail: 'self sign-up is off (DISABLE_SIGNUP=true)',
+    });
+
+    // Not passing the flag never resets the operator's choice.
+    expect((await run(['init', '--yes'])).code).toBe(0);
+    expect(readEnv().DISABLE_SIGNUP).toBe('true');
+  }, 60_000);
+
+  test('init on a laptop instance prints no sign-up risk', async () => {
+    const { code, stdout } = await run(['init', '--yes']);
+    expect(code).toBe(0);
+    expect(stdout).not.toContain(SIGN_UP_RISK);
+  });
+
+  // GoTrue reads DISABLE_SIGNUP and ENABLE_EMAIL_AUTOCONFIRM only through
+  // Compose interpolation into supabase-auth, so a new value reaches it only
+  // when that container is recreated. The API reads ENABLE_EMAIL_AUTOCONFIRM
+  // too (KRTX-1715), so the two must restart together. Docker is stubbed as a
+  // running stack that records every call.
+  function runningStackDocker() {
+    const bin = join(tmp, 'bin');
+    mkdirSync(bin, { recursive: true });
+    const log = join(tmp, 'docker-calls.log');
+    writeFileSync(join(bin, 'docker'), `#!/bin/sh
+echo "$*" >> '${log}'
+case " $* " in
+  *" ps --quiet "*) echo fixture-container ;;
+esac
+exit 0
+`, { mode: 0o755 });
+    return {
+      env: { PATH: `${bin}:${process.env.PATH}` },
+      // The services each `up --force-recreate --no-deps` call recreated.
+      recreated: () => (existsSync(log) ? readFileSync(log, 'utf8') : '').split('\n')
+        .filter((line) => line.includes(' up -d --force-recreate --no-deps '))
+        .map((line) => line.split(' --no-deps ')[1]),
+    };
+  }
+
+  test('env set DISABLE_SIGNUP recreates supabase-auth, and ENABLE_EMAIL_AUTOCONFIRM recreates supabase-auth with kortix-api', async () => {
+    const docker = runningStackDocker();
+    expect((await run(['init', '--yes', '--domain', 'kortix.example.com'], docker.env)).code).toBe(0);
+
+    const signUp = await run(['env', 'set', 'DISABLE_SIGNUP=true'], docker.env);
+    expect(signUp.code).toBe(0);
+    expect(signUp.stdout).toContain('restarted: supabase-auth');
+    const autoconfirm = await run(['env', 'set', 'ENABLE_EMAIL_AUTOCONFIRM=false'], docker.env);
+    expect(autoconfirm.code).toBe(0);
+    expect(docker.recreated()).toEqual(['supabase-auth', 'kortix-api supabase-auth']);
+  }, 60_000);
+
+  test('update --disable-signup recreates supabase-auth after the rollout', async () => {
+    const docker = runningStackDocker();
+    expect((await run(['init', '--yes', '--domain', 'kortix.example.com'], docker.env)).code).toBe(0);
+
+    const { code } = await run(['update', '--disable-signup'], docker.env);
+    expect(code).toBe(0);
+    expect(readEnv().DISABLE_SIGNUP).toBe('true');
+    expect(docker.recreated()).toEqual(['supabase-auth']);
+
+    // A flag that changes nothing recreates nothing.
+    expect((await run(['update', '--disable-signup'], docker.env)).code).toBe(0);
+    expect(docker.recreated()).toEqual(['supabase-auth']);
+  }, 60_000);
+
+  test('doctor checks open sign-up on a tunnel instance, and not on a laptop instance', async () => {
+    await run(['init', '--yes']);
+    expect((await signUpCheck()).check).toBeUndefined();
+
+    // A tunnel URL reaches the internet like a domain does.
+    const envFile = join(configRoot, instance, '.env');
+    writeFileSync(envFile, `${readFileSync(envFile, 'utf8').replace(/^KORTIX_REACHABILITY_MODE=.*\n/m, '')}KORTIX_REACHABILITY_MODE=tunnel\n`);
+    expect((await signUpCheck()).check?.ok).toBe(false);
+  });
+
+  // Sets the preview domain by editing .env directly rather than via `env set`.
+  // `env set` restarts the services the key touches (caddy + kortix-api), and
+  // two `status` renders on top of that docker work blew the 15s default in CI.
+  // The `env set` path is already covered black-box by the doctor test above;
+  // what this one asserts is the STATUS WORDING, which only needs the file.
+  test('status shows preview origins as NOT configured on a domain instance, and names the domain once set', async () => {
+    // Status shells out to `docker compose ps` and the updater probe. This test
+    // asserts wording from the .env file only, so stub the Docker boundary: a
+    // slow Docker daemon on a CI runner hung the real call for the full 60 s.
+    const bin = join(tmp, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'docker'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const env = { PATH: `${bin}:${process.env.PATH}` };
+    await run(['init', '--yes', '--domain', 'kortix.example.com'], env);
+    const missing = await run(['status'], env);
+    expect(missing.stdout).toContain('preview origins NOT configured');
+
+    const envFile = join(configRoot, instance, '.env');
+    writeFileSync(
+      envFile,
+      readFileSync(envFile, 'utf8').replace(
+        /^KORTIX_PREVIEW_BASE_DOMAIN=.*$/m,
+        'KORTIX_PREVIEW_BASE_DOMAIN=p.kortix.example.com',
+      ),
+    );
+
+    const set = await run(['status'], env);
+    expect(set.stdout).toContain('*.p.kortix.example.com');
+    expect(set.stdout).not.toContain('NOT configured');
+  }, 60_000);
+
+  // `connect-github` is deprecated: managed git is now configured in the web
+  // dashboard (Settings → Git), not by this CLI — the App-manifest flow it
+  // used to run never worked reliably from a laptop (GitHub rejects
+  // hook/callback URLs unreachable over the public internet). The dispatch
+  // case is kept as a no-op alias (not removed outright) so a script that
+  // still calls it doesn't hard-fail.
+  test('connect-github is a deprecated no-op alias: exits 0 and points at the dashboard instead of running the App-manifest flow', async () => {
+    await run(['init', '--yes']);
+    const { code, stdout } = await run(['connect-github']);
+    expect(code).toBe(0);
+    expect(stdout).toContain('deprecated');
+    expect(stdout.toLowerCase()).toContain('settings');
+  });
+});

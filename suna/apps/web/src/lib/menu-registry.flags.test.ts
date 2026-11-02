@@ -1,0 +1,92 @@
+import { CAPABILITY_TABS } from '@kortix/ui/internal/lib/capability-tab-routes';
+import { settingsPaletteGroups } from '@/features/workspace/settings-palette-items';
+import { FEATURE_FLAG_KEYS } from '@kortix/sdk';
+import { describe, expect, test } from 'bun:test';
+import { readFileSync } from '@/i18n/test-source';
+import { join, resolve } from 'node:path';
+import { menuRegistry } from './menu-registry';
+import { uiSourcePath } from '@/test-utils/read-source';
+
+/**
+ * `requiresFlag` is only a gate if EVERY consumer honours it. Before this, the
+ * command palette filtered on it and the legacy right rail did not — so the first
+ * flagged item to gain `showIn: ['rightSidebar']` would have leaked a disabled
+ * feature into the nav. The rail is deleted (KRTX-1012); these tests pin the
+ * declaration, the one surviving consumer, and the flag map that resolves an
+ * arbitrary key.
+ */
+const root = resolve(import.meta.dir, '..');
+const registrySource = readFileSync(join(root, 'lib/menu-registry.ts'), 'utf8');
+const flagMapSource = readFileSync(uiSourcePath('internal/lib/use-project-feature-flags.ts'), 'utf8');
+const paletteSource = readFileSync(join(root, 'features/workspace/command-palette.tsx'), 'utf8');
+
+describe('menu registry feature-flag gating', () => {
+  test('the field is named requiresFlag and typed FeatureFlagKey', () => {
+    expect(registrySource).toContain('requiresFlag?: FeatureFlagKey;');
+    expect(registrySource).toContain("import type { FeatureFlagKey } from '@kortix/sdk';");
+    expect(registrySource).not.toContain('requiresExperimental');
+    expect(registrySource).not.toContain('ExperimentalFeatureKey');
+  });
+
+  test('every declared requiresFlag value is a real feature flag key', () => {
+    const declared = menuRegistry.flatMap((item) => (item.requiresFlag ? [item.requiresFlag] : []));
+    expect(declared.length).toBeGreaterThan(0);
+    for (const key of declared) {
+      expect(FEATURE_FLAG_KEYS).toContain(key);
+    }
+  });
+
+  test('Review Center is reachable with no flag and removed features stay absent', () => {
+    // Review graduated out of the flag system on 2026-09-02. Since 2026-10-17
+    // (#10124) it is a Customize tab again, `/projects/<id>/customize/review`,
+    // gated by the Customize access rule, not a flag. Voice and Marketplace
+    // have no flag any more: both were removed from the product.
+    const keys = CAPABILITY_TABS.map((tab) => tab.key);
+    expect(keys).toContain('review');
+    expect(keys).not.toContain('voice');
+    expect(keys).not.toContain('marketplace');
+
+    const reviewRow = menuRegistry.find((item) => item.id === 'proj-review-inbox');
+    expect(reviewRow).toBeDefined();
+    expect(reviewRow?.requiresFlag).toBeUndefined();
+    expect(reviewRow?.href).toBe('/projects/{projectId}/customize/review');
+
+    // None of them is a settings tab any more, so the derived palette list
+    // must not offer one — that would open the overlay on nothing.
+    const paletteTabs = settingsPaletteGroups({ hasProject: true }).flatMap((group) =>
+      group.items.map((item) => item.tab as string),
+    );
+    for (const key of ['review', 'voice', 'marketplace']) {
+      expect(paletteTabs).not.toContain(key);
+    }
+  });
+
+  test('the palette honours requiresFlag for the entries that still declare one', () => {
+    // `proj-shared-files` (`drives`) and `proj-artifacts` (`artifacts`, #10842)
+    // are the flagged palette entries (Apps graduated off the flag system in
+    // 2026-10). The filter line is the whole gate, so it is pinned literally — a
+    // rename or a fail-OPEN rewrite of it would otherwise pass every other test here.
+    const flagged = menuRegistry.filter(
+      (item) => item.requiresFlag && item.showIn.includes('commandPalette'),
+    );
+    expect(flagged.map((item) => item.id)).toEqual(['proj-shared-files', 'proj-artifacts']);
+    expect(paletteSource).toContain(
+      'if (item.requiresFlag && !projectFlags[item.requiresFlag]) continue;',
+    );
+  });
+});
+
+describe('useProjectFeatureFlags', () => {
+  test('covers EVERY feature flag key, so a new flag is gateable on day one', () => {
+    for (const key of FEATURE_FLAG_KEYS) {
+      expect(flagMapSource).toContain(`useFeatureFlag(projectId, '${key}')`);
+      expect(flagMapSource).toContain(`${key}: `);
+    }
+  });
+
+  test('is composed from the ONE primitive, not a second hand-rolled read', () => {
+    expect(flagMapSource).toContain("import { useFeatureFlag } from '@kortix/sdk/react';");
+    expect(flagMapSource).not.toContain('useQuery');
+    expect(flagMapSource).not.toContain('experimental');
+  });
+});

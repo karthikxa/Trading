@@ -1,0 +1,120 @@
+# security-baseline
+
+Account-global SOC 2 / Drata compliance controls as Terraform. Sibling to the
+`environments/{dev,prod}` app stacks; own state key `security/baseline.tfstate`.
+
+## What it manages
+- IAM account password policy (DCF-68 / DCF-350)
+- CloudTrail KMS CMK + multi-region trail + log-file validation + S3 data events (DCF-54 / DCF-478 / DCF-406)
+- GuardDuty detectors with 15-minute finding publication and managed EC2/EKS/ECS
+  Runtime Monitoring agents in all 17 opted-in commercial regions (DCF-87)
+- Regional GuardDuty EventBridge rules forwarding every Medium+ finding to the
+  eu-west-2 event bus, where `kortix-guardduty-failures` delivers it to the
+  confirmed `kortix-compliance-alerts` topic (DCF-87). us-west-2 was this hub
+  until 2026-10-12.
+- Cross-region EventBridge alerting for every successful AWS root-account
+  console login: us-east-1 and us-west-2 forward to eu-west-2, where
+  `kortix-root-login-failures` delivers to the same topic (DCF-90)
+- EBS default encryption in all 17 opted-in commercial regions (DCF-54)
+- S3 account-level public access block (DCF-55/78/406 backstop)
+- AWS Backup vault, daily plan, selection and service role in eu-west-2 (DCF-99).
+  The plan backs up the eu-west-2 Terraform state bucket and keeps 35 days.
+  It ran in us-west-2 on the old lock table until 2026-10-14.
+- VPC Flow Logs delivery role (DCF-406). `compliance-monitoring` adds flow logs
+  for the dev (us-east-2) and staging (eu-west-2) VPCs. The us-west-2 log group
+  and its CMK were removed on 2026-10-12 with the last us-west-2 VPC.
+- Regional Terraform state buckets, each with its own CMK, versioning and
+  365-day noncurrent retention: `kortix-terraform-state-eu-west-2-935064898258`
+  (`terraform-state-euw2.tf`), `kortix-terraform-state-us-east-2-935064898258`
+  (`terraform-state-use2.tf`) and `kortix-terraform-state-us-east-1-935064898258`
+  (`terraform-state-use1.tf`, for the external vps-demo root). The drift role
+  `kortix-gha-tf-plan` may decrypt with the eu-west-2 and us-east-2 keys through
+  S3 and with no other key.
+- IAM groups, attachments, memberships + 4 customer-managed policies (DCF-776)
+- Weekly SSM security-patch installation and reboot-if-needed for every current
+  and replacement dev/prod EKS worker, serialized one node at a time
+  (DCF-152 / DCF-677)
+- Regional ALB/WAF/alarm and backup-failure monitoring is isolated in the
+  sibling `compliance-monitoring` stack and state.
+
+## Applied via CLI (not in this stack — by design)
+These were one-time resource cleanup/remediation actions and live outside the stack; documented
+in `../../compliance/SOC2-DRATA-REMEDIATION.md`:
+- Deletion of 15 empty regional default VPCs
+- Per-VPC flow logs, default-SG stripping, and NACL deny (22/3389) for the 5 us-west-2 VPCs
+- S3 per-bucket versioning / TLS-deny policy / access-logging
+- The WAFv2 WebACL definitions themselves. This stack discovers all ALBs and
+  manages their associations, but reads the existing regional
+  `kortix-alb-waf` WebACLs as data sources.
+  - WebACL `kortix-alb-waf` exists in eu-west-2 and is associated with every
+    current ALB there. The us-west-2 copy protects nothing since 2026-10-12.
+  - DO NOT block on the `*_BODY` managed sub-rules: this is an API that legitimately carries
+    arbitrary user/agent payloads (prompts full of code, file paths like `/etc/passwd`, IPs
+    like `127.0.0.1`, git binary thin-packs, bodies well over 8 KB). On 2026-06-04 the
+    following sub-rules were set to **Count** (still logged for SOC2, no longer Block) via
+    `aws wafv2 update-web-acl` after they 403'd legitimate prompt sends and `git push`:
+    - AWSManagedRulesCommonRuleSet: `SizeRestrictions_BODY` (the >8 KB body block — was the
+      git-push "~8200 byte" threshold), `GenericLFI_BODY`, `GenericRFI_BODY`,
+      `CrossSiteScripting_BODY`, `EC2MetaDataSSRF_BODY`
+    - AWSManagedRulesKnownBadInputsRuleSet: `Log4JRCE_BODY`, `JavaDeserializationRCE_BODY`,
+      `ReactJSRCE_BODY`
+    On 2026-09-28 `SizeRestrictions_URIPATH` (path > 1024 bytes) was also set to
+    **Count**: setup-link tokens ride in the path (`/v1/setup-links/secret/ksl_…`)
+    and a token with a few described fields passes 1024 bytes. Block answered
+    with a 403 page without CORS headers, so the intake form could not load.
+    Other URI/query/header/cookie rules + AmazonIpReputationList stay in Block. A matching
+    Cloudflare custom-firewall `skip` rule (zone kortix.com) skips CF's free managed ruleset
+    for the same API hosts, since CF was independently blocking command-injection-like prompt
+    content at the edge. Re-blocking any `*_BODY` rule will break prompts + git push again.
+  - OAuth public and native clients can use HTTP loopback redirect URIs. Scope the
+    CommonRuleSet away from only `GET /v1/oauth/authorize` requests whose
+    `redirect_uri` starts with `http://localhost` or `http://127.0.0.1`.
+    KnownBadInputs and AmazonIpReputationList must still inspect these requests.
+    The API validates the complete redirect URI against the registered client.
+    Keep this scope-down statement identical in the live eu-west-2 WebACL and
+    the Terraform-managed us-east-2 WebACL.
+
+## First adoption (resources already exist live)
+```bash
+terraform init
+terraform plan            # import blocks in imports.tf adopt the singletons
+# adopt the for_each IAM groups/attachments/memberships:
+terraform import 'aws_iam_group.this["administrators"]' administrators
+terraform import 'aws_iam_group.this["bedrock-limited"]' bedrock-limited
+terraform import 'aws_iam_group.this["bedrock-marketplace"]' bedrock-marketplace
+terraform import 'aws_iam_group.this["bedrock-full"]' bedrock-full
+terraform import 'aws_iam_group.this["bedrock-count-tokens"]' bedrock-count-tokens
+terraform import 'aws_iam_group.this["cloudwatch-logs-writers"]' cloudwatch-logs-writers
+terraform import 'aws_iam_group.this["mfa-self-manage"]' mfa-self-manage
+terraform import 'aws_iam_group.this["ses-senders"]' ses-senders
+# group memberships import as <group-name>/<membership-name> — see `terraform plan` output
+terraform plan            # iterate until the diff is empty
+terraform apply           # no-op once diff is clean; then delete imports.tf
+```
+
+`terraform-apply-global.yml` applies this stack on every push to `dev` that
+touches it.
+
+## Human access
+A person gets an IAM user with console login and MFA. They get no access keys.
+Pick one group:
+
+| Group | Grants |
+|---|---|
+| `engineers` | `PowerUserAccess`: every service except IAM, Organizations, Account |
+| `administrators` | `AdministratorAccess`, for people who manage IAM |
+
+Both groups deny every action except MFA enrolment and password change until
+the user signs in with MFA. Users and memberships are managed out-of-band,
+never in this stack:
+
+```bash
+aws iam create-user --user-name <name>
+aws iam create-login-profile --user-name <name> --password '<temporary>' --password-reset-required
+aws iam add-user-to-group --user-name <name> --group-name engineers
+```
+
+The user signs in at `https://935064898258.signin.aws.amazon.com/console`,
+sets a new password, then assigns an MFA device under Security credentials.
+CLI access uses `aws sts get-session-token --serial-number <mfa-arn> --token-code <code>`
+with a short-lived key, or a session from the console.

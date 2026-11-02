@@ -1,0 +1,234 @@
+---
+title: "How we detect and quarantine flaky tests"
+description: The flaky-test agent we run on Kortix — connected to GitHub CI history and Slack. It scores every test's non-determinism, opens a quarantine PR for the worst offenders, and files a tracking issue for a human to review.
+date: "2026-02-20"
+author: team
+tags:
+  - Testing
+  - Case Study
+  - Engineering
+template: flaky-test-triage
+---
+
+Flaky tests erode trust in CI fast. A test fails for no reason anyone can pin
+down, gets rerun, goes green, and CI moves on — until the day a real
+regression hides behind the same "oh that one's just flaky" shrug. Nobody
+schedules time to fix the true flakes because nobody has a ranked list of
+which ones are actually costing the team reruns.
+
+We run a flaky-test-triage agent on Kortix that reads the CI run history every
+day, scores every test on how often it flips outcome on unchanged code, and
+opens a quarantine PR for the worst offenders with a tracking issue attached.
+It only skips tests, never deletes one, and it never merges its own PR — a
+human reviews the quarantine and eventually retires it once the test is fixed.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Daily cron, one persistent session</Fact>
+  <Fact label="Connected systems">GitHub · CI run history · Slack</Fact>
+  <Fact label="Mode">Quarantine PR + tracking issue only — never merges, never deletes</Fact>
+</KeyFacts>
+
+## The problem
+
+Flakiness hides in plain sight. A test fails, the job reruns, it passes, and
+CI goes green — so the failure never becomes a signal anyone tracks. Spread
+across a few hundred tests and a few months, a handful of tests are quietly
+eating a rerun every week, and genuinely broken tests get the same "just
+rerun it" treatment as the flaky ones.
+
+The common responses don't fix this. Rerunning failed jobs until green hides
+the problem instead of measuring it. A channel where someone occasionally
+asks "is this one flaky again?" depends on a person noticing and remembering.
+Deleting a flaky test outright throws away whatever real coverage it had, and
+doing any of this by hand means first digging through weeks of CI logs to
+find which tests are actually the worst offenders.
+
+## What we built
+
+On Kortix, a daily cron re-prompts one persistent agent session. It resumes
+from a flakiness ledger, pulls the CI run history from GitHub since the last
+check, updates every test's non-determinism score, and once a test crosses
+the quarantine threshold, opens a PR that skips it with a reason and a link to
+the evidence — plus a running tracking issue listing every currently
+quarantined test. It never deletes a test and never merges its own PR.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the flaky-test-quarantine skill and the
+daily trigger, and opens a change request for you to review.
+Prefer clicks? Choose **Use this template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a daily flaky-test triage agent in this project.
+
+1. Create the agent agents/flaky-test-triage.md. Its job is to score CI tests in owner/repo for flakiness and quarantine the worst ones. It may use the GitHub connector, the Slack channel and the GH_TOKEN secret.
+
+2. Create the skill skills/flaky-test-quarantine/SKILL.md with these rules:
+   - Read memory/flaky-test-ledger.md first, and process only CI runs newer than the last processed run.
+   - Score each test by flips between pass and fail on unchanged code over its last 20 runs. A single failure is not flakiness.
+   - Quarantine a test at 3 or more flips in the last 20 runs. Add a framework skip marker with a reason and a link to the evidence. Never delete a test, an assertion or a file.
+   - Batch the day's new quarantines into one pull request, and keep one running issue titled Flaky test quarantine tracker.
+   - Never edit CI config to force a pass, never push to the default branch, and never merge.
+   - Post a summary to #ci-health: newly quarantined, still flaky, and stable enough to de-quarantine.
+
+3. Add a cron trigger daily-flaky-test-sweep to kortix.yaml. It runs the flaky-test-triage agent every day at 06:00 with the prompt "Load the flaky-test-quarantine skill and run one triage pass on owner/repo."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect GitHub, add a GitHub token as
+the `GH_TOKEN` secret, and connect Slack under **Channels**. Credentials are
+brokered server-side and never enter the agent's machine.
+
+<ToolList>
+  <ToolNeed name="GitHub" domain="github.com" tag="Required" alternatives={[['GitLab', 'gitlab.com'], ['CircleCI', 'circleci.com'], ['Buildkite', 'buildkite.com']]}>
+    Reads CI history and opens quarantine pull requests and issues.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com']]}>
+    Posts the daily flaky-test summary.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **flaky-test-triage** agent
+and send this prompt. Check the scores and the quarantine pull request
+before you let the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one flaky-test triage pass on owner/repo.
+
+1. Read memory/flaky-test-ledger.md, the open quarantine pull request and the Flaky test quarantine tracker issue.
+2. Pull CI run history since the last processed run and update each test's flip count and failure rate.
+3. For each test at 3 or more flips in the last 20 runs that is not quarantined yet, add a skip marker with a reason and an evidence link.
+4. Put those changes in one pull request and update the tracker issue. Do not merge it.
+5. Post a summary to #ci-health and update the ledger.`}
+/>
+
+</Step>
+<Step title="Let the daily schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every day at 06:00, each run in a new session on its own cloud computer. The ledger in
+`memory/flaky-test-ledger.md` carries the scores between runs.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: daily-flaky-test-sweep
+    name: Daily flaky-test sweep
+    on:
+      cron: "0 0 6 * * *"
+    run:
+      agent: flaky-test-triage
+      prompt: Load the flaky-test-quarantine skill and run one triage pass on owner/repo.`}
+/>
+
+</Step>
+<Step title="Skip tests, never delete them">
+
+The only change the agent makes to a test file is a skip marker with a
+reason. It never removes a test, an assertion or a file, and it never edits
+CI config to hide a failure. Deleting the marker restores the test. A person
+reviews and merges the pull request, and decides when to de-quarantine.
+
+</Step>
+<Step title="Read the daily summary">
+
+Each run ends with one message in the channel. This is what a run looks like in the session:
+
+<ExampleRun
+  title="Daily flaky-test sweep · 06:00"
+  message="Load the flaky-test-quarantine skill and run one triage pass on owner/repo."
+  worked="Worked for 5m 51s"
+  tools={[
+    'github · list workflow runs',
+    'github · download artifact × 9',
+    'shell · git commit skip markers',
+    'github · create pull request',
+    'github · update issue',
+    'slack · post message → #ci-health',
+  ]}
+  note="Illustrative example. Your counts depend on your CI history."
+>
+  Scored **1,240** tests across **9** new runs. Quarantined **2** tests that
+  flipped **4** and **5** times in their last 20 runs, in one pull request.
+  **3** tests are still watched, and **1** is stable enough to
+  de-quarantine.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A daily **cron** re-prompts one persistent **session** so the flakiness
+  ledger survives across runs. The agent reads CI history through GitHub,
+  scores and ranks every test, and its only outputs are a quarantine PR, a
+  tracking issue, and a Slack summary — never a merge, never a deletion.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Find the likely cause"
+  code="For each newly quarantined test, add a comment to the pull request with the most common error message across its failed runs."
+/>
+
+<CopyBlock
+  title="Weekly flakiness trend"
+  code="Every Monday, post the number of quarantined tests and the CI pass rate for the last 4 weeks to #ci-health."
+/>
+
+<CopyBlock
+  title="Propose de-quarantines"
+  code="When a quarantined test has passed 20 runs in a row on a branch with its skip removed, open a pull request that removes the skip marker."
+/>
+
+## Guardrails
+
+The agent changes what runs in CI, so its access is scoped and
+one-directional:
+
+- **Isolation.** Every run happens in the session's own isolated sandbox. Only
+  the PR, the issue, and the Slack post leave it.
+- **Scoped secrets.** The GitHub connector and the `GH_TOKEN` used by the `gh`
+  CLI are encrypted in the Secrets Manager and injected at runtime, scoped to the agents you grant them to.
+- **Skip, never delete.** The agent's only edit to a test file is a
+  skip/quarantine marker with a reason; it never removes a test, its
+  assertions, or its file.
+- **PR-gated.** The agent opens a PR and an issue and stops. It never merges
+  and never pushes to the default branch; a human owns the merge and the
+  eventual de-quarantine.
+- **Everything is code.** The agent's scoring rules, skills, and permissions
+  are files in the repo, versioned and changed through a reviewed **change
+  request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every day" label="Test flakiness re-scored against the latest CI history" />
+  <Stat value="Ranked, not guessed" label="Quarantine targets picked from evidence, not gut feel" />
+  <Stat value="Human merge" label="The agent proposes the quarantine; the team decides" />
+</StatGrid>
+
+The tests that used to eat a silent rerun every week now show up ranked, with
+a PR and a tracking issue attached to the worst of them. CI gets quieter
+without losing coverage nobody meant to drop, and the team spends its fixing
+time on the flakes that are actually costing the most reruns.

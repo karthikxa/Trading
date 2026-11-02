@@ -1,0 +1,2462 @@
+// Connectors — connector CRUD, credentials, Pipedream. Connectors are
+// project-wide visible; the only access gate is the agent's `connectors`
+// grant (kortix.yaml [[agents]].connectors), not anything configured here.
+
+import { backendApi } from '../../http/api-client';
+import { ApiError } from '../../http/api/errors';
+import { authenticatedFetch } from '../../http/auth';
+import { platformConfig } from '../../http/config';
+import type { PolicyArgCondition } from './policies';
+import { unwrap } from './shared';
+
+// ─── Connectors ────────────────────────────────────────────────────────────
+
+export interface ConnectorAction {
+  path: string;
+  name: string;
+  description: string;
+  risk: 'read' | 'write' | 'destructive';
+  /**
+   * What the tool likely does, for grouping: an un-annotated MCP or managed
+   * tool's stored `write` is a fail-closed fallback, so its name decides
+   * (`unknown` when the name says nothing). The admin list (`listConnectors`)
+   * only; the gateway enforces `risk`. Absent on older servers.
+   */
+  likely_risk?: 'read' | 'write' | 'unknown';
+  inputSchema: Record<string, unknown> | null;
+  /**
+   * JSON Schema of the call's `output`. Present only when the catalog was read
+   * with `includeOutputSchemas`; `null` when the connector publishes none
+   * (managed Composio and Pipedream connectors).
+   */
+  outputSchema?: Record<string, unknown> | null;
+}
+
+/**
+ * The typed connector actions of a project, keyed by connector slug, then
+ * action path. Empty in the SDK: `kortix connectors types --out <file>`
+ * generates a declaration file that fills it by module augmentation.
+ * {@link ConnectorArgs} and {@link ConnectorResult} read it.
+ */
+export interface ConnectorActionRegistry {}
+
+/** The args of `<S>.<A>` from {@link ConnectorActionRegistry}, else any object. */
+export type ConnectorArgs<S extends string, A extends string> = S extends keyof ConnectorActionRegistry
+  ? A extends keyof ConnectorActionRegistry[S]
+    ? ConnectorActionRegistry[S][A] extends { args: infer T }
+      ? T
+      : Record<string, unknown>
+    : Record<string, unknown>
+  : Record<string, unknown>;
+
+/** The call `output` of `<S>.<A>` from {@link ConnectorActionRegistry}, else `unknown`. */
+export type ConnectorResult<S extends string, A extends string> = S extends keyof ConnectorActionRegistry
+  ? A extends keyof ConnectorActionRegistry[S]
+    ? ConnectorActionRegistry[S][A] extends { result: infer T }
+      ? T
+      : unknown
+    : unknown
+  : unknown;
+
+/** One connector as exposed by the callable project catalog. */
+export interface ConnectorCatalogEntry {
+  slug: string;
+  name: string;
+  provider: string;
+  status: string;
+  actions: ConnectorAction[];
+  /**
+   * The accounts THIS caller may run this connector as, default first.
+   *
+   * One connector can hold the project's shared account and each member's own
+   * — this is the signal that a connector is not single-account, without a
+   * separate {@link listConnectorAccounts} round trip. Undefined on a server
+   * that predates this field.
+   */
+  accounts?: ConnectorAccount[];
+  /** Label of the account an unnamed call resolves to, or null if none. */
+  default_account?: string | null;
+  /** The calling agent's policy set on this connector; `actions` omits what it
+   *  blocks. Absent when the caller has none (base rules) or on older servers. */
+  policy_set?: string;
+}
+
+/** One callable connector action, identified by `<connector>.<action>`. */
+export interface ConnectorTool {
+  tool: string;
+  connector: string;
+  action: string;
+  risk: ConnectorAction['risk'];
+  description: string;
+  inputSchema: ConnectorAction['inputSchema'];
+  /** See {@link ConnectorAction.outputSchema}. Set by {@link describeConnectorTool}. */
+  outputSchema?: ConnectorAction['outputSchema'];
+}
+
+/**
+ * `T` types `data`, the raw upstream answer. `O` types `output`, the payload
+ * without the binding's envelope; {@link ConnectorResult} supplies it for a
+ * generated action.
+ */
+export interface ConnectorCallResult<T = unknown, O = unknown> {
+  ok: boolean;
+  data?: T;
+  /**
+   * The payload without the binding's envelope: Composio `data.result`, MCP
+   * `structuredContent ?? content`, GraphQL `data.data`, otherwise `data`.
+   * The API sends it only when it differs from `data`; `callConnector` fills
+   * it in. Absent from servers that predate it (no `binding`).
+   */
+  output?: O;
+  /** The action's binding: `openapi`, `http`, `mcp`, `graphql`, `composio`, … */
+  binding?: string;
+  /** The upstream HTTP status, or `null` when the upstream gave none. */
+  upstream_status?: number | null;
+  /** A failure the upstream reported inside a 2xx (MCP `isError`, GraphQL `errors`). */
+  upstream_error?: string;
+  /** With `status: 'tool_error'` (`ok: false`, HTTP 200): the tool's own error text. */
+  error?: string;
+  risk?: ConnectorAction['risk'];
+  status?: string;
+  reason?: string;
+  /** On a denial the caller's policy set decided (`reason` `policy_block` or
+   *  `policy_set_missing`): the set name. */
+  policy_set?: string;
+  /** With `policy_set`: the agent whose set decided. */
+  agent?: string | null;
+  execution_id?: string | null;
+  retryable?: boolean;
+  approval_url?: string | null;
+  approval_summary?: string | null;
+  approval_instructions?: string | null;
+  /**
+   * The account this call actually ran as.
+   *
+   * Echoed on every successful call, including one that named no account, so a
+   * transcript can show WHICH identity acted instead of leaving the reader to
+   * guess which of a connector's accounts resolution picked.
+   */
+  account?: { connection_id: string; label: string; owner_type: string };
+}
+
+export interface ConnectorAttachmentUploadInput {
+  filename: string;
+  contentType: string;
+  contentDisposition?: 'attachment' | 'inline';
+  contentId?: string;
+  /**
+   * Slug of the connector the file is for, e.g. `microsoft-graph`. The caller
+   * must be able to use that connector. Omit it for the native Email channel.
+   */
+  connector?: string;
+}
+
+export interface ConnectorAttachmentUploadResult {
+  attachment_id: string;
+  filename: string;
+  content_type: string;
+  content_disposition: 'attachment' | 'inline';
+  content_id?: string;
+  size: number;
+  expires_at: string;
+  /**
+   * The value to place in call arguments, e.g. as a Microsoft Graph
+   * `body.message.attachments[]` element or as a `contentBytes` string. The
+   * gateway replaces it with the file server-side. Absent from servers that
+   * predate it; build `{ $kortix_attachment: attachment_id }` yourself there.
+   */
+  ref?: { $kortix_attachment: string };
+}
+
+function connectorGatewayPath(projectId: string | undefined, suffix: string): string {
+  return projectId
+    ? `/connectors/projects/${encodeURIComponent(projectId)}/${suffix}`
+    : `/connectors/${suffix}`;
+}
+
+export interface GetConnectorCatalogOptions {
+  /** Restrict the catalog to one connector by slug. */
+  slug?: string;
+  /**
+   * The full per-action JSON Schema. Omitted from the request by default, and
+   * the API then INCLUDES it: sandboxes run a baked CLI whose connector
+   * gateway reads schemas from this route, so the server default can never
+   * flip. Pass `false` from a surface that renders no schema (it is the bulk
+   * of the payload: 439 KB on prod); `describeConnectorTool` narrows with
+   * `slug` instead.
+   */
+  includeSchemas?: boolean;
+  /**
+   * Add each action's `outputSchema`. Omitted by default: no bulk reader
+   * needs it. `kortix connectors types` and `describeConnectorTool` set it.
+   */
+  includeOutputSchemas?: boolean;
+}
+
+export async function getConnectorCatalog(
+  projectId?: string,
+  options?: GetConnectorCatalogOptions,
+): Promise<ConnectorCatalogEntry[]> {
+  const params = new URLSearchParams();
+  if (options?.slug) params.set('slug', options.slug);
+  if (options?.includeSchemas !== undefined) {
+    params.set('include_schemas', String(options.includeSchemas));
+  }
+  if (options?.includeOutputSchemas) params.set('include_output_schemas', 'true');
+  const query = params.toString() ? `?${params.toString()}` : '';
+  const result = unwrap(
+    await backendApi.get<{ connectors?: ConnectorCatalogEntry[] }>(
+      `${connectorGatewayPath(projectId, 'catalog')}${query}`,
+    ),
+  );
+  return result.connectors ?? [];
+}
+
+export async function listConnectorTools(projectId?: string): Promise<ConnectorTool[]> {
+  const tools: ConnectorTool[] = [];
+  // Neither this nor any caller of it (search, discover) reads `inputSchema` —
+  // only `describeConnectorTool` below does, and it fetches its own schema
+  // directly instead of going through this bulk listing. The API includes each
+  // action's JSON Schema by default (439KB on prod), so opt out or this summary
+  // pays the whole payload for nothing.
+  for (const connector of await getConnectorCatalog(projectId, { includeSchemas: false })) {
+    for (const action of connector.actions) {
+      tools.push({
+        tool: `${connector.slug}.${action.path}`,
+        connector: connector.slug,
+        action: action.path,
+        risk: action.risk,
+        description: action.description || action.name,
+        inputSchema: action.inputSchema,
+      });
+    }
+  }
+  return tools;
+}
+
+export async function searchConnectorTools(
+  projectId: string | undefined,
+  query = '',
+  options: { limit?: number } = {},
+): Promise<ConnectorTool[]> {
+  const normalized = query.trim().toLowerCase();
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  const exact: ConnectorTool[] = [];
+  const tokenMatches: ConnectorTool[] = [];
+  for (const tool of await listConnectorTools(projectId)) {
+    const haystack = `${tool.tool} ${tool.description}`.toLowerCase();
+    if (!normalized || haystack.includes(normalized)) exact.push(tool);
+    else if (tokens.every((token) => haystack.includes(token))) tokenMatches.push(tool);
+  }
+  return [...exact, ...tokenMatches].slice(0, options.limit ?? 20);
+}
+
+export async function describeConnectorTool(
+  projectId: string | undefined,
+  tool: string,
+): Promise<ConnectorTool | null> {
+  const separator = tool.indexOf('.');
+  if (separator < 0) return null;
+  const connectorSlug = tool.slice(0, separator).trim();
+  if (!connectorSlug) return null;
+  // Fetch ONE connector, with its schema, instead of the whole catalog —
+  // this used to call listConnectorTools (the full, unfiltered, schema-less
+  // catalog) just to pick out a single action.
+  // Match by slug, never take the first entry: an API that predates the
+  // `slug` filter answers the whole catalog, and the CLI ships separately.
+  const connector = (
+    await getConnectorCatalog(projectId, {
+      slug: connectorSlug,
+      includeSchemas: true,
+      includeOutputSchemas: true,
+    })
+  ).find((entry) => entry.slug === connectorSlug);
+  if (!connector) return null;
+  for (const action of connector.actions) {
+    const candidateTool = `${connector.slug}.${action.path}`;
+    if (candidateTool === tool) {
+      return {
+        tool: candidateTool,
+        connector: connector.slug,
+        action: action.path,
+        risk: action.risk,
+        description: action.description || action.name,
+        inputSchema: action.inputSchema,
+        outputSchema: action.outputSchema ?? null,
+      };
+    }
+  }
+  return null;
+}
+
+function parseConnectorTool(tool: string): { connector: string; action: string } {
+  const separator = tool.indexOf('.');
+  const connector = separator < 0 ? '' : tool.slice(0, separator).trim();
+  const action = separator < 0 ? '' : tool.slice(separator + 1).trim();
+  if (!connector || !action) {
+    throw new Error('tool must use the connector.action format');
+  }
+  return { connector, action };
+}
+
+/** One account a connector can run as. See {@link listConnectorAccounts}. */
+export interface ConnectorAccount {
+  connection_id: string;
+  /** Human-facing name. What `ConnectorCallOptions.account` matches on. */
+  label: string;
+  owner_type: string;
+  /** True for the account an unselected call resolves to. */
+  is_default: boolean;
+  /** Who the account was authorized as. `null` (or absent, on older servers) when unknown. */
+  connected_as?: string | null;
+  /** When the upstream first answered 401 to this account's stored credential:
+   *  it expired or was revoked, and a person must replace it. `null` (or
+   *  absent, on older servers) when not rejected. An ok call or a new
+   *  credential clears it. */
+  credential_rejected_at?: string | null;
+}
+
+export interface ConnectorCallOptions {
+  /**
+   * Which account to run this call as — a connection label or id from
+   * {@link listConnectorAccounts}, or one of the two selector words: `me` (the
+   * caller's own default private account) and `project` (the default account
+   * shared with the whole project). Omit for the connector's default account,
+   * which is how every call behaved before a connector could expose more than
+   * one.
+   *
+   * A named account is never silently substituted: if it does not match one
+   * this caller is entitled to, the call is denied with `connector_not_connected`
+   * and the denial lists the names that were available.
+   */
+  account?: string | null;
+  /**
+   * What this call does, in the caller's words — shown to the human when a
+   * policy holds the call for approval. Use it when the arguments alone don't
+   * show the effect (`send_draft` takes only a draft id: say who it goes to and
+   * what it says). Displayed as unverified; never sent to the provider.
+   */
+  approvalContext?: string | null;
+  /**
+   * Client deadline in ms. Default 90 000: above the gateway's 60 s upstream
+   * deadline, so the gateway answers `upstream_timeout` before the client
+   * gives up. After a client-side timeout the call may still have run.
+   */
+  timeoutMs?: number;
+  /** Aborts the request. The call may still have run upstream. */
+  signal?: AbortSignal;
+}
+
+const CONNECTOR_CALL_TIMEOUT_MS = 90_000;
+
+export async function callConnector<T = unknown>(
+  projectId: string | undefined,
+  tool: string,
+  args: Record<string, unknown> = {},
+  options: ConnectorCallOptions = {},
+): Promise<ConnectorCallResult<T>> {
+  const { connector, action } = parseConnectorTool(tool);
+  const account = options.account?.trim();
+  const approvalContext = options.approvalContext?.trim();
+  const result = unwrap(
+    await backendApi.post<ConnectorCallResult<T>>(
+      connectorGatewayPath(projectId, 'call'),
+      // The key is omitted rather than sent as null: the gateway reads its
+      // presence, and an explicit null would read as "an account was named".
+      {
+        connector,
+        action,
+        args,
+        ...(account ? { account } : {}),
+        ...(approvalContext ? { approval_context: approvalContext } : {}),
+      },
+      { timeout: options.timeoutMs ?? CONNECTOR_CALL_TIMEOUT_MS, signal: options.signal },
+    ),
+  );
+  // A server that names the binding omits `output` when it equals `data`, so
+  // the body carries the payload once. A server without `binding` predates `output`.
+  if (result.ok && result.binding !== undefined && !('output' in result)) result.output = result.data;
+  return result;
+}
+
+/**
+ * The accounts this caller may run `slug` as, default first.
+ *
+ * Resolved through the same principal a call uses, so every account listed is
+ * one a call can actually use — never one the gateway would then refuse.
+ */
+export async function listConnectorAccounts(
+  projectId: string | undefined,
+  slug: string,
+): Promise<ConnectorAccount[]> {
+  const response = await backendApi.get<{ connector: string; accounts: ConnectorAccount[] }>(
+    connectorGatewayPath(projectId, `connectors/${encodeURIComponent(slug)}/accounts`),
+  );
+  return unwrap(response).accounts ?? [];
+}
+
+function connectorResponseMessage(body: unknown, status: number): string {
+  if (body && typeof body === 'object') {
+    const value = body as Record<string, unknown>;
+    for (const key of ['reason', 'error', 'message', 'detail']) {
+      if (typeof value[key] === 'string' && value[key]) return value[key];
+    }
+  }
+  return `HTTP ${status}`;
+}
+
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return end === value.length ? value : value.slice(0, end);
+}
+
+export async function uploadConnectorAttachment(
+  projectId: string | undefined,
+  content: Uint8Array | ArrayBuffer | Blob,
+  input: ConnectorAttachmentUploadInput,
+): Promise<ConnectorAttachmentUploadResult> {
+  const filename = input.filename.trim();
+  const contentType = input.contentType.trim();
+  if (!filename) throw new Error('filename is required');
+  if (!contentType) throw new Error('contentType is required');
+
+  const headers: Record<string, string> = {
+    'Content-Type': contentType,
+    'X-Kortix-Attachment-Filename': encodeURIComponent(filename),
+    'X-Kortix-Attachment-Disposition': input.contentDisposition ?? 'attachment',
+  };
+  if (input.contentId?.trim()) {
+    headers['X-Kortix-Attachment-Content-Id'] = encodeURIComponent(input.contentId.trim());
+  }
+  if (input.connector?.trim()) {
+    headers['X-Kortix-Attachment-Connector'] = encodeURIComponent(input.connector.trim());
+  }
+
+  const backendUrl = trimTrailingSlashes(platformConfig().backendUrl);
+  const endpoint = connectorGatewayPath(projectId, 'attachments');
+  const response = await authenticatedFetch(
+    `${backendUrl}${endpoint}`,
+    { method: 'POST', headers, body: content as BodyInit },
+    { timeoutMs: 60_000 },
+  );
+  const raw = await response.text();
+  let body: unknown = null;
+  if (raw) {
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = raw;
+    }
+  }
+  if (!response.ok) {
+    throw new ApiError(connectorResponseMessage(body, response.status), {
+      status: response.status,
+      code:
+        body && typeof body === 'object'
+          ? String((body as Record<string, unknown>).code ?? response.status)
+          : String(response.status),
+      details: body,
+      response,
+      endpoint,
+    });
+  }
+  return body as ConnectorAttachmentUploadResult;
+}
+
+/**
+ * @deprecated A connector-wide owner MODE no longer exists. Ownership is per
+ * account (`Connection.owner_type`), chosen when the account is connected —
+ * see {@link ConnectorConnectOwner}. The type stays exported and the values
+ * stay on the wire as a derived summary; nothing branches on them any more.
+ */
+export type ConnectorAuthorizationStrategy = 'project' | 'user';
+
+export interface AdminConnector {
+  slug: string;
+  name: string;
+  provider:
+    | 'composio'
+    | 'pipedream'
+    | 'mcp'
+    | 'openapi'
+    | 'postman'
+    | 'graphql'
+    | 'http'
+    | 'channel'
+    | 'computer';
+  platform?: 'slack' | 'email' | null;
+  /** Provider icon materialized during connector synchronization. */
+  iconUrl?: string | null;
+  status: 'active' | 'disabled' | 'needs_auth' | 'error';
+  /** Credential storage model. Always `shared` — `per_user` (each member's
+   *  own) was removed 2026-07-05. A `shared` connector with no credential set
+   *  (`secretSet: false`) needs reconnecting. */
+  credentialMode: 'shared';
+  /**
+   * @deprecated A derived summary, not a setting: `'user'` when the connector
+   * has member-owned accounts and no project-owned one, else `'project'`.
+   * Nothing enforces it — a connector can hold both kinds at once. Read
+   * `owner_type` on the accounts themselves ({@link listConnectorAccounts}).
+   */
+  authorizationStrategy: ConnectorAuthorizationStrategy;
+  /** Authentication shape required when a member adds a private credential. */
+  requestAuthType?: ConnectorRequestAuthType;
+  /** Marked sensitive — its reads gate too (require_approval by default). */
+  sensitive: boolean;
+  actions: ConnectorAction[];
+  authSecret: string | null;
+  /** Project secret identifier bound as this connector's credential source. */
+  secretIdentifier?: string | null;
+  /** Where the connector currently obtains its server-side credential. */
+  credentialSource?: 'none' | 'stored' | 'project_secret' | 'platform';
+  secretSet: boolean;
+  /**
+   * Why the last attempt to load this connector's tools failed. Set when
+   * `status` is `error`. Absent on older servers.
+   */
+  lastError?: string | null;
+  /** The one state to show: `needs_account` = it needs an account and has none
+   *  the caller can use. Absent on older servers. */
+  state?: 'disabled' | 'error' | 'needs_account' | 'connected';
+  /** Why, in a few words, for every state but `connected`. */
+  state_reason?: string | null;
+  /** False: the connector runs with no account. Absent on older servers. */
+  auth_needed?: boolean;
+}
+
+export interface ConnectorsResponse {
+  connectors: AdminConnector[];
+}
+
+export interface ConnectorSyncResult {
+  synced: number;
+  errors: Array<{ slug: string; error: string }>;
+}
+
+export type DiscoveredAuthScheme =
+  | 'none'
+  | 'bearer'
+  | 'basic'
+  | 'api_key'
+  | 'oauth1'
+  | 'oauth2'
+  | 'openid_connect'
+  | 'mutual_tls'
+  | 'digest'
+  | 'hawk'
+  | 'ntlm'
+  | 'aws_v4'
+  | 'edgegrid'
+  | 'asap'
+  | 'unknown';
+export type ConnectorRequestAuthType =
+  | 'none'
+  | 'bearer'
+  | 'basic'
+  | 'custom'
+  | 'api_key'
+  | 'oauth1'
+  | 'hmac'
+  | 'aws_sigv4'
+  | 'mtls';
+export interface ExecutableConnectorAuth {
+  type: ConnectorRequestAuthType;
+  in: 'header' | 'query' | 'cookie';
+  name: string | null;
+  prefix: string | null;
+}
+export interface ConnectorAuthCandidate {
+  id: string;
+  source: string;
+  scheme: DiscoveredAuthScheme;
+  label: string;
+  supported: boolean;
+  requestCount: number;
+  totalRequests: number;
+  placement: 'header' | 'query' | 'cookie' | null;
+  parameterName: string | null;
+  prefix: string | null;
+  parameterNames: string[];
+  variables: string[];
+  oauth?: {
+    authorizationUrl?: string;
+    tokenUrl?: string;
+    refreshUrl?: string;
+    openIdConnectUrl?: string;
+    protectedResourceMetadataUrl?: string;
+    scopes: string[];
+  };
+  executable: ExecutableConnectorAuth | null;
+}
+export interface ConnectorAuthDiscovery {
+  status: 'detected' | 'none' | 'ambiguous' | 'unsupported';
+  recommended: ExecutableConnectorAuth | null;
+  candidates: ConnectorAuthCandidate[];
+  warnings: string[];
+  totalRequests: number;
+  /** The source document's own name (OpenAPI `info.title`, Postman `info.name`). */
+  title: string | null;
+}
+
+interface ConnectionFields {
+  connector_alias: string;
+  owner_type: 'project' | 'agent' | 'member' | 'subject' | 'external';
+  owner_id: string | null;
+  label: string;
+  status: 'active' | 'revoked' | 'error';
+  is_default: boolean;
+  metadata: Record<string, unknown>;
+  /**
+   * Who the account was authorized as: an email, a login, or a display name,
+   * read from the provider when the authorization finalized. `null` (or
+   * absent, on older servers) when the provider exposes none or no account
+   * is authorized yet.
+   */
+  connected_as?: string | null;
+  /**
+   * Who may use a shared (`owner_type: 'project'`) account: the grants that
+   * narrow it. Empty, or holding a `project` grant, means everyone in the
+   * project — `connectionSharedWithEveryone` reads it. Absent on every other
+   * owner type, and on older servers.
+   */
+  shared_with?: ConnectionShare[];
+  /**
+   * `false` = the caller is outside this shared account's audience and sees it
+   * only because they manage the project's connections; it cannot be bound to
+   * a session. Absent on older servers, which means usable.
+   */
+  usable?: boolean;
+  /**
+   * `true` = the account is signed in: it holds a credential, or a connected
+   * provider account. `false` = it still needs a sign-in (an abandoned OAuth
+   * flow, say), so a client offers Connect. Absent on older servers.
+   */
+  authorized?: boolean;
+  /**
+   * The paired machine this account points at. Set only on accounts of a
+   * `computer` connector; `null` once the machine was unpaired (the account is
+   * then `revoked`). Absent on every other connector, and on older servers.
+   */
+  tunnel_id?: string | null;
+  /**
+   * Live status of the machine behind a `computer` account, for an online dot.
+   * `null` when the machine is gone. Absent on every other connector, and on
+   * older servers.
+   */
+  machine?: {
+    online: boolean;
+    last_heartbeat_at: string | null;
+    hostname?: string;
+    platform?: string;
+    /**
+     * Who may use the machine, decided by its owner on the machine itself:
+     * `ask` = the owner approves each new agent session on the computer
+     * (`granted_until` is the end of the current approval, `null` when none),
+     * `always` = no prompt, `off` = every call is refused. `null` (or
+     * absent) when the machine's agent never reported it, e.g. npm 0.1.x.
+     */
+    access?: {
+      mode: 'ask' | 'always' | 'off';
+      granted_until: string | null;
+    } | null;
+  } | null;
+}
+
+/** One grant naming who may use a shared account. Grant or revoke through
+ *  `createAssignment` / `revokeAssignment` (`object: { type: 'connection' }`). */
+export interface ConnectionShare {
+  /** The assignment id; `revokeAssignment` takes it. */
+  grant_id: string;
+  /** `project` = everyone with access to the project. `agent`: `principal_id`
+   *  is the agent's service account; every session of that agent may use it. */
+  principal_type: 'member' | 'group' | 'project' | 'agent';
+  principal_id: string;
+  /** A member's email, a group's name, an agent's name, or the project's name. */
+  label: string;
+  expires_at: string | null;
+}
+
+export interface Connection extends ConnectionFields {
+  connection_id: string;
+}
+
+/**
+ * Is this a shared account everyone in the project may use? True when nobody
+ * narrowed it (no grant — including an older server that sends no
+ * `shared_with`) or a grant names the whole project. False for a narrowed
+ * shared account and for every private one.
+ */
+export function connectionSharedWithEveryone(connection: Connection): boolean {
+  if (connection.owner_type !== 'project') return false;
+  const shares = connection.shared_with ?? [];
+  return shares.length === 0 || shares.some((share) => share.principal_type === 'project');
+}
+
+export interface ReconcileConnectionInput {
+  connector_alias: string;
+  /** `project` = a TEAM-shared connection (several per connector, distinguished
+   *  by `label`), which takes no `owner_id`. Every other owner type needs one. */
+  owner_type: 'project' | 'agent' | 'member' | 'subject' | 'external';
+  owner_id?: string;
+  /** Distinguishes several connections on one connector for the same owner
+   *  ("Support", "Sales", "Work"). Reconciling the same label updates in place. */
+  label: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** Create or update the calling user's member-owned connection. Ownership is
+ * derived exclusively from the bearer token; callers cannot supply an owner. */
+export interface ReconcileMemberConnectionInput {
+  connector_alias: string;
+  label: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ConnectionConnectInput {
+  success_redirect_uri?: string;
+  error_redirect_uri?: string;
+}
+
+export interface OAuth2ClientCredentials {
+  type: 'oauth2_client_credentials';
+  token_url: string;
+  client_id: string;
+  token_endpoint_auth_method:
+    | 'none'
+    | 'client_secret_post'
+    | 'client_secret_basic'
+    | 'client_secret_jwt'
+    | 'private_key_jwt';
+  client_secret?: string;
+  private_key?: string;
+  certificate_thumbprint?: string;
+  scopes?: string[];
+  resource?: string;
+  audience?: string;
+  /** Additional provider-required token form fields not owned by OAuth2 itself. */
+  token_params?: Record<string, string>;
+}
+
+export type OAuth2TokenEndpointAuthMethod =
+  | 'none'
+  | 'client_secret_basic'
+  | 'client_secret_post'
+  | 'client_secret_jwt'
+  | 'private_key_jwt';
+
+export interface OAuth2ApplicationInput {
+  discovery_url?: string;
+  authorization_url?: string;
+  token_url?: string;
+  device_authorization_url?: string;
+  revocation_url?: string;
+  client_id: string;
+  token_endpoint_auth_method: OAuth2TokenEndpointAuthMethod;
+  client_secret?: string;
+  private_key?: string;
+  scopes?: string[];
+  resource?: string;
+  audience?: string;
+  authorization_params?: Record<string, string>;
+  token_params?: Record<string, string>;
+  /** RFC 7592 management URI, present when Kortix registered this client. */
+  registration_client_uri?: string;
+  /** RFC 7592 management token. Never returned by the API. */
+  registration_access_token?: string;
+  /**
+   * The authorization server that issued this client. Recorded so the callback
+   * can validate RFC 9207 `iss` and reject a code minted elsewhere.
+   */
+  issuer?: string;
+}
+
+export interface OAuth2ApplicationView
+  extends Omit<
+    OAuth2ApplicationInput,
+    'client_secret' | 'private_key' | 'registration_access_token'
+  > {
+  has_client_secret: boolean;
+  has_private_key: boolean;
+}
+
+/**
+ * What the MCP authorization discovery chain found for one connector's server:
+ * whether it needs authorization at all, which authorization server governs it,
+ * the endpoints to use, and whether Kortix can register itself dynamically
+ * (RFC 7591) instead of the user creating an OAuth app by hand.
+ */
+export interface OAuth2ResourceDiscovery {
+  resource_url: string;
+  requires_authorization: boolean;
+  /** RFC 8707 resource indicator to bind tokens to. */
+  resource?: string;
+  resource_name?: string;
+  protected_resource_metadata_url?: string;
+  authorization_server?: string;
+  metadata?: Partial<Omit<OAuth2ApplicationView, 'has_client_secret' | 'has_private_key'>>;
+  registration_endpoint?: string;
+  /** Kortix signs in with its own OAuth client: a catalogue app whose server
+   *  has no dynamic registration. Register without `registration_endpoint`. */
+  kortix_client?: boolean;
+  token_endpoint_auth_methods_supported?: string[];
+  code_challenge_methods_supported?: string[];
+  scopes: string[];
+  warnings: string[];
+}
+
+export interface OAuth2ResourceDiscoveryInput {
+  /** Defaults to the connector's own server URL. */
+  resource_url?: string;
+}
+
+export interface OAuth2ClientRegistrationInput {
+  /** RFC 7591 endpoint. Absent: the API uses Kortix's own OAuth client, which
+   *  only a catalogue app with `kortix_client` discovery has. */
+  registration_endpoint?: string;
+  /** Authorization server issuer, recorded for RFC 9207 `iss` validation. */
+  issuer?: string;
+  client_name?: string;
+  token_endpoint_auth_methods_supported?: string[];
+  discovery_url?: string;
+  authorization_url?: string;
+  token_url?: string;
+  device_authorization_url?: string;
+  revocation_url?: string;
+  scopes?: string[];
+  resource?: string;
+  audience?: string;
+}
+
+export interface OAuth2AuthorizationStartInput {
+  scopes?: string[];
+  success_redirect_uri?: string;
+  error_redirect_uri?: string;
+}
+
+export interface OAuth2AuthorizationStartResult {
+  authorization_url: string;
+  expires_at: string;
+}
+
+export interface OAuth2DeviceAuthorizationStartInput {
+  scopes?: string[];
+}
+
+export interface OAuth2DeviceAuthorizationStartResult {
+  session_id: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete?: string;
+  expires_at: string;
+  interval_seconds: number;
+}
+
+export interface OAuth2ConnectionStatus {
+  status: 'not_configured' | 'ready' | 'pending' | 'active' | 'error' | 'revoked';
+  expires_at?: string | null;
+  scopes?: string[];
+  error_code?: string | null;
+}
+
+export type ConnectionCredentialInput =
+  | { value: string; kind?: 'secret' | 'connection' }
+  | { oauth2: OAuth2ClientCredentials };
+
+export async function listConnections(projectId: string) {
+  return unwrap(
+    await backendApi.get<{ connections: Connection[] }>(`/projects/${projectId}/connections`),
+  );
+}
+
+/**
+ * One row of the owner/admin roster. Deliberately NARROWER than
+ * `Connection`: it carries identity and status only. `label` and `metadata`
+ * are excluded because they are a member's own annotations on a PRIVATE
+ * connection and can hold personal identifiers a peer manager needn't see.
+ */
+export interface ConnectionRoster {
+  connection_id: string;
+  connector_alias: string;
+  owner_type: 'project' | 'agent' | 'member' | 'subject' | 'external';
+  owner_id: string | null;
+  status: 'active' | 'revoked' | 'error';
+}
+
+/**
+ * Owner/admin read-only roster: WHO has connected each connector in the project
+ * and whether it still works — not just the caller's own connections. Requires
+ * the connections manage capability. Never returns credentials, and never
+ * a peer's private label or metadata (see `ConnectionRoster`).
+ */
+export async function listAllConnections(projectId: string) {
+  return unwrap(
+    await backendApi.get<{ connections: ConnectionRoster[] }>(
+      `/projects/${projectId}/connections/all`,
+    ),
+  );
+}
+
+export async function reconcileConnection(
+  projectId: string,
+  input: ReconcileConnectionInput,
+) {
+  return unwrap(await backendApi.post<Connection>(`/projects/${projectId}/connections`, input));
+}
+
+export async function reconcileMemberConnection(
+  projectId: string,
+  input: ReconcileMemberConnectionInput,
+) {
+  return unwrap(
+    await backendApi.post<Connection>(`/projects/${projectId}/connections/me`, input),
+  );
+}
+
+export async function updateConnectionCredential(
+  projectId: string,
+  connectionId: string,
+  input: ConnectionCredentialInput,
+) {
+  return unwrap(
+    await backendApi.put<{ ok: true }>(
+      `/projects/${projectId}/connections/${connectionId}/credential`,
+      input,
+    ),
+  );
+}
+
+function connectionOAuth2Path(
+  projectId: string,
+  connectionId: string,
+  suffix: string,
+): string {
+  return `/projects/${projectId}/connections/${connectionId}/oauth2/${suffix}`;
+}
+
+export async function ensureProjectConnectorConnection(projectId: string, slug: string) {
+  return unwrap(
+    await backendApi.post<{ connection_id: string }>(
+      `/projects/${projectId}/connectors/${encodeURIComponent(slug)}/oauth2/connection`,
+      {},
+    ),
+  );
+}
+
+export async function putConnectionOAuth2Application(
+  projectId: string,
+  connectionId: string,
+  input: OAuth2ApplicationInput,
+) {
+  return unwrap(
+    await backendApi.put<{ ok: true }>(
+      connectionOAuth2Path(projectId, connectionId, 'application'),
+      input,
+    ),
+  );
+}
+
+export async function getConnectionOAuth2Application(
+  projectId: string,
+  connectionId: string,
+) {
+  return unwrap(
+    await backendApi.get<{ application: OAuth2ApplicationView }>(
+      connectionOAuth2Path(projectId, connectionId, 'application'),
+    ),
+  );
+}
+
+export async function discoverConnectionOAuth2(
+  projectId: string,
+  connectionId: string,
+  input: { discovery_url: string },
+) {
+  return unwrap(
+    await backendApi.post<{ metadata: Partial<OAuth2ApplicationView> }>(
+      connectionOAuth2Path(projectId, connectionId, 'discover'),
+      input,
+    ),
+  );
+}
+
+/**
+ * Discover how to authorize with a connector's server: the MCP chain
+ * (`WWW-Authenticate` → RFC 9728 protected resource metadata → RFC 8414/OIDC
+ * authorization server metadata). Returns endpoints, scopes, and the dynamic
+ * client registration endpoint when the server has one.
+ */
+export async function discoverConnectionOAuth2Resource(
+  projectId: string,
+  connectionId: string,
+  input: OAuth2ResourceDiscoveryInput = {},
+) {
+  return unwrap(
+    await backendApi.post<{ discovery: OAuth2ResourceDiscovery }>(
+      connectionOAuth2Path(projectId, connectionId, 'discover-resource'),
+      input,
+    ),
+  );
+}
+
+/**
+ * Register Kortix as an OAuth2 client with the authorization server (RFC 7591)
+ * and store the issued client as this connection's OAuth2 application. The
+ * caller never handles the client secret.
+ */
+export async function registerConnectionOAuth2Client(
+  projectId: string,
+  connectionId: string,
+  input: OAuth2ClientRegistrationInput,
+) {
+  return unwrap(
+    await backendApi.post<{ application: OAuth2ApplicationView }>(
+      connectionOAuth2Path(projectId, connectionId, 'register'),
+      input,
+    ),
+  );
+}
+
+export async function startConnectionOAuth2Authorization(
+  projectId: string,
+  connectionId: string,
+  input: OAuth2AuthorizationStartInput,
+) {
+  return unwrap(
+    await backendApi.post<OAuth2AuthorizationStartResult>(
+      connectionOAuth2Path(projectId, connectionId, 'authorize'),
+      input,
+    ),
+  );
+}
+
+export async function startConnectionOAuth2DeviceAuthorization(
+  projectId: string,
+  connectionId: string,
+  input: OAuth2DeviceAuthorizationStartInput,
+) {
+  return unwrap(
+    await backendApi.post<OAuth2DeviceAuthorizationStartResult>(
+      connectionOAuth2Path(projectId, connectionId, 'device'),
+      input,
+    ),
+  );
+}
+
+export async function pollConnectionOAuth2DeviceAuthorization(
+  projectId: string,
+  connectionId: string,
+  sessionId: string,
+) {
+  return unwrap(
+    await backendApi.post<OAuth2ConnectionStatus>(
+      connectionOAuth2Path(
+        projectId,
+        connectionId,
+        `device/${encodeURIComponent(sessionId)}`,
+      ),
+      {},
+    ),
+  );
+}
+
+export async function getConnectionOAuth2Status(
+  projectId: string,
+  connectionId: string,
+) {
+  return unwrap(
+    await backendApi.get<OAuth2ConnectionStatus>(
+      connectionOAuth2Path(projectId, connectionId, 'status'),
+    ),
+  );
+}
+
+export async function revokeConnection(projectId: string, connectionId: string) {
+  return unwrap(
+    await backendApi.put<{ ok: true }>(
+      `/projects/${projectId}/connections/${connectionId}/revoke`,
+      {},
+    ),
+  );
+}
+
+export async function activateConnection(projectId: string, connectionId: string) {
+  return unwrap(
+    await backendApi.put<{ ok: true }>(
+      `/projects/${projectId}/connections/${connectionId}/activate`,
+      {},
+    ),
+  );
+}
+
+/**
+ * Make this the DEFAULT connection for its owner scope — the one a session uses
+ * when it doesn't name a connection explicitly. Defaults are per-owner: one for
+ * the project (team-shared) and one per member, so this only displaces the
+ * previous default within the same scope.
+ */
+export async function setDefaultConnection(projectId: string, connectionId: string) {
+  return unwrap(
+    await backendApi.put<{ ok: true }>(
+      `/projects/${projectId}/connections/${connectionId}/default`,
+      {},
+    ),
+  );
+}
+
+/**
+ * Rename a connection. Only the label changes: the authorized account, the
+ * owner, the default flag, and the provider state stay as they are, so no
+ * re-authorization is needed. The server refuses `me`, `project`, UUID-shaped
+ * labels (400), and a label another account of the same owner already has,
+ * compared case-insensitively (409).
+ */
+export async function renameConnection(projectId: string, connectionId: string, label: string) {
+  return unwrap(
+    await backendApi.put<Connection>(`/projects/${projectId}/connections/${connectionId}/label`, {
+      label,
+    }),
+  );
+}
+
+/**
+ * Share a machine the caller paired with this project, as a shared account of
+ * the project's `computer` connector (`share: 'project'`, needs the
+ * connector-manage capability). The caller's own private account needs no
+ * call: it follows them into every project they belong to. `share: 'me'` (the
+ * server default) stays accepted. Idempotent: the same machine for the same
+ * owner returns the existing account. `409` when the machine cannot join this
+ * project's account.
+ */
+export async function addComputerToProject(
+  projectId: string,
+  input: { tunnelId: string; share?: ConnectorConnectOwner },
+) {
+  return unwrap(
+    await backendApi.post<Connection>(`/projects/${projectId}/computers`, {
+      tunnel_id: input.tunnelId,
+      ...(input.share ? { share: input.share } : {}),
+    }),
+  );
+}
+
+/** Who may use a shared account: a person, a group, or everyone in the project. */
+export interface ConnectionSharePrincipal {
+  principal_type: 'user' | 'group' | 'project';
+  principal_id: string;
+}
+
+/**
+ * Share the caller's OWN private account: it becomes a shared account only
+ * `principals` may use (an empty list: everyone in the project). Needs the
+ * right to manage the project's connections. The account is never open to the
+ * whole project in between: the server writes the grants first.
+ */
+export async function shareConnection(
+  projectId: string,
+  connectionId: string,
+  principals: ConnectionSharePrincipal[] = [],
+) {
+  return unwrap(
+    await backendApi.post<Connection>(`/projects/${projectId}/connections/${connectionId}/share`, {
+      principals,
+    }),
+  );
+}
+
+/** Managed connector providers that can issue a hosted Connect Link. */
+export type ConnectorConnectProvider = 'composio' | 'pipedream';
+
+/**
+ * Hosted authorization result returned by connector and connection connect routes.
+ *
+ * `connectUrl` is the normalized Kortix field. `redirectUrl` remains optional so
+ * clients can consume an upstream Connect Link response during a rolling deploy.
+ */
+export interface ConnectorConnectResult {
+  provider?: ConnectorConnectProvider;
+  app?: string;
+  connectUrl?: string;
+  redirectUrl?: string;
+  token?: string;
+  expiresAt?: string;
+  requestId?: string;
+  sessionId?: string;
+  connectionId?: string;
+  /**
+   * The account is already usable, so there is no hosted page to show.
+   *
+   * True for a no-auth toolkit, and for a connector whose account is still
+   * active from an earlier authorization. Callers branch on this before opening
+   * a popup — see `runConnectLinkFlow` in the web host.
+   */
+  connected?: boolean;
+  /** The toolkit needs no authorization at all, so `connected` is true on the
+   *  first call and no link is ever minted. */
+  isNoAuth?: boolean;
+}
+
+/** Poll result for a hosted connector authorization request. */
+export interface ConnectorFinalizeResult {
+  provider?: ConnectorConnectProvider;
+  connected: boolean;
+  accountId?: string;
+  connectionId?: string;
+}
+
+/** Deployment-wide availability for hosted connector authorization providers. */
+export interface ConnectorConnectStatus {
+  configured: boolean;
+  provider: ConnectorConnectProvider | null;
+  /** Ordered by server preference. Absent on older API deployments. */
+  providers?: ConnectorConnectProvider[];
+}
+
+export async function pipedreamConnectConnection(
+  projectId: string,
+  connectionId: string,
+  input: ConnectionConnectInput = {},
+) {
+  return unwrap(
+    await backendApi.post<ConnectorConnectResult>(
+      `/projects/${projectId}/connections/${connectionId}/connect`,
+      input,
+    ),
+  );
+}
+
+export async function pipedreamFinalizeConnection(
+  projectId: string,
+  connectionId: string,
+) {
+  return unwrap(
+    await backendApi.post<ConnectorFinalizeResult>(
+      `/projects/${projectId}/connections/${connectionId}/connect/finalize`,
+      {},
+    ),
+  );
+}
+
+export interface ListConnectorsOptions {
+  /**
+   * The full per-action JSON Schema on every connector's actions. The API
+   * includes it unless this is `false` (older CLIs read it and cannot be
+   * updated in place). The dashboard passes `false`: the schemas were 1.6 MB
+   * of the prod response and no list renders them.
+   */
+  includeSchemas?: boolean;
+}
+
+export async function listConnectors(projectId: string, options?: ListConnectorsOptions) {
+  const query =
+    options?.includeSchemas === undefined ? '' : `?include_schemas=${options.includeSchemas}`;
+  return unwrap(
+    // Background read fired at workspace mount (project-home tiles, sidebar
+    // setup checklist) — never global-toast; callers render their own state.
+    await backendApi.get<ConnectorsResponse>(
+      `/connectors/projects/${projectId}/connectors${query}`,
+      { showErrors: false },
+    ),
+  );
+}
+
+export async function syncConnectors(projectId: string) {
+  return unwrap(
+    await backendApi.post<ConnectorSyncResult>(
+      `/connectors/projects/${projectId}/connectors/sync`,
+      {},
+    ),
+  );
+}
+
+/** `shared` is the only credential mode (`per_user` removed 2026-07-05) — kept
+ *  for back-compat callers, restricted to a no-op on the API side. */
+export async function setConnectorCredentialMode(projectId: string, slug: string, mode: 'shared') {
+  return unwrap(
+    await backendApi.put<{ ok: boolean; sync?: ConnectorSyncResult }>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/credential-mode`,
+      { mode },
+    ),
+  );
+}
+
+/**
+ * @deprecated A no-op server-side since the owner mode was removed: the route
+ * still answers 200 so an older client is never 400'd, but it changes nothing.
+ * To create an account under a specific owner, pass `owner` to
+ * {@link connectorConnect} instead.
+ */
+export async function setConnectorAuthorizationStrategy(
+  projectId: string,
+  slug: string,
+  authorizationStrategy: ConnectorAuthorizationStrategy,
+) {
+  return unwrap(
+    await backendApi.put<{ ok: boolean; sync?: ConnectorSyncResult }>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/authorization-strategy`,
+      { authorization_strategy: authorizationStrategy },
+    ),
+  );
+}
+
+/** Toggle a connector's `sensitive` flag — sensitive connectors gate reads too
+ *  (every action defaults to require_approval unless a policy opens it). */
+export async function setConnectorSensitive(projectId: string, slug: string, sensitive: boolean) {
+  return unwrap(
+    await backendApi.put<{ ok: boolean; sync?: ConnectorSyncResult }>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/sensitive`,
+      { sensitive },
+    ),
+  );
+}
+
+export type ConnectorPolicyAction = 'always_run' | 'require_approval' | 'block';
+export interface ConnectorPolicyRule {
+  match: string;
+  action: ConnectorPolicyAction;
+  /** ALL must hold for the rule to apply. Absent/empty = a plain tool-name rule.
+   *  Servers that predate connector-rule conditions drop them on write. */
+  conditions?: PolicyArgCondition[];
+}
+
+/**
+ * Which policy scope decided an action. Project rules win and cannot be overridden here.
+ * `policy_set` = the calling agent's policy set on this connector
+ * (`agents.<a>.policy_sets.<slug>`), evaluated after project rules and before
+ * the connector's base rules.
+ */
+export type ConnectorPolicySource =
+  | 'project'
+  | 'policy_set'
+  | 'connector'
+  | 'risk_default'
+  | 'allow_all';
+
+export interface ConnectorEffectivePolicy {
+  /** Connector-relative tool path, e.g. `send_email`. */
+  path: string;
+  action: ConnectorPolicyAction;
+  source: ConnectorPolicySource;
+  /** The stored risk the project default decides on. Older servers omit it. */
+  risk?: ConnectorAction['risk'];
+  /** The rule that decided; absent when the default did. Older servers omit it. */
+  rule?: ConnectorPolicyRule;
+}
+
+/** Selects one policy set on a connector. Absent, empty or `base` = the base rules. */
+export interface ConnectorPolicySetOptions {
+  policySet?: string;
+}
+
+function connectorPoliciesPath(projectId: string, slug: string, options?: ConnectorPolicySetOptions) {
+  const base = `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/policies`;
+  return options?.policySet ? `${base}?policy_set=${encodeURIComponent(options.policySet)}` : base;
+}
+
+/**
+ * Read a connector's rules: the base rules, or one policy set's rules with
+ * `{ policySet }`. A set that does not exist answers 404 `policy_set_not_found`.
+ */
+export async function getConnectorPolicies(
+  projectId: string,
+  slug: string,
+  options?: ConnectorPolicySetOptions,
+) {
+  return unwrap(
+    await backendApi.get<{
+      policies: ConnectorPolicyRule[];
+      /** The policy set these rules belong to; absent for the base rules. */
+      policy_set?: string;
+      /**
+       * Resolved per tool through the same function the call gate uses. Present
+       * so an editor can show WHICH scope decided — without it a connector rule
+       * that a project-scope rule silently overrules still renders as if it applied.
+       * For a policy set, it is what an agent with that set gets.
+       * Older servers omit this; treat as empty.
+       */
+      effective?: ConnectorEffectivePolicy[];
+      /** Project-scope rules, which are evaluated first and win. */
+      project_policies?: ConnectorPolicyRule[];
+      default_mode?: 'risk' | 'allow_all';
+      /** Marked sensitive: every tool no rule decides needs approval. */
+      sensitive?: boolean;
+    }>(connectorPoliciesPath(projectId, slug, options)),
+  );
+}
+
+/**
+ * Replace a connector's rules: the base rules, or one policy set's rules with
+ * `{ policySet }`. This is the only writer of a set's rules; the set itself is
+ * created with {@link upsertConnectorPolicySet}.
+ */
+export async function setConnectorPolicies(
+  projectId: string,
+  slug: string,
+  policies: ConnectorPolicyRule[],
+  options?: ConnectorPolicySetOptions,
+) {
+  return unwrap(
+    await backendApi.put<{ ok: boolean; sync?: ConnectorSyncResult }>(
+      connectorPoliciesPath(projectId, slug, options),
+      { policies },
+    ),
+  );
+}
+
+/**
+ * A named rule set on one connector (`connectors[].policy_sets.<name>` in
+ * kortix.yaml). An agent gets it with `agents.<a>.policy_sets.<slug>: <name>`,
+ * so one connected account serves agents with different rules.
+ */
+export interface ConnectorPolicySet {
+  name: string;
+  description: string | null;
+  policies: ConnectorPolicyRule[];
+  /** The agents whose `policy_sets` name this set. */
+  agents: string[];
+}
+
+function connectorPolicySetsPath(projectId: string, slug: string) {
+  return `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/policy-sets`;
+}
+
+function connectorPolicySetPath(projectId: string, slug: string, name: string) {
+  return `${connectorPolicySetsPath(projectId, slug)}/${encodeURIComponent(name)}`;
+}
+
+/** List a connector's policy sets, sets with zero rules included. */
+export async function listConnectorPolicySets(projectId: string, slug: string) {
+  return unwrap(
+    await backendApi.get<{ sets: ConnectorPolicySet[] }>(connectorPolicySetsPath(projectId, slug)),
+  );
+}
+
+/**
+ * Create a policy set, or set (`string`) or clear (`null`) its description.
+ * Omitting `description` on an existing set keeps it. Rules are written with
+ * `setConnectorPolicies(projectId, slug, policies, { policySet: name })`.
+ */
+export async function upsertConnectorPolicySet(
+  projectId: string,
+  slug: string,
+  name: string,
+  input: { description?: string | null; template?: ConnectorPolicySetTemplate } = {},
+) {
+  return unwrap(
+    await backendApi.put<{
+      ok: boolean;
+      sync?: ConnectorSyncResult;
+      created: boolean;
+      /** The template applied, when one was sent. */
+      template?: ConnectorPolicySetTemplate;
+      /** How many rules the template wrote. */
+      rules?: number;
+    }>(connectorPolicySetPath(projectId, slug, name), {
+      ...(input.description === undefined ? {} : { description: input.description }),
+      ...(input.template ? { template: input.template } : {}),
+    }),
+  );
+}
+
+/**
+ * A policy set's starting rules, written by the server from the connector's
+ * tools: `read_only` blocks every tool that is not a read, `ask_before_writes`
+ * asks a person for each. A tool whose name says nothing gets the rule too.
+ * Applying a template replaces the set's rules.
+ */
+export type ConnectorPolicySetTemplate = 'read_only' | 'ask_before_writes';
+
+/** One agent on one connector: may it use it, and under which rule set. */
+export interface ConnectorAgentRow {
+  agent: string;
+  /** The agent's grant lists the connector (or all connectors). */
+  granted: boolean;
+  /** The rule set it runs under here; null = the base rules. */
+  policy_set: string | null;
+  /** It names a set the connector does not define: every call is blocked. */
+  policy_set_missing: boolean;
+}
+
+/** Every declared agent of the project on one connector. */
+export async function listConnectorAgents(projectId: string, slug: string) {
+  return unwrap(
+    await backendApi.get<{ slug: string; policy_sets: string[]; agents: ConnectorAgentRow[] }>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/agents`,
+    ),
+  );
+}
+
+/** Every connector × every declared agent, from kortix.yaml. */
+export interface ConnectorRulesMatrix {
+  connectors: Array<{ slug: string; name: string; policy_sets: string[] }>;
+  agents: Array<{ agent: string; cells: Record<string, Omit<ConnectorAgentRow, 'agent'>> }>;
+}
+
+/** Who uses which connector under which rule set, in one request. */
+export async function getConnectorRulesMatrix(projectId: string) {
+  return unwrap(await backendApi.get<ConnectorRulesMatrix>(`/connectors/projects/${projectId}/rules-matrix`));
+}
+
+/** OAuth2 client credentials for a connector's shared account. `token_endpoint_auth_method` defaults to `client_secret_basic`. */
+export type ConnectorOAuth2ClientCredentialsInput = Omit<
+  OAuth2ClientCredentials,
+  'type' | 'token_endpoint_auth_method'
+> & { token_endpoint_auth_method?: OAuth2TokenEndpointAuthMethod };
+
+/**
+ * Set OAuth2 client credentials on a connector's shared account. The server
+ * requests a token first and stores nothing when that fails (`503`
+ * `oauth2_token_failed`); it refreshes the token before each call needs it.
+ * The secret is never returned.
+ */
+export async function setConnectorOAuth2ClientCredentials(
+  projectId: string,
+  slug: string,
+  input: ConnectorOAuth2ClientCredentialsInput,
+) {
+  return unwrap(
+    await backendApi.put<{ ok: boolean; slug: string; account: string | null; expires_at: string | null }>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/oauth2/connection`,
+      input,
+    ),
+  );
+}
+
+/** Rename a policy set and every agent assignment of it, in one commit. */
+export async function renameConnectorPolicySet(
+  projectId: string,
+  slug: string,
+  name: string,
+  newName: string,
+) {
+  return unwrap(
+    await backendApi.put<{ ok: boolean; sync?: ConnectorSyncResult }>(
+      `${connectorPolicySetPath(projectId, slug, name)}/name`,
+      { name: newName },
+    ),
+  );
+}
+
+/** Delete a policy set. Answers 409 `policy_set_in_use` (with `agents`) while an agent uses it. */
+export async function deleteConnectorPolicySet(projectId: string, slug: string, name: string) {
+  return unwrap(
+    await backendApi.delete<{ ok: boolean; sync?: ConnectorSyncResult }>(
+      connectorPolicySetPath(projectId, slug, name),
+    ),
+  );
+}
+
+/**
+ * @deprecated Policies apply to a connector, not one connection.
+ * Use `getConnectorPolicies(projectId, slug)`.
+ */
+export async function getConnectionPolicies(
+  _projectId: string,
+  _connectionId: string,
+): Promise<{ policies: ConnectorPolicyRule[] }> {
+  throw new Error(
+    'Connection-specific policies were removed. Use getConnectorPolicies(projectId, slug).',
+  );
+}
+
+/**
+ * @deprecated Policies apply to a connector, not one connection.
+ * Use `setConnectorPolicies(projectId, slug, policies)`.
+ */
+export async function setConnectionPolicies(
+  _projectId: string,
+  _connectionId: string,
+  _policies: ConnectorPolicyRule[],
+): Promise<{ ok: boolean }> {
+  throw new Error(
+    'Connection-specific policies were removed. Use setConnectorPolicies(projectId, slug, policies).',
+  );
+}
+
+/** The editable connection config for an existing connector (kortix.yaml = source of truth). */
+export interface ConnectorConfig {
+  slug: string;
+  name: string;
+  provider: AdminConnector['provider'];
+  platform: 'slack' | 'email' | null;
+  credentialMode: 'shared';
+  authorizationStrategy: ConnectorAuthorizationStrategy;
+  app: string | null;
+  account: string | null;
+  url: string | null;
+  transport: 'http' | 'sse' | null;
+  endpoint: string | null;
+  baseUrl: string | null;
+  spec: string | null;
+  /**
+   * @deprecated Computers are accounts of the `computer` connector now: read
+   * `Connection.tunnel_id` from `listConnections`. Servers no longer send it.
+   * Removed in the next major.
+   */
+  tunnelIds?: string[];
+  auth: {
+    type: ConnectorRequestAuthType;
+    in: 'header' | 'query' | 'cookie';
+    name: string | null;
+    prefix: string | null;
+  };
+  /** Static request headers sent on EVERY call this connector makes — an
+   *  ordered map of header name → value (`{ Accept: 'application/json' }`);
+   *  `{}` when none are declared. NOT secrets: stored in kortix.yaml in
+   *  plaintext, like `baseUrl`. The credential (see `auth`) always wins if a
+   *  header here has the same name. */
+  headers: Record<string, string>;
+}
+
+export async function getConnectorConfig(projectId: string, slug: string) {
+  return unwrap(
+    await backendApi.get<ConnectorConfig>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/config`,
+    ),
+  );
+}
+
+export async function setConnectorName(projectId: string, slug: string, name: string) {
+  return unwrap(
+    await backendApi.put<{ ok: boolean; sync?: ConnectorSyncResult }>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/name`,
+      { name },
+    ),
+  );
+}
+
+/**
+ * Who a newly authorized account belongs to.
+ *
+ * `me` is the signed-in human's own account — reachable only by them, and only
+ * in a private session. `project` is the account shared with everyone the
+ * connector is granted to, and creating one needs `project.connector.write`.
+ */
+export type ConnectorConnectOwner = 'project' | 'me';
+
+export interface ConnectorConnectOptions {
+  /** Owner for the account this authorization creates. Defaults to `me`. */
+  owner?: ConnectorConnectOwner;
+  /** Where the hosted flow sends the browser after success (a native app's deep link). */
+  successRedirectUri?: string;
+  /** Where the hosted flow sends the browser after a failure. */
+  errorRedirectUri?: string;
+}
+
+/**
+ * Start a hosted authorization for a project connector.
+ *
+ * Provider-neutral: the API picks Composio or Pipedream. `pipedreamConnect` is
+ * the original name for this exact route and stays exported — renaming it would
+ * be a breaking change for published consumers.
+ */
+export async function connectorConnect(
+  projectId: string,
+  slug: string,
+  options: ConnectorConnectOptions = {},
+) {
+  return unwrap(
+    await backendApi.post<ConnectorConnectResult>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/connect`,
+      // Omitted rather than null when unset: the API reads the key's presence
+      // to apply its own default, and an old client sends no key at all.
+      {
+        ...(options.owner ? { owner: options.owner } : {}),
+        ...(options.successRedirectUri ? { success_redirect_uri: options.successRedirectUri } : {}),
+        ...(options.errorRedirectUri ? { error_redirect_uri: options.errorRedirectUri } : {}),
+      },
+    ),
+  );
+}
+
+/** @deprecated Prefer {@link connectorConnect} — the route was never Pipedream-only. */
+export const pipedreamConnect = connectorConnect;
+
+/** A connector this session's agent asked a human to authorize. */
+export interface SessionConnectRequest {
+  slug: string;
+  /** Provider app/toolkit behind the connector, e.g. `gmail`. */
+  app: string;
+  provider: string;
+  connected: boolean;
+}
+
+/**
+ * The connectors a session is blocked on.
+ *
+ * The agent mints a connect link mid-turn and stops. A host reads this to render
+ * a real Connect button for that session instead of leaving the raw URL in the
+ * transcript for someone to paste into a tab.
+ */
+export async function listSessionConnectRequests(
+  projectId: string,
+  sessionId: string,
+): Promise<SessionConnectRequest[]> {
+  const result = unwrap(
+    await backendApi.get<{ connectors?: SessionConnectRequest[] }>(
+      `/connectors/projects/${projectId}/sessions/${encodeURIComponent(sessionId)}/connect-requests`,
+    ),
+  );
+  return result.connectors ?? [];
+}
+
+export interface ConnectorDraftInput {
+  slug: string;
+  name?: string;
+  provider: AdminConnector['provider'];
+  /** Refuse to update an existing slug. The API returns HTTP 409 on conflict. */
+  create_only?: boolean;
+  platform?: 'slack' | 'email';
+  app?: string;
+  account?: string;
+  url?: string;
+  transport?: 'http' | 'sse';
+  endpoint?: string;
+  baseUrl?: string;
+  spec?: string;
+  /**
+   * @deprecated Computers are accounts of the `computer` connector now: add one
+   * with `addComputerToProject`. The server ignores this field. Removed in the
+   * next major.
+   */
+  tunnel_ids?: string[];
+  /** Credential storage mode. `shared` is the only mode (`per_user` was
+   *  removed 2026-07-05). */
+  credential?: 'shared';
+  authorization_strategy?: ConnectorAuthorizationStrategy;
+  auth?: {
+    type?: ConnectorRequestAuthType;
+    in?: 'header' | 'query' | 'cookie';
+    name?: string;
+    prefix?: string;
+  };
+  /** Static request headers, an ordered map of header name → value. Omit to
+   *  keep whatever the connector already declares; send `{}` to clear them.
+   *  Names must be RFC 7230 tokens (`^[A-Za-z0-9!#$%&'*+.^_\`|~-]+$`, max 128
+   *  chars), values may not contain CR/LF (max 2048 chars), at most 32 entries.
+   *  NOT secrets — they are committed to kortix.yaml in plaintext. */
+  headers?: Record<string, string>;
+}
+
+export async function createConnector(projectId: string, draft: ConnectorDraftInput) {
+  return unwrap(
+    await backendApi.post<{
+      ok: boolean;
+      sync?: ConnectorSyncResult;
+      authDiscovery?: ConnectorAuthDiscovery;
+    }>(`/connectors/projects/${projectId}/connectors`, draft),
+  );
+}
+
+export async function discoverConnectorAuth(projectId: string, draft: ConnectorDraftInput) {
+  return unwrap(
+    await backendApi.post<ConnectorAuthDiscovery>(
+      `/connectors/projects/${projectId}/connectors/auth-discovery`,
+      draft,
+    ),
+  );
+}
+
+/** Whether an MCP server needs a sign-in, and whether Kortix can run it with
+ *  nothing but the user's consent (OAuth metadata plus client registration). */
+export interface McpServerSignInCheck {
+  requires_sign_in: boolean;
+  one_click: boolean;
+}
+
+export async function checkMcpServerSignIn(projectId: string, url: string) {
+  return unwrap(
+    await backendApi.post<McpServerSignInCheck>(
+      `/connectors/projects/${projectId}/connectors/mcp-sign-in-check`,
+      { url },
+    ),
+  );
+}
+
+/** A Pipedream or Composio connector, and the Kortix app it moves to. */
+export interface ConnectorMove {
+  slug: string;
+  name: string;
+  /** The retired provider the connector runs on. */
+  provider: 'pipedream' | 'composio';
+  /** The connector's app on that provider. */
+  app: string | null;
+  /** The Kortix app it moves to. `null`: no Kortix connection for this app on this deployment yet. */
+  to: { slug: string; name: string; icon: string | null } | null;
+  /** The account a started move signs in on. */
+  connection_id: string | null;
+  /** The move signed in; only the switch to `mcp` is left. */
+  signed_in: boolean;
+  /** Accounts on the connector. All but the moved one sign in again after the move. */
+  accounts: number;
+}
+
+/** `sign_in`: sign in on `connection_id` (the OAuth2 routes); the connector switches
+ *  to `provider: mcp` when the sign-in completes. `moved`: it switched. */
+export interface ConnectorMoveResult {
+  status: 'sign_in' | 'moved';
+  connection_id?: string;
+  to?: { slug: string; name: string; url: string };
+}
+
+/** The project's Pipedream and Composio connectors and the Kortix app each moves to. */
+export async function listConnectorMoves(projectId: string): Promise<ConnectorMove[]> {
+  return unwrap(await backendApi.get<{ moves: ConnectorMove[] }>(`/projects/${projectId}/connector-moves`)).moves;
+}
+
+/**
+ * Move a Pipedream or Composio connector to its Kortix app. The connector keeps its slug.
+ * The first call marks an account and answers `sign_in`; after the sign-in the
+ * connector switches by itself, and a second call finishes a switch that failed.
+ */
+export async function moveConnector(
+  projectId: string,
+  slug: string,
+  options: { connectionId?: string } = {},
+): Promise<ConnectorMoveResult> {
+  return unwrap(
+    await backendApi.post<ConnectorMoveResult>(
+      `/projects/${projectId}/connectors/${encodeURIComponent(slug)}/move`,
+      options.connectionId ? { connection_id: options.connectionId } : {},
+    ),
+  );
+}
+
+export async function deleteConnector(projectId: string, slug: string) {
+  return unwrap(
+    await backendApi.delete<{ ok: boolean }>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}`,
+    ),
+  );
+}
+
+export interface PipedreamApp {
+  slug: string;
+  name: string;
+  description: string | null;
+  imgSrc: string | null;
+  /**
+   * Pipedream's own auth type — `'oauth'`, `'keys'`, `'none'`, or absent.
+   *
+   * Widened from the `'oauth'` literal. The narrow type described a filter the
+   * API used to apply, not the catalogue: only 659 of Pipedream's 3,238 apps
+   * are OAuth, and requiring it hid every key-based app (SAP, Oracle, Notion
+   * API Key, …) from search. Both kinds connect through the same hosted
+   * Connect Link, so this field is descriptive — nothing branches on it.
+   */
+  authType: string | null;
+  categories: string[];
+  /** Whether the app publishes actions. Apps without them are excluded from
+   *  the catalogue: a connector with no actions exposes no agent tools. */
+  hasActions: boolean;
+  hasTriggers: boolean;
+  /** Pipedream's promotion weight. The catalogue's resting sort key. */
+  featuredWeight: number;
+  /** The same app's API/MCP catalogue id (`ConnectToolkit.directId`). */
+  directId?: string | null;
+  /** The app's hosted MCP server (`ConnectToolkit.directMcpUrl`). */
+  directMcpUrl?: string | null;
+}
+
+/** A category facet: the key to filter by, and its true size in the catalogue. */
+export interface PipedreamCategory {
+  key: string;
+  label: string;
+  count: number;
+}
+
+export interface PipedreamCatalogQuery {
+  q?: string;
+  /**
+   * A `key` from the same response's `categories`.
+   *
+   * Served from the Kortix API's snapshot of the whole catalogue. Pipedream's
+   * own `/apps` endpoint accepts a category parameter and ignores it, so this
+   * filter does not exist upstream and cannot be reproduced client-side from
+   * loaded pages.
+   */
+  category?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface PipedreamCatalogPage {
+  apps: PipedreamApp[];
+  /** Every category with its true count. Empty while `indexReady` is false. */
+  categories: PipedreamCategory[];
+  /** The catalogue's size for this query and category, across every page. */
+  total?: number;
+  nextCursor?: string;
+  hasMore: boolean;
+  /** Whether the answer came from the complete catalogue index. `false` means
+   *  the index is still building, `categories` is empty, and `category` was
+   *  ignored for this page. Absent on API builds that predate the index. */
+  indexReady?: boolean;
+  /**
+   * Apps matching the query that publish no actions, and so are not offered.
+   *
+   * Lets an empty result say why instead of implying the app does not exist:
+   * `q=SAP` matches two real SAP records that expose zero actions. Absent on
+   * API builds that predate the index.
+   */
+  excludedNoActions?: number;
+}
+
+/**
+ * A page of the Pipedream catalogue.
+ *
+ * Accepts either the positional `(q, cursor)` form or an options object. The
+ * positional form is the published signature and keeps working unchanged;
+ * `category` and `limit` are reachable only through the options object.
+ */
+export async function listPipedreamApps(
+  projectId: string,
+  qOrQuery?: string | PipedreamCatalogQuery,
+  cursor?: string,
+) {
+  const query: PipedreamCatalogQuery =
+    typeof qOrQuery === 'string' || qOrQuery === undefined
+      ? { ...(qOrQuery ? { q: qOrQuery } : {}), ...(cursor ? { cursor } : {}) }
+      : qOrQuery;
+  const params = new URLSearchParams();
+  if (query.q) params.set('q', query.q);
+  if (query.category) params.set('category', query.category);
+  if (query.cursor) params.set('cursor', query.cursor);
+  if (query.limit) params.set('limit', String(query.limit));
+  const qs = params.toString();
+  return unwrap(
+    await backendApi.get<PipedreamCatalogPage>(
+      `/connectors/projects/${projectId}/pipedream/apps${qs ? `?${qs}` : ''}`,
+    ),
+  );
+}
+
+export interface PipedreamSection {
+  key: string;
+  label: string;
+  /** The category's TRUE size — not `apps.length`. A heading states this. */
+  total: number;
+  apps: PipedreamApp[];
+}
+
+/**
+ * The catalogue browse page: a fixed top slice of each of the largest
+ * categories, in one request.
+ *
+ * One request rather than one per category, and a fixed slice rather than a
+ * client-side bucketing of loaded pages — which is what made browse sections
+ * grow and reflow underneath the reader as pagination continued.
+ */
+export async function listPipedreamSections(
+  projectId: string,
+  opts?: { perCategory?: number; maxCategories?: number },
+) {
+  const params = new URLSearchParams();
+  if (opts?.perCategory) params.set('perCategory', String(opts.perCategory));
+  if (opts?.maxCategories) params.set('maxCategories', String(opts.maxCategories));
+  const qs = params.toString();
+  return unwrap(
+    await backendApi.get<{
+      sections: PipedreamSection[];
+      categories: PipedreamCategory[];
+      indexReady?: boolean;
+    }>(`/connectors/projects/${projectId}/pipedream/sections${qs ? `?${qs}` : ''}`),
+  );
+}
+
+/** A Composio toolkit available through the hosted connector catalog. */
+export interface ConnectToolkit {
+  slug: string;
+  name: string;
+  logo: string | null;
+  description?: string | null;
+  categories?: string[];
+  isNoAuth: boolean;
+  connected: boolean;
+  /** The same app's API/MCP catalogue id, when the project has that catalogue
+   *  on and it lists the app. The app page offers both ways to connect. */
+  directId?: string | null;
+  /** The app's hosted MCP server. Install offers it before the managed app
+   *  when `checkMcpServerSignIn` says the sign-in is one click. */
+  directMcpUrl?: string | null;
+}
+
+export interface ConnectToolkitsPage {
+  provider: 'composio';
+  toolkits: ConnectToolkit[];
+  total?: number;
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
+export interface ConnectToolkitsQuery {
+  q?: string;
+  category?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+interface ConnectToolkitsWirePage {
+  items: ConnectToolkit[];
+  cursor?: string | null;
+  totalPages?: number;
+}
+
+/** List hosted Composio toolkits. Legacy Pipedream catalog methods stay separate. */
+export async function listConnectToolkits(
+  projectId: string,
+  query: ConnectToolkitsQuery = {},
+) {
+  const params = new URLSearchParams();
+  if (query.q) params.set('q', query.q);
+  if (query.category) params.set('category', query.category);
+  if (query.cursor) params.set('cursor', query.cursor);
+  if (query.limit) params.set('limit', String(query.limit));
+  const qs = params.toString();
+  const page = unwrap(
+    await backendApi.get<ConnectToolkitsWirePage | ConnectToolkitsPage>(
+      `/connectors/projects/${projectId}/connect/toolkits${qs ? `?${qs}` : ''}`,
+    ),
+  );
+  // The provider returns its native `items` / `cursor` page. Keep accepting the
+  // earlier normalized shape during rolling deploys, but expose one stable SDK
+  // contract to web and other consumers.
+  if ('toolkits' in page) return page;
+  const nextCursor = page.cursor?.trim() || undefined;
+  return {
+    provider: 'composio' as const,
+    toolkits: page.items,
+    nextCursor,
+    hasMore: Boolean(nextCursor),
+  };
+}
+
+/** One browse section of the hosted toolkit catalog. */
+export interface ConnectSection {
+  /** The provider's category slug. `listConnectToolkits({ category: key })` opens it. */
+  key: string;
+  label: string;
+  /** The category's TRUE size — not `toolkits.length`. A heading states this. */
+  total: number;
+  toolkits: ConnectToolkit[];
+}
+
+/** A category of the hosted toolkit catalog, with its size. */
+export interface ConnectCategory {
+  key: string;
+  label: string;
+  count: number;
+}
+
+export interface ConnectSectionsPage {
+  provider: 'composio';
+  /** The largest categories, each a fixed top slice by usage. */
+  sections: ConnectSection[];
+  /** Every category, largest first. */
+  categories: ConnectCategory[];
+}
+
+/**
+ * The hosted toolkit catalog's browse page: a fixed top slice of each of the
+ * largest categories, each with the category's true total, in one request.
+ *
+ * The Composio counterpart of `listPipedreamSections`. Sections are grouped
+ * server-side from the complete catalog, so a heading's count never describes
+ * only the toolkits a single loaded page happened to contain.
+ */
+export async function listConnectSections(
+  projectId: string,
+  opts?: { perCategory?: number; maxCategories?: number },
+) {
+  const params = new URLSearchParams();
+  if (opts?.perCategory) params.set('perCategory', String(opts.perCategory));
+  if (opts?.maxCategories) params.set('maxCategories', String(opts.maxCategories));
+  const qs = params.toString();
+  return unwrap(
+    await backendApi.get<ConnectSectionsPage>(
+      `/connectors/projects/${projectId}/connect/sections${qs ? `?${qs}` : ''}`,
+    ),
+  );
+}
+
+/** `composio`: a managed app. Install it as a
+ *  Composio toolkit from `DiscoverConnector.composio`. `cli` is kept for
+ *  compatibility: the catalogue no longer returns CLI records (2026-10-24),
+ *  and the API answers `400` to `kind=cli`. */
+export type DiscoverConnectorKind = 'openapi' | 'mcp' | 'graphql' | 'composio' | 'kortix' | 'cli';
+
+/** What a `kortix` entry is: an integration Kortix built itself — a channel
+ *  people message the agent in (`slack`, `teams`, `email`, `telegram`) or the
+ *  computer it works on (`computer`). It is set up on its own page, never
+ *  through `installDiscoverConnector`. */
+export interface DiscoverKortixApp {
+  app: 'slack' | 'teams' | 'email' | 'telegram' | 'computer';
+}
+
+export interface DiscoverConnector {
+  id: string;
+  kind: DiscoverConnectorKind;
+  slug: string;
+  name: string;
+  description: string | null;
+  url: string | null;
+  icon: string | null;
+  domain: string;
+  categories: string[];
+  feeds: string[];
+  popularity: number | null;
+  /** The app's hosted MCP server. MCP entries only. */
+  mcpUrl?: string;
+  /** The server signs in with OAuth. */
+  oauth?: boolean;
+  /** Connects with nothing to set up: a public or self-registering MCP server,
+   *  a Kortix catalogue app, or a managed app. */
+  oneClick?: boolean;
+  /** The managed toolkit a `composio` entry installs. */
+  composio?: ConnectToolkit;
+  /** What a `kortix` entry sets up. */
+  kortix?: DiscoverKortixApp;
+  /** The project's profiles that are this app's way in (MCP URL or toolkit). Absent on older servers. */
+  installed?: string[];
+}
+
+export interface DiscoverConnectorTemplate {
+  provider: 'openapi' | 'postman' | 'mcp' | 'graphql';
+  spec?: string;
+  url?: string;
+  transport?: 'http' | 'sse';
+  endpoint?: string;
+  auth?: {
+    type: 'none' | 'bearer' | 'basic' | 'custom';
+    in: 'header' | 'query';
+    name: string | null;
+    prefix: string | null;
+  };
+}
+
+export interface DiscoverConnectorVariant {
+  id: string;
+  /** `composio`: a Composio app, installed from `composio`. */
+  kind: 'openapi' | 'postman' | 'mcp' | 'graphql' | 'http' | 'composio' | 'kortix' | 'cli';
+  name: string;
+  url: string | null;
+  docs: string | null;
+  description: string | null;
+  transports: string[];
+  requiresAuth: boolean;
+  command: string | null;
+  connector: DiscoverConnectorTemplate | null;
+  /** Connects with nothing to set up. */
+  oneClick?: boolean;
+  /** The way Install uses without asking; the first variant. */
+  recommended?: boolean;
+  /** The Composio toolkit a `composio` variant installs. */
+  composio?: ConnectToolkit;
+  /** What a `kortix` variant sets up. */
+  kortix?: DiscoverKortixApp;
+  /** The project's profiles that are this way. Absent on older servers. */
+  installed?: string[];
+}
+
+export interface DiscoverConnectorsPage {
+  items: DiscoverConnector[];
+  total: number;
+  nextCursor?: string;
+  hasMore: boolean;
+  /** Catalogue sources that could not be reached (`integrations`, `composio`): some apps are missing. */
+  degraded?: string[];
+}
+
+export interface DiscoverConnectorDetail {
+  item: DiscoverConnector;
+  variants: DiscoverConnectorVariant[];
+  /** Every profile the project has of this app, any way. Absent on older servers. */
+  installed?: string[];
+}
+
+/** @deprecated Use `DiscoverConnectorKind`. */
+export type DiscoverIntegrationKind = DiscoverConnectorKind;
+/** @deprecated Use `DiscoverConnector`. */
+export type DiscoverIntegration = DiscoverConnector;
+/** @deprecated Use `DiscoverConnectorTemplate`. */
+export type DiscoverIntegrationTemplate = DiscoverConnectorTemplate;
+/** @deprecated Use `DiscoverConnectorVariant`. */
+export type DiscoverIntegrationVariant = DiscoverConnectorVariant;
+/** @deprecated Use `DiscoverConnectorsPage`. */
+export type DiscoverIntegrationsPage = DiscoverConnectorsPage;
+/** @deprecated Use `DiscoverConnectorDetail`. */
+export type DiscoverIntegrationDetail = DiscoverConnectorDetail;
+
+export interface DiscoverConnectorsQuery {
+  q?: string;
+  cursor?: string;
+  /** A browse-section key from `listDiscoverSections`. The page then holds
+   *  exactly the connectors that section counted, picks first. */
+  category?: string;
+  limit?: number;
+  /** Only the entries that connect with nothing to set up (`oneClick`). */
+  oneClick?: boolean;
+  /** Only the entries that connect these ways. */
+  kinds?: DiscoverConnectorKind[];
+}
+
+/**
+ * A page of the Discover catalogue. Accepts the original positional
+ * `(projectId, q, cursor)` form or a query object carrying a category filter.
+ */
+export async function listDiscoverConnectors(
+  projectId: string,
+  qOrQuery?: string | DiscoverConnectorsQuery,
+  cursor?: string,
+) {
+  const query: DiscoverConnectorsQuery =
+    typeof qOrQuery === 'string' || qOrQuery === undefined
+      ? { ...(qOrQuery ? { q: qOrQuery } : {}), ...(cursor ? { cursor } : {}) }
+      : qOrQuery;
+  const params = new URLSearchParams();
+  if (query.q) params.set('q', query.q);
+  if (query.category) params.set('category', query.category);
+  if (query.cursor) params.set('cursor', query.cursor);
+  if (query.limit) params.set('limit', String(query.limit));
+  if (query.oneClick) params.set('oneClick', '1');
+  if (query.kinds?.length) params.set('kind', query.kinds.join(','));
+  const qs = params.toString();
+  return unwrap(
+    await backendApi.get<DiscoverConnectorsPage>(
+      `/connectors/projects/${projectId}/discover/connectors${qs ? `?${qs}` : ''}`,
+    ),
+  );
+}
+
+/** One browse section of the Discover catalogue. */
+export interface DiscoverSection {
+  /** The section key. `listDiscoverConnectors({ category: key })` opens it. */
+  key: string;
+  label: string;
+  /** The section's TRUE size — not `items.length`. A heading states this. */
+  total: number;
+  items: DiscoverConnector[];
+}
+
+/** A Discover browse section, with its size. */
+export interface DiscoverCategory {
+  key: string;
+  label: string;
+  count: number;
+}
+
+export interface DiscoverSectionsPage {
+  /** The top of the whole catalogue by popularity. */
+  popular: DiscoverConnector[];
+  /** The leading sections in browse order, each a fixed top slice. */
+  sections: DiscoverSection[];
+  /** Every section in browse order. */
+  categories: DiscoverCategory[];
+  /** Catalogue sources that could not be reached. */
+  degraded?: string[];
+}
+
+/**
+ * The Discover browse page in one request: Popular, then a fixed top slice of
+ * each section with the section's true total across the complete catalogue.
+ */
+export async function listDiscoverSections(
+  projectId: string,
+  opts?: {
+    perCategory?: number;
+    maxCategories?: number;
+    oneClick?: boolean;
+    kinds?: DiscoverConnectorKind[];
+  },
+) {
+  const params = new URLSearchParams();
+  if (opts?.perCategory) params.set('perCategory', String(opts.perCategory));
+  if (opts?.maxCategories) params.set('maxCategories', String(opts.maxCategories));
+  if (opts?.oneClick) params.set('oneClick', '1');
+  if (opts?.kinds?.length) params.set('kind', opts.kinds.join(','));
+  const qs = params.toString();
+  return unwrap(
+    await backendApi.get<DiscoverSectionsPage>(
+      `/connectors/projects/${projectId}/discover/sections${qs ? `?${qs}` : ''}`,
+    ),
+  );
+}
+
+export async function getDiscoverConnector(projectId: string, id: string) {
+  const params = new URLSearchParams({ id });
+  return unwrap(
+    await backendApi.get<DiscoverConnectorDetail>(
+      `/connectors/projects/${projectId}/discover/connectors/detail?${params.toString()}`,
+    ),
+  );
+}
+
+/** One tool a way to connect offers, read before install. */
+export interface DiscoverConnectorTool {
+  name: string;
+  description: string;
+}
+
+export interface DiscoverConnectorTools {
+  way: { id: string; kind: DiscoverConnectorVariant['kind']; name: string };
+  tools: DiscoverConnectorTool[];
+  /** Every tool the source lists; `tools` holds at most 500. */
+  total: number;
+  /** `mcp`: the server's own list; `directory`: names from a public
+   *  directory; `composio`; `spec`: the OpenAPI operations; `none`: this way
+   *  lists its tools only after install. */
+  source: 'mcp' | 'directory' | 'composio' | 'spec' | 'none';
+}
+
+/** The tools of one way to connect a Discover app (`way`: a variant id;
+ *  default the recommended way), before it is installed. */
+export async function getDiscoverConnectorTools(projectId: string, id: string, way?: string) {
+  const params = new URLSearchParams({ id });
+  if (way) params.set('way', way);
+  return unwrap(
+    await backendApi.get<DiscoverConnectorTools>(
+      `/connectors/projects/${projectId}/discover/connectors/tools?${params.toString()}`,
+    ),
+  );
+}
+
+export interface DiscoverInstallResult {
+  ok: true;
+  slug: string;
+  name: string;
+  provider: string;
+  way: { id: string; kind: DiscoverConnectorVariant['kind']; name: string; oneClick: boolean };
+  sync?: ConnectorSyncResult;
+  /**
+   * `connect`: sign in (`connectorConnect`); `credential`: set its key;
+   * `ready`: usable now; `fix`: added, but its tools did not load (`error`).
+   */
+  next: 'connect' | 'credential' | 'ready' | 'fix';
+  /** The project already had this way: nothing was added; `slug` is that profile. */
+  existing?: boolean;
+  /** Why the tools did not load, with `next: 'fix'`. */
+  error?: string;
+}
+
+/** Install one way to connect a Discover app as a connector profile:
+ *  `way` by variant id, else the recommended one. */
+export async function installDiscoverConnector(
+  projectId: string,
+  input: {
+    id: string;
+    way?: string;
+    name?: string;
+    slug?: string;
+    /** Add a second profile of a way the project already has. */
+    as_new_profile?: boolean;
+  },
+) {
+  return unwrap(
+    await backendApi.post<DiscoverInstallResult>(
+      `/connectors/projects/${projectId}/discover/install`,
+      input,
+    ),
+  );
+}
+
+/** @deprecated Use `listDiscoverConnectors`. */
+export const listDiscoverIntegrations = listDiscoverConnectors;
+/** @deprecated Use `getDiscoverConnector`. */
+export const getDiscoverIntegration = getDiscoverConnector;
+
+/**
+ * Deployment-wide flag: is the easy-connect (Pipedream) provider configured?
+ * Lets the UI hide/disable the Easy Connect surface instead of surfacing it and
+ * failing with a 501 once opened (e.g. self-host without Pipedream credentials).
+ */
+export async function getConnectStatus() {
+  return unwrap(
+    await backendApi.get<ConnectorConnectStatus>('/connectors/connect-status'),
+  );
+}
+
+/**
+ * Store a connector's shared credential. For an MCP connector the server then
+ * re-reads the tools: `sync` is that run, and a per-slug error in it means the
+ * credential is stored but the tools still fail to load. Absent for other
+ * providers and on older servers.
+ */
+export async function setConnectorCredential(
+  projectId: string,
+  slug: string,
+  credential: string | ConnectionCredentialInput,
+) {
+  const input = typeof credential === 'string' ? { value: credential } : credential;
+  return unwrap(
+    await backendApi.put<{ ok: boolean; sync?: ConnectorSyncResult }>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/credential`,
+      input,
+    ),
+  );
+}
+
+/** Disconnect a connector: remove its stored credential. */
+export async function deleteConnectorCredential(projectId: string, slug: string) {
+  return unwrap(
+    await backendApi.delete<{ ok: boolean }>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/credential`,
+    ),
+  );
+}
+
+export async function setConnectorSecretBinding(
+  projectId: string,
+  slug: string,
+  secretIdentifier: string | null,
+) {
+  return unwrap(
+    await backendApi.put<{ ok: boolean }>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/secret-binding`,
+      { secret_identifier: secretIdentifier },
+    ),
+  );
+}
+
+export interface ConnectorFinalizeOptions {
+  /**
+   * Owner scope of the account to finalize. Must MATCH the owner the paired
+   * `connectorConnect` used: the route defaults an absent value to `me`, so
+   * finalizing a `project` authorization without this polls the caller's own
+   * member connection and never reports the shared account active.
+   */
+  owner?: ConnectorConnectOwner;
+  /**
+   * Finalize this exact connection. Omitted, the route resolves the most
+   * recently updated connection in the owner scope — correct for a connect this
+   * client just started, but a caller that already knows the connection should
+   * name it rather than rely on recency.
+   */
+  connectionId?: string;
+}
+
+/**
+ * Poll a hosted authorization until the provider reports an active account.
+ *
+ * On success the API tells the session that requested the connector, so the
+ * agent resumes without anyone typing "done".
+ */
+export async function connectorFinalize(
+  projectId: string,
+  slug: string,
+  options: ConnectorFinalizeOptions = {},
+) {
+  // Each key is omitted rather than sent as null when unset: the API reads a
+  // key's PRESENCE to apply its own default, and an older client sends neither.
+  const body: Record<string, string> = {};
+  if (options.owner) body.owner = options.owner;
+  if (options.connectionId) body.connection_id = options.connectionId;
+  return unwrap(
+    await backendApi.post<ConnectorFinalizeResult>(
+      `/connectors/projects/${projectId}/connectors/${encodeURIComponent(slug)}/connect/finalize`,
+      body,
+    ),
+  );
+}
+
+/** @deprecated Prefer {@link connectorFinalize} — the route was never Pipedream-only. */
+export const pipedreamFinalize = connectorFinalize;

@@ -1,0 +1,2316 @@
+'use client';
+
+/**
+ * useSession — the ONE hook a host needs to open a session and stream a chat.
+ *
+ * Everything sandbox-shaped is internal: it drives `/start` (server long-poll),
+ * points the runtime at the session's sandbox, opens the SSE stream, resolves the
+ * canonical OpenCode id, and syncs messages — exposing one `phase`
+ * (starting|ready|error) plus messages/send/abort/questions/permissions and the
+ * server-side capabilities (models/agents/commands/picks). The host imports
+ * `createKortix` + `useSession` and NOTHING else runtime-related: no server-store,
+ * no `switchToSessionSandboxAsync`, no health poller, no event-stream provider.
+ *
+ * Readiness comes from the SERVER (`stage==='ready'` is only returned after the
+ * daemon answered), seeded into the connection store on switch — so there is NO
+ * client health poller, and the first turn streams immediately.
+ *
+ * Call this ONCE per session view (like a provider): it owns the SSE subscription
+ * and the `/start` poll for `(projectId, sessionId)`.
+ */
+
+import type { Message, Part } from '../core/runtime/runtime-types';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+
+import { useOpenCodeCompactionStore } from '../browser/stores/opencode-compaction-store';
+import { useSessionWorkingStore } from '../browser/stores/session-working-store';
+import type { SendReceipt } from '../core/session/working';
+import {
+  compactionExpiryAtMs,
+  projectCompacting,
+  serverCompactionRevalidateAtMs,
+} from '../core/session/compaction';
+import { useRuntimePendingStore } from '../browser/stores/opencode-pending-store';
+import {
+  markRuntimeReadyVerified,
+  seedConnectionFromReadyStart,
+} from '../browser/stores/sandbox-connection-store';
+import { getSandboxUrlForExternalId } from '../browser/stores/server-store';
+import { authenticatedFetch } from '../core/http/auth';
+import { RUNTIME_LOG_CAPABILITY, readRuntimeLogPage } from '../core/session/runtime-actions';
+import { getBackendUrl } from '../core/session/server-store/url-helpers';
+import { ascendingId, useSyncStore } from '../browser/stores/sync-store';
+import { BillingError, parseBillingError } from '../core/http/api/errors';
+import { isSessionFresh } from '../core/http/fresh-sessions';
+import { onSessionDeleted, onSessionStopped } from '../core/http/session-stopped';
+import { formatRuntimeError } from '../core/http/runtime-errors';
+import {
+  type CreateSessionPromptInput,
+  type SessionPromptPart,
+  type SessionStartResult,
+  createSessionPrompt,
+  isSessionStartError,
+  sessionStartKey,
+  startProjectSession,
+} from '../core/rest/projects-client';
+import { RuntimeNotReadyError, getClient } from '../core/runtime/client';
+import { setCurrentRuntime } from '../core/session/current-runtime';
+import { onRuntimeGone } from '../core/session/runtime-gone';
+import { openSessionBundle } from '../core/session/open-bundle';
+import { messagesBeforeRewind } from '../core/session/rewind';
+import { extractGatewayErrorDetails, unwrapError } from '../core/turns/errors';
+import { holdLiveStart, liveStartPollMode } from './hold-live-start';
+import { clearStartStash, readStartStash } from './session-start-stash';
+import { reconcileHydratedSessionTitle } from './session-title-sync';
+import { seedModelDefaultsFromOpenBundle } from './prefetch-session-open';
+import { useCanonicalRuntimeSession } from './use-canonical-opencode-session';
+import type { ModelKey } from './use-model-store';
+import { useRuntimeEventStream } from './use-opencode-events';
+import { useSessionStream } from './use-session-stream';
+import { sessionStreamConnected } from '../core/session/control-stream';
+import {
+  PRESENCE_AWAKE_REFRESH_MS,
+  presenceAwakeFrom,
+  presenceReporter,
+  watchHumanPresence,
+} from './human-presence';
+import { formatModelString } from './use-opencode-local';
+import {
+  type AbortSettlement,
+  type PromptPart,
+  runtimeKeys,
+  rejectQuestion as rejectQuestionApi,
+  replyToPermission,
+  replyToQuestion,
+  useAbortRuntimeSession,
+  useExecuteRuntimeCommand,
+  useRuntimeSession,
+} from './use-opencode-sessions';
+import { mintSessionWireMessageId } from './use-opencode-sessions/messages';
+import { unwrap } from './use-opencode-sessions/shared';
+import { usePermissionSelfHeal } from './use-permission-self-heal';
+import { useProjectConfig } from './use-project-config';
+import { useProjectModels } from './use-project-models';
+import { useQuestionSelfHeal } from './use-question-self-heal';
+import { useRuntimePhase } from './use-runtime-phase';
+import { useSessionPicks, type SessionPicks } from './use-session-picks';
+import { derivePhase } from './use-session-phase';
+import { isEmptyConversation, resolveSavedTranscript } from '../core/session-sync/saved-transcript';
+import { useSessionLogOlder, useSessionLogSync } from './use-session-log';
+import { sessionLogRoot } from '../core/session-log/v1-view';
+import { useSessionSync } from './use-session-sync';
+import { selectTranscriptShapeKey } from './session-transcript-subscription';
+import { useSessionStartGiveUp } from './use-session-start-give-up';
+import { useSessionCanStop, useSessionTurnOutcome, useSessionWorking } from './use-session-working';
+import { cancelSessionTurn } from './session-stop';
+import { useTurnEndHandoff } from './turn-end-handoff';
+import { useVisibleAgents } from './use-visible-agents';
+import { createKortix } from '../core/client/kortix';
+import { platformConfig } from '../core/http/config';
+
+/** Coarse session lifecycle for the host's top-level gating. */
+export type SessionPhase = 'starting' | 'ready' | 'error';
+
+// `useLayoutEffect` warns during SSR ("useLayoutEffect does nothing on the
+// server"). This file is always `'use client'`, but Next.js still runs an
+// initial SSR pass before hydration — fall back to `useEffect` there. See the
+// mount-time `markRuntimeReadyVerified` seed below for why this hook needs a
+// LAYOUT effect specifically (ordering, not paint timing).
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
+// Grace window for the optimistic create-vs-start race: how long /start keeps
+// retrying a 404 for a freshly-minted session before treating it as terminal.
+// ~12 × 800ms ≈ 9.6s, comfortably past the sub-second create POST.
+const FRESH_START_404_RETRIES = 12;
+const FRESH_START_404_RETRY_DELAY_MS = 800;
+
+/**
+ * Whether the `/start` poll should retry. A 404 on a freshly-minted session is
+ * the optimistic create-vs-start race (the create POST hasn't landed yet), so
+ * retry it for the grace window; a 404 on any other (non-fresh) session is a
+ * genuinely-missing/no-access session and is terminal at once. Other terminal
+ * SessionStartErrors never retry; transient transport failures retry a few times.
+ */
+export function shouldRetrySessionStart(
+  failureCount: number,
+  error: unknown,
+  sessionId: string,
+): boolean {
+  if (isSessionStartError(error) && error.status === 404 && isSessionFresh(sessionId)) {
+    return failureCount < FRESH_START_404_RETRIES;
+  }
+  return !isSessionStartError(error) && failureCount < 3;
+}
+
+/**
+ * Whether a human coming BACK to this tab should re-open (wake) a stopped
+ * session. Two states park a session with no way back except an explicit
+ * Restart or a remount:
+ *
+ * - the hold: a user Stop made from this tab (`stoppedByUserRef`);
+ * - the cached answer is terminal-`stopped`: the poll stopped dead on the
+ *   dormant answer (a manual stop from any host, or the idle reaper), and
+ *   `shouldPollSessionStart` will never fire again for it.
+ *
+ * The caller fires this only on an absent→present presence transition — a
+ * person who left and returned — and resets the open intent before it, so the
+ * wake wins the `userStopFollowsIntent` race that parked the session. A stop
+ * pressed moments ago in this same tab (presence never dropped) is not a
+ * return, and stays stopped.
+ */
+export function presenceReturnReopensSession(
+  heldByThisTab: boolean,
+  cachedStage: string | null | undefined,
+): boolean {
+  return heldByThisTab || cachedStage === 'stopped';
+}
+
+/**
+ * Gap between `/start` polls. The server long-polls each tick, so this is the
+ * pause between holds, not the latency to observe `ready`.
+ */
+export const SESSION_START_POLL_MS = 1_500;
+
+/**
+ * The absolute URL of this session's OpenCode runtime, or `null` until the box
+ * is ready.
+ *
+ * `/start` reports the runtime two ways and NEITHER is directly usable:
+ *
+ *  - `sandbox.external_id` — the provider sandbox id. The proxy route is the
+ *    SDK's to compose (`getSandboxUrlForExternalId`), never the host's.
+ *  - `runtime_url` — a RELATIVE path, `/p/<external_id>/8000`
+ *    (`apps/api/src/projects/session-open/index.ts:526`). Returned verbatim it is a
+ *    string no host can fetch.
+ *
+ * The external id wins because it is the same derivation `startProjectSession`
+ * writes into the session-runtime registry and `useSession` hands to
+ * `setCurrentRuntime` — one URL for the session, from one function. The
+ * `runtime_url` branch covers a ready payload whose sandbox row is absent,
+ * and composes the path against the configured backend.
+ *
+ * Gated on `stage === 'ready'`: a sandbox row exists from `provisioning`
+ * onward, and a URL for a box that is not serving yet is an invitation to dial
+ * it — the condition `SessionNotReadyError` exists to prevent.
+ */
+export function resolveSessionRuntimeUrl(
+  start: Pick<SessionStartResult, 'stage' | 'sandbox' | 'runtime_url'> | null | undefined,
+): string | null {
+  if (!start || start.stage !== 'ready') return null;
+  const externalId = start.sandbox?.external_id;
+  if (externalId) return getSandboxUrlForExternalId(externalId);
+  const path = start.runtime_url;
+  if (!path) return null;
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${getBackendUrl()}${path.startsWith('/') ? '' : '/'}${path}`;
+}
+
+/** What a send may carry beyond the parts themselves. */
+export interface SendOptions {
+  model?: ModelKey;
+  agent?: string;
+  variant?: string;
+  directory?: string;
+}
+
+/**
+ * Fold the session's picks and this call's override into the options a send
+ * actually carries.
+ *
+ * Each field is OMITTED when neither source supplies one — `{ variant:
+ * undefined }` is not `{}` to a body builder that iterates keys, and the
+ * runtime reads an absent field as "use the default". `variant` (reasoning
+ * effort) now falls back to `picks.variant` exactly as `model` and `agent`
+ * already fell back to theirs; before `SessionPicks` carried it, every host
+ * kept it in a store of its own and passed it on every call.
+ *
+ * `directory` is deliberately per-send only: it scopes one prompt, not a
+ * session.
+ */
+export function resolveSendOptions(
+  picks: Pick<SessionPicks, 'model' | 'agent' | 'variant'>,
+  override?: {
+    model?: ModelKey | null;
+    agent?: string | null;
+    variant?: string | null;
+    directory?: string | null;
+  },
+): SendOptions {
+  const model = override?.model ?? picks.model;
+  const agent = override?.agent ?? picks.agent;
+  const variant = override?.variant ?? picks.variant;
+  return {
+    ...(model ? { model } : {}),
+    ...(agent ? { agent } : {}),
+    ...(variant ? { variant } : {}),
+    ...(override?.directory ? { directory: override.directory } : {}),
+  };
+}
+
+/**
+ * The inbox prompt (`POST .../prompts`) for one `sendParts` call.
+ *
+ * The wire id is minted here and placed by the server at delivery
+ * (`remintOnDelivery`), as the CLI does. One `clientMessageId` keeps one wire
+ * id across retries of a submission; without one, the minted id names the
+ * submission. A text part's `id` is the host's own correlation key for its
+ * optimistic message and does not go on the wire.
+ */
+export function sessionPromptFromParts(
+  runtimeSessionId: string,
+  parts: PromptPart[],
+  options: SendOptions,
+  clientMessageId?: string,
+  nowMs: number = Date.now(),
+  /**
+   * The id the host drew its optimistic message under. It becomes the wire id, so the
+   * runtime's user message, the session log and the inbox row all carry it, and the log's
+   * put replaces the optimistic message by id. Omitted: a wire id is minted.
+   */
+  optimisticMessageId?: string,
+): CreateSessionPromptInput {
+  const messageId = optimisticMessageId ?? mintSessionWireMessageId(runtimeSessionId, clientMessageId);
+  const wireParts: SessionPromptPart[] = parts.map((part) => {
+    if (part.type === 'file') {
+      return {
+        type: 'file',
+        mime: part.mime,
+        url: part.url,
+        ...(part.filename ? { filename: part.filename } : {}),
+        ...(part.source ? { source: part.source } : {}),
+      };
+    }
+    if (part.type === 'agent') return { type: 'agent', name: part.name, ...(part.source ? { source: part.source } : {}) };
+    return { type: 'text', text: part.text };
+  });
+  const overrides = {
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.agent ? { agent: options.agent } : {}),
+    ...(options.variant ? { variant: options.variant } : {}),
+    ...(options.directory ? { directory: options.directory } : {}),
+  };
+  return {
+    clientMessageId: clientMessageId ?? messageId,
+    messageId,
+    parts: wireParts,
+    ...(Object.keys(overrides).length ? { overrides } : {}),
+    remintOnDelivery: true,
+    clientSentAtMs: nowMs,
+  };
+}
+
+/**
+ * Should the `/start` boot poll fire again, given the last tick's outcome?
+ * `false` = stop: a terminal stage, or a terminal client error that no amount
+ * of polling can fix. Everything else keeps polling — including a `null`
+ * payload from a transient transport failure, since the box is still coming up.
+ */
+export function shouldPollSessionStart(
+  error: unknown,
+  data: SessionStartResult | null | undefined,
+  now: number = Date.now(),
+): number | false {
+  if (isSessionStartError(error)) return false;
+  if (data?.retriable === false) return false;
+  const stage = data?.stage;
+  if (stage === 'ready' || stage === 'failed' || stage === 'stopped') return false;
+  const retryPause = sessionStartRetryPauseMs(data, now);
+  return retryPause ?? SESSION_START_POLL_MS;
+}
+
+/**
+ * How long to wait before the NEXT `/start` poll when the server names a time
+ * it will itself re-attempt (`failure.evidence.next_retry_at`).
+ *
+ * The wake cooldown payloads answer instantly (`stage: 'starting'`,
+ * `retriable: true`, the server already re-attempting on its own schedule) and
+ * a poll faster than that `next_retry_at` cannot change the answer — it only
+ * repeats the same round trip, every 1.5s, from every open session view.
+ * Prod (KRTX-385): that cadence sustained ~8k `POST /start`/hour from one
+ * workspace's wedged boxes for days and convoyed the audit-ingest pool behind
+ * them, which is what pushed the whole fleet's DB routes (including the polled
+ * `GET /sessions/:id/turn`) into a multi-second p95.
+ *
+ * The pause is `next_retry_at - now`, clamped: never below the normal cadence
+ * (a lapsed cooldown polls immediately — the server is re-attempting now) and
+ * never above 60s (an hours-away cooldown still rechecks once a minute, so an
+ * open tab notices the lapse). Null when the payload names no retry time —
+ * a cold boot's `provisioning`/`starting` keeps the fast cadence exactly as
+ * it was.
+ */
+function sessionStartRetryPauseMs(
+  data: SessionStartResult | null | undefined,
+  now: number,
+): number | null {
+  const nextRetryAt = data?.failure?.evidence?.next_retry_at;
+  if (!nextRetryAt) return null;
+  const atMs = Date.parse(nextRetryAt);
+  if (!Number.isFinite(atMs)) return null;
+  return Math.max(SESSION_START_POLL_MS, Math.min(atMs - now + 1_000, 60_000));
+}
+
+/**
+ * How long `/start` can return NEITHER data NOR an error before it counts as
+ * "given up" rather than "still working".
+ *
+ * `startProjectSession` swallows every 5xx/408/429/transport failure into a
+ * `null` result instead of throwing
+ * (`core/rest/projects-client/session-sandbox.ts`), so on a persistent
+ * outage `start.error` and `start.data` both stay `null` forever and
+ * `shouldPollSessionStart(null, null)` keeps returning `SESSION_START_POLL_MS`
+ * — there is no terminal stage and no error ever produced to observe.
+ * Without this ceiling, a caller waiting for `/start` to "settle" (e.g. the
+ * `phase` derivation below) can never learn it gave up, and a runtime error
+ * arriving alongside a wedged `/start` pins that caller in "still starting"
+ * forever — a silent hang, strictly worse than a visible error card.
+ *
+ * A genuine resume never trips this: every poll on a resuming box returns
+ * real `data` (a `stage`), so the inconclusive clock keeps resetting and this
+ * budget never starts counting — it only fires when `/start` itself has
+ * nothing to say, tick after tick. A cold sandbox resume can legitimately
+ * take tens of seconds end to end, but that legitimate case is exactly the
+ * one that keeps producing data and never reaches this bound.
+ *
+ * **Worst-case actual flip time is ~61.5s, not 45s** — say so accurately
+ * rather than understate it. 45s is 30 consecutive empty poll intervals at
+ * `SESSION_START_POLL_MS` (1.5s each), but the budget is only ever CHECKED
+ * at a poll tick, and `waitMs` (default
+ * `15_000`, the server-side long-poll budget passed to `startProjectSession`)
+ * means a single tick's request can itself take up to ~15s before resolving.
+ * So the tick that finally crosses the 45s line can itself land up to one
+ * full cycle late: `45_000 + (waitMs + SESSION_START_POLL_MS)` ≈
+ * `45_000 + 16_500` = `61_500`ms in the worst case. That is still acceptable:
+ * it is a finite, single-digit-minutes ceiling on a failure this task
+ * otherwise made hang forever, and erring toward a LATE flip (never early)
+ * is the safe direction — it never cuts short a legitimate wake, only delays
+ * how quickly a genuine outage surfaces its error card.
+ */
+export {
+  START_INCONCLUSIVE_GIVE_UP_MS,
+  hasStartGivenUp,
+  nextInconclusiveSince,
+} from './use-session-start-give-up';
+
+/**
+ * Has `/start` been returning nothing usable — no data, no error — for at
+ * least {@link START_INCONCLUSIVE_GIVE_UP_MS}? Kept separate from
+ * `shouldPollSessionStart` (which correctly keeps saying "poll again":
+ * retrying costs nothing) because "should the query retry" and "should a
+ * caller stop waiting on it" are different questions once the first answer
+ * is permanently yes.
+ */
+/**
+ * Compute the next value for the "inconclusive since" clock that feeds
+ * {@link hasStartGivenUp}, given one poll tick's outcome. Pure and separate
+ * from the `useEffect` that calls it so the arm/reset decision is
+ * unit-testable without rendering the hook — an earlier version of this
+ * logic lived only in the effect and was wrong in a way the pure
+ * `computeStartSettled` tests could not catch: it armed while the query was
+ * DISABLED, and the stale stamp then carried into the enabled window,
+ * consuming the whole grace period before a single real `/start` request had
+ * fired.
+ *
+ * The invariant: the clock may only measure time during which the query was
+ * actually able to run for THIS session.
+ * - Disabled → always `null`. A query that cannot fetch has neither "given
+ *   up" nor is it "still working" — it hasn't started. A stamp taken while
+ *   disabled must not survive into the enabled window.
+ * - Data or error arrived → clear to `null`. The poll said SOMETHING.
+ * - Enabled and inconclusive (no data, no error) → arm at
+ *   `nowMs` if nothing is armed yet; otherwise keep the existing stamp — the
+ *   clock starts once, at the FIRST inconclusive tick, not every tick.
+ * - The first mid-fetch state also arms the clock. A request that never settles
+ *   must reach the same bounded verdict as repeated empty responses.
+ *
+ * Session-identity resetting (`projectId`/`sessionId` changing under a reused
+ * hook instance) is handled by a separate effect, not here — this function
+ * has no session id to key on by design, matching the narrow input the
+ * `useEffect` actually has on each tick.
+ */
+
+/**
+ * Whether the `/start` poll should be treated as SETTLED — resolved, failed,
+ * or given up — for a caller (like `phase`, below) that needs to stop
+ * waiting on it. A disabled query settles immediately: a query that never
+ * runs was never "still working" in the first place.
+ *
+ * Takes `hasGivenUp` as an ALREADY-RESOLVED boolean, not a timestamp pair.
+ * The caller previously stored this function's ENTIRE return value in
+ * `useState` — including the `!enabled -> true` branch — so a
+ * disabled->enabled transition (or a session switch) could read a stale
+ * `true` for one committed, painted frame, and a live `runtimeError` in that
+ * window rendered 'error' before a single real `/start` request had fired.
+ * `enabled`, `isFetching`, `data`, and `error` are cheap to read fresh on
+ * every call, so they no longer go through state at all — only `hasGivenUp`
+ * (via {@link hasStartGivenUp}) inherently needs wall-clock tracking, so it
+ * is the only piece the caller is allowed to latch.
+ *
+ * ORDER IS LOAD-BEARING: `hasGivenUp` must be tested BEFORE `isFetching`.
+ * Giving up does not stop the poll — `shouldPollSessionStart(null, null)`
+ * keeps returning 1500ms for as long as the outage lasts — so with the
+ * fetch check first, this answered false
+ * mid-poll and true between polls, forever. `phase` flipped 'starting' <->
+ * 'error' with it and the runtime error card blinked on and off once per poll
+ * cycle. Give-up is a sticky verdict (the caller's effect clears it only when
+ * /start actually answers, when the session changes, or when the query is
+ * disabled), so once it is in, no single in-flight tick may take it back out.
+ */
+export function computeStartSettled(input: {
+  enabled: boolean;
+  isFetching: boolean;
+  data: SessionStartResult | null | undefined;
+  error: unknown;
+  hasGivenUp: boolean;
+}): boolean {
+  if (!input.enabled) return true;
+  if (input.hasGivenUp) return true;
+  if (input.isFetching) return false;
+  return !shouldPollSessionStart(input.error, input.data);
+}
+
+/**
+ * How long a `ready` /start result stays fresh enough that a REMOUNT renders
+ * it straight from the TanStack Query cache with zero network `/start` before
+ * first paint — the "user just left this exact session and came right back"
+ * case (tab switch, back button, re-opening the same session from the
+ * project's session list), which otherwise re-POSTs `/start` (and re-waits
+ * its up-to-`waitMs` server long-poll) on every single mount even though the
+ * box never went anywhere.
+ *
+ * The server parks an idle sandbox after ~15 minutes (see the `/start` route
+ * this hook drives, in `session-sandbox.ts`), so this window is nowhere near
+ * long enough to promise anything about a sandbox that has genuinely been
+ * idle — it only needs to outlast the sub-second "switch thrash" case, not
+ * survive a real absence. 30s comfortably covers that without risking a
+ * materially stale "ready" read surviving into a box the server already
+ * parked: `sessionStartStaleTime` only skips the IMMEDIATE refetch, it never
+ * cancels one — a background refetch still fires once the cached entry ages
+ * past this window (stale-while-revalidate), so a parked box still converges
+ * to `stopped` on the very next look.
+ */
+export const SESSION_START_FRESH_MS = 30_000;
+
+/** At most one `/start` re-read per this window when the proxy reports the box gone. */
+const RUNTIME_GONE_REFETCH_MIN_MS = 3_000;
+
+/**
+ * OUTCOME-AWARE `staleTime` for the `/start` query (TanStack's function
+ * form). Only a `stage==='ready'` result may be served from cache without an
+ * immediate refetch — every other stage (`provisioning`/`starting`/
+ * `stopped`/`failed`, or no cached data yet) represents an in-flight or
+ * terminal state that must keep converging on server truth, so it stays
+ * maximally stale (`0`, i.e. TanStack's "always refetch on mount") —
+ * unchanged from this query's behavior before this staleTime existed.
+ *
+ * The ready-state interval below rechecks server truth while a tab remains open;
+ * staleTime only governs the immediate remount request.
+ */
+export function sessionStartStaleTime(query: {
+  state: { data: SessionStartResult | null | undefined };
+}): number {
+  return query.state.data?.stage === 'ready' ? SESSION_START_FRESH_MS : 0;
+}
+
+/**
+ * Whether a cached `/start` query STATE (as sitting in the TanStack Query
+ * cache the moment a session starts mounting) already says `stage==='ready'`
+ * — independent of staleness/age: React Query serves whatever is cached
+ * synchronously on every mount regardless of `staleTime` (`staleTime` only
+ * gates whether a background refetch ALSO fires, never whether the cached
+ * data renders) — so a session left seconds or minutes ago can make
+ * `switched` true well before this mount's own effects have a chance to run.
+ *
+ * Pure so the mount-time `markRuntimeReadyVerified()` decision it feeds (the
+ * `useIsomorphicLayoutEffect` in {@link useSession}, right after the /start
+ * query below) is unit-testable without rendering the hook — this package has
+ * no hook-render harness, so pure predicates like this ARE the test surface
+ * for effect-gated logic (see `computeStartSettled`/`nextInconclusiveSince`
+ * above for the established pattern).
+ */
+export function cachedStartResultIsReady(
+  cachedState: { data?: SessionStartResult | null } | undefined,
+): boolean {
+  return cachedState?.data?.stage === 'ready';
+}
+
+/**
+ * What one `/start` answer said, in the few fields a re-poll can change.
+ * Two consecutive answers with the same signature told the client nothing
+ * new; the poll interval may stretch.
+ */
+function startPollSignature(data: SessionStartResult | null | undefined): string {
+  return [
+    data?.stage ?? '',
+    data?.reason ?? '',
+    data?.failure?.evidence?.next_retry_at ?? '',
+  ].join('|');
+}
+
+interface StartPollPace {
+  signature: string;
+  /** When the CURRENT signature was first observed. */
+  unchangedSince: number;
+  /** Last time this pace was touched; prunes pace left behind by an unmount. */
+  touchedAt: number;
+}
+
+const SESSION_START_POLL_BACKOFF_STEPS = [
+  { afterMs: 30_000, pollMs: 5_000 },
+  { afterMs: 90_000, pollMs: 15_000 },
+  { afterMs: 240_000, pollMs: 30_000 },
+] as const;
+
+/** How long a pace entry survives without a poll before it is stale. */
+const START_POLL_PACE_TTL_MS = 300_000;
+
+const startPollPaceByQuery = new WeakMap<object, StartPollPace>();
+
+/** The query surface `refetchInterval` receives from React Query. */
+interface StartPollQuery {
+  state: {
+    error: unknown;
+    data: SessionStartResult | null | undefined;
+  };
+}
+
+/**
+ * The `refetchInterval` for one `/start` query, with the clock injected so
+ * tests are deterministic. Pure in everything but the per-query pace map.
+ *
+ * A wedged box answers the same non-terminal payload indefinitely
+ * (`stage: 'starting'`, `retriable: true`, no failure evidence — the server
+ * long-polls each call ~8s and the query re-fires 1.5s after every hold).
+ * Prod, 2026-09-26 through 09-29: that cycle ran for days from one
+ * workspace's wedged boxes at ~8k POST /start/hour, convoyed the audit-ingest
+ * pool behind it, and pushed every polled DB route — including
+ * `GET /sessions/:id/turn` — into a multi-second p95 (KRTX-385). While the
+ * answer sits unchanged the interval stretches through
+ * {@link SESSION_START_POLL_BACKOFF_STEPS}; any change resets it at once, and
+ * a terminal answer stops polling and forgets the pace.
+ */
+function sessionStartRefetchIntervalMs(
+  query: StartPollQuery,
+  now: number,
+): number | false {
+  if (query.state.data?.stage === 'ready') return 60_000;
+  const base = shouldPollSessionStart(query.state.error, query.state.data, now);
+  if (base === false) {
+    startPollPaceByQuery.delete(query);
+    return false;
+  }
+  const signature = startPollSignature(query.state.data);
+  const previous = startPollPaceByQuery.get(query);
+  const pace =
+    previous &&
+    previous.signature === signature &&
+    now - previous.touchedAt <= START_POLL_PACE_TTL_MS
+      ? previous
+      : { signature, unchangedSince: now, touchedAt: now };
+  pace.touchedAt = now;
+  startPollPaceByQuery.set(query, pace);
+  const unchangedMs = now - pace.unchangedSince;
+  const stretched = [...SESSION_START_POLL_BACKOFF_STEPS]
+    .reverse()
+    .find((step) => unchangedMs >= step.afterMs)?.pollMs;
+  return stretched ? Math.max(base, stretched) : base;
+}
+
+/**
+ * Recheck a ready session once a minute: a provider can park its sandbox
+ * while the tab remains open, and only /start can wake it. Pending stages
+ * retain the boot cadence while the answer is moving, stretch while the same
+ * answer repeats (a wedged box), and stop on terminal failures. Keep polling
+ * in background to complete an in-flight wake.
+ */
+export const SESSION_START_POLL_OPTIONS = {
+  refetchInterval: (query: StartPollQuery): number | false =>
+    sessionStartRefetchIntervalMs(query, Date.now()),
+  refetchIntervalInBackground: true,
+} as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Send-error classification. `send`/the reply actions below never throw for
+// back-compat (`send`) or so a host doesn't need a try/catch for the common
+// case; failures are surfaced as this typed union instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Discriminant for `KortixSendError` — what kind of failure interrupted a send. */
+export type KortixSendErrorKind = 'billing' | 'connector' | 'runtime-not-ready' | 'runtime-error';
+
+/** One connector the session needs and has no usable connection for. */
+export interface KortixSendErrorConnector {
+  id: string;
+  slug: string;
+  name: string;
+  /**
+   * `project` — one shared connection serves everyone, so anyone who can mint a
+   * setup link fixes it once. `user` — the connection must belong to the account
+   * the session RUNS AS, which in a wrapper is the operator, not the end-user.
+   * The distinction decides whether a connect button can help at all.
+   */
+  authorization_strategy: 'project' | 'user';
+}
+
+/** Typed failure surfaced by `send` (via `sendError`) and thrown by
+ * `answerQuestion`/`rejectQuestion`/`answerPermission`. */
+export interface KortixSendError {
+  kind: KortixSendErrorKind;
+  /** Human-readable message, already formatted for display. */
+  message: string;
+  /** Present when `kind === 'billing'` — the parsed 402 detail. */
+  billing?: BillingError;
+  /**
+   * Present when `kind === 'connector'` — the connectors this session requires
+   * and has no usable connection for.
+   *
+   * The platform refuses these turns BEFORE the sandbox sees them, so nothing
+   * streamed and nothing was spent. Without this field the refusal collapsed
+   * into a generic `runtime-error`, and the host could only show "something went
+   * wrong" for the one failure that has an obvious remedy.
+   */
+  connectors?: KortixSendErrorConnector[];
+  /**
+   * Present when `kind === 'runtime-error'` and the failure carries the LLM
+   * gateway's structured error envelope (provider/code/suggestion/...) — see
+   * `extractGatewayErrorDetails`. Lets a host render WHICH provider failed and
+   * WHAT to do about it instead of only the provider's raw error text.
+   */
+  gateway?: {
+    provider?: string;
+    code?: string;
+    suggestion?: string;
+    upstreamStatus?: number;
+    requestId?: string;
+  };
+  /** The original thrown value, for callers that want more detail. */
+  cause: unknown;
+}
+
+// `getClient()` (packages/sdk/src/opencode/client.ts) throws a
+// `RuntimeNotReadyError` with this exact message when the sandbox url hasn't
+// been resolved yet (session still starting). The string match is kept as a
+// fallback for callers that re-wrap the original error (losing the
+// `instanceof` chain) but still preserve its message.
+const RUNTIME_NOT_READY_MARKER = 'Server URL not ready';
+
+/**
+ * Flip the optimistic message these parts belong to from `pending` to
+ * `dispatched`, resolved by part id.
+ *
+ * A host owns its own optimistic add and therefore its own message id, so
+ * `sendParts` never sees one. It does see the client-generated part ids, which
+ * hosts already send with the prompt so the server's echo updates the same
+ * part — the exact key `hydrate` correlates on. Reusing it here means the two
+ * halves of the handshake agree by construction instead of by convention.
+ *
+ * A no-op when the parts carry no ids or belong to no optimistic message.
+ */
+export function markDispatchedForPartIds(sessionId: string, parts: PromptPart[]): void {
+  const partIds = new Set(
+    parts
+      .map((p) => (p as { id?: unknown }).id)
+      .filter((id): id is string => typeof id === 'string' && !!id),
+  );
+  if (partIds.size === 0) return;
+
+  const store = useSyncStore.getState();
+  for (const message of store.messages[sessionId] ?? []) {
+    if (message.role !== 'user') continue;
+    const owns = (store.parts[message.id] ?? []).some((p) => partIds.has(p.id));
+    if (owns) store.markOptimisticDispatched(sessionId, message.id);
+  }
+}
+
+/**
+ * Optimistically add the user's message for a plain-text `send()` call, and
+ * mint the SAME part id onto both the optimistic part AND the outgoing wire
+ * part `send()` goes on to POST.
+ *
+ * T15 — "one user bubble": `send()` used to build its outgoing part
+ * as `{ type: 'text', text }` with no id at all, so — even where a host paired
+ * it with its own optimistic add — nothing correlated the two. The sync
+ * store's `message.updated` handler matches an incoming echo to an optimistic
+ * message primarily by EXACT part id (opencode preserves a client-supplied
+ * part id on echo); only when that fails does it fall back to "the oldest
+ * DISPATCHED optimistic message" (`markDispatchedForPartIds`, called
+ * unconditionally by `sendParts` below, marks it — but only once the part ids
+ * actually match, same root cause). With no id on the wire, neither path can
+ * ever fire, and the user's text stayed doubled on screen until the next
+ * idle sweep (`clearOptimisticMessages`).
+ *
+ * Mirrors `beginOptimisticSend` (`use-session-send.ts`) exactly — same store
+ * calls, same stub-message shape, same "skip parts for empty/whitespace text"
+ * rule — kept as a sibling here rather than imported, since
+ * `use-session-send.ts` already imports FROM this module (`classifySendError`)
+ * and a reverse import would make the two files mutually dependent.
+ */
+export function beginOptimisticPlainTextSend(
+  sessionId: string,
+  text: string,
+  /**
+   * The prompt's wire id (`mintSessionWireMessageId`): the message is drawn under the id the
+   * runtime and the session log will hold it by. Omitted: a local id, which the server never
+   * keeps (`ascendingId` is not the wire codec's clock).
+   */
+  wireMessageId?: string,
+): { messageId: string; parts: PromptPart[] } {
+  const messageId = wireMessageId ?? ascendingId('msg');
+  const partId = ascendingId('prt');
+  const optimisticParts: Part[] = text.trim()
+    ? [
+        {
+          id: partId,
+          sessionID: sessionId,
+          messageID: messageId,
+          type: 'text' as const,
+          text,
+        },
+      ]
+    : [];
+  const info = {
+    id: messageId,
+    sessionID: sessionId,
+    role: 'user',
+    // No `time.created`: display order is by the BOX's `time.created`
+    // (`compareMessagesForDisplay`), and a stub stamped from the browser's
+    // clock sorted ABOVE real messages whenever the box ran behind it. An
+    // untimed stub is "the newest thing the user did", on every clock.
+    time: {},
+  } as unknown as Message;
+  useSyncStore.getState().optimisticAdd(sessionId, info, optimisticParts);
+  // No status write. `sessionStatus` is where the runtime's own SSE frames
+  // land, and a fabricated `busy` there outranked a real `GET .../turn` read
+  // stamped after it. `sendParts` files a `SendReceipt` instead — the claim
+  // this tab is actually entitled to make.
+  return { messageId, parts: [{ type: 'text', text, id: partId }] };
+}
+
+/** The error body, wherever the transport parked it. */
+function errorBody(error: unknown): Record<string, unknown> | null {
+  if (!error || typeof error !== 'object') return null;
+  const holder = error as Record<string, unknown>;
+  for (const key of ['data', 'details', 'body']) {
+    const candidate = holder[key];
+    if (candidate && typeof candidate === 'object') return candidate as Record<string, unknown>;
+  }
+  return holder;
+}
+
+function errorBodyMessage(error: unknown): string | null {
+  const body = errorBody(error);
+  for (const key of ['message', 'error']) {
+    const value = body?.[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+/**
+ * The connectors a `CONNECTOR_CONNECTION_REQUIRED` refusal names, or
+ * null when this is not that refusal.
+ *
+ * Keyed on the CODE, never on the message: the prose is for humans and changes.
+ * A refusal that names no connection still returns null — a connector prompt that
+ * cannot say which connector is worse than the generic error it replaced.
+ */
+function connectorRefusalConnections(error: unknown): KortixSendErrorConnector[] | null {
+  const body = errorBody(error);
+  if (body?.code !== 'CONNECTOR_CONNECTION_REQUIRED') return null;
+  const listed = [body.connector_connections, body.connectorConnections].find(Array.isArray) as
+    | unknown[]
+    | undefined;
+  const connections: KortixSendErrorConnector[] = [];
+  for (const entry of listed ?? []) {
+    if (!entry || typeof entry !== 'object') continue;
+    const connection = entry as Record<string, unknown>;
+    const strategy = connection.authorization_strategy ?? connection.authorizationStrategy;
+    if (typeof connection.id !== 'string' || typeof connection.slug !== 'string') continue;
+    if (strategy !== 'project' && strategy !== 'user') continue;
+    connections.push({
+      id: connection.id,
+      slug: connection.slug,
+      name:
+        typeof connection.name === 'string' && connection.name ? connection.name : connection.slug,
+      authorization_strategy: strategy,
+    });
+  }
+  return connections.length > 0 ? connections : null;
+}
+
+/** Classify a thrown/rejected error from a send or a permission/question reply
+ * into a `KortixSendError`. Pure — safe to unit test without a runtime. */
+export function classifySendError(error: unknown): KortixSendError {
+  if (
+    error instanceof RuntimeNotReadyError ||
+    (error instanceof Error && error.message.includes(RUNTIME_NOT_READY_MARKER))
+  ) {
+    return {
+      kind: 'runtime-not-ready',
+      message: 'The session runtime is still starting — try again in a moment.',
+      cause: error,
+    };
+  }
+
+  if (error && typeof error === 'object') {
+    const parsed = parseBillingError(error);
+    if (parsed instanceof BillingError) {
+      return {
+        kind: 'billing',
+        message: parsed.message,
+        billing: parsed,
+        cause: error,
+      };
+    }
+    const connectors = connectorRefusalConnections(error);
+    if (connectors) {
+      return {
+        kind: 'connector',
+        message:
+          errorBodyMessage(error) ??
+          'Connect the required connectors before continuing this session.',
+        connectors,
+        cause: error,
+      };
+    }
+  }
+
+  const gateway = extractGatewayErrorDetails(error);
+  const formatted = formatRuntimeError(error);
+  return {
+    kind: 'runtime-error',
+    // Prefer the gateway's own message (already human-written server-side per
+    // status/cause) over opencode's raw runtime-error formatting when present.
+    // The fallback is unwrapped too: a thrown error's message is often an HTTP
+    // body (`{"message":…,"code":401}`), and a body is not a sentence.
+    message: gateway?.message || unwrapError(formatted.message),
+    ...(gateway
+      ? {
+          gateway: {
+            provider: gateway.provider,
+            code: gateway.code,
+            suggestion: gateway.suggestion,
+            upstreamStatus: gateway.upstreamStatus,
+            requestId: gateway.requestId,
+          },
+        }
+      : {}),
+    cause: error,
+  };
+}
+
+/** The optimistic-send + last-error state `send` drives. Modeled as a small
+ * reducer-ish pair of pure helpers so the transition logic is unit-testable
+ * without rendering the hook. */
+export interface SendState {
+  /** Pending optimistic message text, or null. */
+  pending: string | null;
+  /** Last send failure, or null. Reset on every new `send` call. */
+  sendError: KortixSendError | null;
+}
+
+export interface SessionCommandOptions {
+  agent?: string | null;
+  model?: ModelKey | null;
+  variant?: string | null;
+}
+
+export function buildSessionCommandInput(
+  sessionId: string,
+  command: string,
+  args: string,
+  options: SessionCommandOptions = {},
+) {
+  return {
+    sessionId,
+    command,
+    args,
+    ...(options.agent ? { agent: options.agent } : {}),
+    ...(options.model ? { model: formatModelString(options.model) } : {}),
+    ...(options.variant ? { variant: options.variant } : {}),
+  };
+}
+
+const IDLE_SEND_STATE: SendState = { pending: null, sendError: null };
+
+/** New state when a send is kicked off — always clears any previous error. */
+export function sendStateOnStart(text: string): SendState {
+  return { pending: text, sendError: null };
+}
+
+/** New state when a send fails — drops the optimistic message and classifies
+ * the error. */
+export function sendStateOnError(error: unknown): SendState {
+  return { pending: null, sendError: classifySendError(error) };
+}
+
+/** This tab's own record that a send went out, and when. Re-exported from the
+ *  projection that consumes it so there is exactly one shape — a second
+ *  declaration here would drift from `acceptedAtMs`, which is the field that
+ *  decides whether a server read may answer for the send at all. */
+export type { SendReceipt };
+
+/** The submission's tab-local name: the host's own key when it gave one, else
+ *  the optimistic part id this send is correlated by. Never sent anywhere —
+ *  it exists so a `working` state can say WHICH send it is standing on. */
+export function sendReceiptId(
+  sessionId: string,
+  parts: PromptPart[],
+  clientMessageId?: string,
+): string {
+  const identified = parts.find(
+    (part): part is PromptPart & { id: string } => 'id' in part && typeof part.id === 'string',
+  );
+  return clientMessageId ?? identified?.id ?? sessionId;
+}
+
+export async function rewindOpenCodeSession(sessionId: string, messageId: string): Promise<void> {
+  if (!messageId) throw new Error('Session rewind requires a message id');
+  unwrap(
+    await getClient().session.revert({
+      sessionID: sessionId,
+      messageID: messageId,
+    }),
+  );
+}
+
+export async function restoreOpenCodeSessionRewind(sessionId: string): Promise<void> {
+  unwrap(await getClient().session.unrevert({ sessionID: sessionId }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Permission/question replies. Standalone (not closures over hook state) since
+// they only need the global runtime client + the global pending store — both
+// singletons — so they double as the implementation AND a directly testable,
+// hook-free surface.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Answer an agent question through the session's runtime and drop it from
+ * local pending state — but only once the server has actually accepted the
+ * reply. On failure the question stays pending and a `KortixSendError` is
+ * thrown.
+ */
+export async function answerQuestion(requestId: string, answers: string[][]): Promise<void> {
+  try {
+    await replyToQuestion(requestId, answers);
+  } catch (error) {
+    throw classifySendError(error);
+  }
+  useRuntimePendingStore.getState().removeQuestion(requestId);
+}
+
+/** Reject an agent question through the session's runtime (see `answerQuestion`). */
+export async function rejectQuestion(requestId: string): Promise<void> {
+  try {
+    await rejectQuestionApi(requestId);
+  } catch (error) {
+    throw classifySendError(error);
+  }
+  useRuntimePendingStore.getState().removeQuestion(requestId);
+}
+
+/** Answer an agent permission request through the session's runtime (see `answerQuestion`). */
+export async function answerPermission(
+  requestId: string,
+  reply: 'once' | 'always' | 'reject',
+  message?: string,
+): Promise<void> {
+  try {
+    await replyToPermission(requestId, reply, message);
+  } catch (error) {
+    throw classifySendError(error);
+  }
+  useRuntimePendingStore.getState().removePermission(requestId);
+}
+
+export interface UseSessionOptions {
+  /** Hold this browser tab's presence lease while the signed-in view is visible and used (input in the last 10 min). */
+  browserPresence?: boolean;
+  /**
+   * This tab shows its own notifications (the host's browser notifications
+   * are on and permitted). Sent on the presence lease, so the server skips the
+   * phone and Web Push only while an ALERTING tab is in use. Default false: a
+   * present tab that does not alert leaves the phone push on. A change is
+   * sent at once. Needs `browserPresence`.
+   */
+  presenceAlerts?: boolean;
+  /**
+   * End the presence lease when the page closes or enters the back/forward
+   * cache, so a turn that ends right after the tab closes still notifies:
+   * `pagehide` reports absent, and every absent report is sent with
+   * `keepalive`, so it outlives the page. Default false, the presence before
+   * KRTX-1742: no `pagehide` report and no `keepalive`. A closing tab still
+   * turns hidden and reports absent, but the browser may cancel that request
+   * as the page unloads; the lease then lives to its 90 s expiry. Pass the
+   * project's `notification_center` flag. A change applies at once, with no
+   * new report. Needs `browserPresence`.
+   */
+  presencePageExit?: boolean;
+  /** Long-poll budget (ms) the client requests on `/start`; the server clamps it. */
+  waitMs?: number;
+  /**
+   * Ask `/start` to resume the preserved runtime of a session created before
+   * the project repository changed.
+   *
+   * It is no longer needed, and it changes nothing about what the session may
+   * do. Such a session starts, runs the project's CURRENT config release and
+   * converges like any other. What remains true of it is physical: its
+   * `/workspace` clone came from the old repository while `origin` now
+   * resolves to the new one, so a push without a rebase is refused by Git
+   * itself. Kept for callers built against the older behaviour; the server
+   * reads it as telemetry only.
+   */
+  repositoryMode?: 'previous';
+  /**
+   * Replay a stashed first message (prompt + model + agent from the "new session"
+   * screen) once the runtime is ready and the thread is empty. Default true. Hosts
+   * with their own first-message hand-off (e.g. apps/web) set this false.
+   */
+  replayStartStash?: boolean;
+  /**
+   * Gate the whole hook (the /start poll + switch + SSE). Default true. Set false
+   * to hold off until a precondition is met (e.g. a billing gate resolves) — mirrors
+   * a query `enabled` flag.
+   */
+  enabled?: boolean;
+  /**
+   * A server-authorized runtime session pin associated with this Kortix
+   * session. The `/start` response remains authoritative.
+   */
+  initialRuntimeSessionId?: string | null;
+  /** @deprecated Renamed to `initialRuntimeSessionId`, which wins when both are set. Removed in the next major. */
+  initialOpenCodeSessionId?: string | null;
+  /**
+   * Mount the chat-consumption engine — `useSessionSync` (messages/status/diffs/
+   * todos, including its 10s busy-poll SSE-stall fallback) and `useQuestionSelfHeal`
+   * (the 2s missed-`question.asked` self-heal poll) — on top of the boot/lifecycle
+   * machinery every host needs. Default true.
+   *
+   * Set this false when the host mounts its OWN chat surface for the same
+   * `(projectId, sessionId)` (e.g. apps/web's `SessionChat`, which has its own
+   * `useSessionSync` + `useQuestionSelfHeal`): with two callers of `useSession`
+   * alive for the same session — this hook (for boot/lifecycle) and the host's
+   * chat component — leaving it `true` would double-mount both pollers, running
+   * the question self-heal poll twice and the busy-poll fallback at ~2x cadence
+   * for no benefit, since nothing reads this hook's chat fields anyway.
+   *
+   * When `false`: `messages`/`diffs`/`todos` are empty arrays, `status` is the
+   * idle status, `isBusy`/`isLoading` are `false`, `questions`/`permissions` stay
+   * live (populated by SSE via the still-active event stream, just without the
+   * self-heal poll backstop), the session log (v2) is still negotiated, so
+   * `useSessionLogThread` serves the log's records, and `replayStartStash` is force-disabled (it reads
+   * the now-empty chat state, so it would never fire correctly). Everything the
+   * boot/lifecycle fields need — `start`/`switch`/`runtimePhase`/`sandbox`/`stage`/
+   * `runtimeSessionId` — is unaffected.
+   */
+  chatEngine?: boolean;
+  /**
+   * Re-render the calling component on every transcript change. Default
+   * `true`, which keeps `messages` live.
+   *
+   * A streaming turn changes the transcript once per ~16 ms event batch, so
+   * with the default every component that calls this hook re-renders at that
+   * rate. Set `false` in a host that renders lifecycle UI (boot state, header,
+   * panels) and draws the transcript in a child: the child reads the live rows
+   * with `useSessionMessages(session)`, and only it re-renders per delta.
+   *
+   * When `false`: the chat engine still runs (fetch, stream, pollers);
+   * `messages` is the transcript as of this render, and this hook re-renders
+   * only when the transcript's shape changes — a message added or removed, or
+   * a tool part changing status — so `messages.length` and the question and
+   * permission self-heal pollers stay correct. Streamed text alone does not
+   * re-render it.
+   */
+  subscribeMessages?: boolean;
+}
+
+/** Stable, empty chat state — used when `chatEngine: false` so the hook's
+ * public chat fields stay type-stable (empty arrays/idle status, never
+ * `undefined`) instead of leaking whatever an unmounted-in-spirit
+ * `useSessionSync('')` call happens to return. */
+const DISABLED_CHAT_ENGINE_SYNC = {
+  messages: [] as ReturnType<typeof useSessionSync>['messages'],
+  status: { type: 'idle' } as ReturnType<typeof useSessionSync>['status'],
+  freshness: 'idle' as ReturnType<typeof useSessionSync>['freshness'],
+  retryTranscript: () => {},
+  isBusy: false,
+  isLoading: false,
+  mirrorState: 'idle' as ReturnType<typeof useSessionSync>['mirrorState'],
+  diffs: [] as ReturnType<typeof useSessionSync>['diffs'],
+  todos: [] as ReturnType<typeof useSessionSync>['todos'],
+  hasOlder: false,
+  isLoadingOlder: false,
+  loadOlder: async () => {},
+};
+
+export function useSession(projectId: string, sessionId: string, options: UseSessionOptions = {}) {
+  const queryClient = useQueryClient();
+  const titleRefreshAbortRef = useRef<AbortController | null>(null);
+  const {
+    waitMs = 15_000,
+    repositoryMode,
+    replayStartStash = true,
+    enabled = true,
+    chatEngine = true,
+    initialRuntimeSessionId = options.initialOpenCodeSessionId ?? null,
+    subscribeMessages = true,
+    browserPresence = false,
+    presenceAlerts = false,
+    presencePageExit = false,
+  } = options;
+
+  // One presence id per mounted view. The session stream carries it, and the
+  // server renews the lease while the stream is open (R5.3). The lease exists
+  // only while a person used the page recently, not while a tab is merely
+  // visible (KRTX-1729, `human-presence.ts`).
+  const [presenceTabId] = useState(() => (browserPresence ? crypto.randomUUID() : null));
+  // The flag rides on the reporter, not on the effect's deps: a dep change
+  // would stop the watcher (an absent PUT) and start it again (KRTX-1742).
+  const presenceAlertsRef = useRef(presenceAlerts);
+  const presencePageExitRef = useRef(presencePageExit);
+  const presenceReporterRef = useRef<ReturnType<typeof presenceReporter> | null>(null);
+  // The previous presence report, to recognize an absent→present transition —
+  // a human coming BACK (tab shown again, input after idle, page unhidden).
+  // Null until the first report: the initial present at mount is not a return.
+  const lastPresenceActiveRef = useRef<boolean | null>(null);
+  // Until when this person's presence keeps the computer on (KRTX-1729), from
+  // the latest present PUT's response. Null while absent, for a viewer, for a
+  // computer the renewal found not running, and from a turn's start until the
+  // next renewal answers.
+  const [presenceAwake, setPresenceAwakeState] = useState<{ until: Date; capAt: Date } | null>(null);
+  // Set only on a change: a same-value set during a streamed update still
+  // renders the host once, and hosts count on one render per delta.
+  const presenceAwakeRef = useRef(presenceAwake);
+  const setPresenceAwake = useCallback((next: { until: Date; capAt: Date } | null) => {
+    if (next === null && presenceAwakeRef.current === null) return;
+    presenceAwakeRef.current = next;
+    setPresenceAwakeState(next);
+  }, []);
+  // Only the latest report's response may set the window: a present PUT that
+  // lands after an absent report, or after a turn started, must not bring it
+  // back. Bumped by each report and by each clear.
+  const presenceReportRef = useRef(0);
+  useEffect(() => {
+    if (!browserPresence || !presenceTabId || !projectId || !sessionId) return;
+    const tab_id = presenceTabId;
+    const handle = createKortix(platformConfig()).session(projectId, sessionId);
+    // A deleted session has no lease left to renew or end: every PUT would 404.
+    let deleted = false;
+    const offDeleted = onSessionDeleted((id) => {
+      if (id === sessionId) deleted = true;
+    });
+    // Without page exit, an absent PUT goes without `keepalive`, as before
+    // KRTX-1742: a closing page may cancel it, and the lease then expires.
+    const reporter = presenceReporter(({ active, alerts }) => {
+      if (deleted) return;
+      // A human coming back to a stopped session is a fresh visit: release the
+      // stop hold and re-open (`presenceReturnReopensSession`). Presence-gated
+      // on purpose — a background tab never reports a return, so it never
+      // wakes a box for nobody. A stop made seconds ago in THIS tab (presence
+      // never dropped) is not a return and stays stopped.
+      if (
+        active &&
+        lastPresenceActiveRef.current === false &&
+        presenceReturnReopensSession(
+          stoppedByUserRef.current === sessionId,
+          queryClient.getQueryData<SessionStartResult | null>(sessionStartKey(projectId, sessionId))
+            ?.stage,
+        )
+      ) {
+        stoppedByUserRef.current = null;
+        openedAtRef.current = { sessionId, at: Date.now() };
+        void queryClient.invalidateQueries({ queryKey: sessionStartKey(projectId, sessionId) });
+      }
+      lastPresenceActiveRef.current = active;
+      const report = ++presenceReportRef.current;
+      if (!active) setPresenceAwake(null);
+      const keepalive = !active && presencePageExitRef.current;
+      void handle
+        .presence({ tab_id, active, alerts }, { keepalive })
+        .then((res) => {
+          // A failed request says nothing about the window: keep the last one.
+          if (active && report === presenceReportRef.current && res.data) {
+            setPresenceAwake(presenceAwakeFrom(res.data));
+          }
+        })
+        .catch(() => {});
+    }, presenceAlertsRef.current);
+    presenceReporterRef.current = reporter;
+    const stop = watchHumanPresence(
+      { doc: document, win: window },
+      reporter.report,
+      () => sessionStreamConnected(projectId, sessionId),
+      () => presencePageExitRef.current,
+    );
+    // The stream renews the lease and the deadline without a response, so the
+    // window ages: read it again while the person is here.
+    const refresh = window.setInterval(reporter.refresh, PRESENCE_AWAKE_REFRESH_MS);
+    return () => {
+      window.clearInterval(refresh);
+      presenceReporterRef.current = null;
+      stop();
+      offDeleted();
+    };
+  }, [browserPresence, presenceTabId, projectId, sessionId, queryClient]);
+  useEffect(() => {
+    presenceAlertsRef.current = presenceAlerts;
+    presenceReporterRef.current?.setAlerts(presenceAlerts);
+  }, [presenceAlerts]);
+  useEffect(() => {
+    presencePageExitRef.current = presencePageExit;
+  }, [presencePageExit]);
+
+  // A deleted session answers 404 to every read and to `/start`: once this tab
+  // deletes it, the hook goes quiet while the host navigates away.
+  const [deletedSessionId, setDeletedSessionId] = useState<string | null>(null);
+  useEffect(
+    () => onSessionDeleted((id) => (id === sessionId ? setDeletedSessionId(id) : undefined)),
+    [sessionId],
+  );
+  // 1. Drive /start until the runtime is ready (the server long-polls each tick).
+  const startEnabled = enabled && !!projectId && !!sessionId && deletedSessionId !== sessionId;
+  // Read by `/start`'s refetch interval, which runs outside render.
+  const streamConnectedRef = useRef(false);
+  // The session a Stop in THIS tab stopped. Until something else brings the
+  // box back (a restart, a new message), every `/start` this hook sends is a
+  // keep-alive poll: it reports the stop, it never undoes it. Without this, a
+  // session stopped before it was ever `ready` went on polling as an open, and
+  // the first poll after the stop woke it again.
+  const stoppedByUserRef = useRef<string | null>(null);
+  // When this tab opened the session (its first `/start`, or an explicit
+  // retry). Every open-mode poll carries its age, so a Stop made anywhere
+  // after the open wins over the polls, however late they reach the API.
+  const openedAtRef = useRef<{ sessionId: string; at: number } | null>(null);
+  const start = useQuery({
+    queryKey: sessionStartKey(projectId, sessionId),
+    // Once live, only a lifecycle fact leaves live (hold-live-start.ts).
+    queryFn: async () => {
+      const previous = queryClient.getQueryData<SessionStartResult | null>(
+        sessionStartKey(projectId, sessionId),
+      );
+      if (openedAtRef.current?.sessionId !== sessionId) openedAtRef.current = { sessionId, at: Date.now() };
+      const heldByStop = stoppedByUserRef.current === sessionId;
+      const mode = heldByStop
+        ? 'keep-stopped'
+        : liveStartPollMode(previous, typeof document !== 'undefined' && document.hidden);
+      // A background tab that shows the session ready does not poll: the poll
+      // only keeps a box alive for nobody. The next visible fetch revalidates.
+      if (mode === 'skip' && previous) return previous;
+      const next = await startProjectSession(projectId, sessionId, {
+        waitMs,
+        repositoryMode,
+        // The keep-alive poll must report a user Stop or an idle park, never
+        // undo it. An open (no ready answer cached yet) wakes the box as before.
+        keepStopped: mode === 'keep-stopped',
+        intentAgeMs: Date.now() - openedAtRef.current.at,
+      });
+      // Anything but `stopped` means the box is coming back by an explicit
+      // action elsewhere (a restart, a sent message): this tab follows it.
+      if (heldByStop && next && next.stage !== 'stopped' && stoppedByUserRef.current === sessionId) {
+        stoppedByUserRef.current = null;
+        openedAtRef.current = { sessionId, at: Date.now() };
+      }
+      return holdLiveStart(previous, next);
+    },
+    enabled: startEnabled,
+    retry: (failureCount, error) => shouldRetrySessionStart(failureCount, error, sessionId),
+    retryDelay: (failureCount, error) =>
+      isSessionStartError(error) && error.status === 404
+        ? FRESH_START_404_RETRY_DELAY_MS
+        : Math.min(1000 * 2 ** failureCount, 5000),
+    staleTime: sessionStartStaleTime,
+    ...SESSION_START_POLL_OPTIONS,
+    // Once ready, a connected stream reports every box change (and re-reads
+    // `/start` on it); the 60 s ready recheck is a poll it replaces.
+    refetchInterval: (query) =>
+      streamConnectedRef.current && query.state.data?.stage === 'ready'
+        ? false
+        : SESSION_START_POLL_OPTIONS.refetchInterval(query),
+  });
+  // A user Stop (any host, via `stopProjectSession`) re-reads `/start` at once:
+  // the poll answers `stopped` (keep_stopped) instead of waiting up to 60 s.
+  useEffect(() => {
+    if (!startEnabled) return;
+    return onSessionStopped((stoppedId) => {
+      if (stoppedId !== sessionId) return;
+      stoppedByUserRef.current = sessionId;
+      void queryClient.invalidateQueries({ queryKey: sessionStartKey(projectId, sessionId) });
+    });
+  }, [startEnabled, projectId, sessionId, queryClient]);
+  const startData = start.data ?? null;
+  const startError = isSessionStartError(start.error) ? start.error : null;
+  const stage = startData?.stage ?? null;
+  const sandbox = startData?.sandbox ?? null;
+  const startReady = stage === 'ready';
+  const terminal = stage === 'failed' || stage === 'stopped';
+  // The window follows the computer (KRTX-1729): one that becomes ready reads
+  // it at once, and one that stops ends it, with any response in flight.
+  const startReadyRef = useRef(startReady);
+  useEffect(() => {
+    if (startReady && !startReadyRef.current) {
+      presenceReporterRef.current?.refresh();
+    } else if (!startReady && startReadyRef.current) {
+      presenceReportRef.current += 1;
+      setPresenceAwake(null);
+    }
+    startReadyRef.current = startReady;
+  }, [startReady]);
+
+  // T8 defect 1 — `useRuntimeReconnect`'s first-mount
+  // `resetForServerSwitch()` (a plain `useEffect`) unconditionally seeds
+  // `status:'connecting', healthy:null` UNLESS `markRuntimeReadyVerified()`
+  // already told it the server proved this session ready. Task A's staleTime
+  // (above) means a remount can render `stage==='ready'` on its VERY FIRST
+  // render — before ANY effect, this hook's own switch/health-seed effects
+  // included, has had a chance to run — so whichever effect happens to fire
+  // first is not something to gamble on.
+  //
+  // `useLayoutEffect` is what makes this deterministic regardless of
+  // component-tree shape: React runs EVERY layout effect, tree-wide, before
+  // ANY passive effect (`useEffect`) fires — so this always wins the race
+  // against `useRuntimeReconnect`'s reset, whether that hook lives in a
+  // parent, a child, or a sibling of this one.
+  //
+  // Gated on `[projectId, sessionId]` (session identity), not `[startReady]`:
+  // it must only ever answer "was this session ALREADY proven ready at the
+  // moment I started mounting" — never "did it become ready later". A real
+  // network `/start` completing seconds after this mount's own reset has
+  // ALREADY run (and cleared whatever the flag held) would just leave a
+  // stale "ready" flag sitting in sessionStorage for the NEXT, unrelated
+  // session's first mount to wrongly consume. That later-ready case needs no
+  // help from this flag anyway: the health-seed effect (step 3, below)
+  // writes the connection store directly once `switched` flips, and
+  // `resetForServerSwitch()` never runs a second time to undo it — see
+  // `use-runtime-reconnect.test.ts`'s "mount-time ordering" tests for both
+  // orderings converging.
+  useIsomorphicLayoutEffect(() => {
+    if (!startEnabled) return;
+    const cached = queryClient.getQueryState<SessionStartResult>(
+      sessionStartKey(projectId, sessionId),
+    );
+    if (cachedStartResultIsReady(cached)) markRuntimeReadyVerified();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, sessionId]);
+
+  // 1a'. The session log (v2), read first on every open (`use-session-log.ts`). Also without
+  // the chat engine: a host that reads its own transcript renders the log's threads
+  // (`useSessionLogThread`). With the chat engine, the log OWNS the history from the first
+  // render: the open asks the snapshot for no transcript window, no saved copy is read
+  // (`useSessionSync` `sessionLog`), and older pages come from `GET …/log`. No project flag is
+  // read, and no v1 transcript (`GET …/transcript`, P8.3) is read, whatever the log answers.
+  // The box's own page, while `/start` says the box is ready and serves it (`runtime.log.v1`):
+  // ahead of the API's copy (the reply it streams, a prompt waiting on it), and a new session's
+  // log before the API holds one.
+  const liveLogBoxId =
+    startData?.stage === 'ready' && startData.capabilities?.includes(RUNTIME_LOG_CAPABILITY) ? (startData.sandbox?.external_id ?? null) : null;
+  const livePage = useMemo(
+    () =>
+      liveLogBoxId
+        ? (query: { limit: number }) =>
+            readRuntimeLogPage(getSandboxUrlForExternalId(liveLogBoxId), authenticatedFetch as typeof globalThis.fetch, query)
+        : null,
+    [liveLogBoxId],
+  );
+  // The box serves its log: the session log is the only transcript read. No v1 transcript, session
+  // record, status, permission, question or diagnostics read goes to the box (see each gate below).
+  const logNative = liveLogBoxId !== null;
+  const logReloadRef = useRef<(() => void) | null>(null);
+  const logDialect = useSessionLogSync(projectId, sessionId, { enabled: startEnabled, livePage, reloadRef: logReloadRef });
+  // `'missing'`: no page yet (a new session, an unconverted mirror, a failed read). Nothing saved
+  // is on its way; the runtime's rows are the history.
+  const logOwned = chatEngine && logDialect !== 'v1';
+  const logRootRuntimeId = useSyncStore((state) => (logOwned ? (sessionLogRoot(state.sessionLogs[sessionId])?.runtimeSessionId ?? null) : null));
+  // On v2 the session log is the saved copy: its page, or the device's saved v2 copy.
+  const logHistory = useSyncStore((state): 'loading' | 'present' | 'absent' => {
+    const log = logOwned ? state.sessionLogs[sessionId] : undefined;
+    if (!log) return logDialect === 'missing' ? 'absent' : 'loading';
+    return sessionLogRoot(log)?.hasMessages ? 'present' : 'absent';
+  });
+  // The log's page proves the conversation empty (as the v1 saved copy's `total: 0` did).
+  const logEmptyRoot = useSyncStore((state) => {
+    const root = logOwned ? sessionLogRoot(state.sessionLogs[sessionId]) : null;
+    return root?.empty ? root.runtimeSessionId : null;
+  });
+  const logOlder = useSessionLogOlder({ projectId, sessionId }, undefined, { enabled: logOwned });
+  // The log pages older history only while the store holds it. Without one (no page yet, a
+  // failed read) the runtime pages its own older messages.
+  const logPages = useSyncStore((state) => logOwned && state.sessionLogs[sessionId] !== undefined);
+
+  // 1b. ONE read for the rest of the open.
+  //
+  // The session row, `/turn`, `/prompts`, `/transcript?shape=sync` and
+  // `/model-defaults` used to be five to six serial control-plane round trips
+  // before the first honest frame — 0.3-2.3 s each at the median on a real
+  // deployment, and `/turn` alone was measured SIX times inside one open
+  // because three hooks mount that query. `openSessionBundle` issues the one
+  // request that answers all of them; each of those consumers claims it inside
+  // its own `queryFn` and falls back to its own endpoint when there is nothing
+  // to claim. Nothing here changes WHAT any of them answer.
+  //
+  // A LAYOUT effect, for the same reason the seed above is one — React runs
+  // every layout effect, tree-wide, before any passive effect, and TanStack
+  // starts a query's fetch from a passive effect. That ordering is what makes
+  // the bundle already in flight when the first `/turn` fetch begins, rather
+  // than a seventh request racing the six it is meant to replace.
+  //
+  // Session identity is the whole dependency list: this is the OPEN read, not
+  // a poll, and re-running it on any other input would turn an accelerator
+  // into a second cadence.
+  useIsomorphicLayoutEffect(() => {
+    if (!startEnabled) return;
+    // The pointer only: the open reads the session log first, never the snapshot's v1 window.
+    openSessionBundle(projectId, sessionId);
+    seedModelDefaultsFromOpenBundle(queryClient, projectId, sessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, sessionId]);
+
+  // 1c. The session's ONE live connection (R5.3): the server's turn verdict,
+  // queue, box, wake ladder, title and runtime health, plus the runtime's own
+  // events. While it is up, the polls below stand down.
+  const streamConnected = useSessionStream(projectId, sessionId, {
+    enabled: startEnabled,
+    tabId: presenceTabId ?? undefined,
+  });
+  streamConnectedRef.current = streamConnected;
+
+  // Track how long /start has been returning nothing usable — no data, no
+  // error — so `computeStartSettled` can bound the "given up" case (see
+  // START_INCONCLUSIVE_GIVE_UP_MS) instead of waiting on a poll that a
+  // swallowed transport failure can keep alive forever. `nextInconclusiveSince`
+  // owns the arm/reset decision. `useSessionStartGiveUp` owns the timestamp and
+  // timer. The hook-level test proves that a first request which never settles
+  // still reaches this verdict.
+  const startGivenUp = useSessionStartGiveUp({
+    identity: `${projectId}\u0000${sessionId}`,
+    enabled: startEnabled,
+    hasData: !!start.data,
+    hasError: !!start.error,
+    isFetching: start.isFetching,
+  });
+  // `startEnabled`/`start.isFetching`/`start.data`/`start.error` are read
+  // FRESH here, on every render — never stored. Only `startGivenUp` comes
+  // from state. The PREVIOUS version stored `computeStartSettled`'s entire
+  // return value (including the `!enabled -> true` branch) via `useState`,
+  // so on the commit where `startEnabled` flipped from `false` to `true` (a
+  // billing unblock, or auth finishing load), this read the STALE stored
+  // `true` for one committed, painted frame — and with a live `runtimeError`
+  // already present, that frame rendered `phase === 'error'`, the exact
+  // premature panic card this task exists to remove. Reading
+  // `enabled`/`isFetching`/`data`/`error` fresh at render makes that
+  // structurally impossible: nothing here can ever be one render behind its
+  // own inputs except the one value that inherently needs wall-clock
+  // tracking (`startGivenUp`), and that value is now session-reset above
+  // too.
+  const startSettled = computeStartSettled({
+    enabled: startEnabled,
+    isFetching: start.isFetching,
+    data: start.data,
+    error: start.error,
+    hasGivenUp: startGivenUp,
+  });
+
+  // 2. Point the SDK's runtime at this session's sandbox once ready. Track WHICH
+  // box we switched to (not a bare bool) so navigating between sessions (this
+  // hook instance is reused) re-gates instead of binding the new session to the
+  // previous sandbox. One active session at a time is the supported model, so the
+  // whole chat path (SSE, sync, send) rides this single global switch — there is no
+  // separate per-session client to keep in sync.
+  //
+  // Keyed on the box (`external_id`), not on `sandbox_id`: a session keeps its
+  // `sandbox_id` (= the session id) when its box is replaced (a restore, a
+  // re-provision). Keyed on `sandbox_id`, the switch never
+  // re-ran for the new box, and every read stayed on the deleted one until a
+  // reload ("Lost contact with this session's computer").
+  const [switchedBoxId, setSwitchedBoxId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!startReady || !sandbox?.external_id || switchedBoxId === sandbox.external_id) return;
+    // Point the app's runtime at THIS session's box — no global "switch", just set
+    // the current runtime url. Every read (getClient, the SSE stream, files/
+    // terminal/git) resolves through it. `stage==='ready'` is server-proven, so the
+    // health effect below seeds connected+healthy with no client poll.
+    setCurrentRuntime(
+      getSandboxUrlForExternalId(sandbox.external_id),
+      sandbox.external_id,
+      sandbox.sandbox_id,
+    );
+    setSwitchedBoxId(sandbox.external_id);
+  }, [startReady, sandbox, switchedBoxId]);
+  // Clear the current runtime when this session view unmounts.
+  useEffect(() => () => setCurrentRuntime(null), []);
+
+  const switched =
+    deletedSessionId !== sessionId &&
+    startReady &&
+    !!sandbox?.external_id &&
+    switchedBoxId === sandbox.external_id;
+
+  // 3. Keep the connection store healthy from server-truth while switched, with NO
+  // poller. If the box later dies mid-session the SSE's own disconnect/heartbeat
+  // handling drives recovery (no steady-state health loop to halt — the old
+  // first-load bug is structurally gone).
+  useEffect(() => {
+    if (!switched || !sandbox?.external_id) return;
+    // Claim this runtime before the route's reconnect poller mounts; otherwise
+    // its first reset treats the healthy seed as belonging to a different box.
+    // The ready answer also lists what the runtime serves, so capability gates
+    // are right before the first health probe answers.
+    seedConnectionFromReadyStart(
+      getSandboxUrlForExternalId(sandbox.external_id),
+      startData?.capabilities,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [switched, switchedBoxId]);
+
+  // 3b. The proxy says the box behind our runtime URL is gone (deleted or
+  // replaced; another tab or the send path may already have woken the
+  // session on a new box). The URL can never answer again, so ask `/start`
+  // now instead of waiting out its once-a-minute recheck.
+  const refetchStart = start.refetch;
+  useEffect(() => {
+    if (!startEnabled || !switchedBoxId) return;
+    const switchedUrl = getSandboxUrlForExternalId(switchedBoxId);
+    let lastAt = 0;
+    return onRuntimeGone((runtimeUrl) => {
+      if (runtimeUrl !== switchedUrl) return;
+      const now = Date.now();
+      if (now - lastAt < RUNTIME_GONE_REFETCH_MIN_MS) return;
+      lastAt = now;
+      void refetchStart();
+    });
+  }, [startEnabled, switchedBoxId, refetchStart]);
+
+  // 4. Open the live SSE stream. This was a provider component (RuntimeEvent
+  // StreamProvider); calling the underlying hook here means the host mounts
+  // nothing. It self-gates on the connection store's healthy flag (seeded above).
+  // R5.3: its events come from the session stream mounted in 1c.
+  useRuntimeEventStream({ enabled: switched, projectId, sessionId, logNative });
+
+  // 5. Resolve the canonical OpenCode root id (server-owned; /start hands it over)
+  // and sync messages off it.
+  const transcriptHistoryEnabled = startEnabled && chatEngine;
+  const canonicalSession = useCanonicalRuntimeSession({
+    projectId,
+    sessionId,
+    pinFromStart: startData?.runtime_session_id ?? startData?.opencode_session_id ?? null,
+    initialPin: logRootRuntimeId ?? initialRuntimeSessionId,
+    // A box that serves its log: the pin comes from `/start` and the log; the box lists nothing.
+    listRuntimeSessions: switched && !logNative,
+  });
+  const { rootSessionId } = canonicalSession;
+  const ocSessionId = rootSessionId ?? '';
+  useEffect(
+    () => () => {
+      titleRefreshAbortRef.current?.abort();
+      titleRefreshAbortRef.current = null;
+    },
+    [projectId, sessionId],
+  );
+  // ONE answer to "is this session working?", and it says where it came from.
+  //
+  // Four machines used to answer it and disagree: a prompt-observation phase
+  // machine with a stall timer, a busy override in the sync layer, a 30s
+  // safety timeout, and a 5s polling grace. `working` is a pure projection
+  // over the server's turn authority, the session's durable prompt inbox, the
+  // live stream, and — only until a server source that CAN know about it
+  // answers — this tab's own send receipt.
+  //
+  // Computed BEFORE `useSessionSync` because it is that hook's liveness switch:
+  // the transcript poll must follow the projection, not the stream slot a
+  // dropped frame can leave idle through a whole turn.
+  const working = useSessionWorking(projectId, sessionId, {
+    enabled,
+    runtimeSessionId: ocSessionId,
+  });
+  const canStop = useSessionCanStop(projectId, sessionId);
+  // A turn keeps the computer on and moves presence's cap (the idle window
+  // after the latest turn), so the window from before it is wrong after it
+  // (KRTX-1729): a turn that starts clears it, and a turn that ends reads it
+  // again.
+  const turnRunning = working.state === 'working';
+  const turnRanRef = useRef(turnRunning);
+  useEffect(() => {
+    if (turnRunning) {
+      presenceReportRef.current += 1;
+      setPresenceAwake(null);
+    } else if (turnRanRef.current) {
+      presenceReporterRef.current?.refresh();
+    }
+    turnRanRef.current = turnRunning;
+  }, [turnRunning]);
+  // The receipt lives in a per-session store, not in this component: the
+  // composer mounts its own `useSessionWorking` for the same session and they
+  // share one `/turn` cache entry. Two private receipts meant the observer
+  // without one wrote an uninformed read into that entry and defeated the
+  // other's. Nothing clears it on a server answer and nothing needs to — an
+  // observation the server could make AFTER accepting the send outranks it —
+  // so only the paths that know nothing is coming drop it.
+  const { noteSendReceipt, acceptSendReceipt, clearSendReceipt } = useSessionWorkingStore.getState();
+
+  // Always call the hook (rules-of-hooks) so it stays in the same position
+  // every render, but starve it with an empty session id when the chat engine
+  // is off — `useSessionSync('')` fetches/polls nothing (its effects no-op on
+  // a falsy/non-canonical session id) — and use a fixed, type-stable empty
+  // result instead of whatever it happens to return for that starved call.
+  const rawSync = useSessionSync(chatEngine ? ocSessionId : '', {
+    kortixSessionScope: `${projectId}/${sessionId}`,
+    streamConnected,
+    // No saved copy: the session log is the only one (P8.3). Never `undefined`,
+    // which would make the sync layer read the log page a second time.
+    mirror: null,
+    sessionLog: logOwned,
+    // A box that serves its log: the rows come from the log, so no v1 read or liveness poll runs.
+    networkEnabled: switched && !logNative,
+    working: working.state === 'working',
+    // The control plane holding a turn open keeps the transcript verification
+    // poll on even when the projection's answer is idle — the repair for a
+    // stale wire idle frame vetoing the open row while the SSE stream is dead
+    // (see UseSessionSyncOptions.serverHoldsTurn). Without it, that one wrong
+    // answer switched off the only read that could disprove it, and the
+    // transcript froze mid-turn until a reload.
+    serverHoldsTurn: working.serverOpenTurnToken !== null,
+    subscribeMessages,
+  });
+  // Detached from the rows (`subscribeMessages: false`): re-render on a SHAPE
+  // change only, which is what every transcript read in this hook depends on
+  // (`messages.length`, the running-tool checks of the self-heal pollers).
+  useSyncStore((state) =>
+    !subscribeMessages && chatEngine && ocSessionId
+      ? selectTranscriptShapeKey(state, ocSessionId)
+      : '',
+  );
+  const syncRows = chatEngine ? rawSync : DISABLED_CHAT_ENGINE_SYNC;
+  // On a box that serves its log, loading, freshness and the retry are the log's.
+  const sync = useMemo(
+    () =>
+      logNative && chatEngine
+        ? {
+            ...syncRows,
+            isLoading: logHistory === 'loading',
+            freshness: (logHistory === 'loading' ? 'loading' : 'fresh') as typeof syncRows.freshness,
+            retryTranscript: () => logReloadRef.current?.(),
+          }
+        : syncRows,
+    [logNative, chatEngine, syncRows, logHistory],
+  );
+  const runtimePhase = useRuntimePhase();
+  // T22 — the revert record lives in the sync store, not component state.
+  // Component state made the boundary math wrong in two ways at once: it
+  // reset on every remount (stranding an invisible staged revert after a
+  // reload — the server still held the pointer, nothing here knew), and it
+  // was the ONLY thing to mirror server truth, so a `.staged`/`.cleared`/
+  // `.committed` wire event or another tab's action never reached this
+  // session's view at all. The store is the single place all of those
+  // sources (this hook's own `rewind()`/`restoreRewind()`, the three wire
+  // events via `handle-event.ts`, and a `Session.revert` field read on
+  // reload) converge — see `sync-store.ts`'s `sessionRevert` doc comment.
+  const restRewind = useSyncStore((s) => s.sessionRevert[ocSessionId] ?? null);
+  const [rewindPending, setRewindPending] = useState(false);
+  const [rewindError, setRewindError] = useState<KortixSendError | null>(null);
+  const rewindMessageId = restRewind?.staged ? restRewind.messageId : null;
+  const messages = useMemo(
+    () => messagesBeforeRewind(sync.messages, restRewind),
+    [sync.messages, restRewind],
+  );
+  // The server's turn record (shared `/turn` cache entry, no extra request) and
+  // the saved copy's proof of an empty conversation. Read before 5a: while the
+  // proof waits for the turn record, the host must not paint its boot screen.
+  const turnOutcome = useSessionTurnOutcome(projectId, sessionId);
+  const turnRead = typeof turnOutcome.atMs === 'number';
+  // The idle flip above can land before the control plane closes the turn in
+  // its ledger (`endedByRuntime`: ~200 ms, 15 s in one measured case), and the
+  // refresh it sends then reads the open turn's deadline and cap. The ledger's
+  // newest ended turn changing is when the server's window is right, so the
+  // awake window is read again then (KRTX-1729). The first read is no news.
+  const lastEndedToken = turnOutcome.last_ended?.turn_token ?? null;
+  const lastEndedSeenRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!turnRead) return;
+    const seen = lastEndedSeenRef.current;
+    lastEndedSeenRef.current = lastEndedToken;
+    if (seen !== undefined && seen !== lastEndedToken) presenceReporterRef.current?.refresh();
+  }, [turnRead, lastEndedToken]);
+  // This view's stream is the only thing that announces a turn's end. A turn
+  // still running when the view unmounts (the person opened another page) is
+  // handed to a `/turn` watch that announces it instead; mounting again takes
+  // it back (`turn-end-handoff.ts`).
+  useTurnEndHandoff({
+    enabled,
+    projectId,
+    sessionId,
+    runtimeSessionId: ocSessionId || null,
+    working: turnRunning,
+    openTurnToken: working.serverOpenTurnToken,
+    lastEndedToken,
+  });
+  const savedEmptyRoot = transcriptHistoryEnabled && logOwned ? logEmptyRoot : null;
+  const emptyProvenForRoot = savedEmptyRoot !== null && savedEmptyRoot === ocSessionId;
+  // 5a. Can this session show its saved conversation before the computer
+  // wakes? A host paints placeholder rows while the answer is `loading` and
+  // its boot screen only on `none` — see `core/session-sync/saved-transcript`.
+  const savedTranscript = resolveSavedTranscript({
+    enabled: startEnabled && chatEngine,
+    hasMessages: sync.messages.length > 0 || (logOwned && logHistory === 'present'),
+    history: !transcriptHistoryEnabled ? 'off' : logOwned ? logHistory : 'absent',
+    mirror: logOwned ? (logHistory === 'present' ? 'painted' : logHistory) : sync.mirrorState,
+    root: ocSessionId ? 'known' : canonicalSession.pinSettled ? 'unknown' : 'pending',
+    emptyAwaitingTurnRead: emptyProvenForRoot && !turnRead,
+  });
+  // 5a'. And is there anything to wait for at all? The saved copy can prove
+  // the conversation empty (a complete read of the runtime found nothing); the
+  // turn record says whether a turn ended since, and the projection whether
+  // one is open or queued. A proven-empty session opens on its composer.
+  const conversationEmpty = isEmptyConversation({
+    savedEmptyRoot,
+    rootSessionId: ocSessionId,
+    turnRead,
+    hasEndedTurn: turnOutcome.last_ended != null,
+    hasOpenOrQueuedTurn:
+      working.state === 'working' ||
+      working.pendingDelivery === true ||
+      working.serverOpenTurnToken !== null,
+  });
+
+  useEffect(() => {
+    setRewindPending(false);
+    setRewindError(null);
+  }, [sessionId, ocSessionId]);
+
+  // 5b. Self-heal a missed `question.asked` SSE event (a `question` tool part
+  // rendering as running with nothing in the pending store) — see
+  // `useQuestionSelfHeal` for why this is distinct from the SSE reconnect-gap
+  // hydration in `useRuntimeEventStream`. Disabled entirely when `chatEngine`
+  // is off — see that option's jsdoc: a host mounting its own chat surface
+  // already runs its own copy of this poller for the same session.
+  // R5.3: with the session stream up, an ask cannot be dropped — the box's
+  // ring replays it on a reconnect and a resync re-reads the pending lists —
+  // so these polls run only while the stream is down.
+  useQuestionSelfHeal(ocSessionId, sync.messages, {
+    enabled: switched && chatEngine && !!ocSessionId && !streamConnected && !logNative,
+  });
+  usePermissionSelfHeal(ocSessionId, sync.messages, {
+    enabled: switched && chatEngine && !!ocSessionId && !streamConnected && !logNative,
+  });
+
+  // 6. Interactive prompts live in the pending store (the SSE writes them there,
+  // keyed by request id carrying sessionID). useSessionSync does NOT surface them.
+  const questionMap = useRuntimePendingStore((s) => s.questions);
+  const permissionMap = useRuntimePendingStore((s) => s.permissions);
+  // Is this session COMPACTING? Two inputs, one projection — see
+  // `core/session/compaction.ts`. It used to be the raw client-only flag,
+  // cleared ONLY by the `session.compacted` SSE frame, so a missed frame pinned
+  // the composer for the lifetime of the tab and a compaction started anywhere
+  // else was invisible.
+  const optimisticCompactionAtMs = useOpenCodeCompactionStore((state) =>
+    switched ? (state.compactingBySession[ocSessionId] ?? null) : null,
+  );
+  // `Session.time.compacting` — the runtime's own record. This query is the
+  // same cache entry `session.compacted` and `session.updated` already write
+  // (`runtimeKeys.runtimeSession`), so reading it here costs no extra request
+  // in a host that mounts the session row anyway.
+  // A box that serves its log reports compaction as `log.status` (the compaction store above).
+  const runtimeSessionRow = useRuntimeSession(switched && !logNative ? ocSessionId : '');
+  const compactionInputs = {
+    optimisticAtMs: optimisticCompactionAtMs,
+    serverCompactingAtMs: runtimeSessionRow.data?.time?.compacting ?? null,
+    nowMs: Date.now(),
+  };
+  const isCompacting = projectCompacting(compactionInputs);
+  // The cap has to apply when NOTHING else re-renders — a lost
+  // `session.compacted` frame is exactly the case where no further event
+  // arrives — so the expiry instant is armed explicitly. Same mechanism, and
+  // the same reason, as `useSessionWorking`'s `workingExpiryAtMs` timer.
+  const [, setCompactionTick] = useState(0);
+  const compactionExpiry = compactionExpiryAtMs(compactionInputs);
+  useEffect(() => {
+    if (compactionExpiry === null) return;
+    const timer = setTimeout(
+      () => setCompactionTick((tick) => tick + 1),
+      Math.max(0, compactionExpiry - Date.now()) + 1,
+    );
+    return () => clearTimeout(timer);
+  }, [compactionExpiry]);
+  // The server-observed branch of `projectCompacting` (rule 1) is otherwise
+  // unbounded: it stays authoritative until `runtimeKeys.runtimeSession`'s
+  // cached row is refreshed, and the only event wired to refresh it
+  // (`session.compacted`, in `use-opencode-events/handle-event.ts`) is one
+  // SSE frame that can be lost — a backgrounded tab, a stream reconnect, or
+  // that handler's own refetch failing. Without this, a lost frame pins
+  // `isCompacting` — and therefore the composer and slash-commands
+  // (`session-chat.tsx`'s `effectiveBusy`) — for the rest of the tab's life.
+  // This forces a REAL, retry-backed re-check (through the same query
+  // `useRuntimeSession` above already runs, so it inherits its 3-attempt
+  // exponential-backoff retry) once the observed flag has gone unconfirmed
+  // for `SERVER_COMPACTION_REVALIDATE_MS` — independent of whether
+  // `session.compacted` ever arrives. If the server still reports
+  // compacting, the fresh timestamp re-arms this same timer; once it does
+  // not, `serverCompactingAtMs` clears and the projection follows.
+  const serverCompactionRevalidateAt = serverCompactionRevalidateAtMs(compactionInputs);
+  useEffect(() => {
+    if (serverCompactionRevalidateAt === null || !switched || !ocSessionId) return;
+    const timer = setTimeout(
+      () => {
+        void queryClient.invalidateQueries({ queryKey: runtimeKeys.runtimeSession(ocSessionId) });
+      },
+      Math.max(0, serverCompactionRevalidateAt - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [serverCompactionRevalidateAt, switched, ocSessionId, queryClient]);
+  const removeQuestion = useRuntimePendingStore((s) => s.removeQuestion);
+  const removePermission = useRuntimePendingStore((s) => s.removePermission);
+  const questions = useMemo(
+    () => (switched ? Object.values(questionMap).filter((q) => q.sessionID === ocSessionId) : []),
+    [questionMap, ocSessionId, switched],
+  );
+  const permissions = useMemo(
+    () => (switched ? Object.values(permissionMap).filter((p) => p.sessionID === ocSessionId) : []),
+    [permissionMap, ocSessionId, switched],
+  );
+  const runtimeActionReady = switched && !!rootSessionId;
+
+  // 7. Server-side capabilities + per-session picks (all pre-runtime — no sandbox).
+  const models = useProjectModels(projectId);
+  const agents = useVisibleAgents({ projectId });
+  const config = useProjectConfig(projectId);
+  const picks = useSessionPicks(sessionId);
+
+  // 8. Mutations. A prompt creates a durable row; retrying the POST would
+  // only find the same row (`clientMessageId`), so the outer retry stays off.
+  const sendMutation = useMutation({
+    mutationFn: (input: CreateSessionPromptInput) => createSessionPrompt(projectId, sessionId, input),
+    retry: false,
+  });
+  const abortMutation = useAbortRuntimeSession();
+  const commandMutation = useExecuteRuntimeCommand();
+
+  // 9. Optimistic send: show the user's message instantly until a NEW user message
+  // lands (count grows) — robust to server-normalized text where a text-equality
+  // match would clear too early or never (wedging the composer). 30s backstop.
+  const userMsgCount = useMemo(
+    () => messages.filter((m) => m.info.role === 'user').length,
+    [messages],
+  );
+  // The title ladder arms ONCE per session, on the first user message this tab
+  // sees — not on every count change.
+  //
+  // `reconcileHydratedSessionTitle` reads the count only as `> 0`, but the
+  // count was the effect's DEPENDENCY: every message a hydrating transcript
+  // added aborted the running ladder and started a new one at delay 0, and
+  // each restart immediately refetched the sessions list. A thread with N user
+  // messages therefore paid N extra list reads on open — measured at up to 22
+  // `GET /sessions` in ONE session open. The boolean is the input the ladder
+  // actually has: has this conversation produced a user message yet.
+  const hasUserMessages = userMsgCount > 0;
+  useEffect(() => {
+    // R5.3: the stream's `kortix.control.session` frame carries the title the
+    // moment it is written; the ladder is the fallback without it.
+    if (!chatEngine || !hasUserMessages || streamConnected) return;
+    titleRefreshAbortRef.current?.abort();
+    const controller = new AbortController();
+    titleRefreshAbortRef.current = controller;
+    void reconcileHydratedSessionTitle(queryClient, projectId, sessionId, 1, {
+      signal: controller.signal,
+    }).finally(() => {
+      if (titleRefreshAbortRef.current === controller) {
+        titleRefreshAbortRef.current = null;
+      }
+    });
+    return () => controller.abort();
+  }, [chatEngine, projectId, queryClient, sessionId, hasUserMessages, streamConnected]);
+  const [sendState, setSendState] = useState<SendState>(IDLE_SEND_STATE);
+  const pending = sendState.pending;
+  const pendingBaseCount = useRef(0);
+  // Cleared when the send's echo lands — a real observation. The 30s timeout
+  // that used to sit beside this is deleted: no in-repo consumer reads
+  // `pending`, and where it could fire it fired wrongly — 30s is shorter than
+  // a legitimate inbox path (18.9s Daytona / 24.5s Platinum boot plus the
+  // drain). The sync store's optimistic message and the `SendReceipt` carry
+  // the state it approximated, each with an honest bound.
+  useEffect(() => {
+    if (pending && userMsgCount > pendingBaseCount.current) {
+      setSendState((s) => (s.pending ? { ...s, pending: null } : s));
+    }
+  }, [userMsgCount, pending]);
+
+  const sendParts = async (
+    parts: PromptPart[],
+    override?: {
+      model?: ModelKey | null;
+      agent?: string | null;
+      variant?: string | null;
+      directory?: string | null;
+      /**
+       * Stable name for the submission these parts belong to — a host's queue
+       * key, say. Re-dispatching a failed send with the same one keeps one wire
+       * `messageID`, so the proxy's duplicate protection still absorbs the
+       * retry instead of delivering the prompt twice. Omit it and every call is
+       * a new submission. See `SendRuntimeMessageArgs.clientMessageId`.
+       */
+      clientMessageId?: string;
+      /** The id the host drew its optimistic message under; the prompt goes out under it. */
+      messageId?: string;
+    },
+  ): Promise<void> => {
+    if (!runtimeActionReady) throw new RuntimeNotReadyError();
+    const opts = resolveSendOptions(picks, override);
+    // The prompt is going out, so the optimistic message stops being `pending`.
+    // Hosts own the optimistic add (they build the message id themselves), so
+    // this resolves it the same way `hydrate` correlates an echo: by the
+    // client-generated part ids that ride along with the prompt. Until this
+    // lands, `hydrate` refuses to supersede the message on an ordinal match —
+    // which is what keeps it on screen for the whole of a slow upload instead
+    // of being deleted by a rehydrate that only carries older turns.
+    markDispatchedForPartIds(ocSessionId, parts);
+
+    const receipt: SendReceipt = {
+      messageId: sendReceiptId(ocSessionId, parts, override?.clientMessageId),
+      atMs: Date.now(),
+    };
+    noteSendReceipt(sessionId, receipt);
+    try {
+      // Every turn start goes through the session's durable prompt inbox, the
+      // path the web composer and the CLI use: the server decides when it runs.
+      const result = await sendMutation.mutateAsync(
+        sessionPromptFromParts(ocSessionId, parts, opts, override?.clientMessageId, Date.now(), override?.messageId),
+      );
+      if (result.state === 'failed') {
+        throw new Error('This prompt was refused: its earlier delivery already failed.');
+      }
+      // The server has the prompt. From here — and NOT before — a `/turn` read
+      // is able to see it, so one is allowed to answer for it.
+      acceptSendReceipt(sessionId, receipt.messageId, Date.now());
+    } catch (error) {
+      // The prompt never reached the server, so there is nothing to wait for.
+      // Dropping the receipt here is what stops a refused send from claiming
+      // `working` for a minute over a turn that will never start. NAMED, so a
+      // slow failure cannot drop a later send's receipt while its own request
+      // is still on the wire.
+      clearSendReceipt(sessionId, receipt.messageId);
+      throw error;
+    }
+    useSyncStore.getState().commitSessionRevert(ocSessionId);
+  };
+
+  const send = (
+    text: string,
+    override?: {
+      model?: ModelKey | null;
+      agent?: string | null;
+      variant?: string | null;
+    },
+  ) => {
+    if (!runtimeActionReady) return;
+    pendingBaseCount.current = userMsgCount;
+    setSendState(sendStateOnStart(text));
+    // T15 — one user bubble: the optimistic message and the outgoing
+    // part share one minted id, so the server's echo can be correlated back
+    // to it instead of leaving both on screen until the idle sweep.
+    // One id from the optimistic message to the session log: minted by the wire codec, drawn
+    // here, sent as the prompt's wire id, kept by a runtime that keeps ids, and replaced by
+    // the log's put of the same id.
+    const { messageId, parts } = beginOptimisticPlainTextSend(ocSessionId, text, mintSessionWireMessageId(ocSessionId));
+    void sendParts(parts, { ...override, messageId }).catch((error) => {
+      // The send never reached (or was refused by) the server — nothing to
+      // rehydrate, so drop the optimistic message outright rather than leave
+      // it stranded forever (mirrors `abandonOptimisticSend`).
+      // `sendParts` already dropped this tab's send receipt on this path.
+      useSyncStore.getState().optimisticRemove(ocSessionId, messageId);
+      setSendState(sendStateOnError(error));
+    });
+  };
+
+  // Run a project slash-command (server-side `/command`), distinct from a prompt.
+  const runCommand = (
+    command: string,
+    args: string,
+    options: SessionCommandOptions = {},
+  ): Promise<void> => {
+    if (!runtimeActionReady) return Promise.resolve();
+    return commandMutation.mutateAsync(
+      buildSessionCommandInput(ocSessionId, command, args, options),
+    );
+  };
+
+  const rewind = async (messageId: string): Promise<void> => {
+    if (!runtimeActionReady) throw new RuntimeNotReadyError();
+    if (!messageId) throw new Error('Session rewind requires a message id');
+    if (working.state === 'working' || rewindPending) {
+      throw new Error('Cannot rewind a busy session');
+    }
+    setRewindPending(true);
+    setRewindError(null);
+    try {
+      await rewindOpenCodeSession(ocSessionId, messageId);
+      useSyncStore.getState().stageSessionRevert(ocSessionId, messageId);
+    } catch (error) {
+      const classified = classifySendError(error);
+      setRewindError(classified);
+      throw classified;
+    } finally {
+      setRewindPending(false);
+    }
+  };
+
+  const restoreRewind = async (): Promise<void> => {
+    if (!runtimeActionReady) throw new RuntimeNotReadyError();
+    if (!rewindMessageId || rewindPending) return;
+    setRewindPending(true);
+    setRewindError(null);
+    try {
+      await restoreOpenCodeSessionRewind(ocSessionId);
+      useSyncStore.getState().clearSessionRevert(ocSessionId);
+    } catch (error) {
+      const classified = classifySendError(error);
+      setRewindError(classified);
+      throw classified;
+    } finally {
+      setRewindPending(false);
+    }
+  };
+
+  // The one true cancel: hold the prompt inbox, abort the run, and drop any
+  // pending prompt + open prompts. Returns a promise that settles once the
+  // abort is acknowledged — the mutation resolved (and, per
+  // `abortRuntimeSession`, the session's status was re-read to confirm idle),
+  // the mutation failed after its own retries, or a bounded ~5s timeout
+  // elapsed. See `AbortSettlement`.
+  //
+  // `cancelSessionTurn` is `stopWithReceipt`, the Stop `useSessionSend` uses:
+  // it files the abort receipt and cancels a delivery still in its boot/wake
+  // backoff synchronously (T9), then holds the session's prompt inbox (bounded
+  // by `STOP_HOLD_DEADLINE_MS`) BEFORE the abort. Without the hold, a prompt
+  // queued during the turn was redelivered as soon as the abort dropped the
+  // runtime's queue, and Stop started the next turn. The optimistic UI
+  // (questions/permissions cleared, composer idle) still updates instantly.
+  const cancel = (): Promise<AbortSettlement> => {
+    const settlement = cancelSessionTurn({
+      projectId,
+      sessionId,
+      runtimeSessionId: ocSessionId,
+      runtimeActionReady,
+      runAbort: () => abortMutation.mutateAsync(ocSessionId),
+    });
+    questions.forEach((q) => removeQuestion(q.id));
+    permissions.forEach((p) => removePermission(p.id));
+    setSendState(IDLE_SEND_STATE);
+    return settlement;
+  };
+
+  const runtimeSessionError = canonicalSession.error;
+  const phase: SessionPhase = derivePhase({
+    terminal,
+    startError,
+    runtimeError: runtimeSessionError,
+    // `startSettled` is computed above via `computeStartSettled`, which wraps
+    // `shouldPollSessionStart` (the EXISTING definition of "the poll is still
+    // working") and additionally bounds the case where /start swallows a
+    // persistent failure into `null` forever — see START_INCONCLUSIVE_GIVE_UP_MS.
+    startSettled,
+    switched,
+  });
+
+  // 10. Replay the new-session hand-off once ready + thread empty (exactly once).
+  // Force-disabled when `chatEngine` is off: this reads `sync.isLoading`/
+  // `sync.messages`, which are the fixed empty stand-ins above when the chat
+  // engine isn't mounted, so it could never correctly gate on thread-empty —
+  // a host that disables the chat engine already owns its own hand-off.
+  const startedRef = useRef(false);
+  useEffect(() => {
+    if (!replayStartStash || !chatEngine) return;
+    if (startedRef.current || phase !== 'ready' || sync.isLoading) return;
+    const stash = readStartStash(sessionId);
+    if (!stash) return;
+    startedRef.current = true;
+    clearStartStash(sessionId);
+    if (sync.messages.length > 0) return;
+    if (stash.model) picks.setModel(stash.model);
+    if (stash.agent) picks.setAgent(stash.agent);
+    // A picks-only stash (`prompt: ''`) seeds the selections above and sends
+    // NOTHING: apps/web's producers now deliver the first prompt as a durable
+    // inbox row (server-side at create, or `startSessionWithPrompt`), and the
+    // stash carries only the model/agent hand-off. A full stash — the
+    // white-label/lumen producer — still replays here exactly as before.
+    if (!stash.prompt.trim()) return;
+    send(stash.prompt, {
+      model: stash.model,
+      agent: stash.agent,
+      variant: stash.variant,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, sync.isLoading, sync.messages.length, sessionId, replayStartStash, chatEngine]);
+
+  return {
+    projectId,
+    sessionId,
+    /** Canonical runtime root id, or null while resolving. */
+    runtimeSessionId: rootSessionId ?? null,
+    /** @deprecated Renamed to `runtimeSessionId`. Same value. Removed in the next major. */
+    opencodeSessionId: rootSessionId ?? null,
+    runtimeTransport: 'rest' as const,
+    runtimeSessions: canonicalSession.sessions,
+    /** The runtime session list has not answered yet (fetching, or not enabled
+     *  before this session owns the runtime). Empty `runtimeSessions` then means
+     *  "not asked", not "no child sessions". */
+    runtimeSessionsLoading: canonicalSession.isLoading,
+    runtimeSessionsListed: canonicalSession.listed,
+    runtimeError: runtimeSessionError,
+
+    // live data
+    messages,
+    status: sync.status,
+    /** Transcript-read state (`idle|loading|fresh|stale|error`), for gating the
+     *  chat body: `loading`/`error` with no messages are a wait and a failure,
+     *  not an empty session. `retryTranscript` re-reads the tail. */
+    freshness: sync.freshness,
+    retryTranscript: sync.retryTranscript,
+    questions,
+    permissions,
+    diffs: sync.diffs,
+    todos: sync.todos,
+    // While the store holds the log, older history is the log's (`GET …/log?before_seq=`).
+    hasOlder: logPages ? logOlder.hasOlder : sync.hasOlder,
+    isLoadingOlder: logPages ? logOlder.isLoadingOlder : sync.isLoadingOlder,
+    loadOlder: logPages ? logOlder.loadOlder : sync.loadOlder,
+
+    // lifecycle
+    phase,
+    /** Raw /start stage (provisioning|starting|ready|stopped|failed), for boot UI. */
+    stage,
+    /**
+     * The immutable agent this project session was created with, from /start
+     * (`agent_name`). Known from the FIRST /start response — long before the
+     * sandbox is ready — so composers can render the session's real agent
+     * while it boots instead of guessing from the roster. The server
+     * serializes `'default'` when no agent was bound; that is not a real
+     * roster agent, so it surfaces as `null` here.
+     */
+    agentName: startData?.agent_name && startData.agent_name !== 'default'
+      ? startData.agent_name
+      : null,
+    /** The serialized session_sandboxes row from /start (status, metadata, ids), or null. */
+    sandbox,
+    /**
+     * Absolute URL of this session's OpenCode runtime (the `/p/<ext>/8000`
+     * proxy), or null until `stage === 'ready'`. The same URL the hook hands
+     * to `setCurrentRuntime` — hosts that need it for a PTY attach or a direct
+     * daemon call read it here instead of rebuilding it from `sandbox`.
+     */
+    runtimeUrl: resolveSessionRuntimeUrl(startData),
+    /** True once the runtime is switched in and ready (equivalent to phase==='ready'). */
+    switched,
+    /** Whether polling /start again can still make progress (false = terminal). */
+    retriable: startData?.retriable ?? false,
+    /** Is a provider operation running for this session right now, per the
+     *  latest /start's `boot.actively_starting`? `false` while a `starting`
+     *  stage is only waiting out a retry cooldown, not driving the box. */
+    activelyStarting: startData?.boot?.actively_starting ?? false,
+    /** Terminal /start failure, for hosts to render instead of spinning forever. */
+    startError,
+    /** Typed provider-neutral terminal provisioning failure. */
+    failure: startData?.failure ?? null,
+    /** Granular boot phase (connecting|booting|ready|unreachable) for detailed UI. */
+    runtimePhase,
+    /** Provenance-tagged working state — WHICH observation decided it, when,
+     *  and for which turn. The one answer; `isBusy` is its boolean face. */
+    working,
+    isBusy: working.state === 'working',
+    /**
+     * May this viewer stop the running turn? In a shared session only the
+     * member who started it, the session owner or a project manager may. False
+     * only when the server's latest `/turn` answer says so (`can_stop`); a host
+     * then shows no Stop and a send queues. True when nothing runs, and when
+     * the server did not say. A stop the server refuses still ends as a
+     * `failed` settlement (403 `not_turn_prompter`).
+     */
+    canStop,
+    /**
+     * Until when this person's presence keeps the session's computer on
+     * (KRTX-1729): `until` is the computer's stop time after the latest
+     * renewal, `capAt` the time presence cannot keep it on past (the idle
+     * window after the latest turn). Set from the presence lease's responses,
+     * so it needs
+     * `browserPresence`. Null while the person is absent (hidden tab, or no
+     * input for 10 min), for a viewer who may not start the session, after a
+     * renewal that found the computer not running, from a turn's start until
+     * the next renewal answers, and against an API before KRTX-1729. Read
+     * again every 5 min while present, when a turn ends, and when the
+     * control plane closes a turn. A stop between two reads shows only at
+     * the next read, up to 5 min later: `until` is the latest stop time the
+     * hook knows, not proof the computer is running.
+     */
+    presenceAwake,
+    isCompacting,
+    isLoading: sync.isLoading,
+    /**
+     * Can the saved conversation show before the computer wakes?
+     * `loading` — a saved copy may still paint (show placeholder rows);
+     * `shown` — messages are in the store; `none` — nothing can paint until
+     * the runtime answers (show the boot screen). An unknown is `loading`,
+     * never `none`.
+     */
+    savedTranscript,
+    /**
+     * The server's saved copy proves this session's conversation empty (a
+     * complete read of its runtime found no messages), no turn ended since,
+     * and nothing is open or queued. Open it on its empty conversation (the
+     * composer), never on a boot screen. `false` while any of those reads is
+     * in flight, and for a project that keeps no saved history.
+     */
+    conversationEmpty,
+    isError: terminal || !!startError || !!runtimeSessionError,
+    /** Whether there are open interactive prompts (questions/permissions). */
+    hasPending: questions.length > 0 || permissions.length > 0,
+    /** Latest /start reason (e.g. 'runtime_waking'), surfaced for boot/error UI. */
+    reason: startData?.reason ?? null,
+    /** Pending optimistic message text, or null. */
+    pending,
+    /** True while the current `send` mutation is in flight. */
+    isSending: sendMutation.isPending,
+    /** Last `send` failure, typed (billing / runtime-not-ready / runtime-error),
+     * or null. Reset on every new `send` call. */
+    sendError: sendState.sendError,
+    rewindMessageId,
+    rewindPending,
+    rewindError,
+
+    // server-side capabilities (pre-runtime)
+    models,
+    agents,
+    defaultAgent: config?.default_agent ?? config?.open_code_default_agent ?? null,
+    commands: config?.commands ?? [],
+    picks,
+
+    // actions
+    send,
+    sendParts,
+    rewind,
+    restoreRewind,
+    cancel,
+    runCommand,
+    /** Answer an agent question through the server and drop it from pending
+     * state on success; throws a `KortixSendError` and leaves it pending on
+     * failure. */
+    answerQuestion,
+    /** Reject an agent question through the server (see `answerQuestion`). */
+    rejectQuestion,
+    /** Answer an agent permission request through the server (see `answerQuestion`). */
+    answerPermission,
+    /** @deprecated Drops the question from local state WITHOUT replying to the
+     * server — the agent run stays blocked waiting on it. Use `answerQuestion`
+     * / `rejectQuestion` instead. */
+    removeQuestion,
+    /** @deprecated Drops the permission request from local state WITHOUT
+     * replying to the server — the agent run stays blocked waiting on it. Use
+     * `answerPermission` instead. */
+    removePermission,
+    /** Force a re-poll of /start (e.g. a Retry button on the boot screen). */
+    retry: () => {
+      // An explicit retry is an open, whatever this tab stopped before.
+      stoppedByUserRef.current = null;
+      openedAtRef.current = { sessionId, at: Date.now() };
+      void start.refetch();
+    },
+  };
+}
+
+export type UseSessionResult = ReturnType<typeof useSession>;

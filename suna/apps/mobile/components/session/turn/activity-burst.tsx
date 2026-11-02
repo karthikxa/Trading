@@ -1,0 +1,120 @@
+/**
+ * One burst — a maximal run of non-text blocks (`sessionLogTurnSegments` kind `burst`).
+ *
+ * The summary line matches apps/web `turn/activity-burst.tsx`:
+ * `text-sm text-muted-foreground/70`, `gap-2`, the SDK's `burstSummaryLabel`
+ * ("Working · N steps" as a muted shimmer, "Completed N steps", "Completed X of
+ * N steps · F failed", "N steps failed"), trailing caret
+ * `size-3.5 text-muted-foreground/40`.
+ *
+ * Mobile departs from web on purpose: the burst never expands inline. Tapping
+ * the summary line opens the activity sheet (`useActivitySheetStore`, shown by
+ * `ActivitySheetHost`), a timeline of every step with a detail view per step.
+ * While this row owns the open sheet it republishes its live view to the store.
+ * A running summary ("Working · N steps") shimmers on screen, also while it
+ * owns the sheet (Jay); Reduce Motion and an off-screen turn draw it still.
+ *
+ * - every burst is this line, even ONE call ("Completed 1 step"): web shows
+ *   those bare, mobile never expands a step inline (Jay, 2026-09-24);
+ * - thinking never shows: `burstView` drops reasoning blocks;
+ * - a burst that merges to nothing (plumbing only) renders nothing;
+ * - under an opened "Worked for" row (`inFold`) the settled line names the
+ *   work instead ("Ran 9 commands, read 2 files · 1 failed", `sessionLogBurstWorkLabel`).
+ */
+
+import { memo, useCallback, useEffect, useMemo } from 'react';
+import { Pressable, View } from 'react-native';
+import { sessionLogBurstWorkLabel, type SessionLogBlock } from '@kortix/sdk';
+import { Text } from '@/components/ui/text';
+import { TextShimmer } from '@/components/kortix/text-shimmer';
+import { CaretRightIcon } from '@/lib/icons';
+import { burstView, samePartsList } from '@/lib/session/activity';
+import { ownsBurst } from '@/lib/session/activity-sheet';
+import { useActivitySheetStore } from '@/lib/session/activity-sheet-store';
+import { TURN_SPACE, TURN_TYPE, useTurnPalette } from '@/components/session/tool/shared/styles';
+import type { PermissionReply } from '@/components/session/tool/tool-part-renderer';
+import type { ActivityContextValue } from '@/lib/session/activity-sheet-store';
+
+// ─── Burst ───────────────────────────────────────────────────────────────────
+
+interface ActivityBurstProps {
+  segment: { kind: 'burst'; blocks: SessionLogBlock[] };
+  /** The owning turn is still working (web `working`). */
+  turnLive: boolean;
+  /** Last segment in the turn — stays running across SSE gaps between tool calls. */
+  isTrailing?: boolean;
+  sessionId?: string;
+  onOpenFile?: (path: string) => void;
+  toDisplayPath?: (path: string) => string;
+  onPermissionReply?: (requestId: string, reply: PermissionReply) => void;
+  /** Under an opened "Worked for" row: the line names the work (`sessionLogBurstWorkLabel`), not the step count. */
+  inFold?: boolean;
+}
+
+function ActivityBurstImpl({
+  segment,
+  turnLive,
+  isTrailing = false,
+  sessionId,
+  onOpenFile,
+  toDisplayPath,
+  onPermissionReply,
+  inFold = false,
+}: ActivityBurstProps) {
+  const palette = useTurnPalette();
+  const { blocks } = segment;
+  const view = useMemo(() => burstView(blocks, turnLive, isTrailing), [blocks, turnLive, isTrailing]);
+  const ownsSheet = useActivitySheetStore((state) => state.sheet !== null && ownsBurst(state.sheet.blockIds, blocks));
+
+  const context = useMemo<ActivityContextValue>(
+    () => ({ sessionId, turnLive, onOpenFile, toDisplayPath, onPermissionReply }),
+    [sessionId, turnLive, onOpenFile, toDisplayPath, onPermissionReply],
+  );
+
+  useEffect(() => {
+    if (ownsSheet) useActivitySheetStore.getState().sync(blocks, view, context);
+  }, [ownsSheet, blocks, view, context]);
+
+  const openSheet = useCallback(() => useActivitySheetStore.getState().show(blocks, view, context), [blocks, view, context]);
+
+  const title = useMemo(() => (inFold && !view.running ? sessionLogBurstWorkLabel(blocks) : view.title), [inFold, view, blocks]);
+
+  if (view.hidden) return null;
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityHint="Opens the activity"
+      onPress={openSheet}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: TURN_SPACE.gap2 }}
+    >
+      {view.running ? (
+        <TextShimmer variant="muted" tone="muted" style={[TURN_TYPE.sm, TABULAR]} numberOfLines={1}>
+          {title}
+        </TextShimmer>
+      ) : (
+        <Text variant="muted" numberOfLines={1} style={[TURN_TYPE.sm, TABULAR, { flexShrink: 1, color: palette.muted70 }]}>
+          {title}
+        </Text>
+      )}
+      <CaretRightIcon size={TURN_SPACE.caret} color={palette.muted40} />
+    </Pressable>
+  );
+}
+
+const TABULAR = { fontVariant: ['tabular-nums' as const] };
+
+/** `segment.blocks` is a fresh array per frame while a turn streams — compare element-wise. */
+export const ActivityBurst = memo(
+  ActivityBurstImpl,
+  (a, b) =>
+    a.turnLive === b.turnLive &&
+    a.isTrailing === b.isTrailing &&
+    a.sessionId === b.sessionId &&
+    a.onOpenFile === b.onOpenFile &&
+    a.toDisplayPath === b.toDisplayPath &&
+    a.onPermissionReply === b.onPermissionReply &&
+    a.inFold === b.inFold &&
+    samePartsList(a.segment.blocks, b.segment.blocks),
+);
+ActivityBurst.displayName = 'ActivityBurst';

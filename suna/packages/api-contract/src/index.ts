@@ -1,0 +1,2759 @@
+/**
+ * @kortix/api-contract — the shared wire contract for the Kortix platform API.
+ *
+ * Zod schemas + inferred TS types describing EXACTLY what apps/api serializes
+ * onto the wire today. The API serializers
+ * (apps/api/src/projects/lib/serializers.ts et al) are the behavioral source
+ * of truth. Response schemas are descriptive. Request schemas validate public
+ * input and can normalize deprecated input aliases to canonical fields.
+ *
+ * The contract is enforced two ways:
+ *   1. compile time — serializer return types in apps/api are annotated with
+ *      the inferred types below, so any added/renamed/retyped field fails
+ *      typecheck (object-literal excess-property checks catch additions);
+ *   2. runtime — apps/api's unit suite parses real serializer output against
+ *      these schemas (see
+ *      apps/api/src/__tests__/unit-api-contract-serializers.test.ts).
+ */
+import { z } from 'zod';
+import { SessionLogPageSchema } from './session-log/wire';
+import { SessionAttentionSchema, SessionBoardStateSchema, SessionInboundSchema } from './multi-agent';
+
+export * from './memory';
+
+/** Loose JSON object — jsonb metadata/config columns surfaced as-is. */
+export const JsonObjectSchema = z.record(z.string(), z.unknown());
+export type JsonObject = z.infer<typeof JsonObjectSchema>;
+
+/**
+ * Standard error envelope. Matches the platform-wide shape
+ * (`{ error, message, code, status }`) — permissive because handlers attach
+ * route-specific extras (e.g. `balance` on 402, `issues` on validation 400).
+ */
+export const ErrorEnvelopeSchema = z.object({
+  error: z.union([z.boolean(), z.string()]).optional(),
+  message: z.string().optional(),
+  code: z.string().optional(),
+  status: z.number().optional(),
+});
+export type ErrorEnvelope = z.infer<typeof ErrorEnvelopeSchema>;
+
+/** Bare success acknowledgement returned by delete/detach-style routes. */
+export const OkResponseSchema = z.object({ ok: z.literal(true) });
+export type OkResponse = z.infer<typeof OkResponseSchema>;
+
+/**
+ * Effective on/off map for every feature flag. Keys mirror the registry in
+ * apps/api/src/feature-flags/registry.ts, which imports `FeatureFlagKey` from
+ * here — adding a flag there without updating this map fails typecheck.
+ *
+ * Wire note: the serialized project fields keep their historical names
+ * (`experimental`, `experimental_features`) and the override map lives at
+ * `projects.metadata.experimental` — both are stable wire/storage details.
+ * Code-level names are the FeatureFlag* family.
+ */
+export const FeatureFlagMapSchema = z.object({
+  marketplace: z.boolean(),
+  meta_agent: z.boolean(),
+  reminders: z.boolean(),
+  warm_sessions: z.boolean(),
+  secrets_egress: z.boolean(),
+  pooled_provider_secrets: z.boolean(),
+  us_region: z.boolean(),
+  event_triggers: z.boolean(),
+  notification_center: z.boolean(),
+  volumes: z.boolean(),
+  drives: z.boolean(),
+  session_log_restore: z.boolean(),
+  project_channels: z.boolean(),
+  agent_rooms: z.boolean(),
+  goals: z.boolean(),
+  workspace_volume: z.boolean(),
+  artifacts: z.boolean(),
+  artifact_comments: z.boolean(),
+  email_channel: z.boolean(),
+  session_groups: z.boolean(),
+  chrome: z.boolean(),
+  agent_teams: z.boolean(),
+});
+export type FeatureFlagMap = z.infer<typeof FeatureFlagMapSchema>;
+
+export const FeatureFlagKeySchema = FeatureFlagMapSchema.keyof();
+export type FeatureFlagKey = z.infer<typeof FeatureFlagKeySchema>;
+export const FEATURE_FLAG_KEYS = FeatureFlagKeySchema.options;
+
+/** How settled a flag's surface is — a badge, not a mechanism. A `stable`
+ *  feature can still ship behind a flag (dark launch, gradual rollout). */
+export const FeatureFlagStabilitySchema = z.enum(['experimental', 'beta', 'stable']);
+export type FeatureFlagStability = z.infer<typeof FeatureFlagStabilitySchema>;
+
+/** One catalog entry of the self-describing feature-flag UI list. */
+export const FeatureFlagViewSchema = z.object({
+  key: FeatureFlagKeySchema,
+  name: z.string(),
+  description: z.string(),
+  stability: FeatureFlagStabilitySchema,
+  available: z.boolean(),
+  enabled: z.boolean(),
+  overridden: z.boolean(),
+  /** Internal-only flag, listed only while on. Only a platform operator can change it. */
+  operator_only: z.boolean().optional(),
+  /** Work in progress: not recommended yet. Absent on servers older than this field. */
+  wip: z.boolean().optional(),
+  /** `organization`: one value for every project of the organization; changing it needs `account.write`. */
+  scope: z.enum(['project', 'organization']).optional(),
+});
+export type FeatureFlagView = z.infer<typeof FeatureFlagViewSchema>;
+
+/**
+ * Standard error body for a route whose feature flag is off for the project:
+ * `403` with `code: 'feature_disabled'`. Emitted only after membership authz,
+ * so it reveals nothing to non-members.
+ */
+export const FeatureDisabledErrorSchema = z.object({
+  error: z.string(),
+  code: z.literal('feature_disabled'),
+  feature: FeatureFlagKeySchema,
+});
+export type FeatureDisabledError = z.infer<typeof FeatureDisabledErrorSchema>;
+
+/**
+ * `GET /v1/clients/mobile` — public (no auth, it is read before login). The
+ * operator's mobile release policy: a build older than `minimum_version`
+ * shows a blocking "update required" screen. Every field is null when the
+ * operator has not set it; a null minimum means no gate.
+ */
+export const MobileClientPolicySchema = z.object({
+  /** Minimum supported app version, `major.minor.patch`. Null: no gate. */
+  minimum_version: z.string().nullable(),
+  /** App Store page the update button opens on iOS. Null: no button. */
+  store_url_ios: z.string().nullable(),
+  /** Play Store page the update button opens on Android. Null: no button. */
+  store_url_android: z.string().nullable(),
+});
+export type MobileClientPolicy = z.infer<typeof MobileClientPolicySchema>;
+
+/** The two assignable project roles. `user`/`viewer` are deprecated aliases of
+ *  `member`; `editor` was REMOVED on 2026-08-18 (folded into `manager`). None
+ *  of the three is emitted, and only `manager`/`member` are accepted on write. */
+export const PROJECT_ROLES = ['manager', 'member'] as const;
+export const ProjectRoleSchema = z.enum(PROJECT_ROLES);
+export type ProjectRole = z.infer<typeof ProjectRoleSchema>;
+
+/** Every sandbox provider the current platform can select or emit. */
+// Platinum is the reference provider; Daytona is a legacy fallback (removal
+// scheduled). E2B support is discontinued.
+export const SANDBOX_PROVIDERS = ['platinum', 'daytona'] as const;
+export const SandboxProviderSchema = z.enum(SANDBOX_PROVIDERS);
+export type SandboxProvider = z.infer<typeof SandboxProviderSchema>;
+
+/**
+ * The dashboard's three sharing options, as emitted on sessions
+ * (`visibilityToIntent`) and secrets (`scopeToIntent`).
+ */
+export const SharingIntentSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('project') }),
+  z.object({ mode: z.literal('private'), ownerId: z.string() }),
+  z.object({
+    mode: z.literal('members'),
+    memberIds: z.array(z.string()).readonly().optional(),
+    groupIds: z.array(z.string()).readonly().optional(),
+  }),
+]);
+export type SharingIntent = z.infer<typeof SharingIntentSchema>;
+
+/** A project as serialized by `serializeProject`. */
+export const ProjectSchema = z.object({
+  project_id: z.string(),
+  account_id: z.string(),
+  name: z.string(),
+  repo_url: z.string(),
+  /** Universal client-facing git origin (proxy URL when enabled, else repo_url). */
+  git_origin_url: z.string(),
+  default_branch: z.string(),
+  manifest_path: z.string(),
+  status: z.enum(['active', 'archived']),
+  metadata: JsonObjectSchema,
+  /** Per-project emoji shown on the project card, or null when unset/invalid. */
+  icon: z.string().nullable(),
+  /** A named glyph + colour, the alternative to `icon`. At most one of the two
+   *  is ever set — the API deletes the other whenever either is written. */
+  icon_glyph: z.object({ name: z.string(), color: z.string() }).nullable(),
+  last_opened_at: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  /** Explicit project_members role, or null when access is inherited. */
+  project_role: ProjectRoleSchema.nullable(),
+  /** UI label for the caller's effective role (not an auth decision). */
+  effective_project_role: ProjectRoleSchema.nullable(),
+  dashboard_url: z.string(),
+  /** `apps` is not a flag (Apps graduated); it is always `true` so CLIs before
+   *  v0.14.0, which gate `kortix apps` on it, keep working. */
+  experimental: FeatureFlagMapSchema.extend({
+    apps: z.literal(true).optional(),
+    /** Not a flag (the gateway is the only model path); always `true` for older SDK and mobile clients. */
+    llm_gateway: z.literal(true).optional(),
+    /** Not a flag (the session log is every session's saved history); always `true` for older SDK, CLI and mobile clients. */
+    session_log: z.literal(true).optional(),
+    /** Not a flag (every new session runs pi; OpenCode is sunset); always `true` for older SDK, CLI and mobile clients. */
+    pi_harness: z.literal(true).optional(),
+    /** Not a flag (generative UI is always on); always `true` for older SDK, web and mobile clients, which render blocks only while it is on. */
+    genui: z.literal(true).optional(),
+    /** Not a flag (the Kortix connectors catalog is the only connectors path); always `true` for older SDK and hosts. */
+    connectors_v2: z.literal(true).optional(),
+    /** Not a flag (integrations.sh is part of the one catalog); always `true` for older SDK and hosts. */
+    connectors_api_discover: z.literal(true).optional(),
+  }),
+  experimental_features: z.array(FeatureFlagViewSchema),
+  /** Per-project provider pin, surfaced only while still usable. */
+  default_sandbox_provider: SandboxProviderSchema.nullable(),
+  available_sandbox_providers: z.array(SandboxProviderSchema),
+  /** Per-project default reasoning effort (a models.dev effort label such as
+   *  `low`/`high`/`xhigh`), or null for automatic. Delivery injects it as the
+   *  prompt's `variant` whenever the prompt carries none; re-validated on read
+   *  so a value the catalog never published never reaches a client. */
+  default_reasoning_effort: z.string().nullable(),
+});
+export type Project = z.infer<typeof ProjectSchema>;
+
+export const SESSION_STATUSES = [
+  'queued',
+  'branching',
+  'provisioning',
+  'running',
+  'stopped',
+  'failed',
+  'completed',
+] as const;
+export const SessionStatusSchema = z.enum(SESSION_STATUSES);
+export type SessionStatus = z.infer<typeof SessionStatusSchema>;
+
+export const SESSION_VISIBILITIES = ['private', 'project', 'restricted'] as const;
+export const SessionVisibilitySchema = z.enum(SESSION_VISIBILITIES);
+export type SessionVisibility = z.infer<typeof SessionVisibilitySchema>;
+
+/**
+ * Non-secret, wrapper-supplied context attached durably to one Kortix session.
+ * This is not an environment-variable map: the server serializes the whole
+ * object into one server-owned `KORTIX_SESSION_CONTEXT` JSON envelope.
+ */
+export const SESSION_RUNTIME_CONTEXT_MAX_KEYS = 64;
+export const SESSION_RUNTIME_CONTEXT_MAX_BYTES = 16 * 1024;
+export const SESSION_RUNTIME_CONTEXT_KEY_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
+const SESSION_RUNTIME_CONTEXT_SENSITIVE_KEY_PATTERN =
+  /(^|[._-])(token|secret|password|credential|api[_-]?key|private[_-]?key|authorization|cookie)([._-]|$)/;
+
+export const SessionRuntimeContextScalarSchema = z.union([
+  z.string().max(4096),
+  z.number().finite(),
+  z.boolean(),
+  z.null(),
+]);
+export type SessionRuntimeContextScalar = z.infer<typeof SessionRuntimeContextScalarSchema>;
+
+export const SessionRuntimeContextSchema = z
+  .record(
+    z
+      .string()
+      .regex(
+        SESSION_RUNTIME_CONTEXT_KEY_PATTERN,
+        'runtime_context keys must start with a lower-case letter and contain only lower-case letters, numbers, dots, dashes, or underscores (max 64 characters)',
+      )
+      .refine(
+        (key) => !SESSION_RUNTIME_CONTEXT_SENSITIVE_KEY_PATTERN.test(key),
+        'runtime_context is non-secret and cannot contain credential-like keys',
+      ),
+    SessionRuntimeContextScalarSchema,
+  )
+  .superRefine((value, ctx) => {
+    if (Object.keys(value).length > SESSION_RUNTIME_CONTEXT_MAX_KEYS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `runtime_context may contain at most ${SESSION_RUNTIME_CONTEXT_MAX_KEYS} entries`,
+      });
+    }
+    const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
+    if (bytes > SESSION_RUNTIME_CONTEXT_MAX_BYTES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `runtime_context must be at most ${SESSION_RUNTIME_CONTEXT_MAX_BYTES} UTF-8 bytes`,
+      });
+    }
+  });
+export type SessionRuntimeContext = z.infer<typeof SessionRuntimeContextSchema>;
+
+export const SESSION_CONNECTOR_BINDINGS_MAX_KEYS = 64;
+const SessionConnectorBindingAliasSchema = z
+  .string()
+  .regex(
+    /^[a-z][a-z0-9_-]{0,127}$/,
+    'connector binding aliases must be lower-case connector slugs',
+  );
+
+export const SessionConnectorBindingInputSchema = z
+  .object({
+    connection_id: z.string().uuid(),
+  })
+  .strict();
+export type SessionConnectorBindingInput = z.input<typeof SessionConnectorBindingInputSchema>;
+
+export const SessionConnectorBindingSchema = z
+  .object({
+    connection_id: z.string().uuid(),
+  })
+  .strict();
+export type SessionConnectorBinding = z.infer<typeof SessionConnectorBindingSchema>;
+
+export const SessionConnectorBindingsInputSchema = z
+  .record(SessionConnectorBindingAliasSchema, SessionConnectorBindingInputSchema)
+  .superRefine((value, ctx) => {
+    if (Object.keys(value).length > SESSION_CONNECTOR_BINDINGS_MAX_KEYS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `connector_bindings may contain at most ${SESSION_CONNECTOR_BINDINGS_MAX_KEYS} entries`,
+      });
+    }
+  });
+export type SessionConnectorBindingsInput = z.input<typeof SessionConnectorBindingsInputSchema>;
+
+export const SessionConnectorBindingsSchema = z
+  .record(SessionConnectorBindingAliasSchema, SessionConnectorBindingSchema)
+  .superRefine((value, ctx) => {
+    if (Object.keys(value).length > SESSION_CONNECTOR_BINDINGS_MAX_KEYS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `connector_bindings may contain at most ${SESSION_CONNECTOR_BINDINGS_MAX_KEYS} entries`,
+      });
+    }
+  });
+export type SessionConnectorBindings = z.infer<typeof SessionConnectorBindingsSchema>;
+
+export const SESSION_SECRETS_ALLOWLIST_MAX_KEYS = 128;
+/**
+ * A per-session secrets allowlist: project-secret IDENTIFIERS (never values)
+ * this session may receive. Backend-only. Narrows the resolved set — see
+ * intersectSecretGrants. Identifier grammar mirrors project_secrets.identifier
+ * (apps/api secrets.ts IDENTIFIER_REGEX).
+ */
+export const SessionSecretsAllowlistSchema = z
+  .array(
+    z
+      .string()
+      .regex(
+        /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/,
+        'each secrets entry must be a project-secret identifier',
+      ),
+  )
+  .max(
+    SESSION_SECRETS_ALLOWLIST_MAX_KEYS,
+    `secrets may contain at most ${SESSION_SECRETS_ALLOWLIST_MAX_KEYS} identifiers`,
+  );
+export type SessionSecretsAllowlist = z.infer<typeof SessionSecretsAllowlistSchema>;
+
+export const ConnectorAuthorizationStrategySchema = z.enum(['project', 'user']);
+export type ConnectorAuthorizationStrategy = z.infer<typeof ConnectorAuthorizationStrategySchema>;
+
+/*
+ * A session no longer declares connectors it REQUIRES.
+ *
+ * `require_connectors` used to name aliases with nothing connected, which made
+ * the pre-flight refuse the turn until someone connected them. The refusal was
+ * unreachable in practice: a `user`-strategy connector has no project-wide
+ * account to offer, so the web card rendered prose with no button, the warm
+ * session path swallowed the 409, and the composer span forever on "Thinking".
+ * A session that names a requirement nobody can satisfy is a dead end.
+ *
+ * The connector CALL is the gate now. It denies with `connector_not_connected`,
+ * names the connector, and carries a connect link the agent surfaces — so the
+ * turn runs, the agent says what is missing, and the remedy is one click.
+ */
+
+export const SessionScopeInputSchema = z
+  .object({
+    secrets: SessionSecretsAllowlistSchema.nullable().optional(),
+    /**
+     * FULL new binding map — REPLACES the previous one. Three distinct states,
+     * and conflating any two of them is a bug:
+     *
+     * - **omitted** — leave the session's connector scope exactly as it is.
+     * - **`null`** — CLEAR the override. The session goes back to inheriting the
+     *   project default for every alias its agent grants. This is the only way
+     *   to undo an override; without it an override was permanent.
+     * - **`{}`** — an EXPLICIT zero-connector override: this session gets no
+     *   connector at all, project defaults included. The opposite of `null`.
+     */
+    connector_bindings: SessionConnectorBindingsInputSchema.nullable().optional(),
+    /** @deprecated INERT. Accepted and ignored — see `SessionCreateInputSchema`. */
+    require_connectors: z.array(z.string()).nullable().optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      Object.hasOwn(value, 'secrets') ||
+      Object.hasOwn(value, 'connector_bindings') ||
+      Object.hasOwn(value, 'require_connectors'),
+    'Supply `secrets`, `connector_bindings`, or both',
+  );
+export type SessionScopeInput = z.input<typeof SessionScopeInputSchema>;
+
+export const SessionScopeSchema = z
+  .object({
+    secrets_allowlist: SessionSecretsAllowlistSchema.nullable(),
+    /**
+     * @deprecated Always `null`. No session requires connectors any more.
+     *
+     * Kept on the response because `SessionScope` is a published `@kortix/sdk`
+     * type and removing a field breaks every consumer that reads it. `null` is
+     * the truthful value for "nothing is required", which is now always so.
+     */
+    required_connectors: z.null(),
+    connector_bindings: SessionConnectorBindingsSchema,
+    dropped_secrets: z.array(z.string()),
+    added_secrets: z.array(z.string()),
+    dropped_bindings: z.array(z.string()),
+    retroactive: z.boolean(),
+    /**
+     * Whether this session HOLDS its own connector override.
+     *
+     * `connector_bindings` above is the server-RESOLVED effective map, so it
+     * looks identical whether the session overrode its connectors or simply
+     * inherited the project defaults. A client could not tell the two apart, so
+     * it rendered an inherited session as "None selected" and wrote an explicit
+     * zero-connector override on the next untouched save. This flag is the
+     * difference: `false` means every alias still resolves to the project
+     * default; `true` means the stored bindings are authoritative.
+     *
+     * Send `connector_bindings: null` to put it back to `false`.
+     */
+    connector_bindings_configured: z.boolean(),
+    /**
+     * Whether an alias with NO stored binding still falls back to the project
+     * default while an override is configured. Create-time only, and false for
+     * a session that supplied bindings at create — those fail closed.
+     */
+    connector_bindings_inherit_unbound: z.boolean(),
+    /**
+     * True when the new secrets scope was pushed to the live sandbox and
+     * OpenCode was restarted to pick it up — the change is in effect NOW.
+     * False when there was no active sandbox to push to (the change is stored
+     * and applies at the next boot), or when `secrets` was not part of this
+     * request. Mirrors the model route's `applied_live`.
+     */
+    applied_live: z.boolean().optional(),
+    /**
+     * Present only when a live push was REQUIRED (the secrets scope changed and
+     * an active sandbox exists) and FAILED — the row is written but the running
+     * harness still answers from the OLD scope. `applied_live: false` cannot
+     * express this on its own (it is also the benign no-active-sandbox answer),
+     * so a client must read THIS to tell a half-applied change from a stored one.
+     */
+    push_failed: z.literal(true).optional(),
+    push_reason: z.string().optional(),
+    detail: z.string(),
+  })
+  .strict();
+export type SessionScope = z.infer<typeof SessionScopeSchema>;
+
+/**
+ * @deprecated Shape of one entry in the retired `CONNECTOR_CONNECTION_REQUIRED`
+ * error (see the comment above `SessionScopeInputSchema`). No route constructs
+ * this any more — the connector call is the gate now, not session preflight.
+ * Kept on the wire: this is a published `@kortix/sdk` type and removing it
+ * breaks every consumer that imports it.
+ */
+export const RequiredConnectorConnectionSchema = z
+  .object({
+    id: z.string().uuid(),
+    slug: z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/),
+    name: z.string().min(1),
+    authorization_strategy: ConnectorAuthorizationStrategySchema,
+  })
+  .strict();
+export type RequiredConnectorConnection = z.infer<typeof RequiredConnectorConnectionSchema>;
+
+/**
+ * @deprecated The required-connector session gate is retired — no route
+ * returns this error any more (its 409 came from session create/preflight,
+ * which no longer checks required connectors). Kept on the wire for the same
+ * reason as `RequiredConnectorConnectionSchema` above.
+ */
+export const ConnectorConnectionRequiredErrorSchema = z
+  .object({
+    code: z.literal('CONNECTOR_CONNECTION_REQUIRED'),
+    message: z.string().min(1),
+    connector_connections: z.array(RequiredConnectorConnectionSchema).min(1),
+  })
+  .strict();
+export type ConnectorConnectionRequiredError = z.infer<
+  typeof ConnectorConnectionRequiredErrorSchema
+>;
+
+export const ConnectionOwnerTypeSchema = z.enum(['agent', 'member', 'subject', 'external']);
+export const ConnectionStatusSchema = z.enum(['active', 'revoked', 'error']);
+export const ConnectionMetadataSchema = z
+  .record(
+    z
+      .string()
+      .regex(/^[a-z][a-z0-9_.-]{0,63}$/)
+      .refine(
+        (key) =>
+          !/(^|[._-])(token|secret|password|credential|api[_-]?key|private[_-]?key|authorization|cookie)([._-]|$)/.test(
+            key,
+          ),
+        'connection metadata is non-secret',
+      ),
+    SessionRuntimeContextScalarSchema,
+  )
+  .superRefine((value, ctx) => {
+    if (Object.keys(value).length > 64) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'metadata may contain at most 64 entries',
+      });
+    }
+    if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 16 * 1024) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'metadata must be at most 16384 UTF-8 bytes',
+      });
+    }
+  });
+/**
+ * One grant that names who may use a shared account. `project` = everyone with
+ * access to the project (`principal_id` is the project id).
+ */
+export const ConnectionShareSchema = z.object({
+  /** The `role_assignments` id; revoke it to take this audience away. */
+  grant_id: z.string().uuid(),
+  /** `agent`: `principal_id` is the agent's service account. */
+  principal_type: z.enum(['member', 'group', 'project', 'agent']),
+  principal_id: z.string(),
+  /** A member's email, a group's name, an agent's name, or the project's name. */
+  label: z.string(),
+  expires_at: z.string().nullable(),
+});
+export type ConnectionShare = z.infer<typeof ConnectionShareSchema>;
+
+/** Live status of the machine behind a computer account. */
+export const ComputerMachineStatusSchema = z.object({
+  online: z.boolean(),
+  last_heartbeat_at: z.string().nullable(),
+  hostname: z.string().optional(),
+  platform: z.string().optional(),
+  /**
+   * The access mode the machine last reported (`tunnel.access.state`):
+   * `ask` needs its owner to allow each grant on the computer, `always` runs,
+   * `off` refuses every call. `granted_until` is the end of the current `ask`
+   * grant. `null` or absent: the agent never reported one (treat as `always`).
+   */
+  access: z
+    .object({
+      mode: z.enum(['ask', 'always', 'off']),
+      granted_until: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
+});
+export type ComputerMachineStatus = z.infer<typeof ComputerMachineStatusSchema>;
+
+export const ConnectionSchema = z.object({
+  connection_id: z.string().uuid(),
+  connector_alias: z.string(),
+  owner_type: z.enum(['project', 'agent', 'member', 'subject', 'external']),
+  owner_id: z.string().nullable(),
+  label: z.string(),
+  status: ConnectionStatusSchema,
+  is_default: z.boolean(),
+  metadata: ConnectionMetadataSchema,
+  /**
+   * The identity the account was authorized as: an email, a login, or a
+   * display name, read from the provider at finalize. `null` when the
+   * provider exposes none or the connection holds no authorized account.
+   */
+  connected_as: z.string().nullable().optional(),
+  /**
+   * Who may use a shared (`owner_type: project`) account. Empty, or holding a
+   * `project` grant, means everyone in the project; otherwise only the named
+   * members and groups, in private sessions. Absent on every other owner type.
+   */
+  shared_with: z.array(ConnectionShareSchema).optional(),
+  /**
+   * `false` = the caller is outside this shared account's audience and sees it
+   * only because they manage the project's connections. It cannot be bound to
+   * a session. Absent on older servers: treat as `true`.
+   */
+  usable: z.boolean().optional(),
+  /** Signed in: the account holds a credential or a connected provider
+   *  account. `false` offers Connect. Absent on older servers. */
+  authorized: z.boolean().optional(),
+  /**
+   * Computer accounts only: the paired machine this account reaches. `null`
+   * when the machine was unpaired. Absent on every other connector.
+   */
+  tunnel_id: z.string().uuid().nullable().optional(),
+  /**
+   * Computer accounts only: live status of the paired machine, or `null` when
+   * it was unpaired. Absent on every other connector.
+   */
+  machine: ComputerMachineStatusSchema.nullable().optional(),
+});
+export type Connection = z.infer<typeof ConnectionSchema>;
+
+/**
+ * Rename a connection. Only the label changes. `me`, `project`, and
+ * UUID-shaped labels are refused at the route because `--account` resolves
+ * those before labels.
+ */
+export const RenameConnectionInputSchema = z
+  .object({ label: z.string().trim().min(1).max(255) })
+  .strict();
+export type RenameConnectionInput = z.infer<typeof RenameConnectionInputSchema>;
+
+export const ReconcileConnectionInputSchema = z
+  .object({
+    connector_alias: z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/),
+    // `project` = a project-shared connection (several are allowed per connector,
+    // distinguished by label); it takes no owner_id. Every other owner type
+    // requires one. Creating a project connection needs the connections-manage
+    // capability — enforced at the route.
+    owner_type: z.enum(['project', 'agent', 'member', 'subject', 'external']),
+    owner_id: z.string().trim().min(1).max(512).optional(),
+    label: z.string().trim().min(1).max(255),
+    metadata: ConnectionMetadataSchema.optional(),
+  })
+  .strict();
+export type ReconcileConnectionInput = z.infer<typeof ReconcileConnectionInputSchema>;
+
+const OAuth2TokenParameterNameSchema = z
+  .string()
+  .regex(
+    /^[A-Za-z][A-Za-z0-9_.~-]{0,127}$/,
+    'token parameter names must be 1-128 URL-form-safe characters and start with a letter',
+  );
+
+export const OAUTH2_RESERVED_TOKEN_PARAMETER_NAMES = [
+  'grant_type',
+  'client_id',
+  'client_secret',
+  'client_assertion',
+  'client_assertion_type',
+  'scope',
+  'resource',
+  'audience',
+] as const;
+const OAUTH2_RESERVED_TOKEN_PARAMETERS = new Set<string>(OAUTH2_RESERVED_TOKEN_PARAMETER_NAMES);
+
+const OAuth2AdditionalTokenParametersSchema = z
+  .record(OAuth2TokenParameterNameSchema, z.string().max(4096))
+  .superRefine((value, ctx) => {
+    const entries = Object.entries(value);
+    if (entries.length > 32) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.too_big,
+        type: 'array',
+        maximum: 32,
+        inclusive: true,
+        message: 'at most 32 additional token parameters are allowed',
+      });
+    }
+    for (const [key] of entries) {
+      if (OAUTH2_RESERVED_TOKEN_PARAMETERS.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} is owned by the OAuth2 client-credentials protocol`,
+        });
+      }
+    }
+  });
+
+export const OAuth2ClientCredentialsSchema = z
+  .object({
+    type: z.literal('oauth2_client_credentials'),
+    token_url: z
+      .string()
+      .url()
+      .refine((value) => value.startsWith('https://'), 'token_url must use https'),
+    client_id: z.string().trim().min(1).max(1024),
+    token_endpoint_auth_method: z.enum([
+      'none',
+      'client_secret_post',
+      'client_secret_basic',
+      'client_secret_jwt',
+      'private_key_jwt',
+    ]),
+    client_secret: z.string().min(1).max(65536).optional(),
+    private_key: z.string().min(1).max(65536).optional(),
+    certificate_thumbprint: z.string().min(1).max(512).optional(),
+    scopes: z.array(z.string().trim().min(1).max(2048)).max(64).optional(),
+    resource: z.string().trim().min(1).max(4096).optional(),
+    audience: z.string().trim().min(1).max(4096).optional(),
+    token_params: OAuth2AdditionalTokenParametersSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const usesSecret =
+      value.token_endpoint_auth_method === 'client_secret_post' ||
+      value.token_endpoint_auth_method === 'client_secret_basic' ||
+      value.token_endpoint_auth_method === 'client_secret_jwt';
+    if (usesSecret && !value.client_secret) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['client_secret'],
+        message: 'client_secret is required for the selected authentication method',
+      });
+    }
+    if (value.token_endpoint_auth_method === 'private_key_jwt' && !value.private_key) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['private_key'],
+        message: 'private_key is required for private_key_jwt',
+      });
+    }
+  });
+export type OAuth2ClientCredentials = z.infer<typeof OAuth2ClientCredentialsSchema>;
+
+const OAuth2HttpsUrlSchema = z
+  .string()
+  .url()
+  .refine((value) => value.startsWith('https://'), 'OAuth2 endpoints must use https');
+
+const OAuth2RedirectUrlSchema = z
+  .string()
+  .url()
+  .refine((value) => {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' ||
+      (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1'))
+    );
+  }, 'redirect URI must use https except on loopback');
+
+export const OAuth2TokenEndpointAuthMethodSchema = z.enum([
+  'none',
+  'client_secret_basic',
+  'client_secret_post',
+  'client_secret_jwt',
+  'private_key_jwt',
+]);
+export type OAuth2TokenEndpointAuthMethod = z.infer<typeof OAuth2TokenEndpointAuthMethodSchema>;
+
+const OAuth2ApplicationFields = {
+  discovery_url: OAuth2HttpsUrlSchema.optional(),
+  authorization_url: OAuth2HttpsUrlSchema.optional(),
+  token_url: OAuth2HttpsUrlSchema.optional(),
+  device_authorization_url: OAuth2HttpsUrlSchema.optional(),
+  revocation_url: OAuth2HttpsUrlSchema.optional(),
+  client_id: z.string().trim().min(1).max(1024),
+  token_endpoint_auth_method: OAuth2TokenEndpointAuthMethodSchema,
+  client_secret: z.string().min(1).max(65536).optional(),
+  private_key: z.string().min(1).max(65536).optional(),
+  scopes: z.array(z.string().trim().min(1).max(2048)).max(64).optional(),
+  resource: z.string().trim().min(1).max(4096).optional(),
+  audience: z.string().trim().min(1).max(4096).optional(),
+  authorization_params: z.record(z.string().max(4096)).optional(),
+  token_params: z.record(z.string().max(4096)).optional(),
+  // RFC 7591/7592: present when Kortix registered this client dynamically.
+  registration_client_uri: OAuth2HttpsUrlSchema.optional(),
+  registration_access_token: z.string().min(1).max(65536).optional(),
+  /**
+   * The authorization server that issued this client (RFC 8414 `issuer`).
+   * Recorded so the callback can validate RFC 9207 `iss`, and so credentials
+   * stay bound to the server that minted them (MCP SEP-2352).
+   */
+  issuer: OAuth2HttpsUrlSchema.optional(),
+};
+
+export const OAuth2ApplicationInputSchema = z
+  .object(OAuth2ApplicationFields)
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!value.discovery_url && !value.token_url) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['token_url'],
+        message: 'token_url or discovery_url is required',
+      });
+    }
+    if (
+      (value.token_endpoint_auth_method === 'client_secret_basic' ||
+        value.token_endpoint_auth_method === 'client_secret_post' ||
+        value.token_endpoint_auth_method === 'client_secret_jwt') &&
+      !value.client_secret
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['client_secret'],
+        message: 'client_secret is required for the selected authentication method',
+      });
+    }
+    if (value.token_endpoint_auth_method === 'private_key_jwt' && !value.private_key) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['private_key'],
+        message: 'private_key is required for private_key_jwt',
+      });
+    }
+  });
+export type OAuth2ApplicationInput = z.infer<typeof OAuth2ApplicationInputSchema>;
+
+export const OAuth2ApplicationViewSchema = z
+  .object(OAuth2ApplicationFields)
+  .omit({
+    client_secret: true,
+    private_key: true,
+    registration_access_token: true,
+  })
+  .extend({
+    has_client_secret: z.boolean(),
+    has_private_key: z.boolean(),
+  });
+export type OAuth2ApplicationView = z.infer<typeof OAuth2ApplicationViewSchema>;
+
+export const OAuth2ResourceDiscoveryInputSchema = z
+  .object({
+    /** Defaults to the connector's own URL (MCP url / http base_url / graphql endpoint). */
+    resource_url: OAuth2HttpsUrlSchema.optional(),
+  })
+  .strict();
+export type OAuth2ResourceDiscoveryInput = z.infer<typeof OAuth2ResourceDiscoveryInputSchema>;
+
+export const OAuth2ResourceDiscoverySchema = z
+  .object({
+    resource_url: z.string(),
+    requires_authorization: z.boolean(),
+    resource: z.string().optional(),
+    resource_name: z.string().optional(),
+    protected_resource_metadata_url: z.string().optional(),
+    authorization_server: z.string().optional(),
+    metadata: OAuth2ApplicationViewSchema.partial()
+      .omit({ has_client_secret: true, has_private_key: true })
+      .optional(),
+    registration_endpoint: z.string().optional(),
+    /** Kortix signs in with its own OAuth client: a catalogue app whose server
+     *  has no dynamic registration. Register without `registration_endpoint`. */
+    kortix_client: z.boolean().optional(),
+    token_endpoint_auth_methods_supported: z.array(z.string()).optional(),
+    code_challenge_methods_supported: z.array(z.string()).optional(),
+    scopes: z.array(z.string()),
+    warnings: z.array(z.string()),
+  })
+  .strict();
+export type OAuth2ResourceDiscovery = z.infer<typeof OAuth2ResourceDiscoverySchema>;
+
+/** Register Kortix as a client (RFC 7591) and save the issued client as the
+ * connection's OAuth2 application. Endpoint fields come from discovery.
+ * Without `registration_endpoint` the server uses Kortix's own OAuth client,
+ * which only a catalogue app with `kortix_client` discovery has. */
+export const OAuth2ClientRegistrationInputSchema = z
+  .object({
+    registration_endpoint: OAuth2HttpsUrlSchema.optional(),
+    /** Authorization server issuer, recorded for RFC 9207 `iss` validation. */
+    issuer: OAuth2HttpsUrlSchema.optional(),
+    client_name: z.string().trim().min(1).max(128).optional(),
+    token_endpoint_auth_methods_supported: z.array(z.string().max(64)).max(16).optional(),
+    discovery_url: OAuth2HttpsUrlSchema.optional(),
+    authorization_url: OAuth2HttpsUrlSchema.optional(),
+    token_url: OAuth2HttpsUrlSchema.optional(),
+    device_authorization_url: OAuth2HttpsUrlSchema.optional(),
+    revocation_url: OAuth2HttpsUrlSchema.optional(),
+    scopes: z.array(z.string().trim().min(1).max(2048)).max(64).optional(),
+    resource: z.string().trim().min(1).max(4096).optional(),
+    audience: z.string().trim().min(1).max(4096).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!value.discovery_url && !value.token_url) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['token_url'],
+        message: 'token_url or discovery_url is required',
+      });
+    }
+  });
+export type OAuth2ClientRegistrationInput = z.infer<typeof OAuth2ClientRegistrationInputSchema>;
+
+export const OAuth2DiscoveryInputSchema = z
+  .object({ discovery_url: OAuth2HttpsUrlSchema })
+  .strict();
+export type OAuth2DiscoveryInput = z.infer<typeof OAuth2DiscoveryInputSchema>;
+
+const OAuth2OptionalScopesSchema = z.array(z.string().trim().min(1).max(2048)).max(64).optional();
+
+export const OAuth2AuthorizationStartInputSchema = z
+  .object({
+    scopes: OAuth2OptionalScopesSchema,
+    success_redirect_uri: OAuth2RedirectUrlSchema.optional(),
+    error_redirect_uri: OAuth2RedirectUrlSchema.optional(),
+  })
+  .strict();
+export type OAuth2AuthorizationStartInput = z.infer<typeof OAuth2AuthorizationStartInputSchema>;
+
+export const OAuth2DeviceAuthorizationStartInputSchema = z
+  .object({ scopes: OAuth2OptionalScopesSchema })
+  .strict();
+export type OAuth2DeviceAuthorizationStartInput = z.infer<
+  typeof OAuth2DeviceAuthorizationStartInputSchema
+>;
+
+export const OAuth2AuthorizationStartResultSchema = z
+  .object({
+    authorization_url: OAuth2HttpsUrlSchema,
+    expires_at: z.string().datetime(),
+  })
+  .strict();
+export type OAuth2AuthorizationStartResult = z.infer<typeof OAuth2AuthorizationStartResultSchema>;
+
+export const OAuth2DeviceAuthorizationStartResultSchema = z
+  .object({
+    session_id: z.string().uuid(),
+    user_code: z.string().min(1).max(1024),
+    verification_uri: OAuth2HttpsUrlSchema,
+    verification_uri_complete: OAuth2HttpsUrlSchema.optional(),
+    expires_at: z.string().datetime(),
+    interval_seconds: z.number().int().min(1).max(300),
+  })
+  .strict();
+export type OAuth2DeviceAuthorizationStartResult = z.infer<
+  typeof OAuth2DeviceAuthorizationStartResultSchema
+>;
+
+export const OAuth2ConnectionStatusSchema = z
+  .object({
+    status: z.enum(['not_configured', 'ready', 'pending', 'active', 'error', 'revoked']),
+    expires_at: z.string().datetime().nullable().optional(),
+    scopes: z.array(z.string()).optional(),
+    error_code: z.string().max(128).nullable().optional(),
+  })
+  .strict();
+export type OAuth2ConnectionStatus = z.infer<typeof OAuth2ConnectionStatusSchema>;
+
+export const UpdateConnectionCredentialInputSchema = z.union([
+  z
+    .object({
+      value: z.string().min(1).max(65536),
+      kind: z.enum(['secret', 'connection']).optional(),
+    })
+    .strict(),
+  z.object({ oauth2: OAuth2ClientCredentialsSchema }).strict(),
+]);
+export type UpdateConnectionCredentialInput = z.infer<typeof UpdateConnectionCredentialInputSchema>;
+export const PendingSessionPromptSchema = z
+  .object({
+    text: z.string().max(1_000_000),
+    agent: z.string().min(1).nullable().optional(),
+    model: z
+      .object({ providerID: z.string().min(1), modelID: z.string().min(1) })
+      .strict()
+      .nullable()
+      .optional(),
+    variant: z.string().min(1).nullable().optional(),
+    attachment_names: z.array(z.string().min(1).max(512)).max(50).optional(),
+    /**
+     * Full prompt parts, in OpenCode's own wire shape. Lets the first prompt
+     * carry attachments as `data:` URLs — the session's sandbox does not exist
+     * yet, so there is nowhere to upload into. The API converts the whole
+     * pending prompt into a durable inbox row at create; the inbox's own
+     * sanitizer re-checks these and enforces the serialized byte cap.
+     */
+    parts: z
+      .array(
+        z
+          .object({
+            type: z.enum(['text', 'file', 'agent']),
+            text: z.string().optional(),
+            mime: z.string().max(255).optional(),
+            url: z.string().max(17_000_000).optional(),
+            attachment_id: z.string().uuid().optional(),
+            filename: z.string().max(512).optional(),
+            name: z.string().max(512).optional(),
+            source: z.unknown().optional(),
+          })
+          .strict(),
+      )
+      .max(64)
+      .optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.text.trim().length > 0 || (value.attachment_names?.length ?? 0) > 0) return;
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['text'],
+      message: 'A pending prompt requires text or an attachment name.',
+    });
+  });
+export type PendingSessionPrompt = z.infer<typeof PendingSessionPromptSchema>;
+
+/**
+ * Free-form session labels, for classifying and filtering sessions. Each label
+ * is trimmed and 1..64 characters; at most 20; duplicates drop in first-seen
+ * order. Matching (`?label=`) is exact and case-sensitive.
+ */
+export const SessionLabelsSchema = z
+  .array(z.string().trim().min(1).max(64))
+  .max(20)
+  .transform((labels) => [...new Set(labels)]);
+
+/** JSON characters one session-metadata write may carry (create or PATCH). */
+export const SESSION_METADATA_MAX_CHARS = 16_384;
+
+/** Client metadata on create / PATCH: a free-form object, bounded in size. */
+export const SessionMetadataInputSchema = JsonObjectSchema.refine(
+  (metadata) => JSON.stringify(metadata).length <= SESSION_METADATA_MAX_CHARS,
+  { message: `metadata must be at most ${SESSION_METADATA_MAX_CHARS} characters of JSON` },
+);
+
+/** The context the CLI's worker contract rides in, and its schema cap. */
+export const SESSION_INITIAL_CONTEXT_MAX_CHARS = 8_192;
+
+/** Authoritative public body for POST /v1/projects/:projectId/sessions. */
+export const SessionCreateInputSchema = z
+  .object({
+    /** Copy the authorized platform session history into a new independent session. */
+    fork_from_session_id: z.string().min(1).max(255).optional(),
+    parent_session_id: z.string().uuid().optional(),
+    base_ref: z.string().min(1).optional(),
+    agent_name: z.string().min(1).optional(),
+    sandbox_slug: z.string().min(1).optional(),
+    initial_prompt: z.string().optional(),
+    /**
+     * Harness context that rides beside `initial_prompt` and is delivered to
+     * the model as a synthetic (model-only) message part — e.g. the CLI's
+     * worker contract. The transcript keeps showing the caller's own words:
+     * every renderer already hides synthetic text parts.
+     */
+    initial_context: z.string().min(1).max(SESSION_INITIAL_CONTEXT_MAX_CHARS).optional(),
+    pending_prompt: PendingSessionPromptSchema.optional(),
+    provider_secret_pools: z.record(
+      z.string().min(1).max(100),
+      z.array(z.string().uuid()).max(10),
+    ).refine((pools) => Object.keys(pools).length <= 20, 'Too many provider pools').optional(),
+    // The clean text auto-titling derives from, when `initial_prompt` is a
+    // rendered envelope (channel scaffolding, a coordinator's session
+    // contract, a --with-file manifest) rather than the user's own words.
+    title_source: z.string().optional(),
+    /** The session's `provider/model` pin. Wins over `opencode_model`. */
+    model: z.string().min(1).optional(),
+    /** @deprecated The pre-W4 name of `model`. */
+    opencode_model: z.string().min(1).optional(),
+    name: z.string().optional(),
+    labels: SessionLabelsSchema.optional(),
+    /**
+     * The space (channel or the caller's own DM) the session belongs to.
+     * Read only while the project's `project_channels` flag is on; ignored
+     * otherwise. Absent: the parent session's space, else `#general`.
+     */
+    space_id: z.string().uuid().optional(),
+    session_id: z
+      .string()
+      .regex(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        'session_id must be an RFC 4122 v4 UUID',
+      )
+      .optional(),
+    provider: SandboxProviderSchema.optional(),
+    /**
+     * @deprecated INERT. Accepted and ignored: persistent machines left the
+     * product. The key stays because this object is `.strict()` and
+     * `@kortix/sdk` is published: dropping it would turn an old client's
+     * create into a 400.
+     */
+    persistent_machine: z.boolean().optional(),
+    branch_already_created: z.boolean().optional(),
+    metadata: SessionMetadataInputSchema.optional(),
+    runtime_context: SessionRuntimeContextSchema.optional(),
+    connector_bindings: SessionConnectorBindingsInputSchema.optional(),
+    // When `connector_bindings` is set, unbound aliases fail closed.
+    // `inherit_unbound: true` keeps strategy-based default resolution for them.
+    inherit_unbound: z.boolean().optional(),
+    /**
+     * @deprecated INERT. Accepted and ignored.
+     *
+     * A session no longer declares connectors it requires. The field stays in
+     * the schema because this object is `.strict()` and `@kortix/sdk` is
+     * published: dropping the key would turn an old client's create into a 400
+     * on a field that simply no longer does anything. The connector CALL
+     * denies instead, with a connect link.
+     */
+    require_connectors: z.array(z.string()).optional(),
+    // Backend-only: narrow which project secrets (by identifier) this session's
+    // sandbox receives, from the default agent-grant set down to this list. `[]`
+    // means inject zero project secrets. Backend origin required — a non-backend
+    // caller supplying it is rejected 403 (canOverride 'secrets').
+    secrets: SessionSecretsAllowlistSchema.optional(),
+    // Deprecated camelCase compatibility accepted by the pre-contract route.
+    // New SDK/API consumers use the snake_case fields above.
+    baseRef: z.string().min(1).optional(),
+    agentName: z.string().min(1).optional(),
+    sandboxSlug: z.string().min(1).optional(),
+    initialPrompt: z.string().optional(),
+    initialContext: z.string().min(1).max(SESSION_INITIAL_CONTEXT_MAX_CHARS).optional(),
+    opencodeModel: z.string().min(1).optional(),
+    sessionId: z
+      .string()
+      .regex(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        'sessionId must be an RFC 4122 v4 UUID',
+      )
+      .optional(),
+    branchAlreadyCreated: z.boolean().optional(),
+  })
+  .strict();
+export type SessionCreateInput = z.infer<typeof SessionCreateInputSchema>;
+
+/**
+ * Public body for PATCH /v1/projects/:projectId/sessions/:sessionId.
+ * `labels` replaces the list. `metadata` merges top-level keys; a `null`
+ * value removes that key. `name` "" or null clears the rename.
+ */
+export const SessionUpdateInputSchema = z.object({
+  name: z.string().nullable().optional(),
+  labels: SessionLabelsSchema.optional(),
+  metadata: SessionMetadataInputSchema.optional(),
+});
+export type SessionUpdateInput = z.input<typeof SessionUpdateInputSchema>;
+
+/** A project session as serialized by `serializeSession`. */
+/** One conversation of a session's runtime, as the snapshot writer stores it
+ *  (`apps/api/src/projects/opencode-session-snapshot.ts`). Times are epoch ms. */
+export const RuntimeSessionSnapshotSchema = z.object({
+  id: z.string(),
+  fork_source_id: z.string().optional(),
+  title: z.string().nullable(),
+  parent_id: z.string().nullable(),
+  project_id: z.string().nullable(),
+  created_at: z.number().nullable(),
+  updated_at: z.number().nullable(),
+  archived_at: z.number().nullable(),
+});
+export type RuntimeSessionSnapshot = z.infer<typeof RuntimeSessionSnapshotSchema>;
+
+/**
+ * Is the session working, decided ONCE by the server (R5.2). Clients show this
+ * instead of combining their own signals. `working` while a live turn runs that
+ * the runtime has not reported ended, or while a prompt is on its way to the
+ * runtime (`pending_delivery`). Ordered by the control frame's `cseq`.
+ */
+export const SessionWorkingSchema = z.object({
+  state: z.enum(['working', 'idle']),
+  /** When this state began (ISO), or null when the server does not know. */
+  since: z.string().nullable(),
+  /** The newest live turn, or null. */
+  turn_token: z.string().nullable(),
+  /** No live turn yet, but a prompt is queued for or being handed to the runtime. */
+  pending_delivery: z.boolean(),
+});
+export type SessionWorking = z.infer<typeof SessionWorkingSchema>;
+
+export const ProjectSessionSchema = z.object({
+  /** Durable conversation selection, falling back to the creation pin before a log exists. */
+  model: z.string().nullable().optional(),
+  /** Work activity, independent of the computer lifecycle status. Older servers may omit it. */
+  working: SessionWorkingSchema.optional(),
+  /**
+   * Board state, as Claude Code's agent view groups sessions
+   * (`@kortix/api-contract/multi-agent`). The fields below are descriptive;
+   * older servers omit them.
+   */
+  board_state: SessionBoardStateSchema.optional(),
+  /** What the session waits for from its person: `question`, `approval`, or null. */
+  attention: SessionAttentionSchema.optional(),
+  /** The newest turn start, turn end or accepted prompt (ISO), or null. */
+  last_activity_at: z.string().nullable().optional(),
+  /** At most 280 characters of the last assistant text of the newest completed turn. */
+  result_excerpt: z.string().nullable().optional(),
+  /** The name a lead gave this child (`metadata.agent_handle`); `send_message` resolves `to` by it. */
+  agent_handle: z.string().nullable().optional(),
+  /** The lead of a teammate (`metadata.team_lead`, agent teams). */
+  team_lead_session_id: z.string().nullable().optional(),
+  /** Who may send this session a message: `accept`, `hold` or `refuse`. */
+  inbound: SessionInboundSchema.optional(),
+  session_id: z.string(),
+  account_id: z.string(),
+  project_id: z.string(),
+  branch_name: z.string(),
+  base_ref: z.string(),
+  sandbox_provider: SandboxProviderSchema,
+  sandbox_id: z.string().nullable(),
+  sandbox_url: z.string().nullable(),
+  /** The session's root conversation in its runtime (OpenCode or pi). */
+  runtime_session_id: z.string().nullable(),
+  /** @deprecated The pre-W4 name of `runtime_session_id`. Same value. */
+  opencode_session_id: z.string().nullable(),
+  /** Resolved display name: the user-set override, else the auto title. */
+  name: z.string().nullable(),
+  /** The user-set override alone, so clients can tell it apart from the auto title. */
+  custom_name: z.string().nullable(),
+  labels: z.array(z.string()),
+  agent_name: z.string(),
+  status: SessionStatusSchema,
+  error: z.string().nullable(),
+  metadata: JsonObjectSchema,
+  /** The runtime's conversation tree snapshot; `[]` for a caller who cannot open the session. */
+  runtime_sessions: z.array(RuntimeSessionSnapshotSchema),
+  /** @deprecated The pre-W4 name of `runtime_sessions`. Same value. */
+  opencode_sessions: z.array(RuntimeSessionSnapshotSchema),
+  created_by: z.string().nullable(),
+  owner_email: z.string().nullable(),
+  owner_name: z.string().nullable().optional(),
+  owner_avatar_url: z.string().nullable().optional(),
+  owner_type: z.enum(['user', 'service_account', 'unknown']).nullable().optional(),
+  visibility: SessionVisibilitySchema,
+  /** Policy class the session was created under (derived, never client-set). */
+  origin: z.enum(['user', 'trigger', 'schedule', 'backend', 'system']),
+  /** The session that spawned this one (a coordinator's worker); null for a top-level session. */
+  parent_session_id: z.string().nullable().optional(),
+  /** The space (channel or DM) the session is filed in; null for a session in no space. */
+  space_id: z.string().uuid().nullable(),
+  /** The session group it is filed in (`session_groups`); null for a session in no group. */
+  group_id: z.string().uuid().nullable(),
+  /** The first 500 characters of the first prompt; stored for sessions created while `project_channels` is on, else null. */
+  first_prompt: z.string().nullable(),
+  /** Who started the run this session belongs to (a child carries its parent's). Derived, never client-set. */
+  initiator: z
+    .object({
+      type: z.enum(['member', 'trigger', 'channel', 'api', 'system']),
+      id: z.string().nullable(),
+      label: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
+  /**
+   * A channel or DM thread list (`space_id`) only: the messages after the
+   * first prompt in the root conversation, from the stored transcript. Null on
+   * every other read.
+   */
+  reply_count: z.number().int().nullable(),
+  /** List with `parent=root` only: the session's non-deleted children. */
+  child_count: z.number().int().optional(),
+  /** List with `parent=root&q=` only: the session matched itself, or only a child matched. */
+  search_match: z.enum(['self', 'child']).optional(),
+  /** Backend-set per-session secrets allowlist (identifiers); null = no narrowing. */
+  secrets_allowlist: SessionSecretsAllowlistSchema.nullable(),
+  sharing: SharingIntentSchema,
+  is_owner: z.boolean(),
+  /** May change WHO CAN OPEN this session — the owner's call, not a manager's. */
+  can_manage_sharing: z.boolean(),
+  /** May stop / restart / delete it and change its model — owner or project manager. */
+  can_manage_lifecycle: z.boolean().optional(),
+  /** May publish one assistant response through a public link: a human owner or project manager who can read it. Single-session reads only. */
+  can_publish_response: z.boolean().optional(),
+  can_access: z.boolean().optional(),
+  runtime_status: z
+    .enum(['provisioning', 'active', 'stopped', 'error', 'archived'])
+    .nullable()
+    .optional(),
+  deleted_at: z.string().nullable().optional(),
+  deleted_by: z.string().nullable().optional(),
+  /** A deleted session: the last instant `POST …/restore` takes it back (KRTX-2853). */
+  restore_until: z.string().nullable().optional(),
+  /** When the requesting person pinned / archived it (KRTX-2418). Present on
+   *  the list and the read by id for a person; absent for an agent, an API
+   *  key or a service account, and on other responses. */
+  pinned_at: z.string().nullable().optional(),
+  archived_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type ProjectSession = z.infer<typeof ProjectSessionSchema>;
+
+/**
+ * `DELETE /v1/projects/:projectId/sessions/:sessionId`. The session is in the
+ * trash until `restore_until`: `POST .../restore` brings it back before then,
+ * and the retention purge deletes its messages and files after it.
+ */
+export const SessionDeleteResultSchema = z.object({
+  ok: z.literal(true),
+  restore_until: z.string(),
+});
+export type SessionDeleteResult = z.infer<typeof SessionDeleteResultSchema>;
+
+export const WarmProjectSessionWorkspaceRefreshSchema = z.object({
+  status: z.enum(['skipped', 'unchanged', 'updated', 'failed']),
+  before_sha: z.string().nullable().optional(),
+  after_sha: z.string().nullable().optional(),
+  error: z.string().optional(),
+});
+export type WarmProjectSessionWorkspaceRefresh = z.infer<
+  typeof WarmProjectSessionWorkspaceRefreshSchema
+>;
+
+export const WarmProjectSessionResultSchema = z.object({
+  session: ProjectSessionSchema,
+  reused: z.boolean(),
+  workspace_refresh: WarmProjectSessionWorkspaceRefreshSchema,
+});
+export type WarmProjectSessionResult = z.infer<typeof WarmProjectSessionResultSchema>;
+
+export const ClaimWarmProjectSessionInputSchema = z
+  .object({
+    session_id: z
+      .string()
+      .regex(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        'session_id must be an RFC 4122 v4 UUID',
+      ),
+    agent_name: z.string().min(1).optional(),
+    sandbox_slug: z.string().min(1).optional(),
+    pending_prompt: PendingSessionPromptSchema.optional(),
+  })
+  .strict();
+export type ClaimWarmProjectSessionInput = z.infer<typeof ClaimWarmProjectSessionInputSchema>;
+
+/**
+ * A project space: a channel (product word "Channel") or the caller's DM with
+ * one agent. `/projects/:id/spaces`, behind the `project_channels` flag.
+ */
+export const SPACE_KINDS = ['channel', 'dm'] as const;
+/** Who sees a channel: every project member (`public`) or only its members (`private`). */
+export const SPACE_VISIBILITIES = ['public', 'private'] as const;
+export const SpaceSchema = z
+  .object({
+    space_id: z.string(),
+    kind: z.enum(SPACE_KINDS),
+    /** Channels: lowercase `a-z0-9-`, 1–40 chars. Null for a DM. */
+    slug: z.string().nullable(),
+    name: z.string(),
+    description: z.string().nullable(),
+    is_default: z.boolean(),
+    dm_agent_name: z.string().nullable(),
+    archived_at: z.string().nullable(),
+    created_at: z.string(),
+    updated_at: z.string(),
+    /** The caller may rename, describe, archive and unarchive it: the channel's creator or a project manager. False for a DM. */
+    can_edit: z.boolean(),
+    /**
+     * The channel's agents, in order: the first is the channel's default for a
+     * new thread. Empty: no agent list, a new thread starts on the project's
+     * default. Always empty for a DM.
+     */
+    agents: z.array(z.string()),
+    /**
+     * The caller is in the channel: a member of `#general` always (every
+     * project member is), of another channel once added or joined. True for a
+     * DM. A non-member of a public channel still reads and posts.
+     */
+    is_member: z.boolean(),
+    /**
+     * `public`: every project member sees and opens it. `private`: only its
+     * members see the channel and everything in it; `#general` and a DM are
+     * always `public`.
+     */
+    visibility: z.enum(SPACE_VISIBILITIES),
+  })
+  .strict();
+export type Space = z.infer<typeof SpaceSchema>;
+
+/** At most this many people in one `POST /spaces/:spaceId/members` or one channel create. */
+export const SPACE_MEMBERS_ADD_MAX = 100;
+
+/**
+ * A person in a channel: `GET /projects/:id/spaces/:spaceId/members`. `name`
+ * is the display name (else the email's local part), never the email.
+ */
+export const SpaceMemberSchema = z
+  .object({
+    user_id: z.string(),
+    name: z.string(),
+    avatar_url: z.string().nullable(),
+    /** The channel's creator. */
+    is_creator: z.boolean(),
+    is_viewer: z.boolean(),
+    /** When they were added or joined; null for `#general` (implicit) and for rows the migration backfilled without a time. */
+    added_at: z.string().nullable(),
+    /**
+     * The caller may remove them: a project manager anyone, the creator anyone
+     * but themself, a member only themself (Leave). Nobody leaves the creator
+     * out except a manager. Always false in `#general`.
+     */
+    can_remove: z.boolean(),
+  })
+  .strict();
+export type SpaceMember = z.infer<typeof SpaceMemberSchema>;
+
+export const SpaceMemberListSchema = z
+  .object({
+    /** The caller first, then by name. */
+    members: z.array(SpaceMemberSchema),
+    /** `#general`: every project member is in it, no one is added, no one leaves. */
+    implicit: z.boolean(),
+    /** The caller may add people: a member of the channel, its creator or a project manager. False in `#general`. */
+    can_add: z.boolean(),
+  })
+  .strict();
+export type SpaceMemberList = z.infer<typeof SpaceMemberListSchema>;
+
+/** `POST /projects/:id/spaces/:spaceId/members`. Every id must be a member of the project; one already in the channel is skipped. */
+export const SpaceMembersAddInputSchema = z
+  .object({ user_ids: z.array(z.string().uuid()).min(1).max(SPACE_MEMBERS_ADD_MAX) })
+  .strict();
+export type SpaceMembersAddInput = z.infer<typeof SpaceMembersAddInputSchema>;
+
+/** At most this many agents in one channel's agent list. */
+export const SPACE_AGENTS_MAX = 50;
+
+/**
+ * `#general`'s "turned on again" line: `count` sessions started while Channels
+ * was off were filed into `#general` at `at`. Present for 7 days after the switch.
+ */
+export const SpaceGeneralNoticeSchema = z
+  .object({ kind: z.literal('reenabled'), at: z.string(), count: z.number().int().positive() })
+  .strict();
+export type SpaceGeneralNotice = z.infer<typeof SpaceGeneralNoticeSchema>;
+
+export const SpaceListSchema = z
+  .object({
+    spaces: z.array(SpaceSchema),
+    general_notice: SpaceGeneralNoticeSchema.optional(),
+    /** Whether this deployment lets a channel be private (`KORTIX_PRIVATE_CHANNELS_ENABLED`). */
+    private_channels_available: z.boolean(),
+  })
+  .strict();
+export type SpaceList = z.infer<typeof SpaceListSchema>;
+
+/**
+ * `GET /projects/:id/spaces/private`, project managers only: the private
+ * channels the manager is not in, archived ones included. Name, member count
+ * and creator; never content. The manager renames,
+ * archives, lists, adds and removes people from it, never reads it.
+ */
+export const PrivateChannelSummarySchema = z
+  .object({
+    space_id: z.string(),
+    name: z.string(),
+    slug: z.string(),
+    member_count: z.number().int(),
+    created_by: z.string().nullable(),
+    /** The creator's display name, null when unknown. */
+    created_by_name: z.string().nullable(),
+    created_at: z.string(),
+    archived_at: z.string().nullable(),
+  })
+  .strict();
+export type PrivateChannelSummary = z.infer<typeof PrivateChannelSummarySchema>;
+export const PrivateChannelListSchema = z.object({ channels: z.array(PrivateChannelSummarySchema) }).strict();
+export type PrivateChannelList = z.infer<typeof PrivateChannelListSchema>;
+
+/**
+ * Channels onboarding marks a member leaves once per project:
+ * `POST /projects/:id/onboarding/channels/marks`.
+ */
+export const CHANNELS_ONBOARDING_MARKS = [
+  'channels_intro',
+  'get_started.dismissed',
+  'get_started.channel',
+  'get_started.remember',
+  'get_started.dm',
+] as const;
+export type ChannelsOnboardingMark = (typeof CHANNELS_ONBOARDING_MARKS)[number];
+export const ChannelsOnboardingMarkInputSchema = z.object({ mark: z.enum(CHANNELS_ONBOARDING_MARKS) }).strict();
+export type ChannelsOnboardingMarkInput = z.infer<typeof ChannelsOnboardingMarkInputSchema>;
+
+/**
+ * The caller's Channels onboarding state. A "Get started" row is done when its
+ * mark is present or the fact is true (the caller created a channel, saved
+ * memory in `#general`, owns a DM). `visible`: not dismissed and not all done.
+ */
+export const ChannelsOnboardingSchema = z
+  .object({
+    intro_seen: z.boolean(),
+    get_started: z
+      .object({ visible: z.boolean(), create_channel: z.boolean(), remember: z.boolean(), open_dm: z.boolean() })
+      .strict(),
+  })
+  .strict();
+export type ChannelsOnboarding = z.infer<typeof ChannelsOnboardingSchema>;
+
+export const SpaceCreateInputSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80),
+    description: z.string().trim().max(500).optional(),
+    /** People added with the creator (who is always a member). Every id must be a member of the project. */
+    member_ids: z.array(z.string().uuid()).max(SPACE_MEMBERS_ADD_MAX).optional(),
+    /** Default `public`. `private`: only its members see it. */
+    visibility: z.enum(SPACE_VISIBILITIES).optional(),
+  })
+  .strict();
+export type SpaceCreateInput = z.infer<typeof SpaceCreateInputSchema>;
+
+export const SpaceUpdateInputSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    /** `null` clears the description. */
+    description: z.string().trim().max(500).nullable().optional(),
+    /** `true` archives the channel; `false` unarchives it. */
+    archived: z.boolean().optional(),
+    /**
+     * Replaces the channel's agent list, in order: the first is the default.
+     * Every name must be an agent of the project, each once. `[]` clears it.
+     */
+    agents: z.array(z.string().trim().min(1).max(200)).max(SPACE_AGENTS_MAX).optional(),
+    /**
+     * `private` makes a public channel private: the people who started a
+     * thread in it or added a link become members. One way only: a private
+     * channel never becomes public.
+     */
+    visibility: z.literal('private').optional(),
+  })
+  .strict();
+export type SpaceUpdateInput = z.infer<typeof SpaceUpdateInputSchema>;
+
+export const SpaceDmInputSchema = z.object({ agent_name: z.string().trim().min(1).max(200) }).strict();
+export type SpaceDmInput = z.infer<typeof SpaceDmInputSchema>;
+
+/** A link pinned to a channel: `/projects/:id/spaces/:spaceId/links`. */
+export const SpaceLinkSchema = z
+  .object({
+    link_id: z.string(),
+    space_id: z.string(),
+    url: z.string(),
+    title: z.string().nullable(),
+    created_by: z.string().nullable(),
+    /** The creator's display name or email; null when unknown. */
+    created_by_name: z.string().nullable(),
+    created_at: z.string(),
+    /** The caller may delete it: they added it, or they manage the project. */
+    can_delete: z.boolean(),
+    /** Agents in the channel read pinned links. Every link starts unpinned (added or shared in a thread) until a member pins it. */
+    pinned: z.boolean(),
+    /** Who pinned it and when; null while unpinned (or, for `pinned_by_name`, when unknown). */
+    pinned_by_name: z.string().nullable(),
+    pinned_at: z.string().nullable(),
+    /** `manual`: added with "Add link". `message`: collected from a person's message in a thread of the channel. */
+    source: z.enum(['manual', 'message']),
+    /** The latest thread that shared it; null for a link never shared in a thread (or whose thread is gone). */
+    session_id: z.string().nullable(),
+    last_shared_at: z.string(),
+    /** The row's name: the title a member gave, else the page's fetched title, else the decoded path, else the host. */
+    display_title: z.string(),
+    /** The page's `og:site_name`, fetched by the server; null until fetched or when the page has none. */
+    site_name: z.string().nullable(),
+    /** The page's icon URL, fetched by the server; null until fetched or when none passed the address check. A remote URL: load it only through an image proxy. */
+    icon_url: z.string().nullable(),
+  })
+  .strict();
+export type SpaceLink = z.infer<typeof SpaceLinkSchema>;
+
+/** `PATCH /projects/:id/spaces/:spaceId/links/:linkId`. Unpinning only clears the pin; the link stays listed. */
+export const SpaceLinkPinInputSchema = z.object({ pinned: z.boolean() }).strict();
+export type SpaceLinkPinInput = z.infer<typeof SpaceLinkPinInputSchema>;
+/** The link after the change. `link` stays nullable for clients of older servers, where unpinning an added link removed it. */
+export const SpaceLinkPinResultSchema = z.object({ link: SpaceLinkSchema.nullable() }).strict();
+export type SpaceLinkPinResult = z.infer<typeof SpaceLinkPinResultSchema>;
+
+export const SpaceLinkListSchema = z.object({ links: z.array(SpaceLinkSchema) }).strict();
+export type SpaceLinkList = z.infer<typeof SpaceLinkListSchema>;
+
+/** An http(s) URL whose normalized form, the one the API stores, is at most 2,048 characters. */
+function isStorableHttpUrl(value: string): boolean {
+  try {
+    const { protocol, href } = new URL(value);
+    return (protocol === 'http:' || protocol === 'https:') && href.length <= 2048;
+  } catch {
+    return false;
+  }
+}
+
+export const SpaceLinkCreateInputSchema = z
+  .object({
+    url: z.string().trim().min(1).max(2048).refine(isStorableHttpUrl, 'url must be an http(s) URL of at most 2,048 characters'),
+    title: z.string().trim().max(200).optional(),
+  })
+  .strict();
+export type SpaceLinkCreateInput = z.infer<typeof SpaceLinkCreateInputSchema>;
+
+/**
+ * A session group: a named folder of the project's sessions in the sidebar
+ * (`/projects/:id/session-groups`, behind the `session_groups` flag). Every
+ * project member sees the same groups in the same order. A session is in at
+ * most one group (`ProjectSession.group_id`).
+ */
+export const SESSION_GROUP_NAME_MAX = 80;
+/** The most groups one project may have. */
+export const SESSION_GROUPS_MAX = 50;
+
+export const SessionGroupSchema = z
+  .object({
+    group_id: z.string(),
+    name: z.string(),
+    /** 0-based place in the project's order; the list is sorted by it. */
+    position: z.number().int().nonnegative(),
+    created_by: z.string().nullable(),
+    created_at: z.string(),
+    updated_at: z.string(),
+  })
+  .strict();
+export type SessionGroup = z.infer<typeof SessionGroupSchema>;
+
+export const SessionGroupListSchema = z.object({ groups: z.array(SessionGroupSchema) }).strict();
+export type SessionGroupList = z.infer<typeof SessionGroupListSchema>;
+
+const SessionGroupNameSchema = z.string().trim().min(1).max(SESSION_GROUP_NAME_MAX);
+
+/** A new group goes last in the order. A name another group of the project has (any case) is refused. */
+export const SessionGroupCreateInputSchema = z.object({ name: SessionGroupNameSchema }).strict();
+export type SessionGroupCreateInput = z.infer<typeof SessionGroupCreateInputSchema>;
+
+export const SessionGroupUpdateInputSchema = z.object({ name: SessionGroupNameSchema }).strict();
+export type SessionGroupUpdateInput = z.infer<typeof SessionGroupUpdateInputSchema>;
+
+/** The project's groups in their new order: every group id, each once. */
+export const SessionGroupOrderInputSchema = z
+  .object({
+    group_ids: z
+      .array(z.string().uuid())
+      .max(SESSION_GROUPS_MAX)
+      .refine((ids) => new Set(ids).size === ids.length, 'group_ids must name each group once'),
+  })
+  .strict();
+export type SessionGroupOrderInput = z.infer<typeof SessionGroupOrderInputSchema>;
+
+/** File a session into a group of its project, or take it out of its group (`null`). */
+export const SessionGroupAssignInputSchema = z.object({ group_id: z.string().uuid().nullable() }).strict();
+export type SessionGroupAssignInput = z.infer<typeof SessionGroupAssignInputSchema>;
+
+export const SessionGroupAssignmentSchema = z
+  .object({ session_id: z.string(), group_id: z.string().nullable() })
+  .strict();
+export type SessionGroupAssignment = z.infer<typeof SessionGroupAssignmentSchema>;
+
+export const SESSION_SANDBOX_STATUSES = [
+  'provisioning',
+  'active',
+  'stopped',
+  'error',
+  'archived',
+] as const;
+export const SessionSandboxStatusSchema = z.enum(SESSION_SANDBOX_STATUSES);
+export type SessionSandboxStatus = z.infer<typeof SessionSandboxStatusSchema>;
+
+/** A session_sandboxes row as serialized onto `SessionStartResult.sandbox`. */
+export const ProjectSessionSandboxSchema = z.object({
+  sandbox_id: z.string(),
+  session_id: z.string(),
+  project_id: z.string(),
+  account_id: z.string(),
+  provider: SandboxProviderSchema,
+  external_id: z.string().nullable(),
+  base_url: z.string().nullable(),
+  status: SessionSandboxStatusSchema,
+  config: JsonObjectSchema,
+  metadata: JsonObjectSchema,
+  last_used_at: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type ProjectSessionSandbox = z.infer<typeof ProjectSessionSandboxSchema>;
+
+export const SESSION_START_STAGES = [
+  'provisioning',
+  'starting',
+  'ready',
+  'stopped',
+  'failed',
+] as const;
+export const SessionStartStageSchema = z.enum(SESSION_START_STAGES);
+export type SessionStartStage = z.infer<typeof SessionStartStageSchema>;
+
+/**
+ * WHY a negative was claimed — which check produced it, when, what the provider
+ * or daemon actually said, and when the server will try again.
+ *
+ * A negative is a claim, and only a source that could have known may make it.
+ * Before this, `/start` could answer `stage:"failed"` from a stamp written
+ * hours earlier without touching a provider on the call (SampleCo 2026-08-26,
+ * one session: a 03:37Z `runtime_boot_failed` replayed for 10+ hours with
+ * `lastInitError:null`). Every failure now carries its evidence.
+ */
+export const SessionStartFailureEvidenceSchema = z
+  .object({
+    /** The check that failed: a wake error, a park reason, a boot budget. */
+    check: z.string(),
+    /** When that check produced this verdict. Null only for legacy rows. */
+    observed_at: z.string().nullable(),
+    /** Provider/daemon text, when the failing path recorded any. */
+    error: z.string().nullable(),
+    /** Consecutive failed start attempts this verdict is counting. */
+    attempts: z.number().int().nonnegative(),
+    /** When the server itself re-attempts. Null = only a restart will. */
+    next_retry_at: z.string().nullable(),
+  })
+  .strict();
+export type SessionStartFailureEvidence = z.infer<typeof SessionStartFailureEvidenceSchema>;
+
+export const SessionStartFailureSchema = z
+  .object({
+    category: z.enum([
+      'provider-capacity',
+      'git-auth',
+      // LEGACY, never produced since one mechanism started serving every provider.
+      // Kept on the wire because sandbox rows written before that change still carry it.
+      'unsupported-secret-delivery',
+      // The PROJECT's own boundary policy is unusable — two secrets claiming the same
+      // (host, header), or a policy the boundary cannot enforce. Never retryable.
+      'invalid-secret-boundary-policy',
+      // The PROJECT's custom sandbox image is over the provider's snapshot
+      // ceiling (Daytona caps at 10 GB). Permanent until the image is slimmed,
+      // so never retryable.
+      'snapshot-too-large',
+      // Kortix Drive: the session's drives did not mount (storage down, or a
+      // project with drives and no Platinum), so the session did not start.
+      'drives-unavailable',
+      'sandbox-provider',
+    ]),
+    message: z.string(),
+    retryable: z.boolean(),
+    /** Optional only for backward compatibility; every NEW failure carries it. */
+    evidence: SessionStartFailureEvidenceSchema.optional(),
+  })
+  .strict();
+export type SessionStartFailure = z.infer<typeof SessionStartFailureSchema>;
+
+/**
+ * What the server DID on this call — not what some earlier call left behind.
+ *
+ * `replayed_stamp` is deliberately absent from this list: an answer no live
+ * check supports is the defect, not a state worth naming.
+ */
+export const SESSION_START_ACTIONS = [
+  /** Read the durable rows only; nothing needed doing. */
+  'inspected',
+  /** Asked the provider for this box's real state on this call. */
+  'checked_provider',
+  /** Claimed the wake fence and started the provider box. */
+  'resumed',
+  /** Allocated a new runtime for this session. */
+  'provisioned',
+  /** Asked the provider to restore the box in place. */
+  'restored',
+  /** Wrote our rows back to the provider's truth (park / preserve). */
+  'reconciled',
+  /** Observed a wake another caller already owns. */
+  'awaited_wake',
+  /** A previous start failed; its cooldown has not lapsed yet. */
+  'cooling_down',
+] as const;
+export const SessionStartActionSchema = z.enum(SESSION_START_ACTIONS);
+export type SessionStartAction = z.infer<typeof SessionStartActionSchema>;
+
+export const SESSION_START_BOOT_PHASES = [
+  'provisioning',
+  'resuming',
+  'booting',
+  'ready',
+  'parked',
+  'failed',
+] as const;
+export const SessionStartBootPhaseSchema = z.enum(SESSION_START_BOOT_PHASES);
+export type SessionStartBootPhase = z.infer<typeof SessionStartBootPhaseSchema>;
+
+/**
+ * What the server OBSERVED on this call, each half explicitly tri-state.
+ *
+ * `known:false` means "not checked on this call" — never "checked and found
+ * nothing". The row metadata's `healthStatus:"unknown"` conflates those two and
+ * is why a stopped box could advertise a health verdict it had never earned.
+ */
+export const SessionStartObservationSchema = z
+  .object({
+    provider: z
+      .object({
+        known: z.boolean(),
+        status: z.string().nullable(),
+        checked_at: z.string().nullable(),
+      })
+      .strict(),
+    runtime: z
+      .object({
+        known: z.boolean(),
+        state: z.enum(['ready', 'booting', 'unreachable']).nullable(),
+        boot_phase: z.string().nullable(),
+        checked_at: z.string().nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+export type SessionStartObservation = z.infer<typeof SessionStartObservationSchema>;
+
+export const SessionStartBootSchema = z
+  .object({
+    phase: SessionStartBootPhaseSchema,
+    /** When this phase began, from the row's own clocks. */
+    since: z.string().nullable(),
+    /** Is a provider operation running for this session right now? */
+    actively_starting: z.boolean(),
+  })
+  .strict();
+export type SessionStartBoot = z.infer<typeof SessionStartBootSchema>;
+
+/**
+ * The readiness payload of POST /v1/projects/:id/sessions/:id/start — the one
+ * object clients poll until `stage === 'ready'`.
+ */
+export const SessionStartResultSchema = z.object({
+  /** Coarse lifecycle stage the client renders + polls on. */
+  stage: SessionStartStageSchema,
+  /** Immutable project-session agent bound at session creation. */
+  agent_name: z.string(),
+  /** Whether polling /start again can make progress (false = terminal). */
+  retriable: z.boolean(),
+  /** Serialized session_sandboxes row, or null while none is usable. */
+  sandbox: ProjectSessionSandboxSchema.nullable(),
+  /** Canonical runtime root pin, resolved server-side once the box is up. */
+  runtime_session_id: z.string().nullable().optional(),
+  /** @deprecated The pre-W4 name of `runtime_session_id`. Same value. */
+  opencode_session_id: z.string().nullable(),
+  /** Stable terminal failure. Raw provider text remains in sandbox metadata. */
+  failure: SessionStartFailureSchema.nullable().optional(),
+  /** Server-selected OpenCode REST transport. */
+  runtime_transport: z.literal('rest').optional(),
+  /**
+   * Relative proxy path for this session's OpenCode runtime (port 8000),
+   * composed by the client against its configured backend URL. The server owns
+   * the proxy scheme; absent until the box has an external_id.
+   */
+  runtime_url: z.string().nullable().optional(),
+  reason: z.string().optional(),
+  /**
+   * What the session's runtime serves (`RUNTIME_CAPABILITIES`), as the daemon
+   * lists it in `GET /kortix/health`. Present with `stage: ready` when the API
+   * could read it; a client that gets it knows the list before its own first
+   * health probe answers.
+   */
+  capabilities: z.array(z.string()).optional(),
+
+  // ── The session-open envelope. Additive; every field describes THIS call. ──
+  /** ONE clock for the whole answer. */
+  observed_at: z.string().optional(),
+  /** What the server did on this call. */
+  action: SessionStartActionSchema.optional(),
+  /** Where this session is in its boot, and whether anything is driving it. */
+  boot: SessionStartBootSchema.optional(),
+  /** What the server checked on this call, and what it got back. */
+  observation: SessionStartObservationSchema.optional(),
+});
+export type SessionStartResult = z.infer<typeof SessionStartResultSchema>;
+
+/**
+ * The 202 envelope of POST /v1/projects/:id/sessions when the create is
+ * accepted asynchronously instead of returning a session row.
+ */
+export const SessionCreateAcceptedSchema = z.object({
+  status: z.string(),
+  command_id: z.string().nullable(),
+  session_id: z.string().nullable(),
+  reason: z.string().nullable(),
+});
+export type SessionCreateAccepted = z.infer<typeof SessionCreateAcceptedSchema>;
+
+/**
+ * Account-local access policy for sessions created by a trigger. Project
+ * managers always retain access; `private` excludes ordinary project members.
+ */
+export const TriggerSessionAccessSchema = z
+  .object({
+    mode: z.enum(['private', 'project', 'members']),
+    memberIds: z.array(z.string()),
+    groupIds: z.array(z.string()),
+  })
+  .strict();
+export type TriggerSessionAccess = z.infer<typeof TriggerSessionAccessSchema>;
+
+/** One trigger entry as emitted by `loadTriggersForResponse`. */
+/**
+ * One trigger filter condition (KRTX-1721): exactly one operator. `not` and
+ * `in` compare the payload value as text; `prefix` and `not_prefix` test its
+ * start; `exists` tests that it is present and not null.
+ */
+export const TriggerFilterConditionSchema = z.union([
+  z.object({ not: z.array(z.string()) }).strict(),
+  z.object({ in: z.array(z.string()) }).strict(),
+  z.object({ exists: z.boolean() }).strict(),
+  z.object({ prefix: z.array(z.string()) }).strict(),
+  z.object({ not_prefix: z.array(z.string()) }).strict(),
+]);
+export type TriggerFilterCondition = z.infer<typeof TriggerFilterConditionSchema>;
+/** A filter path's condition: a string means "equals". */
+export const TriggerFilterValueSchema = z.union([z.string(), TriggerFilterConditionSchema]);
+export type TriggerFilterValue = z.infer<typeof TriggerFilterValueSchema>;
+
+export const TriggerSchema = z.object({
+  slug: z.string(),
+  path: z.string(),
+  name: z.string(),
+  type: z.enum(['cron', 'webhook', 'monitor', 'event', 'app', 'change_request']),
+  agent: z.string(),
+  /** Wire-form model (`provider/model`) or null for "Default". */
+  model: z.string().nullable(),
+  enabled: z.boolean(),
+  cron: z.string().nullable(),
+  run_at: z.string().nullable(),
+  timezone: z.string(),
+  secret_env: z.string().nullable(),
+  /** For type=monitor only — the repo-relative command the box supervises. */
+  run: z.string().nullable(),
+  /** For type=monitor only — `poll` (run on interval) or `stream` (long-running). */
+  mode: z.enum(['poll', 'stream']).nullable(),
+  /** For mode=poll only — the poll period, in whole seconds. */
+  interval_seconds: z.number().nullable(),
+  /** For type=monitor only — the silence watchdog, in whole seconds. */
+  expect_event_within_seconds: z.number().nullable(),
+  /** For type=app only — the slug of the App whose emitted events fire the trigger. */
+  app: z.string().nullable().optional(),
+  /** A fire calls this App (method path) instead of running an agent. Null: an agent run. */
+  target: z.object({ app: z.string(), path: z.string(), method: z.enum(['POST', 'GET']), payload: z.record(z.string(), z.unknown()).optional() }).nullable().optional(),
+  /** For type=cron with `every` — the fixed period in whole seconds; null otherwise. */
+  every_seconds: z.number().nullable().optional(),
+  /**
+   * For type=event only. `pending` = declared but no subscription row yet.
+   * Null for every other type.
+   */
+  event: z
+    .object({
+      connector: z.string(),
+      /** Declared `account` label; null = the connector's default shared account. */
+      account: z.string().nullable(),
+      /** Identity (or label) of the shared account actually feeding the trigger; null when none. */
+      connected_as: z.string().nullable(),
+      type: z.string(),
+      config: z.record(z.string(), z.unknown()),
+      /** Event source adapter: the declared `source`, else the connector's provider (e.g. `composio`). Null when unresolved. */
+      source: z.string().nullable().optional(),
+      /** @deprecated Same value as `source`. */
+      provider: z.string().nullable(),
+      /** Provider app slug (e.g. `github`). Null when unresolved. */
+      app: z.string().nullable(),
+      status: z.enum(['active', 'needs_connection', 'error', 'pending']),
+      error: z.string().nullable(),
+      last_event_at: z.string().nullable(),
+      /** Source `mcp`: when Kortix last checked the app with success. Null for other sources and before the first check. */
+      checked_at: z.string().nullable().optional(),
+      /** Source `mcp`: when Kortix checks the app next. Null for other sources, and while the trigger is not subscribed. */
+      next_check_at: z.string().nullable().optional(),
+    })
+    .nullable(),
+  prompt_template: z.string(),
+  session_mode: z.enum(['fresh', 'reuse', 'pinned', 'keyed']),
+  /** For session_mode === 'pinned' only: the exact session id looped. Null otherwise. */
+  session_id: z.string().nullable(),
+  /**
+   * For session_mode === 'keyed' only: the `{{ body.path }}` template rendered
+   * per delivery to pick one session per key. Null otherwise.
+   */
+  session_key: z.string().nullable(),
+  /**
+   * Payload paths that must match for the trigger to fire. Null when unfiltered.
+   * A path maps to a value (equals) or one operator (KRTX-1721).
+   */
+  filter: z.record(z.string(), TriggerFilterValueSchema).nullable(),
+  /**
+   * Runs the trigger may start in any 60 minutes. Null when unset: the default,
+   * 60, applies. A fire past it is a skipped run with reason `throttled: …`.
+   */
+  max_runs_per_hour: z.number().int().nullable().optional(),
+  /** Runs the trigger may start in a UTC day. Null when unset: no daily cap. */
+  max_runs_per_day: z.number().int().nullable().optional(),
+  /**
+   * Set while the trigger paused itself (KRTX-1721): it ran at its hourly run
+   * limit through the previous hour and was still being held. No automatic
+   * fire starts a run until it is resumed (`PATCH enabled: true`). Absent on
+   * older servers.
+   */
+  auto_paused_at: z.string().nullable().optional(),
+  /** Why it paused, e.g. `auto-paused: ran at max_runs_per_hour 60 for 2 hours in a row`. */
+  auto_paused_reason: z.string().nullable().optional(),
+  /**
+   * Fresh session mode only (KRTX-1721): `skip` holds a fire while the
+   * trigger's previous run is still active. Null when unset: `skip` for a
+   * cron trigger, `allow` otherwise. Absent on older servers.
+   */
+  overlap: z.enum(['skip', 'allow']).nullable().optional(),
+  /** Account-local policy for sessions this trigger creates. */
+  session_access: TriggerSessionAccessSchema,
+  /**
+   * The channel or DM its runs post to as threads; null = none (`#general`).
+   * Present only while the project's `project_channels` flag is on.
+   */
+  space_id: z.string().nullable().optional(),
+  last_fired_at: z.string().nullable(),
+  last_status: z.string().nullable(),
+  last_error: z.string().nullable(),
+  last_attempt_at: z.string().nullable(),
+  /** When an enabled cron trigger runs next: the slot the scheduler claims, jitter included. Null for a webhook trigger. */
+  next_fire_at: z.string().nullable().optional(),
+  /** Next exact cron occurrence, without scheduler jitter. */
+  next_cron_at: z.string().nullable().optional(),
+  webhook_url: z.string().nullable(),
+});
+export type Trigger = z.infer<typeof TriggerSchema>;
+
+/**
+ * The actual GET /v1/projects/:id/triggers response: an envelope, not a bare
+ * array (specs + per-project pause switch + manifest parse errors).
+ */
+export const TriggerListSchema = z.object({
+  triggers: z.array(TriggerSchema),
+  triggers_paused: z.boolean(),
+  /** The account's Pause all triggers: true stops every project's triggers. Older servers omit it. */
+  account_automations_paused: z.boolean().optional(),
+  errors: z.array(z.object({ slug: z.string(), path: z.string(), error: z.string() })),
+});
+export type TriggerList = z.infer<typeof TriggerListSchema>;
+
+/**
+ * One run of a trigger (KRTX-1743): one fire from any source, its outcome, and
+ * the agent turn it started. `payload` is display-redacted: every value under a
+ * credential-named key reads `[redacted]`. A payload over 64 KiB reads
+ * `{ truncated: true, bytes }` and cannot be replayed.
+ */
+export const TriggerRunSchema = z.object({
+  run_id: z.string(),
+  slug: z.string(),
+  source: z.enum(['cron', 'webhook', 'manual', 'monitor', 'reminder', 'event', 'app', 'change_request']),
+  /** The fire's outcome. `fired` = a session was started or prompted. */
+  status: z.enum(['queued', 'running', 'fired', 'failed', 'skipped', 'rejected']),
+  /** The agent turn's outcome; null when the run started no turn. */
+  run_status: z.enum(['running', 'succeeded', 'failed']).nullable(),
+  /** Why the fire failed, was skipped or was rejected. */
+  error: z.string().nullable(),
+  /** Why the agent turn failed (`stopped` for a stopped turn). */
+  run_error: z.string().nullable(),
+  session_id: z.string().nullable(),
+  command_id: z.string().nullable(),
+  /** The run this one replayed, or null. */
+  replay_of: z.string().nullable(),
+  /** False for a webhook delivery refused before its signature verified. */
+  payload_verified: z.boolean(),
+  payload: z.record(z.string(), z.unknown()),
+  scheduled_for: z.string(),
+  created_at: z.string(),
+  started_at: z.string(),
+  /** Null while the run waits, runs, or its turn is still going. */
+  ended_at: z.string().nullable(),
+  duration_ms: z.number().nullable(),
+  /** LLM spend of the run's session between `started_at` and `ended_at` (or now). Null without a session. */
+  cost_usd: z.number().nullable(),
+});
+export type TriggerRun = z.infer<typeof TriggerRunSchema>;
+
+/** `GET …/triggers/:slug/runs` and `GET …/trigger-runs`: newest first, keyset-paged. */
+export const TriggerRunListSchema = z.object({
+  runs: z.array(TriggerRunSchema),
+  /** Pass as `cursor` for the next page; null on the last page. A page can hold fewer than `limit` runs. */
+  next_cursor: z.string().nullable(),
+});
+export type TriggerRunList = z.infer<typeof TriggerRunListSchema>;
+
+/** Optional body of `POST …/triggers/:slug/fire`. No body = a plain manual fire. */
+export const TriggerFireRequestSchema = z.object({
+  /** Deep-merged over the manual base payload at the root, e.g. `{ body: {…} }` for a webhook template. */
+  payload: z.record(z.string(), z.unknown()).optional(),
+  /** Render and evaluate only: no session, no command, no run row. */
+  dry_run: z.boolean().optional(),
+});
+export type TriggerFireRequest = z.infer<typeof TriggerFireRequestSchema>;
+
+/** `POST …/fire` with `dry_run: true`: what a real fire would send, with nothing written. */
+export const TriggerDryRunResultSchema = z.object({
+  dry_run: z.literal(true),
+  rendered_prompt: z.string(),
+  /** False when the trigger's `filter` would skip this payload. */
+  filter_matches: z.boolean(),
+  /** The rendered key of a `keyed` trigger; null otherwise. */
+  session_key: z.string().nullable(),
+  payload: z.record(z.string(), z.unknown()),
+});
+export type TriggerDryRunResult = z.infer<typeof TriggerDryRunResultSchema>;
+
+/** Optional body of `POST …/triggers/:slug/runs/:run_id/replay`. */
+export const TriggerReplayRequestSchema = z.object({
+  /** Required to replay a payload whose webhook signature never verified. */
+  confirm_unverified: z.boolean().optional(),
+});
+export type TriggerReplayRequest = z.infer<typeof TriggerReplayRequestSchema>;
+
+// ─── Session reads: transcript, turn, prompt queue, snapshot ────────────────
+// The wire shapes of the routes a session view reads on every open. apps/api
+// builds them through these types; the SDK's own interfaces are checked
+// against them by `packages/sdk/src/contract-drift.test.ts`.
+
+/** Which source answered a transcript read. `none` is the only value that
+ *  accompanies `available: false`; `live` and `mirror` are never merged. */
+export const SessionTranscriptSourceSchema = z.enum(['live', 'mirror', 'none']);
+export type SessionTranscriptSource = z.infer<typeof SessionTranscriptSourceSchema>;
+
+export const SessionTranscriptToolCallSchema = z.object({
+  tool: z.string(),
+  status: z.string().nullable(),
+  /** `detail=full` only: the arguments as JSON, cut to the read's `chars` bound. */
+  input: z.string().optional(),
+  /** `detail=full` only: what the call returned (or its error), cut the same way. */
+  output: z.string().optional(),
+});
+export type SessionTranscriptToolCall = z.infer<typeof SessionTranscriptToolCallSchema>;
+
+/** One compact transcript row: text and tool names, no tool payloads. */
+export const SessionTranscriptMessageSchema = z.object({
+  /** The runtime message id, verbatim. */
+  id: z.string().nullable(),
+  /** Which user message a step was parented on. */
+  parent_id: z.string().nullable(),
+  role: z.string(),
+  created: z.string().nullable(),
+  completed: z.string().nullable(),
+  text: z.string(),
+  tools: z.array(SessionTranscriptToolCallSchema),
+  files: z.array(z.object({ filename: z.string().nullable(), mime: z.string().nullable() })),
+  reasoning_omitted: z.boolean(),
+  error: z.object({ name: z.string().optional(), message: z.string().optional() }).nullable(),
+});
+export type SessionTranscriptMessage = z.infer<typeof SessionTranscriptMessageSchema>;
+
+const SessionTranscriptHeadShape = {
+  available: z.boolean(),
+  /** Why this is not a live read. */
+  reason: z.string().nullable(),
+  source: SessionTranscriptSourceSchema,
+  /** The window contains the session's FIRST message. */
+  complete: z.boolean(),
+  /** When the mirror was last written. Null for a live read. */
+  captured_at: z.string().nullable(),
+  runtime_session_id: z.string().nullable(),
+  /** @deprecated The pre-W4 name of `runtime_session_id`. Same value. */
+  opencode_session_id: z.string().nullable(),
+  /** Messages in THIS window. */
+  message_count: z.number(),
+};
+
+/** `GET .../transcript` (default `shape=compact`). */
+export const SessionTranscriptSchema = z.object({
+  ...SessionTranscriptHeadShape,
+  messages: z.array(SessionTranscriptMessageSchema),
+});
+export type SessionTranscript = z.infer<typeof SessionTranscriptSchema>;
+
+/** One mirrored message: the runtime's envelope verbatim, parts 1:1 minus
+ *  attachment bytes. Its inner shape is `kortix.transcript.v1`
+ *  (`@kortix/api-contract/transcript`). */
+export const SessionTranscriptSyncMessageSchema = z.object({
+  info: JsonObjectSchema,
+  parts: z.array(JsonObjectSchema),
+});
+export type SessionTranscriptSyncMessage = z.infer<typeof SessionTranscriptSyncMessageSchema>;
+
+/** `GET .../transcript?shape=sync`: the durable mirror, one window. */
+export const SessionTranscriptSyncEnvelopeSchema = z.object({
+  ...SessionTranscriptHeadShape,
+  /** Messages the mirror holds for this session, across every window. */
+  total: z.number(),
+  /** Pass as `before` to read the window older than this one. */
+  next_cursor: z.string().nullable(),
+  messages: z.array(SessionTranscriptSyncMessageSchema),
+});
+export type SessionTranscriptSyncEnvelope = z.infer<typeof SessionTranscriptSyncEnvelopeSchema>;
+
+/** Either shape of `GET .../transcript`, chosen by `?shape=`. */
+export const SessionTranscriptReadSchema = z.union([
+  SessionTranscriptSchema,
+  SessionTranscriptSyncEnvelopeSchema,
+]);
+
+/** `delivering`: minted, not yet confirmed by the runtime. `active`: accepted. */
+export const SessionTurnStateSchema = z.enum(['delivering', 'active']);
+export type SessionTurnState = z.infer<typeof SessionTurnStateSchema>;
+
+/** One turn the control plane's lifecycle authority holds open. */
+export const SessionTurnSchema = z.object({
+  turn_token: z.string(),
+  state: SessionTurnStateSchema,
+  message_id: z.string().nullable(),
+  runtime_session_id: z.string().nullable(),
+  /** @deprecated The pre-W4 name of `runtime_session_id`. Same value. */
+  opencode_session_id: z.string().nullable(),
+  started_at: z.string().nullable(),
+  accepted_at: z.string().nullable(),
+});
+export type SessionTurn = z.infer<typeof SessionTurnSchema>;
+
+export const SessionTurnEndErrorSchema = z.object({
+  name: z.string().nullable(),
+  message: z.string().nullable(),
+});
+export type SessionTurnEndError = z.infer<typeof SessionTurnEndErrorSchema>;
+
+/** How the most recent turn ended. Optional keys are OMITTED, never null. */
+export const SessionTurnEndedSchema = z.object({
+  turn_token: z.string(),
+  message_id: z.string().optional(),
+  end_reason: z.string().nullable(),
+  ended_at: z.string().nullable(),
+  error: SessionTurnEndErrorSchema.optional(),
+});
+export type SessionTurnEnded = z.infer<typeof SessionTurnEndedSchema>;
+
+/** A recent turn that failed, keyed by its user message. A stop is never one. */
+export const SessionTurnFailureSchema = z.object({
+  message_id: z.string(),
+  ended_at: z.string().nullable(),
+  error: SessionTurnEndErrorSchema.nullable(),
+});
+export type SessionTurnFailure = z.infer<typeof SessionTurnFailureSchema>;
+
+/** `GET .../turn`. `turns` empty means idle; it is a list because a session
+ *  can hold more than one open turn. */
+export const SessionTurnStatusSchema = z.object({
+  turns: z.array(SessionTurnSchema),
+  last_ended: SessionTurnEndedSchema.optional(),
+  recent_failures: z.array(SessionTurnFailureSchema).optional(),
+  /** Present on the session stream's `kortix.control.turn` frame. */
+  working: SessionWorkingSchema.optional(),
+  /**
+   * May THIS caller stop the running turn: its prompter, the session owner or
+   * a project manager. True when nothing runs. Present on `GET .../turn` and
+   * the snapshot's turn leg; absent on the stream frame, which is not per caller.
+   */
+  can_stop: z.boolean().optional(),
+});
+export type SessionTurnStatus = z.infer<typeof SessionTurnStatusSchema>;
+
+export const SessionPromptPlacementSchema = z.enum(['transcript', 'composer']);
+export type SessionPromptPlacement = z.infer<typeof SessionPromptPlacementSchema>;
+
+/**
+ * How a prompt reaches a session whose turn is running.
+ * - `steer`: the running turn reads it at its next step boundary; the turn
+ *   does not stop. Needs the runtime capability `session.steer` and the
+ *   turn's own prompter; otherwise the row falls back to `queue`.
+ * - `queue` (Queue List): waits for the turn to end, then runs as its own turn.
+ * - `interrupt` (Quick Queue, "Stop and send"): ends the turn after the
+ *   running tool, then runs as its own turn.
+ * With no turn running, all three start a turn. `placement` is derived:
+ * `interrupt` is `transcript`, the other two are `composer`.
+ */
+export const SessionPromptDeliverySchema = z.enum(['steer', 'queue', 'interrupt']);
+export type SessionPromptDelivery = z.infer<typeof SessionPromptDeliverySchema>;
+
+/**
+ * Why a `steer` row was delivered as `queue` instead:
+ * - `unsupported`: the session's runtime does not list `session.steer`
+ *   (OpenCode 1.18.14 or earlier, or an older daemon).
+ * - `not_prompter`: the running turn belongs to another member.
+ * - `turn_ended`: the turn ended before the message reached it.
+ */
+export const SessionPromptSteerFallbackSchema = z.enum(['unsupported', 'not_prompter', 'turn_ended']);
+export type SessionPromptSteerFallback = z.infer<typeof SessionPromptSteerFallbackSchema>;
+
+/** A delivered prompt has no state: it is in the transcript. */
+export const SessionPromptStateSchema = z.enum(['queued', 'delivering', 'waiting', 'failed']);
+export type SessionPromptState = z.infer<typeof SessionPromptStateSchema>;
+
+/** One row of the durable prompt inbox, as `serializePrompt` emits it. */
+export const SessionPromptSchema = z.object({
+  placement: SessionPromptPlacementSchema,
+  /** Absent from an API built before steering: read it as `placement` implies. */
+  delivery: SessionPromptDeliverySchema.optional(),
+  /** Set when a `steer` row fell back to `queue`; `delivery` then reads `queue`. */
+  steer_fallback: SessionPromptSteerFallbackSchema.nullable().optional(),
+  /** Full accepted text. `text` is the capped preview. */
+  full_text: z.string(),
+  prompt_id: z.string(),
+  client_message_id: z.string(),
+  /** The id the message carries in the transcript once the drain placed it. */
+  message_id: z.string(),
+  /** The id the client painted its bubble under. */
+  wire_message_id: z.string(),
+  client_sent_at_ms: z.number().nullable(),
+  state: SessionPromptStateSchema,
+  /** Why admission waits: `turn_active`, `older_prompt_pending` or `held`. */
+  reason: z.string().nullable(),
+  text: z.string(),
+  attempts: z.number(),
+  /** Automatic re-attempts a runtime-unreachable park has spent. */
+  runtime_retries: z.number(),
+  last_error: z.string().nullable(),
+  /** File names and types only, never bytes. */
+  attachments: z.array(z.object({ filename: z.string(), mime: z.string() })),
+  /** Posted without a turn: no agent answers it. */
+  no_reply: z.boolean(),
+  /** Harness context (an auto-recovery continuation), not a person's prompt: a transcript never draws it as a user message. */
+  synthetic: z.boolean().optional(),
+  /** The member who sent it. The prompt runs as this member, so only they
+   *  edit, send now or retry it; they or a session manager remove it. Null
+   *  for a prompt with no recorded sender. Absent from older servers. */
+  author_user_id: z.string().nullable().optional(),
+  created_at: z.string(),
+  available_at: z.string(),
+});
+export type SessionPrompt = z.infer<typeof SessionPromptSchema>;
+
+/** `GET .../prompts`. `observed_at` is the server clock BEFORE the read. */
+/**
+ * A prompt the runtime accepted that the session log does not hold yet, or the session's
+ * `initial_prompt`. It left the inbox (`prompts`) at delivery; the log holds it once the box
+ * journals it (pi: every 5 s while a turn runs). Until then this is the only durable record
+ * a client can draw it from. `message_id` is the id the log will hold it under.
+ */
+export const SessionSentPromptSchema = z.object({
+  message_id: z.string(),
+  /** The id the prompt was sent under (a client's optimistic message) when the server re-minted it; else null. */
+  wire_message_id: z.string().nullable(),
+  /** The inbox row; null for the `initial_prompt` of a session create. */
+  prompt_id: z.string().nullable(),
+  text: z.string(),
+  attachments: z.array(z.object({ filename: z.string(), mime: z.string() })),
+  author_user_id: z.string().nullable(),
+  created_at: z.string(),
+});
+export type SessionSentPrompt = z.infer<typeof SessionSentPromptSchema>;
+
+export const SessionPromptListSchema = z.object({
+  prompts: z.array(SessionPromptSchema),
+  /** Accepted prompts the session log does not hold yet, oldest first. An older API omits it. */
+  sent: z.array(SessionSentPromptSchema).optional(),
+  observed_at: z.string(),
+});
+export type SessionPromptList = z.infer<typeof SessionPromptListSchema>;
+
+/** `POST .../prompts`: 202 queued, 200 when `client_message_id` already named a row. */
+export const CreateSessionPromptResultSchema = z.object({
+  prompt_id: z.string(),
+  state: SessionPromptStateSchema,
+  message_id: z.string(),
+  deduped: z.boolean(),
+  /** The server clock after the write. */
+  observed_at: z.string(),
+});
+export type CreateSessionPromptResult = z.infer<typeof CreateSessionPromptResultSchema>;
+
+/** One connector call of a session, as the pending-approvals projection lists it. */
+export const SessionAuditActionSchema = z.object({
+  execution_id: z.string(),
+  action: z.string(),
+  connector_id: z.string().nullable(),
+  connector: z.string().nullable(),
+  status: z.string(),
+  risk: z.string().nullable(),
+  acted_by: z.string().nullable(),
+  acted_by_email: z.string().nullable(),
+  resolved_by: z.string().nullable(),
+  resolved_by_email: z.string().nullable(),
+  result_summary: JsonObjectSchema.nullable(),
+  at: z.string(),
+  resolved_at: z.string().nullable(),
+  approval_url: z.string().nullable(),
+  /** True only on an unresolved row the CALLER may approve or deny: the verdict
+   *  `POST /approvals/:executionId` enforces (KRTX-1724). False on every other row. */
+  can_resolve: z.boolean(),
+  /** Who decides an unresolved row, as a class: `managers` for a session
+   *  started with an API token or a service account (`origin: 'backend'`),
+   *  else `managers_and_launcher`. Null on every settled row. */
+  resolvers: z.enum(['managers', 'managers_and_launcher']).nullable(),
+});
+export type SessionAuditAction = z.infer<typeof SessionAuditActionSchema>;
+
+/** A snapshot leg the server could not answer. Render it as UNKNOWN. */
+export const SessionSnapshotUnknownSchema = z.object({ known: z.literal(false), reason: z.string() });
+
+export const RuntimeProjectionIdentitySchema = z.object({
+  /** `kortix.runtime.v1`; null from a daemon built before W5. */
+  schema: z.string().nullable(),
+  harness: z.string().nullable(),
+  runtime_session_id: z.string().nullable(),
+  harness_version: z.string().nullable(),
+  /** @deprecated The pre-W5 name of `runtime_session_id`. */
+  opencode_session_id: z.string().nullable(),
+  /** @deprecated The pre-W5 name of `harness_version`. */
+  opencode_version: z.string().nullable(),
+  daemon_build: z.number().nullable(),
+  agent_config_etag: z.string().nullable(),
+  head_seq: z.record(z.string(), z.number()).nullable(),
+});
+export type RuntimeProjectionIdentity = z.infer<typeof RuntimeProjectionIdentitySchema>;
+
+/** `GET .../snapshot` (alias `/open-bundle`): everything a session view needs
+ *  to paint, in one read. Every leg except `session` and `config` is
+ *  tri-state: `known: false` means UNKNOWN, never empty. */
+export const SessionSnapshotSchema = z.object({
+  /** One clock for the whole envelope. */
+  observed_at: z.string(),
+  session: ProjectSessionSchema,
+  turn: z.union([
+    SessionTurnStatusSchema.extend({ known: z.literal(true) }),
+    SessionSnapshotUnknownSchema,
+  ]),
+  queue: z.union([
+    z.object({ known: z.literal(true), prompts: z.array(SessionPromptSchema), held: z.boolean() }),
+    SessionSnapshotUnknownSchema,
+  ]),
+  transcript: z.union([
+    z.object({ known: z.literal(true), requested: z.literal(false) }),
+    SessionTranscriptSyncEnvelopeSchema.extend({
+      known: z.literal(true),
+      requested: z.literal(true),
+    }),
+    SessionSnapshotUnknownSchema,
+  ]),
+  config: z.object({
+    known: z.literal(true),
+    base_ref: z.string().nullable(),
+    agent_name: z.string().nullable(),
+    /** @deprecated Always true: the LLM gateway is the only model path. Kept for older clients. */
+    llm_gateway_enabled: z.boolean(),
+    /** The project's default reasoning effort, or null for automatic. */
+    default_reasoning_effort: z.string().nullable(),
+  }),
+  models: z.union([
+    z.object({
+      known: z.literal(true),
+      platformDefault: z.string().nullable(),
+      accountDefault: z.string().nullable(),
+      agentDefaults: z.record(z.string(), z.string()),
+      projectDefault: z.string().nullable(),
+      resolvedForCaller: z.string().nullable(),
+      resolvedSource: z.string(),
+      freeTier: z.boolean(),
+    }),
+    SessionSnapshotUnknownSchema,
+  ]),
+  runtime: z.union([
+    z.object({
+      known: z.literal(true),
+      fresh: z.boolean(),
+      source: z.enum(['daemon_push', 'api_pull']),
+      captured_at: z.string(),
+      age_ms: z.number(),
+      runtime_running: z.boolean(),
+      epoch: z.string().nullable(),
+      seq: z.number().nullable(),
+      identity: RuntimeProjectionIdentitySchema,
+      /** The runtime state document, verbatim. */
+      state: JsonObjectSchema,
+    }),
+    SessionSnapshotUnknownSchema,
+  ]),
+  audit: z.union([
+    z.object({
+      known: z.literal(true),
+      session_id: z.string(),
+      agent: z.string().nullable(),
+      audit_access: z.boolean(),
+      count: z.number(),
+      actions: z.array(SessionAuditActionSchema),
+    }),
+    SessionSnapshotUnknownSchema,
+  ]),
+  /**
+   * = `GET .../log` (P4.2): the first page of the root thread. Present only when the project
+   * flag `session_log` is on. `page: null`: the session has no stored log.
+   */
+  log: z
+    .union([
+      z.object({ known: z.literal(true), page: SessionLogPageSchema.nullable() }),
+      SessionSnapshotUnknownSchema,
+    ])
+    .optional(),
+});
+export type SessionSnapshot = z.infer<typeof SessionSnapshotSchema>;
+
+// ─── Change requests ────────────────────────────────────────────────────────
+
+export const ChangeRequestStatusSchema = z.enum(['open', 'merged', 'closed']);
+export type ChangeRequestStatus = z.infer<typeof ChangeRequestStatusSchema>;
+
+/** One change request, as `serializeChangeRequest` emits it. */
+export const ChangeRequestSchema = z.object({
+  cr_id: z.string(),
+  account_id: z.string(),
+  project_id: z.string(),
+  number: z.number(),
+  title: z.string(),
+  description: z.string(),
+  base_ref: z.string(),
+  head_ref: z.string(),
+  status: ChangeRequestStatusSchema,
+  head_commit_sha: z.string().nullable(),
+  base_commit_sha: z.string().nullable(),
+  origin_session_id: z.string().nullable(),
+  created_by: z.string(),
+  merged_at: z.string().nullable(),
+  merged_by: z.string().nullable(),
+  merge_commit_sha: z.string().nullable(),
+  closed_at: z.string().nullable(),
+  closed_by: z.string().nullable(),
+  /** A closed request's replacement: the next request opened for the same
+   *  branch, when the caller may read it. Null otherwise (KRTX-3031). */
+  superseded_by: z.object({ cr_id: z.string(), number: z.number() }).nullable(),
+  metadata: JsonObjectSchema,
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type ChangeRequest = z.infer<typeof ChangeRequestSchema>;
+
+/** `GET /v1/projects/:id/change-requests`: an envelope, not a bare array. One
+ *  page, newest first; `next_cursor` is the next page's `cursor`, null on the
+ *  last page. */
+export const ChangeRequestListSchema = z.object({
+  change_requests: z.array(ChangeRequestSchema),
+  next_cursor: z.string().nullable(),
+});
+export type ChangeRequestList = z.infer<typeof ChangeRequestListSchema>;
+
+// ─── Accounts ───────────────────────────────────────────────────────────────
+
+/** White-label marks. Each field is null when unset. */
+export const AccountBrandingSchema = z.object({
+  app_name: z.string().nullable(),
+  logo_url: z.string().nullable(),
+  icon_url: z.string().nullable(),
+  favicon_url: z.string().nullable(),
+  logo_dark_url: z.string().nullable(),
+  icon_dark_url: z.string().nullable(),
+  favicon_dark_url: z.string().nullable(),
+});
+export type AccountBranding = z.infer<typeof AccountBrandingSchema>;
+
+/** One entry of `GET /v1/accounts`, and the body of account create and
+ *  rename. `branding` is the EFFECTIVE value: null when nothing is set or the
+ *  plan no longer allows it; create and rename omit it. */
+export const AccountSummarySchema = z.object({
+  account_id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  account_role: z.string().optional(),
+  is_primary_owner: z.boolean().optional(),
+  branding: AccountBrandingSchema.nullable().optional(),
+});
+export type AccountSummary = z.infer<typeof AccountSummarySchema>;
+
+/**
+ * The per-user view of one secret, as built by `buildSecretView`: a secret is
+ * `{ identifier, name (the env var KEY), value }`. `identifier` is unique per
+ * project — the handle an agent's `secrets` grant references and the UI
+ * shows. `name` (the KEY) is NOT unique — multiple identifiers may share one
+ * (e.g. GMAPS-primary / GMAPS-backup, both GOOGLE_MAPS_API_KEY). Values are
+ * never serialized.
+ *
+ * Authorization is centralized on the agent grant (by identifier) — there is
+ * no per-secret member/group sharing and no resource-side agent allow-list
+ * (both retired); every project member with read access sees every secret.
+ */
+export const SecretDeliveryStrategySchema = z.enum(['runtime', 'egress', 'broker', 'denied']);
+export type SecretDeliveryStrategy = z.infer<typeof SecretDeliveryStrategySchema>;
+
+export const SecretConsumerSchema = z.enum([
+  'sandbox',
+  'llm_gateway',
+  'connector',
+  'git_proxy',
+  'http_broker',
+  'network',
+]);
+export type SecretConsumer = z.infer<typeof SecretConsumerSchema>;
+
+export const SecretDeliveryStatusSchema = z.enum(['available', 'unavailable', 'disabled']);
+export type SecretDeliveryStatus = z.infer<typeof SecretDeliveryStatusSchema>;
+
+/**
+ * Why a secret reaches no agent, even though the platform supports its delivery
+ * mode. Tri-state, and the distinction is load-bearing:
+ *
+ *   'no_agent_grant' — CERTAIN: no agent in the manifest can receive this secret.
+ *   null / absent    — granted, not applicable, or the server could not tell.
+ *
+ * Never a guess. A warning raised because the manifest failed to load is worse
+ * than no warning, so an unreadable manifest reports null.
+ */
+export const SecretDeliveryBlockedReasonSchema = z.enum(['no_agent_grant']);
+export type SecretDeliveryBlockedReason = z.infer<typeof SecretDeliveryBlockedReasonSchema>;
+
+/**
+ * Can the server decrypt the stored value? `undecryptable`: the server's
+ * encryption key (`API_KEY_SECRET`) changed after the value was written, or the
+ * stored row is damaged. The value is lost; a person must enter it again.
+ */
+export const SecretValueStatusSchema = z.enum(['ok', 'undecryptable']);
+export type SecretValueStatus = z.infer<typeof SecretValueStatusSchema>;
+
+export const SecretInjectionSlotSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('header'), name: z.string(), template: z.string().optional() }),
+  z.object({ kind: z.literal('query'), name: z.string() }),
+  z.object({ kind: z.literal('json_body_field'), path: z.string() }),
+]);
+
+export const SecretEgressPolicySchema = z.object({
+  backend: z.enum(['llm_gateway', 'connector', 'git_proxy', 'kortix_fetch']).optional(),
+  base_url_env: z.string().optional(),
+  rules: z.array(
+    z.object({
+      host: z.string(),
+      methods: z.array(z.string()).optional(),
+      path: z.string().optional(),
+      inject: SecretInjectionSlotSchema.optional(),
+    }),
+  ),
+  /**
+   * Where the credential is attached, for LEGACY injection rows.
+   *
+   * Optional since the exposure/usage model: an egress-enforced secret
+   * is served by HANDLE SUBSTITUTION, so the policy is a host list and there is
+   * no slot to name. A row that still carries `inject` keeps injecting exactly
+   * as before.
+   */
+  inject: SecretInjectionSlotSchema.optional(),
+  on_no_match: z.enum(['deny', 'observe']).optional(),
+  tls: z.enum(['terminate', 'tunnel']).optional(),
+});
+export type SecretEgressPolicy = z.infer<typeof SecretEgressPolicySchema>;
+
+export const UpdateSecretStrategyInputSchema = z
+  .object({
+    strategy: SecretDeliveryStrategySchema,
+    consumer: SecretConsumerSchema.nullable().optional(),
+    egress_policy: SecretEgressPolicySchema.optional(),
+    handle_prefix: z.string().min(1).max(48).optional(),
+  })
+  .strict();
+export type UpdateSecretStrategyInput = z.infer<typeof UpdateSecretStrategyInputSchema>;
+
+export const SecretBrokerRequestSchema = z
+  .object({
+    url: z.string().min(1).max(4096),
+    method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']).default('GET'),
+    headers: z.record(z.string(), z.string().max(8192)).optional(),
+    body_base64: z.string().max(1_400_000).optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value.headers ?? {}).length <= 64, {
+    message: 'headers must contain at most 64 entries',
+    path: ['headers'],
+  });
+export type SecretBrokerRequest = z.infer<typeof SecretBrokerRequestSchema>;
+
+export const SecretBrokerResponseSchema = z.object({
+  status: z.number().int().min(100).max(599),
+  headers: z.record(z.string(), z.string()),
+  body_base64: z.string(),
+});
+export type SecretBrokerResponse = z.infer<typeof SecretBrokerResponseSchema>;
+
+export const SecretSchema = z.object({
+  /** Unique per project. The handle an agent's `secrets` grant references. */
+  identifier: z.string(),
+  /** The env var KEY injected into the sandbox. Not unique. */
+  name: z.string(),
+  project_id: z.string(),
+  secret_id: z.string().nullable(),
+  created_by: z.string().nullable(),
+  created_at: z.string().nullable(),
+  updated_at: z.string().nullable(),
+  system: z.boolean(),
+  readonly: z.boolean(),
+  purpose: z.literal('git_auth').nullable(),
+  can_rotate: z.boolean(),
+  managed_by: z.literal('project_secret').nullable(),
+  /** Is a shared project value set at all. */
+  configured: z.boolean(),
+  /** The caller's private override (value omitted), or null. `status`: can the
+   *  server decrypt it? While `active`, it is the value the caller's sessions read. */
+  mine: z
+    .object({ active: z.boolean(), updated_at: z.string(), status: SecretValueStatusSchema.optional() })
+    .nullable(),
+  /** Which value actually gets injected into the caller's sessions. */
+  effective_source: z.enum(['mine', 'shared', 'none']),
+  can_manage_shared: z.boolean(),
+  strategy: SecretDeliveryStrategySchema,
+  consumer: SecretConsumerSchema.nullable(),
+  delivery_status: SecretDeliveryStatusSchema,
+  /** The agent-grant axis of delivery, orthogonal to `delivery_status`.
+   *  `delivery_status` says the deployment supports the mode; this says whether
+   *  any agent may actually receive the secret. See
+   *  `SecretDeliveryBlockedReasonSchema` for the tri-state rule. */
+  delivery_blocked_reason: SecretDeliveryBlockedReasonSchema.nullable().optional(),
+  /** Manifest agent grants; null means the roster could not be loaded. */
+  agents: z.union([z.array(z.string()), z.literal('all')]).nullable().optional(),
+  network_boundary_available: z.boolean().optional(),
+  egress_policy: SecretEgressPolicySchema.nullable(),
+  strategy_locked: z.boolean(),
+  last_rotated_at: z.string().nullable(),
+  requires_rotation: z.boolean(),
+  /** Who can use the shared value: each audience grant. Empty = everyone in
+   *  the project. Present on `GET /secrets`. */
+  shared_with: z.array(ConnectionShareSchema).optional(),
+  /** Can the caller's sessions use the shared value? False only when it is
+   *  shared with specific people and the caller is not one of them. */
+  usable: z.boolean().optional(),
+  /** Can the server decrypt the shared value? Absent when none is set
+   *  (`configured: false`). `mine.status` reports the caller's override. Never
+   *  carries the value. */
+  status: SecretValueStatusSchema.optional(),
+});
+export type Secret = z.infer<typeof SecretSchema>;
+
+export const GrantSecretToAgentInputSchema = z
+  .object({ agent: z.string().trim().min(1).max(200) })
+  .strict();
+export type GrantSecretToAgentInput = z.infer<typeof GrantSecretToAgentInputSchema>;
+
+/**
+ * Result of POST /projects/:projectId/secrets/:identifier/grant — the one-click
+ * fix for `delivery_blocked_reason: 'no_agent_grant'`.
+ *
+ * `adopted_governance` is the field that matters. It is true when the commit
+ * published the project's FIRST agent roster, which flips the project from
+ * "every agent may receive every secret" to "an agent the manifest does not
+ * list receives nothing". Surface it; a caller that ignores it silently
+ * revokes working secrets from every undeclared agent.
+ */
+export const GrantSecretToAgentResultSchema = z.object({
+  identifier: z.string(),
+  agent: z.string(),
+  /** The agent already admitted this identifier, so no commit was made. */
+  already_granted: z.boolean(),
+  adopted_governance: z.boolean(),
+});
+export type GrantSecretToAgentResult = z.infer<typeof GrantSecretToAgentResultSchema>;
+
+// ─── Kortix Capture data API (`/v1/accounts/:accountId/capture/*`) ──────────
+// What apps/api/src/capture serializes for the account switch and search.
+// A Kortix API key reads the same bodies.
+
+export const CaptureWorkspaceSchema = z.object({
+  account_id: z.string(),
+  enabled: z.boolean(),
+  /** IAM `capture.read_all`: you read every member's devices and timeline. */
+  can_read_all: z.boolean(),
+  /** IAM `capture.manage`: you turn Capture on or off, set the policy, revoke any device. */
+  can_manage: z.boolean(),
+  updated_at: z.string().nullable(),
+});
+export type CaptureWorkspace = z.infer<typeof CaptureWorkspaceSchema>;
+
+export const CaptureSearchKindSchema = z.enum(['screen', 'actions', 'audio']);
+
+export const CaptureSearchHitSchema = z.object({
+  kind: CaptureSearchKindSchema,
+  id: z.string(),
+  ts: z.string(),
+  user_id: z.string(),
+  device_id: z.string(),
+  chunk_id: z.string(),
+  app: z.string().nullable(),
+  title: z.string().nullable(),
+  url: z.string().nullable(),
+  /** The display a screen hit shows; null for actions, audio and one-display devices. */
+  display_id: z.number().nullable(),
+  display_name: z.string().nullable(),
+  snippet: z.string(),
+});
+export type CaptureSearchHit = z.infer<typeof CaptureSearchHitSchema>;
+
+export const CaptureSearchResultSchema = z.object({
+  /** The person searched; null for an account-wide search (`scope=account`). */
+  user_id: z.string().nullable(),
+  q: z.string(),
+  hits: z.array(CaptureSearchHitSchema),
+});
+export type CaptureSearchResult = z.infer<typeof CaptureSearchResultSchema>;

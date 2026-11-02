@@ -1,0 +1,204 @@
+import { afterEach, expect, mock, test } from 'bun:test';
+import React from 'react';
+import { type ReactTestRenderer, act, create } from 'react-test-renderer';
+import { hasOnlyCacheSourcedMessages, useSyncStore } from '../browser/stores/sync-store';
+import { configureKortix } from '../core/http/config';
+import type { SessionTranscriptSyncEnvelope } from '../core/rest/projects-client/sessions';
+import { resetSessionOpenBundles } from '../core/session/open-bundle';
+import { useSessionSync } from './use-session-sync';
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+const originalFetch = globalThis.fetch;
+let root: ReactTestRenderer | undefined;
+const touched: string[] = [];
+
+afterEach(async () => {
+  if (root) await act(async () => root?.unmount());
+  root = undefined;
+  globalThis.fetch = originalFetch;
+  resetSessionOpenBundles();
+  for (const id of touched.splice(0)) useSyncStore.getState().clearSession(id);
+});
+
+const SCOPE = 'p1/2f6c0a52-7d0e-4b8e-9f51-3c5b8d7e0a11';
+
+function envelope(
+  rootId: string,
+  overrides: Partial<SessionTranscriptSyncEnvelope> = {},
+): SessionTranscriptSyncEnvelope {
+  return {
+    available: true,
+    reason: null,
+    source: 'mirror',
+    complete: true,
+    captured_at: '2026-09-25T00:00:00Z',
+    opencode_session_id: rootId,
+    message_count: 1,
+    messages: [
+      {
+        info: {
+          id: `msg_${rootId}`,
+          sessionID: rootId,
+          role: 'assistant',
+          time: { created: 1, completed: 2 },
+        },
+        parts: [{ id: `prt_${rootId}`, type: 'text', text: 'Saved reply' }],
+      },
+    ],
+    ...overrides,
+  };
+}
+
+type Options = NonNullable<Parameters<typeof useSessionSync>[1]>;
+
+async function settle() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+}
+
+async function mount(sessionId: string, options: Options) {
+  touched.push(sessionId);
+  configureKortix({ backendUrl: 'http://test.local/v1', getToken: async () => 'token' });
+  let value!: ReturnType<typeof useSessionSync>;
+  function Probe(props: { sessionId: string; options: Options }) {
+    value = useSessionSync(props.sessionId, props.options);
+    return null;
+  }
+  const render = (sid: string, opts: Options) =>
+    React.createElement(Probe, { sessionId: sid, options: opts });
+  await act(async () => {
+    root = create(render(sessionId, options));
+  });
+  await settle();
+  return {
+    value: () => value,
+    update: async (sid: string, opts: Options) => {
+      touched.push(sid);
+      await act(async () => {
+        root?.update(render(sid, opts));
+      });
+      await settle();
+    },
+  };
+}
+
+const offline: Options = { kortixSessionScope: SCOPE, networkEnabled: false };
+
+test('a saved copy of this root paints, and the hook says it painted', async () => {
+  const hook = await mount('ses_copy_paint', { ...offline, mirror: envelope('ses_copy_paint') });
+  expect(hook.value().mirrorState).toBe('painted');
+  expect(hook.value().messages).toHaveLength(1);
+});
+
+test('a saved copy captured from another root is refused, and the hook says it is absent', async () => {
+  const hook = await mount('ses_copy_refuse', { ...offline, mirror: envelope('ses_other_root') });
+  expect(hook.value().mirrorState).toBe('absent');
+  expect(hook.value().messages).toHaveLength(0);
+});
+
+test('a server with no saved copy answers absent', async () => {
+  const hook = await mount('ses_copy_none', {
+    ...offline,
+    mirror: envelope('ses_copy_none', {
+      available: false,
+      source: 'none',
+      message_count: 0,
+      messages: [],
+    }),
+  });
+  expect(hook.value().mirrorState).toBe('absent');
+});
+
+test('without a root nothing can be read yet', async () => {
+  const hook = await mount('', { ...offline, mirror: envelope('ses_any') });
+  expect(hook.value().mirrorState).toBe('idle');
+});
+
+test('an empty answer is not sticky: the envelope that follows it still paints', async () => {
+  const hook = await mount('ses_copy_late', { ...offline, mirror: null });
+  expect(hook.value().mirrorState).toBe('absent');
+  await hook.update('ses_copy_late', { ...offline, mirror: envelope('ses_copy_late') });
+  expect(hook.value().mirrorState).toBe('painted');
+  expect(hook.value().messages).toHaveLength(1);
+});
+
+test('an empty runtime read that landed first does not block the saved copy: it paints, still provisional', async () => {
+  touched.push('ses_copy_empty');
+  // An empty runtime read is lost box state, not an empty conversation.
+  useSyncStore.getState().hydrate('ses_copy_empty', []);
+  const hook = await mount('ses_copy_empty', { ...offline, mirror: envelope('ses_copy_empty') });
+  expect(hook.value().mirrorState).toBe('painted');
+  expect(hook.value().messages.map((m) => m.info.id)).toEqual(['msg_ses_copy_empty']);
+  expect(hasOnlyCacheSourcedMessages('ses_copy_empty')).toBe(true);
+});
+
+test('a saved copy that arrives after an empty runtime read still paints', async () => {
+  const hook = await mount('ses_copy_late_empty', { ...offline, mirror: null });
+  useSyncStore.getState().hydrate('ses_copy_late_empty', []);
+  await hook.update('ses_copy_late_empty', { ...offline, mirror: envelope('ses_copy_late_empty') });
+  expect(hook.value().mirrorState).toBe('painted');
+  expect(hook.value().messages.map((m) => m.info.id)).toEqual(['msg_ses_copy_late_empty']);
+});
+
+test('between an empty runtime read and the log answer the hook says loading, not absent', async () => {
+  // The host shows its boot loader on `absent`. An empty runtime read is not
+  // the thread, so it must not flip the answer while the log read is on its way.
+  let answer!: (response: Response) => void;
+  const requests: string[] = [];
+  globalThis.fetch = mock(async (url: unknown) => {
+    requests.push(String(url));
+    return new Promise<Response>((resolve) => {
+      answer = resolve;
+    });
+  }) as unknown as typeof fetch;
+  const hook = await mount('ses_copy_between', offline);
+  expect(hook.value().mirrorState).toBe('loading');
+  await act(async () => {
+    useSyncStore.getState().hydrate('ses_copy_between', []);
+  });
+  await settle();
+  expect(hook.value().mirrorState).toBe('loading');
+  await act(async () => {
+    answer(Response.json({ error: 'No session log for this session', code: 'session_log_missing' }, { status: 404 }));
+  });
+  await settle();
+  expect(hook.value().mirrorState).toBe('absent');
+  expect(requests.filter((url) => url.includes('/transcript'))).toEqual([]);
+});
+
+test('a genuinely empty new session (empty runtime read, no saved copy) ends absent', async () => {
+  globalThis.fetch = mock(async () =>
+    Response.json(
+      envelope('ses_copy_new', { available: false, source: 'none', message_count: 0, messages: [] }),
+    ),
+  ) as unknown as typeof fetch;
+  touched.push('ses_copy_new');
+  useSyncStore.getState().hydrate('ses_copy_new', []);
+  const hook = await mount('ses_copy_new', offline);
+  expect(hook.value().mirrorState).toBe('absent');
+  expect(hook.value().messages).toHaveLength(0);
+});
+
+test('a runtime read with messages keeps a later saved copy out', async () => {
+  touched.push('ses_copy_live');
+  useSyncStore.getState().hydrate('ses_copy_live', [
+    {
+      info: { id: 'msg_live', sessionID: 'ses_copy_live', role: 'user', time: { created: 5 } } as never,
+      parts: [],
+    },
+  ]);
+  const hook = await mount('ses_copy_live', { ...offline, mirror: envelope('ses_copy_live') });
+  expect(hook.value().messages.map((m) => m.info.id)).toEqual(['msg_live']);
+  expect(hasOnlyCacheSourcedMessages('ses_copy_live')).toBe(false);
+});
+
+test("a new source waits for its own answer, not the last source's", async () => {
+  globalThis.fetch = mock(async () => new Promise<Response>(() => {})) as unknown as typeof fetch;
+  const hook = await mount('ses_copy_switch', { ...offline, mirror: null });
+  expect(hook.value().mirrorState).toBe('absent');
+  // The host stops supplying the copy (its flag turned off): the default read
+  // starts, and until it answers nothing is ruled out.
+  await hook.update('ses_copy_switch', offline);
+  expect(hook.value().mirrorState).toBe('loading');
+});

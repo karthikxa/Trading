@@ -1,0 +1,238 @@
+---
+title: "How we offboard employees"
+description: On a schedule, an agent checks for newly marked departures and runs the offboarding checklist across Okta, Google Workspace, Google Drive, and GitHub — revoking access, transferring ownership, and reclaiming licenses — holding the ownership transfer for approval and never deleting an account.
+date: "2026-06-02"
+author: team
+tags:
+  - Security
+  - Case Study
+  - Enterprise
+template: employee-offboarding
+---
+
+Offboarding is a checklist that has to run to completion. When someone leaves,
+their access has to be revoked everywhere, their documents and repositories have
+to change hands, and their licenses have to come back. Miss a step and a former
+employee keeps a login, a shared drive loses its owner, or a paid seat sits
+unused. The steps are simple; the risk is in the ones that get skipped.
+
+We run offboarding through an agent on Kortix. On a schedule, the agent checks
+for newly marked departures and works the checklist across every connected
+tool, posting what it did and what is still pending. This is the security
+counterpart to how we onboard.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Scheduled Okta departure check</Fact>
+  <Fact label="Connected systems">Okta/SSO · Google Workspace · Google Drive · GitHub</Fact>
+  <Fact label="Mode">Schedule-driven · ownership transfer gated</Fact>
+</KeyFacts>
+
+## The problem
+
+When an employee leaves, their access has to be pulled from every system they
+touched, their work has to be handed off, and their licenses have to be
+reclaimed. That means Okta, Google Workspace, Slack, and GitHub, each with its
+own steps, done in the right order, on the same day.
+
+The common approaches leave gaps. A written runbook depends on someone working it
+by hand under time pressure, and a missed line is a live account no one notices.
+A provisioning tool covers SSO but not document ownership or repository access. IT
+tickets spread the work across people and days, and the parts that are easy to
+forget are exactly the ones that matter for security.
+
+## What we built
+
+On Kortix, an agent checks Okta on a schedule for newly marked departures. Each
+check spawns an isolated session (a cloud sandbox) with scoped access to Okta,
+Google Workspace, Google Drive, and GitHub, and works the offboarding checklist
+for every departure it finds: revoke SSO and app access, remove the person from
+the GitHub org, transfer document and drive ownership, and reclaim licenses.
+The ownership transfer waits at a human approval gate — account deletion is
+never attempted — and the agent posts a completed checklist showing what it did
+and what is still pending.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the offboarding checklist skill and the
+hourly trigger, and opens a change request for you to review. Prefer clicks? Choose **Use this
+template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up an employee offboarding agent in this project.
+
+1. Create the agent agents/employee-offboarding.md. Its job is to run the offboarding checklist for each departing employee. It may use the Okta, Google Workspace, Google Drive, GitHub and Slack connectors.
+
+2. Create the skill skills/offboarding-checklist/SKILL.md with these rules:
+   - A person is departing when they are newly added to the Offboarding group in Okta. Work each departure as its own case, so one failure never blocks another.
+   - Deactivate the Okta account and remove its app assignments.
+   - Transfer the person's Drive files and shared drives to their manager. This cannot be undone, so it needs my approval first.
+   - After the transfer, suspend the Google Workspace account and release its license.
+   - Remove the person from the GitHub org and its teams. If they are the sole owner of a repository, flag it instead.
+   - Never delete an account. Post the checklist to #it-ops, with every step done, pending or failed.
+
+3. Add a cron trigger offboarding-check to kortix.yaml. It runs the employee-offboarding agent every hour, on the hour, with the prompt "Load the offboarding-checklist skill and work every new departure in the Offboarding group."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your identity provider, Google
+Workspace, Google Drive, GitHub and Slack. Credentials are brokered server-side and never enter the agent's machine.
+
+<ToolList>
+  <ToolNeed name="Okta" domain="okta.com" tag="Required" alternatives={[['Google Workspace', 'workspace.google.com'], ['Google Drive', 'drive.google.com'], ['GitHub', 'github.com']]}>
+    Finds new departures and revokes SSO and app access.
+  </ToolNeed>
+  <ToolNeed name="BambooHR" domain="bamboohr.com" tag="Optional" alternatives={[['Workday', 'workday.com']]}>
+    Marks the departure that starts the checklist.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com']]}>
+    Posts the completed checklist, with pending and failed steps.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **employee-offboarding** agent
+and send this prompt. Check each step in the checklist before
+you let the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run the offboarding checklist once.
+
+1. Find people newly added to the Offboarding group in Okta. Treat each one as its own case.
+2. Deactivate each Okta account and remove its app assignments.
+3. List the Drive files and shared drives each person owns, and ask me before you transfer them to the manager.
+4. After the transfer, suspend the Google Workspace account and release the license.
+5. Remove each person from the GitHub org and its teams, and reclaim the seat.
+6. Post the checklist to #it-ops with every step done, pending or failed. Never delete an account.`}
+/>
+
+</Step>
+<Step title="Let the hourly schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every hour, on the hour, each run in a new session on its own cloud
+computer.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: offboarding-check
+    name: Offboarding checklist run
+    on:
+      cron: "0 0 * * * *"
+    run:
+      agent: employee-offboarding
+      prompt: Load the offboarding-checklist skill and work every new departure in the Offboarding group.`}
+/>
+
+</Step>
+<Step title="Hold ownership transfers for approval">
+
+Revoking access and reclaiming licenses run on their own, because they can be
+undone. Transferring ownership cannot be undone, so it stops for a person. An
+automated session waits at most 30 minutes for a person, then stops without
+transferring, and the next run asks again. The agent never deletes an account.
+
+</Step>
+<Step title="Read the checklist">
+
+Each departure ends as one checklist in #it-ops. This is what a run looks like
+in the session:
+
+<ExampleRun
+  title="Offboarding checklist run · 16:00"
+  message="Load the offboarding-checklist skill and work every new departure in the Offboarding group."
+  worked="Worked for 2m 31s"
+  tools={[
+    'okta · list group members',
+    'okta · deactivate user',
+    'okta · remove app assignment × 9',
+    'google drive · list files',
+    'github · remove org member',
+    'slack · post message → #it-ops',
+  ]}
+  note="Illustrative example. Your apps and file counts differ."
+>
+  Found **1** new departure. Deactivated the Okta account, removed **9** app
+  assignments and removed GitHub org access. The transfer of **214** Drive files
+  to the manager is waiting for approval, so the Workspace account stays active
+  until then.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A scheduled **trigger** spawns a session with scoped **connectors** into Okta,
+  Google Workspace, Google Drive, and GitHub. The offboarding policy is encoded
+  as **skills** and **memory**. The agent runs the reversible steps on its own
+  and holds the ownership transfer behind a human.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Revoke personal tokens"
+  code="Also list the personal access tokens and OAuth apps the person created in GitHub, and revoke each one after the Okta account is deactivated."
+/>
+
+<CopyBlock
+  title="Tell the manager"
+  code="Send the manager a Slack DM with the completed checklist and the files that will move to them."
+/>
+
+<CopyBlock
+  title="Monthly access audit"
+  code="On the first of each month, check that everyone who left last month is still deactivated in Okta and absent from GitHub, and report any gap to #it-ops."
+/>
+
+## Guardrails
+
+The agent revokes access and transfers ownership across every system, so the
+access is scoped and contained:
+
+- **Isolation.** Every departure case runs in its own isolated sandbox. The
+  session is granted access only to the systems it's scoped to, and only the checklist
+  result is written back out.
+- **Scoped secrets.** The Okta, Google Workspace, Google Drive, and GitHub
+  credentials are encrypted in the Secrets Manager and injected into the
+  sandbox at runtime, scoped to the agents you grant them to.
+- **Human approval gate.** Transferring ownership away from a person requires a
+  person to approve before it runs.
+- **Never deletes.** Account deletion is out of scope for this agent entirely —
+  it is never performed, gated or otherwise. It hands off to a human if a
+  deletion is ever genuinely needed.
+- **Everything is code.** The agent's checklist, skills, and per-system permissions
+  are files in the repo, versioned and changed through a reviewed **change
+  request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every departure" label="The full checklist run across all systems" />
+  <Stat value="Same day" label="Access revoked once the scheduled check finds it" />
+  <Stat value="4 systems" label="Okta, Google Workspace, Google Drive, GitHub in one run" />
+</StatGrid>
+
+Access that used to depend on someone working a runbook by hand now comes down
+the same day a departure is marked, with ownership transferred and licenses
+reclaimed in the same run. The ownership transfer waits for a person, and the
+completed checklist shows exactly what happened and what is still pending.

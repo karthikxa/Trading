@@ -1,0 +1,289 @@
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import { PREVIEW_HOST_RAM_MB } from '../src/core/preview-session-reaper';
+import {
+  CI_DOCKER_COMPOSE_AMD64_SHA256,
+  CI_DOCKER_COMPOSE_VERSION,
+  PLATINUM_CI_BUN_VERSION,
+  PLATINUM_CI_NODE_IMAGE,
+  PLATINUM_CI_PNPM_VERSION,
+  PLATINUM_CI_TEMPLATE_VERSION,
+  PLATINUM_CI_WARM_TIMEOUT_MS,
+  PlatinumHttpError,
+  buildPlatinumTemplateSpec,
+  buildPlatinumWarmTemplateRequest,
+  dockerComposeInstallCommand,
+  isRetryablePlatinumError,
+  observePlatinumSandboxStart,
+  observePlatinumWorker,
+  platinumBaseTemplateName,
+  platinumTemplateCreateIdempotencyKey,
+  platinumSandboxListPath,
+  retryPlatinumOperation,
+  selectReusablePlatinumTemplate,
+  platinumTemplateName,
+  platinumWarmReadinessTimeoutMs,
+} from '../src/core/platinum-ci';
+
+const sha = 'a'.repeat(40);
+const lockHash = 'b'.repeat(64);
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('Platinum CI worker plan', () => {
+  test('bounds warm restore readiness so auto mode can fail over quickly', () => {
+    expect(PLATINUM_CI_WARM_TIMEOUT_MS).toBe(120_000);
+    expect(platinumWarmReadinessTimeoutMs('restore')).toBe(120_000);
+    expect(platinumWarmReadinessTimeoutMs('cold-boot')).toBe(2_700_000);
+    expect(platinumWarmReadinessTimeoutMs(undefined)).toBe(120_000);
+  });
+
+  // Platinum refuses to start a sandbox with less RAM than its template was
+  // captured with: `ram_mb=8192 is below the template minimum (16384)`. #7955
+  // cut preview hosts to 8 GB and left the templates at 16 GB, so every NEW
+  // preview host failed on 2026-09-28 (a running host is reused and hid it).
+  test('the templates never ask for more RAM than a preview host gets', () => {
+    expect(buildPlatinumTemplateSpec({ lockHash, repository: 'kortix-ai/suna', cacheSha: sha }).default_ram_mb)
+      .toBeLessThanOrEqual(PREVIEW_HOST_RAM_MB);
+    expect(buildPlatinumWarmTemplateRequest(lockHash).default_ram_mb).toBeLessThanOrEqual(PREVIEW_HOST_RAM_MB);
+  });
+
+  test('uses one content-addressed template for one lockfile', () => {
+    expect(PLATINUM_CI_TEMPLATE_VERSION).toBe('v15');
+    expect(platinumTemplateName(lockHash)).toBe('kortix-ci-v15-bbbbbbbbbbbbbbbb');
+    expect(platinumBaseTemplateName(lockHash)).toBe('kortix-ci-v13-bbbbbbbbbbbbbbbb-base');
+    const spec = buildPlatinumTemplateSpec({
+      lockHash,
+      repository: 'kortix-ai/suna',
+      cacheSha: sha,
+    });
+
+    expect(spec.name).toBe(platinumBaseTemplateName(lockHash));
+    expect(spec.base_image).toBe(PLATINUM_CI_NODE_IMAGE);
+    expect(spec.default_cpu).toBe(8);
+    expect(spec.default_ram_mb).toBe(PREVIEW_HOST_RAM_MB);
+    expect(spec.default_disk_gb).toBe(50);
+    expect(spec.steps[0]).toEqual({ op: 'kernel_modules', profile: 'container' });
+    expect(JSON.stringify(spec.steps)).toContain(`bun@${PLATINUM_CI_BUN_VERSION}`);
+    expect(JSON.stringify(spec.steps)).toContain(`pnpm@${PLATINUM_CI_PNPM_VERSION}`);
+    expect(JSON.stringify(spec.steps)).toContain('docker-compose-linux-x86_64');
+    expect(JSON.stringify(spec.steps)).toContain(CI_DOCKER_COMPOSE_AMD64_SHA256);
+    expect(JSON.stringify(spec.steps)).not.toContain('postgresql-client');
+    expect(JSON.stringify(spec.steps)).toContain(`fetch --depth=1 origin ${sha}`);
+    expect(JSON.stringify(spec.steps)).toContain('playwright install --with-deps chromium');
+    expect(JSON.stringify(spec.steps)).toContain('git init /workspace/suna');
+    expect(spec.entrypoint).toContain(
+      "timeout 2400 sh -c 'until pnpm exec supabase start --ignore-health-check; do sleep 30; done'",
+    );
+    expect(spec.entrypoint).not.toContain('docker pull postgres:16-alpine');
+    expect(spec.entrypoint).toContain('supabase stop --no-backup');
+    expect(spec.entrypoint).toContain('.kortix-ci-warm-ready');
+    expect(spec.entrypoint).not.toMatch(/\$[A-Za-z_({!]/);
+    expect(spec.entrypoint).toContain('modprobe overlay');
+    expect(spec.entrypoint).toContain(
+      'dockerd --host=unix:///var/run/docker.sock >/workspace/kortix-template-dockerd.log 2>&1 &',
+    );
+    expect(buildPlatinumWarmTemplateRequest(lockHash)).toEqual({
+      name: platinumTemplateName(lockHash),
+      capture_condition: {
+        cmd: 'test -s /workspace/.kortix-ci-warm-ready && ! pgrep -x dockerd >/dev/null && test ! -S /var/run/docker.sock',
+        timeoutSec: 2_700,
+      },
+      default_cpu: 8,
+      default_ram_mb: PREVIEW_HOST_RAM_MB,
+      default_disk_gb: 50,
+    });
+    for (const step of spec.steps) {
+      if (step.op === 'run') expect(step.cmd).not.toContain('\n');
+    }
+  });
+
+  test('installs a pinned Docker Compose plugin in every base template', () => {
+    const command = dockerComposeInstallCommand();
+    expect(CI_DOCKER_COMPOSE_VERSION).toBe('v2.40.3');
+    expect(CI_DOCKER_COMPOSE_AMD64_SHA256).toHaveLength(64);
+    expect(command).toContain(`/download/${CI_DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64`);
+    expect(command).toContain(CI_DOCKER_COMPOSE_AMD64_SHA256);
+    expect(command).toContain('sha256sum -c -');
+    expect(command).toContain('docker compose version');
+  });
+
+  test('lists sandboxes in the home region, so a page past row 10000 is not refused', () => {
+    // Without `regions`, Platinum merges every region and rejects any page that
+    // ends above row 10000 (`pagination_limit`, HTTP 400).
+    expect(platinumSandboxListPath(100, 10_100)).toBe(
+      '/v1/sandboxes?paginated=true&limit=100&regions=local&offset=10100',
+    );
+  });
+
+  test('reuses the exact ready or building content-addressed template', () => {
+    expect(
+      selectReusablePlatinumTemplate(
+        [
+          { id: 'failed', name: 'kortix-ci-v2-other', state: 'failed' },
+          { id: 'ready', name: 'kortix-ci-v2-target', state: 'ready' },
+        ],
+        'kortix-ci-v2-target',
+      )?.id,
+    ).toBe('ready');
+    expect(
+      selectReusablePlatinumTemplate(
+        [{ id: 'failed', name: 'kortix-ci-v2-target', state: 'failed' }],
+        'kortix-ci-v2-target',
+      ),
+    ).toBeNull();
+  });
+
+  test('changes the create idempotency key after a cached template fails', () => {
+    const name = 'kortix-ci-v11-lock-base';
+    expect(platinumTemplateCreateIdempotencyKey(name, [])).toBe(`kortix-ci-template-${name}`);
+
+    const firstFailure = platinumTemplateCreateIdempotencyKey(name, [
+      { id: 'tpl-failed-a', name, state: 'failed' },
+    ]);
+    const sameFailure = platinumTemplateCreateIdempotencyKey(name, [
+      { id: 'tpl-failed-a', name, state: 'FAILED' },
+    ]);
+    const nextFailure = platinumTemplateCreateIdempotencyKey(name, [
+      { id: 'tpl-failed-a', name, state: 'failed' },
+      { id: 'tpl-failed-b', name, state: 'failed' },
+    ]);
+
+    expect(firstFailure).toBe(sameFailure);
+    expect(firstFailure).toMatch(new RegExp(`^kortix-ci-template-${name}-retry-[0-9a-f]{12}$`));
+    expect(nextFailure).not.toBe(firstFailure);
+  });
+
+  test('retries only transient provider failures with bounded attempts', async () => {
+    let calls = 0;
+    const delays: number[] = [];
+    const result = await retryPlatinumOperation({
+      label: 'test',
+      attempts: 4,
+      sleep: async (delay) => {
+        delays.push(delay);
+      },
+      operation: async () => {
+        calls += 1;
+        if (calls < 3) throw new PlatinumHttpError('gateway timeout', 504);
+        return 'ok';
+      },
+    });
+    expect(result).toBe('ok');
+    expect(calls).toBe(3);
+    expect(delays).toEqual([1_000, 2_000]);
+    expect(isRetryablePlatinumError(new PlatinumHttpError('bad request', 400))).toBe(false);
+    expect(isRetryablePlatinumError(new PlatinumHttpError('gateway timeout', 504))).toBe(true);
+    expect(isRetryablePlatinumError(new SyntaxError('truncated JSON response'))).toBe(true);
+    expect(
+      isRetryablePlatinumError(
+        new PlatinumHttpError('500: {"error":"The operation was aborted."}', 500),
+      ),
+    ).toBe(true);
+    expect(isRetryablePlatinumError(new PlatinumHttpError('internal bug', 500))).toBe(false);
+  });
+
+  test('polls worker completion independently from optional log streaming', async () => {
+    let now = 0;
+    let statusChecks = 0;
+    let logChecks = 0;
+    const output: string[] = [];
+    const warnings: string[] = [];
+    const result = await observePlatinumWorker({
+      startedAt: 0,
+      timeoutMs: 100,
+      pollMs: 1,
+      now: () => now,
+      sleep: async (delay) => {
+        now += delay;
+      },
+      checkExitCode: async () => {
+        statusChecks += 1;
+        return statusChecks === 3 ? 0 : null;
+      },
+      statLog: async () => {
+        logChecks += 1;
+        if (logChecks < 3) {
+          throw new PlatinumHttpError('500: {"error":"The operation was aborted."}', 500);
+        }
+        return { size: 4 };
+      },
+      readLog: async () => new TextEncoder().encode('done'),
+      write: (chunk) => {
+        output.push(chunk);
+      },
+      warn: (message) => {
+        warnings.push(message);
+      },
+    });
+
+    expect(result).toBe(0);
+    expect(statusChecks).toBe(3);
+    expect(logChecks).toBe(3);
+    expect(output.join('')).toBe('done');
+    expect(warnings).toContainEqual(expect.stringContaining('incremental log unavailable'));
+    expect(warnings).toContainEqual(expect.stringContaining('incremental log streaming recovered'));
+  });
+
+  test('polls a provisioned worker until Platinum reports it running', async () => {
+    let now = 0;
+    let checks = 0;
+    const states: string[] = [];
+    const sandbox = await observePlatinumSandboxStart({
+      sandbox: { id: 'worker', state: 'provisioning' },
+      startedAt: 0,
+      timeoutMs: 100,
+      pollMs: 10,
+      now: () => now,
+      sleep: async (delay) => {
+        now += delay;
+      },
+      readSandbox: async () => {
+        checks += 1;
+        return checks === 1
+          ? { id: 'worker', state: 'starting' }
+          : { id: 'worker', state: 'running', via: 'restore' };
+      },
+      write: (state) => {
+        states.push(state);
+      },
+    });
+
+    expect(sandbox).toMatchObject({ id: 'worker', state: 'running', via: 'restore' });
+    expect(checks).toBe(2);
+    expect(states).toEqual(['provisioning', 'starting', 'running']);
+  });
+
+  test('allows 45 minutes for a capacity-blocked Platinum worker to start', async () => {
+    await expect(
+      observePlatinumSandboxStart({
+        sandbox: { id: 'worker', state: 'provisioning' },
+        startedAt: 0,
+        now: () => 2_700_001,
+        sleep: async () => {},
+        readSandbox: async () => ({ id: 'worker', state: 'running' }),
+      }),
+    ).rejects.toThrow('within 2700000ms');
+  });
+
+  test('fails immediately when Platinum deletes a provisioning worker', async () => {
+    let now = 0;
+    await expect(
+      observePlatinumSandboxStart({
+        sandbox: { id: 'worker', state: 'provisioning' },
+        startedAt: 0,
+        timeoutMs: 100,
+        pollMs: 10,
+        now: () => now,
+        sleep: async (delay) => {
+          now += delay;
+        },
+        readSandbox: async () => {
+          throw new PlatinumHttpError('sandbox not found', 404);
+        },
+      }),
+    ).rejects.toThrow('sandbox not found');
+    expect(now).toBe(10);
+  });
+});

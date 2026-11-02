@@ -1,0 +1,2605 @@
+/**
+ * Config releases — the descriptor route and the archive route.
+ * Maps to spec §CFG-*.
+ *
+ * A session's sandbox token is minted the way the daemon's `KORTIX_TOKEN` is:
+ * an account token bound by SQL to one project and one session, with a live
+ * `session_sandboxes` row. No cloud sandbox runs.
+ *
+ * Every flow commits the same config files onto the project's base branch with
+ * the real Git CLI, so each target asserts the same bytes. On the local target
+ * the repository is a bare repository on disk. On a deployed target it is the
+ * managed repository, reached through the Kortix git proxy
+ * (`/v1/git/<project>.git`) with an OWNER PAT, the way `kortix ship` pushes.
+ */
+import { subscribe } from '../fixtures/billing';
+import { setFeatureAsOperator } from '../fixtures/feature-flags';
+import { flow, harnessFlow } from '../core/flow';
+import { sleep, waitFor } from '../core/poll';
+import type { CreatedProject, FlowContext, Harness, TeamFixture } from '../core/types';
+import {
+  assertRuntimeHarness,
+  bootSession,
+  readTranscript,
+  readTurn,
+  runtimePath,
+  sendPrompt,
+  waitForAssistantText,
+} from '../fixtures/session-run';
+import { withTransientGitRetry } from '../fixtures/git-transient';
+import { isKe2eRetryableError, transientRetryDelayMs } from '../core/client';
+
+/**
+ * `fetch` for the idempotent reads and descriptor mints of this file. Bun
+ * reuses a keep-alive socket the edge already closed and then fails with "The
+ * socket connection was closed unexpectedly" (CFG-2, CFG-8 on deployed
+ * staging); the request never reached a handler. Only a transport failure
+ * is repeated, three times at most; any HTTP answer goes back untouched.
+ */
+async function fetchRetryingTransport(url: string, init: RequestInit & { signal?: AbortSignal } = {}): Promise<Response> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      if (attempt >= 3 || init.signal?.aborted) throw error;
+      await sleep(transientRetryDelayMs(attempt));
+    }
+  }
+}
+
+const HEX40 = /^[0-9a-f]{40}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+const DESCRIPTOR = 'POST /v1/projects/:projectId/sessions/:sessionId/config-release';
+const ARCHIVE = 'GET /v1/projects/:projectId/config-archives/:configTreeId';
+const MINT = 'POST /v1/accounts/tokens';
+const CONFIG_STATE = 'GET /v1/projects/:projectId/sessions/:sessionId/config';
+const FEATURES = 'PATCH /v1/projects/:projectId/features';
+const PROJECT_DETAIL = 'GET /v1/projects/:projectId';
+/** The git proxy routes `commitTo` and `tipOf` use on a deployed target. */
+const GIT_PROXY = [
+  'GET /v1/git/:project/info/refs',
+  'POST /v1/git/:project/git-upload-pack',
+  'POST /v1/git/:project/git-receive-pack',
+];
+
+type Descriptor = {
+  format: string;
+  release_id: string | null;
+  mode: string;
+  source_commit: string;
+  config_dir: string | null;
+  config_tree_id: string | null;
+  archive: { url: string; bytes: number } | null;
+  files: Array<[string, string, string]> | null;
+  compiled_governance: string | null;
+  compiled_governance_etag: string | null;
+  reason: string | null;
+  agent_repoint: {
+    from: string;
+    to: string | null;
+    applied: boolean;
+    reason: string;
+  } | null;
+  /** v3 only: the project snapshot of `source_commit`, presigned. */
+  snapshot?: { url: string; sha256: string; bytes: number; entries: number; expires_at: string } | null;
+};
+
+interface SessionToken {
+  sessionId: string;
+  secret: string;
+}
+
+/**
+ * A project's repository as a Git client reaches it: a bare repository path on
+ * the local target, the Kortix git proxy with an OWNER PAT on a deployed one.
+ */
+interface ProjectRepo {
+  projectId: string;
+  url: string;
+  branch: string;
+  /** `git -c` arguments that authenticate every request to `url`. */
+  auth: string[];
+}
+
+interface Fixture {
+  ctx: FlowContext;
+  db: import('pg').Client;
+  team: TeamFixture;
+  projectId: string;
+  /** The project itself, for the one flow that boots a real sandbox in it. */
+  project: CreatedProject;
+  repo: ProjectRepo;
+  sessions: string[];
+  mint(opts?: {
+    repositoryAccess?: boolean;
+    agentName?: string;
+    projectId?: string;
+    repositoryGeneration?: string;
+    /** `project_sessions.created_by` — whose access an agent re-point clears. */
+    ownerUserId?: string;
+  }): Promise<SessionToken>;
+  descriptor(secret: string | null, sessionId: string, body?: unknown): Promise<{ status: number; body: any }>;
+  /** `query` is the archive URL's query string (a composed release tree carries `?commit=`). */
+  download(secret: string | null, treeId: string, query?: string): Promise<{ status: number; bytes: Buffer; source: string | null }>;
+  /** Commit files onto the base branch of the project repository. Returns the new tip. */
+  commit(files: Record<string, string | Buffer>, message: string): Promise<string>;
+  /** Open another project's repository with the same credential. */
+  openRepo(projectId: string): Promise<ProjectRepo>;
+  /** `GET .../sessions/:sessionId/config` as the project owner. */
+  configState(sessionId: string): Promise<{ status: number; body: any }>;
+  /**
+   * The legacy `meta_agent` switch, through the operator write path (the flag
+   * is catalogHidden). `true` opts in, `false` opts out, `null` clears the
+   * override and returns the project to the platform default, ON
+   * (`apps/api/src/feature-flags/registry.ts`).
+   */
+  setFeature(enabled: boolean | null, feature: 'meta_agent'): Promise<void>;
+  /**
+   * Write a `config_releases` value straight into the project's stored flag
+   * overrides, as a project that chose one before config releases graduated
+   * still holds it. No API path writes it any more.
+   */
+  storeRetiredConfigReleasesFlag(enabled: boolean): Promise<void>;
+  cleanup(): Promise<void>;
+}
+
+const MANIFEST = [
+  'project:',
+  '  name: ke2e-config-releases',
+  'default_agent: kortix',
+  'skills:',
+  '  demo: skills/demo',
+  'agents:',
+  '  kortix:',
+  '    description: main agent',
+  '    mode: primary',
+  '    prompt_file: agents/kortix.md',
+  // An agent boots without a checkout unless it opts in. The box flows run a
+  // repository-backed session, whose release carries an archive.
+  '    workspace:',
+  '      project_repository: true',
+  '    skills: all',
+  '    tools: all',
+  '  reviewer:',
+  '    description: reviews',
+  '    prompt_file: agents/reviewer.md',
+  '    skills: none',
+  '    tools: all',
+  '',
+].join('\n');
+
+/**
+ * `@kortix/starter`'s templates — the scaffold every managed project gets by
+ * default on provisioning (`managed-repo-seed.ts`: "seeding is the default,
+ * not an opt-in") — ship root `agents/`, `skills/` and `memory/`. This flow
+ * drives a fixed, hand-authored config (`CONFIG_FILES` below), so every
+ * managed project it creates clears that scaffold in the SAME commit that
+ * lays down `CONFIG_FILES`. Without this, the starter's files ride in every
+ * release on a managed (non-`local`) target, and every assertion below that
+ * names a config tree, a release ID, or an archive URL is comparing against
+ * the wrong tree. The `local` target never seeds a starter template
+ * (`createLocalGitRepository`), so this is a no-op there.
+ */
+const STARTER_SCAFFOLD_PATHS = ['skills', 'agents', 'extensions', 'memory'];
+
+const CONFIG_FILES: Record<string, string> = {
+  'kortix.yaml': MANIFEST,
+  'agents/kortix.md': 'You are the main agent.\n',
+  'agents/reviewer.md': 'Review.\n',
+  'skills/demo/SKILL.md': '---\nname: demo\ndescription: demo\n---\nDemo skill.\n',
+  // `git archive` would rewrite this file. The archive must hold it
+  // unmodified, or blob verification on the box fails. No `export-ignore`
+  // rule: one would leave its paths out and compose the release tree.
+  '.gitattributes': 'version.txt export-subst\n',
+  'version.txt': 'commit $Format:%H$\n',
+};
+
+/** The agents a compiled governance runs: the compile also lists OpenCode's built-ins as `disable: true`. */
+function runnableAgents(governance: string | null): string[] {
+  const agent = (JSON.parse(governance ?? '{}').agent ?? {}) as Record<string, { disable?: boolean }>;
+  return Object.keys(agent).filter((name) => agent[name]?.disable !== true);
+}
+
+async function run(cmd: string, args: string[], cwd: string, input?: Buffer): Promise<Buffer> {
+  if (cmd !== 'git') return runOnce(cmd, args, cwd, input);
+  return withTransientGitRetry(args, () => runOnce(cmd, args, cwd, input));
+}
+
+async function runOnce(cmd: string, args: string[], cwd: string, input?: Buffer): Promise<Buffer> {
+  const { spawn } = await import('node:child_process');
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    child.stdout.on('data', (c: Buffer) => out.push(c));
+    child.stderr.on('data', (c: Buffer) => err.push(c));
+    child.once('error', reject);
+    child.once('close', (code) =>
+      code === 0
+        ? resolve(Buffer.concat(out))
+        : reject(
+            new Error(
+              // A git-proxy credential rides in `-c http.extraHeader=...`; never print it.
+              `${cmd} ${args.map((a) => (/authorization:/i.test(a) ? '<credential>' : a)).join(' ')} exited ${code}: ${Buffer.concat(err).toString()}`,
+            ),
+          ),
+    );
+    child.stdin.end(input ?? Buffer.alloc(0));
+  });
+}
+
+/** The Git blob ID of `bytes`. */
+async function gitBlobId(bytes: Buffer): Promise<string> {
+  const { createHash } = await import('node:crypto');
+  return createHash('sha1')
+    .update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes]))
+    .digest('hex');
+}
+
+/** Extract a tar.gz and return every regular file and symlink with its bytes. */
+async function extract(archive: Buffer): Promise<Map<string, Buffer>> {
+  const { mkdtemp, readFile, readlink, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'ke2e-cfg-archive-'));
+  // `find -type` names each entry's kind, so no stat precedes the read.
+  const list = async (type: 'f' | 'l') => (await run('find', ['.', '-type', type], dir))
+    .toString()
+    .split('\n')
+    .filter(Boolean)
+    .map((p) => p.replace(/^\.\//, ''))
+    // A commit archive carries a pax global header; tar does not extract it
+    // as a file, but guard against implementations that do.
+    .filter((p) => p !== 'pax_global_header');
+  try {
+    await run('tar', ['-xzf', '-', '-C', dir], dir, archive);
+    const files = new Map<string, Buffer>();
+    for (const path of await list('f')) files.set(path, await readFile(join(dir, path)));
+    for (const path of await list('l')) files.set(path, Buffer.from(await readlink(join(dir, path))));
+    return files;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Clone `repo`, remove `removePaths` (repo-relative; a missing path is a
+ * no-op — see `STARTER_SCAFFOLD_PATHS`), write `files`, commit, and push to
+ * its base branch. Returns the new tip.
+ */
+async function commitTo(
+  repo: ProjectRepo,
+  files: Record<string, string | Buffer>,
+  message: string,
+  removePaths: string[] = [],
+): Promise<string> {
+  const { mkdtemp, mkdir, rm, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { dirname, join } = await import('node:path');
+  const work = await mkdtemp(join(tmpdir(), 'ke2e-cfg-commit-'));
+  try {
+    await run('git', [...repo.auth, 'clone', '-q', '--branch', repo.branch, repo.url, '.'], work);
+    for (const path of removePaths) {
+      await rm(join(work, path), { recursive: true, force: true });
+    }
+    for (const [path, body] of Object.entries(files)) {
+      await mkdir(dirname(join(work, path)), { recursive: true });
+      await writeFile(join(work, path), body);
+    }
+    await run('git', ['add', '-A'], work);
+    await run('git', ['-c', 'user.name=KE2E', '-c', 'user.email=ke2e@kortix.invalid', 'commit', '-qm', message], work);
+    await run('git', [...repo.auth, 'push', '-q', 'origin', `HEAD:refs/heads/${repo.branch}`], work);
+    const tip = (await run('git', ['rev-parse', 'HEAD'], work)).toString().trim();
+    // A push straight to a path upstream (the local target) bypasses Kortix, as
+    // a push straight to GitHub does: the API sees it within one mirror refresh
+    // interval (apps/api/src/config-releases/base-tip.ts), which the local
+    // stack sets to 1 s (`KORTIX_GIT_REFRESH_INTERVAL_MS`). A push through the
+    // git proxy is seen at once.
+    if (repo.url.startsWith('/')) await sleep(1_100);
+    return tip;
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+}
+
+/** The tip of `repo`'s base branch, read from the repository itself. */
+async function tipOf(repo: ProjectRepo): Promise<string> {
+  const out = (await run('git', [...repo.auth, 'ls-remote', repo.url, `refs/heads/${repo.branch}`], '/')).toString();
+  const tip = out.split(/\s+/)[0] ?? '';
+  if (!HEX40.test(tip)) throw new Error(`no tip for ${repo.branch} in ${repo.url}: ${out}`);
+  return tip;
+}
+
+async function setup(ctx: FlowContext): Promise<Fixture> {
+  const { randomUUID } = await import('node:crypto');
+  const { Client: PgClient } = await import('pg');
+  const team = await ctx.fixtures.team();
+  const local = ctx.env.target === 'local';
+  const project = await team.project({ managedGit: true });
+  const databaseUrl = ctx.env.databaseUrl!;
+  const db = new PgClient({
+    connectionString: databaseUrl,
+    ssl: /localhost|127\.0\.0\.1/.test(databaseUrl) ? false : { rejectUnauthorized: false },
+  });
+  await db.connect();
+  const sessions: string[] = [];
+  const origin = ctx.env.apiUrl.replace(/\/v1$/, '');
+
+  // One OWNER PAT authenticates every git-proxy request of this flow. The
+  // proxy accepts a PAT, never a Supabase JWT (`authorizeGitProxy`).
+  let proxyAuth: string[] | null = null;
+  const openRepo = async (projectId: string): Promise<ProjectRepo> => {
+    const { rows } = await db.query('SELECT repo_url, default_branch FROM kortix.projects WHERE project_id = $1', [projectId]);
+    const repoUrl = String(rows[0]?.repo_url ?? '');
+    const branch = String(rows[0]?.default_branch || 'main');
+    if (local) {
+      if (!repoUrl.startsWith('/')) throw new Error(`local project repo_url is not a path: ${repoUrl}`);
+      return { projectId, url: repoUrl, branch, auth: [] };
+    }
+    if (!proxyAuth) {
+      const pat = await ctx.fixtures.pat({ name: ctx.fixtures.name('cfg-git') });
+      const basic = Buffer.from(`ke2e:${pat}`).toString('base64');
+      proxyAuth = ['-c', `http.extraHeader=Authorization: Basic ${basic}`];
+    }
+    return { projectId, url: `${origin}/v1/git/${projectId}.git`, branch, auth: proxyAuth };
+  };
+  const repo = await openRepo(project.id);
+
+  const fixture: Fixture = {
+    ctx,
+    db,
+    team,
+    projectId: project.id,
+    project,
+    repo,
+    sessions,
+    openRepo,
+    async mint(opts = {}) {
+      const sessionId = randomUUID();
+      const projectId = opts.projectId ?? project.id;
+      sessions.push(sessionId);
+      const created = await ctx.client.as(ctx.P.OWNER).post('/v1/accounts/tokens', { name: `CFG session ${sessionId.slice(0, 8)}` });
+      created.status(201);
+      const { token_id: tokenId, secret_key: secret } = created.json<{ token_id: string; secret_key: string }>();
+      ctx.track('token', tokenId);
+      const metadata = {
+        ...(opts.repositoryAccess === false ? { workspace_mode: 'none', repository_access: false } : { workspace_mode: 'branch' }),
+        // Session create copies the project's generation (`sessions.ts`).
+        ...(opts.repositoryGeneration ? { repository_generation: opts.repositoryGeneration } : {}),
+      };
+      await db.query(
+        `INSERT INTO kortix.project_sessions
+           (session_id, account_id, project_id, branch_name, agent_name, status, metadata, created_by, visibility)
+         VALUES ($1, $2, $3, $1, $4, 'running', $5::jsonb, $6, 'project')`,
+        [
+          sessionId,
+          team.id,
+          projectId,
+          opts.agentName ?? 'kortix',
+          JSON.stringify(metadata),
+          opts.ownerUserId ?? ctx.P.OWNER.userId,
+        ],
+      );
+      await db.query(
+        `INSERT INTO kortix.session_sandboxes (sandbox_id, session_id, account_id, project_id, status)
+         VALUES ($1::uuid, $1, $2, $3, 'active')`,
+        [sessionId, team.id, projectId],
+      );
+      // Bind the API-minted credential exactly as the sandbox's KORTIX_TOKEN is bound.
+      await db.query(
+        `UPDATE kortix.account_tokens
+            SET account_id = $2, user_id = $3, project_id = $4, session_id = $5, agent_grant = $6::jsonb
+          WHERE token_id = $1`,
+        [
+          tokenId,
+          team.id,
+          ctx.P.OWNER.userId,
+          projectId,
+          sessionId,
+          JSON.stringify({ agent: opts.agentName ?? 'kortix', kortixCli: [], connectors: [], env: [] }),
+        ],
+      );
+      return { sessionId, secret };
+    },
+    async descriptor(secret, sessionId, body = {}) {
+      const response = await fetchRetryingTransport(`${origin}/v1/projects/${project.id}/sessions/${sessionId}/config-release`, {
+        method: 'POST',
+        headers: {
+          ...(secret ? { Authorization: `Bearer ${secret}` } : {}),
+          'Content-Type': 'application/json',
+        },
+        body: typeof body === 'string' ? body : JSON.stringify(body),
+        signal: AbortSignal.timeout(60_000),
+      });
+      const text = await response.text();
+      let parsed: unknown = text;
+      try {
+        parsed = JSON.parse(text);
+      } catch {}
+      return { status: response.status, body: parsed };
+    },
+    commit(files, message) {
+      return commitTo(repo, files, message);
+    },
+    async setFeature(enabled, feature) {
+      // `meta_agent` is operator-only (catalogHidden): kortix.yaml `builtin_agents` is the project switch.
+      await setFeatureAsOperator(ctx, project.id, feature, enabled);
+    },
+    async storeRetiredConfigReleasesFlag(enabled) {
+      await db.query(
+        `UPDATE kortix.projects
+            SET metadata = COALESCE(metadata, '{}'::jsonb)
+              || jsonb_build_object(
+                   'experimental',
+                   COALESCE(metadata->'experimental', '{}'::jsonb) || jsonb_build_object('config_releases', $2::boolean)
+                 )
+          WHERE project_id = $1`,
+        [project.id, enabled],
+      );
+    },
+    async configState(sessionId) {
+      const token = (ctx.P.OWNER.auth as { token?: string }).token ?? null;
+      const response = await fetchRetryingTransport(`${origin}/v1/projects/${project.id}/sessions/${sessionId}/config`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: AbortSignal.timeout(60_000),
+      });
+      const text = await response.text();
+      let parsed: unknown = text;
+      try {
+        parsed = JSON.parse(text);
+      } catch {}
+      return { status: response.status, body: parsed };
+    },
+    async download(secret, treeId, query = '') {
+      const response = await fetchRetryingTransport(`${origin}/v1/projects/${project.id}/config-archives/${treeId}${query}`, {
+        headers: secret ? { Authorization: `Bearer ${secret}` } : {},
+        redirect: 'manual',
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (response.status === 302) {
+        // The daemon follows one redirect, with no credentials, to the store.
+        const location = response.headers.get('location');
+        if (!location) throw new Error('302 without a Location header');
+        const stored = await fetchRetryingTransport(location, { signal: AbortSignal.timeout(60_000) });
+        return { status: stored.status, bytes: Buffer.from(await stored.arrayBuffer()), source: 'redirect' };
+      }
+      return {
+        status: response.status,
+        bytes: Buffer.from(await response.arrayBuffer()),
+        source: response.headers.get('x-kortix-config-archive-source'),
+      };
+    },
+    async cleanup() {
+      await db.query('DELETE FROM kortix.config_release_failures WHERE project_id = $1', [project.id]).catch(() => {});
+      await db.query('DELETE FROM kortix.config_releases WHERE project_id = $1', [project.id]).catch(() => {});
+      for (const sessionId of sessions) {
+        await db.query('DELETE FROM kortix.session_sandboxes WHERE session_id = $1', [sessionId]).catch(() => {});
+        await db.query('DELETE FROM kortix.project_sessions WHERE session_id = $1', [sessionId]).catch(() => {});
+      }
+      // The archives this flow stored. The bucket stays: it is shared state.
+      const key = ctx.env.supabaseServiceRoleKey;
+      if (key) {
+        const base = `${ctx.env.supabaseUrl}/storage/v1`;
+        const headers = { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
+        const listed = await fetch(`${base}/object/list/kortix-config-releases`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ prefix: `projects/${project.id}/trees/`, limit: 1000 }),
+        }).catch(() => null);
+        const objects = listed?.ok ? ((await listed.json()) as Array<{ name: string }>) : [];
+        if (objects.length > 0) {
+          await fetch(`${base}/object/kortix-config-releases`, {
+            method: 'DELETE',
+            headers,
+            body: JSON.stringify({ prefixes: objects.map((o) => `projects/${project.id}/trees/${o.name}`) }),
+          }).catch(() => {});
+        }
+      }
+      await db.end().catch(() => {});
+    },
+  };
+
+  // The same config files on every target, so every step asserts known bytes:
+  // clear the starter's scaffold (STARTER_SCAFFOLD_PATHS) in the same commit.
+  await commitTo(repo, CONFIG_FILES, 'config files', STARTER_SCAFFOLD_PATHS);
+  return fixture;
+}
+
+function baseTip(fixture: Fixture): Promise<string> {
+  return tipOf(fixture.repo);
+}
+
+async function assertArchiveMatches(descriptor: Descriptor, bytes: Buffer): Promise<Map<string, Buffer>> {
+  if (bytes.length !== descriptor.archive?.bytes) {
+    throw new Error(`archive has ${bytes.length} bytes; descriptor says ${descriptor.archive?.bytes}`);
+  }
+  const files = await extract(bytes);
+  const listed = new Map(descriptor.files!.map(([path, mode, blob]) => [path, { mode, blob }]));
+  for (const [path, content] of files) {
+    const entry = listed.get(path);
+    if (!entry) throw new Error(`archive holds ${path}, which is not in the descriptor's files`);
+    const blob = await gitBlobId(content);
+    if (blob !== entry.blob) throw new Error(`${path}: blob ${blob}, descriptor says ${entry.blob}`);
+  }
+  for (const [path] of listed) {
+    if (!files.has(path)) throw new Error(`descriptor lists ${path}, which the archive lacks`);
+  }
+  return files;
+}
+
+// ── CFG-1 — descriptor route authentication and input-free contract ────────
+flow(
+  'CFG-1',
+  {
+    domain: 'config-releases',
+    requires: ['database'],
+    timeoutMs: 180_000,
+    routes: [MINT, DESCRIPTOR, ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    try {
+      const own = await fixture.mint();
+      const sibling = await fixture.mint();
+      const otherProject = await fixture.team.project();
+
+      await ctx.step('ANON posting for a session is rejected with 401', async () => {
+        const r = await fixture.descriptor(null, own.sessionId);
+        if (r.status !== 401) throw new Error(`expected 401, got ${r.status}`);
+      });
+      await ctx.step("the session's own sandbox token receives a descriptor (200)", async () => {
+        const r = await fixture.descriptor(own.secret, own.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        if (r.body.format !== 'config-release-v2') throw new Error(`unexpected format ${r.body.format}`);
+      });
+      await ctx.step("a sibling session's token in the same project is refused (403) for this session", async () => {
+        const r = await fixture.descriptor(sibling.secret, own.sessionId);
+        if (r.status !== 403) throw new Error(`expected 403, got ${r.status}: ${JSON.stringify(r.body)}`);
+      });
+      await ctx.step("a session token of another project is refused (403) by the token's project scope", async () => {
+        const foreign = await fixture.mint({ projectId: otherProject.id });
+        const r = await fixture.descriptor(foreign.secret, own.sessionId);
+        if (r.status !== 403) throw new Error(`expected 403, got ${r.status}: ${JSON.stringify(r.body)}`);
+      });
+      await ctx.step('a non-member user cannot read the descriptor (403/404)', async () => {
+        const token = (ctx.P.NONMEMBER.auth as { token?: string }).token ?? null;
+        const r = await fixture.descriptor(token, own.sessionId);
+        if (r.status !== 403 && r.status !== 404) throw new Error(`expected 403/404, got ${r.status}`);
+      });
+      await ctx.step('the project owner (a reader of the session) receives the same release (200)', async () => {
+        const token = (ctx.P.OWNER.auth as { token?: string }).token ?? null;
+        const mine = await fixture.descriptor(own.secret, own.sessionId);
+        const r = await fixture.descriptor(token, own.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        if (r.body.release_id !== mine.body.release_id) throw new Error('owner and sandbox read different releases');
+      });
+      await ctx.step('the request has no inputs: any body returns the same release (200)', async () => {
+        // The desired release is always the base branch's current one for this
+        // session's variant. Nothing a caller sends can change it, so nothing
+        // a caller sends is read.
+        const plain = await fixture.descriptor(own.secret, own.sessionId);
+        const bodies: unknown[] = [
+          '{"workspace":',
+          '"a string"',
+          { workspace: null, descriptor: {} },
+          { anything: [1, 2, 3] },
+        ];
+        for (const body of bodies) {
+          const r = await fixture.descriptor(own.secret, own.sessionId, body);
+          if (r.status !== 200) throw new Error(`body ${JSON.stringify(body)}: expected 200, got ${r.status}`);
+          if (r.body.release_id !== plain.body.release_id) {
+            throw new Error(`body ${JSON.stringify(body)} changed the assigned release`);
+          }
+        }
+      });
+      await ctx.step('a session with local config edits still receives the base release', async () => {
+        // There is no session-files mode: /workspace is an editable clone, and
+        // an edit there reaches the box only once it is pushed to the base
+        // branch. The descriptor never withholds the archive for that reason.
+        const r = await fixture.descriptor(own.secret, own.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+        if (r.body.mode !== 'follow-base') throw new Error(`mode ${r.body.mode}, expected follow-base`);
+        if (r.body.archive === null) throw new Error('the base release carries no archive');
+      });
+      await ctx.step('a malformed session id is rejected with 400', async () => {
+        const r = await fixture.descriptor(own.secret, 'not-a-uuid');
+        if (r.status !== 400) throw new Error(`expected 400, got ${r.status}`);
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── CFG-2 — descriptor round trip and a verified archive download ──────────
+flow(
+  'CFG-2',
+  {
+    domain: 'config-releases',
+    requires: ['database'],
+    timeoutMs: 240_000,
+    routes: [MINT, DESCRIPTOR, ARCHIVE, ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    try {
+      const own = await fixture.mint();
+      let descriptor!: Descriptor;
+      let firstBytes!: Buffer;
+
+      await ctx.step('the descriptor names the base tip, its config tree, and a release ID over tree and governance', async () => {
+        const r = await fixture.descriptor(own.secret, own.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        descriptor = r.body as Descriptor;
+        if (descriptor.mode !== 'follow-base') throw new Error(`mode ${descriptor.mode}`);
+        if (!HEX40.test(descriptor.source_commit)) throw new Error('source_commit is not a commit SHA');
+        const tip = await baseTip(fixture);
+        if (descriptor.source_commit !== tip) {
+          throw new Error(`source_commit ${descriptor.source_commit} is not the base tip ${tip}`);
+        }
+        if ((descriptor.config_dir ?? null) !== null) throw new Error(`config_dir ${descriptor.config_dir}, expected none`);
+        if (!HEX40.test(descriptor.config_tree_id ?? '')) throw new Error(`no config tree: ${descriptor.reason}`);
+        if (!HEX64.test(descriptor.release_id ?? '')) throw new Error('release_id is not 64 hex');
+        const { createHash } = await import('node:crypto');
+        const expected = createHash('sha256')
+          .update(`${descriptor.config_tree_id}:${descriptor.compiled_governance_etag ?? ''}`)
+          .digest('hex');
+        if (descriptor.release_id !== expected) throw new Error('release_id is not sha256(tree:etag)');
+        if (descriptor.archive?.url !== `/v1/projects/${fixture.projectId}/config-archives/${descriptor.config_tree_id}`) {
+          throw new Error(`archive url ${descriptor.archive?.url}`);
+        }
+        if (!descriptor.files?.length) throw new Error('descriptor lists no files');
+        if (descriptor.reason !== null) throw new Error(`unexpected reason ${descriptor.reason}`);
+      });
+
+      await ctx.step('a second request for an unchanged base returns the same release ID', async () => {
+        const r = await fixture.descriptor(own.secret, own.sessionId);
+        if (r.body.release_id !== descriptor.release_id) throw new Error('release ID moved without a base change');
+      });
+
+      await ctx.step("a booting box's base_sha never chooses the release: the tip and any other SHA both answer the base tip", async () => {
+        for (const baseSha of [descriptor.source_commit, 'f'.repeat(40)]) {
+          const r = await fixture.descriptor(own.secret, own.sessionId, { base_sha: baseSha });
+          if (r.status !== 200) throw new Error(`base_sha ${baseSha}: expected 200, got ${r.status}`);
+          if (r.body.source_commit !== descriptor.source_commit || r.body.release_id !== descriptor.release_id) {
+            throw new Error(`base_sha ${baseSha}: answered ${r.body.source_commit} / ${r.body.release_id}`);
+          }
+        }
+      });
+
+      await ctx.step('the session token downloads the archive; every file matches its blob ID and nothing extra ships', async () => {
+        const r = await fixture.download(own.secret, descriptor.config_tree_id!);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${r.bytes.toString().slice(0, 200)}`);
+        firstBytes = r.bytes;
+        const files = await assertArchiveMatches(descriptor, r.bytes);
+        for (const path of ['kortix.yaml', 'agents/kortix.md', 'agents/reviewer.md', 'skills/demo/SKILL.md']) {
+          if (!files.has(path)) throw new Error(`archive lacks ${path}`);
+        }
+        if (files.get('version.txt')?.toString() !== 'commit $Format:%H$\n') {
+          throw new Error('export-subst rewrote version.txt');
+        }
+      });
+
+      await ctx.step('a second download returns byte-identical bytes', async () => {
+        const r = await fixture.download(own.secret, descriptor.config_tree_id!);
+        if (r.status !== 200 || !r.bytes.equals(firstBytes)) throw new Error('the archive bytes changed between downloads');
+      });
+
+      if (ctx.env.target === 'local') {
+        await ctx.step('local storage is loopback: the API streams, and a later download is served from the store', async () => {
+          let source: string | null = null;
+          for (let attempt = 0; attempt < 20 && source !== 'store'; attempt += 1) {
+            const r = await fixture.download(own.secret, descriptor.config_tree_id!);
+            if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+            if (!r.bytes.equals(firstBytes)) throw new Error('store bytes differ from the built archive');
+            source = r.source;
+            if (source !== 'store') await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+          if (source !== 'store') throw new Error(`archive never came from the store (last source ${source})`);
+        });
+      }
+
+      await ctx.step('the project owner (project.file.read) downloads the same archive', async () => {
+        const token = (ctx.P.OWNER.auth as { token?: string }).token ?? null;
+        const r = await fixture.download(token, descriptor.config_tree_id!);
+        if (r.status !== 200 || !r.bytes.equals(firstBytes)) throw new Error(`owner download: ${r.status}`);
+      });
+
+      await ctx.step('ANON is rejected (401); a non-member is rejected (403/404)', async () => {
+        const anon = await fixture.download(null, descriptor.config_tree_id!);
+        if (anon.status !== 401) throw new Error(`ANON: expected 401, got ${anon.status}`);
+        const token = (ctx.P.NONMEMBER.auth as { token?: string }).token ?? null;
+        const r = await fixture.download(token, descriptor.config_tree_id!);
+        if (r.status !== 403 && r.status !== 404) throw new Error(`non-member: expected 403/404, got ${r.status}`);
+      });
+
+      await ctx.step('a blob ID, an unknown tree ID, and a malformed ID are 404', async () => {
+        const blob = descriptor.files![0]![2];
+        for (const id of [blob, 'e'.repeat(40), 'HEAD']) {
+          const r = await fixture.download(own.secret, id);
+          if (r.status !== 404) throw new Error(`${id}: expected 404, got ${r.status}`);
+        }
+      });
+
+      await ctx.step('a session without repository access gets governance, no archive, and a refused download', async () => {
+        const restricted = await fixture.mint({ repositoryAccess: false, agentName: 'reviewer' });
+        const r = await fixture.descriptor(restricted.secret, restricted.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        const d = r.body as Descriptor;
+        if (d.archive !== null || d.files !== null) throw new Error('restricted session received an archive or files');
+        if (d.reason !== 'repository access withheld') throw new Error(`reason ${d.reason}`);
+        // Governance-only release ID: sha256(":" + etag).
+        const { createHash } = await import('node:crypto');
+        const governanceOnly = createHash('sha256').update(`:${d.compiled_governance_etag}`).digest('hex');
+        if (d.release_id !== governanceOnly) throw new Error(`restricted release_id ${d.release_id} is not sha256(":" + etag)`);
+        if (!d.compiled_governance) throw new Error('restricted session lost its compiled governance');
+        const agents = runnableAgents(d.compiled_governance);
+        if (agents.length !== 1 || agents[0] !== 'reviewer') {
+          throw new Error(`selected-agent governance compiled ${agents.join(',')}`);
+        }
+        const download = await fixture.download(restricted.secret, descriptor.config_tree_id!);
+        if (download.status !== 403) throw new Error(`restricted download: expected 403, got ${download.status}`);
+      });
+
+      await ctx.step('a session without repository access receives only the modules of its agent\'s project tools, and downloads no other tree', async () => {
+        const manifest = MANIFEST.replace('agents:\n', 'tools:\n  lookup_order: tools/lookup_order.ts\n  hidden_tool: tools/hidden.ts\nagents:\n')
+          .replace('    skills: none\n    tools: all\n', '    skills: none\n    tools:\n      exclude: [hidden_tool]\n');
+        await fixture.commit(
+          {
+            'kortix.yaml': manifest,
+            'tools/lookup_order.ts': "import { client } from './lib/client'\nexport default { description: 'Look up an order.', parameters: { type: 'object' }, execute: () => client() }\n",
+            'tools/lib/client.ts': 'export const client = () => "order"\n',
+            'tools/hidden.ts': "export default { description: 'Hidden.', parameters: { type: 'object' }, execute: () => 'x' }\n",
+          },
+          'project tools',
+        );
+        const restricted = await fixture.mint({ repositoryAccess: false, agentName: 'reviewer' });
+        const r = await fixture.descriptor(restricted.secret, restricted.sessionId, { accept: ['config-release-v3'] });
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        const d = r.body as Descriptor & { snapshot?: unknown };
+        const paths = d.files?.map(([path]) => path).join(',');
+        if (paths !== 'tools/lib/client.ts,tools/lookup_order.ts') throw new Error(`restricted files: ${paths}`);
+        if ((d.config_dir ?? null) !== null || d.reason !== null) throw new Error(`config_dir ${d.config_dir}, reason ${d.reason}`);
+        if (d.snapshot) throw new Error('a tools-only release carried the whole-commit snapshot');
+        const query = d.archive!.url.slice(d.archive!.url.indexOf('?'));
+        if (query !== `?commit=${d.source_commit}&agent=reviewer`) throw new Error(`archive url ${d.archive!.url}`);
+        const download = await fixture.download(restricted.secret, d.config_tree_id!, query);
+        if (download.status !== 200) throw new Error(`tools download: expected 200, got ${download.status}`);
+        await assertArchiveMatches(d, download.bytes);
+        const whole = await fixture.download(restricted.secret, descriptor.config_tree_id!, query);
+        if (whole.status !== 403) throw new Error(`whole tree with the tools query: expected 403, got ${whole.status}`);
+        const otherAgent = await fixture.download(restricted.secret, d.config_tree_id!, `?commit=${d.source_commit}&agent=kortix`);
+        if (otherAgent.status !== 403) throw new Error(`another agent's query: expected 403, got ${otherAgent.status}`);
+      });
+
+      await ctx.step('the release is the base commit\'s whole tree: an unregistered skill folder and any other file ship at their repository paths', async () => {
+        const tip = await fixture.commit(
+          {
+            'skills/root-demo/SKILL.md': '---\nname: root-demo\ndescription: root layout\n---\nRoot skill.\n',
+            'shared/notes.md': 'Read by no agent config.\n',
+          },
+          'root layout skill',
+        );
+        const r = await fixture.descriptor(own.secret, own.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        const release = r.body as Descriptor;
+        if (release.source_commit !== tip) throw new Error(`source_commit ${release.source_commit} is not the tip ${tip}`);
+        if ((release.config_dir ?? null) !== null) throw new Error(`config_dir ${release.config_dir}, expected none`);
+        if (release.archive?.url !== `/v1/projects/${fixture.projectId}/config-archives/${release.config_tree_id}`) {
+          throw new Error(`archive url ${release.archive?.url}`);
+        }
+        const download = await fixture.download(own.secret, release.config_tree_id!);
+        if (download.status !== 200) throw new Error(`expected 200, got ${download.status}`);
+        const files = await assertArchiveMatches(release, download.bytes);
+        for (const path of [
+          'skills/root-demo/SKILL.md',
+          'shared/notes.md',
+          'skills/demo/SKILL.md',
+          'agents/kortix.md',
+          'kortix.yaml',
+        ]) {
+          if (!files.has(path)) throw new Error(`archive lacks ${path}`);
+        }
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── CFG-3 — no project secret value in any release ─────────────────────────
+flow(
+  'CFG-3',
+  {
+    domain: 'config-releases',
+    requires: ['database'],
+    timeoutMs: 180_000,
+    routes: [MINT, DESCRIPTOR, ARCHIVE, 'POST /v1/projects/:projectId/secrets', ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const { randomBytes } = await import('node:crypto');
+    const fixture = await setup(ctx);
+    try {
+      const value = `ke2e-cfg-secret-${randomBytes(16).toString('hex')}`;
+      await ctx.step('seed a project secret with a known value', async () => {
+        const r = await ctx.client
+          .as(ctx.P.OWNER)
+          .post(
+            '/v1/projects/:projectId/secrets',
+            { name: 'KE2E_CFG_SECRET', value },
+            { params: { projectId: fixture.projectId } },
+          );
+        r.status([200, 201]);
+      });
+      const full = await fixture.mint();
+      const restricted = await fixture.mint({ repositoryAccess: false, agentName: 'kortix' });
+
+      await ctx.step('neither descriptor JSON contains the secret value', async () => {
+        for (const session of [full, restricted]) {
+          const r = await fixture.descriptor(session.secret, session.sessionId);
+          if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+          if (JSON.stringify(r.body).includes(value)) throw new Error('the secret value appears in a descriptor');
+        }
+      });
+
+      await ctx.step('neither the archive bytes nor any extracted file contains the secret value', async () => {
+        const d = (await fixture.descriptor(full.secret, full.sessionId)).body as Descriptor;
+        const r = await fixture.download(full.secret, d.config_tree_id!);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+        if (r.bytes.includes(Buffer.from(value))) throw new Error('the secret value appears in the archive bytes');
+        const files = await extract(r.bytes);
+        for (const [path, content] of files) {
+          if (content.includes(Buffer.from(value))) throw new Error(`the secret value appears in ${path}`);
+        }
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+/** A report entry for `path` (repo-relative) with `bytes` in the working tree. */
+async function reported(path: string, status: 'modified' | 'added' | 'deleted' | 'untracked', bytes: string | null) {
+  return { path, status, blob: bytes === null ? null : await gitBlobId(Buffer.from(bytes)) };
+}
+
+// ── CFG-5 — project quarantine: threshold, fallback, clear on a new release ─
+flow(
+  'CFG-5',
+  {
+    domain: 'config-releases',
+    requires: ['database'],
+    timeoutMs: 300_000,
+    routes: [MINT, DESCRIPTOR, ARCHIVE, ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    try {
+      const a = await fixture.mint();
+      const b = await fixture.mint();
+      const c = await fixture.mint();
+      const assigned = async () =>
+        (
+          await fixture.db.query(
+            'SELECT release_id, variant, source_commit, proven_at FROM kortix.config_releases WHERE project_id = $1 ORDER BY created_at',
+            [fixture.projectId],
+          )
+        ).rows as Array<{ release_id: string; variant: string; source_commit: string; proven_at: Date | null }>;
+      // A daemon's health report reaches these tables through GET /config and
+      // the reload. No daemon runs in this profile, so the flow writes the
+      // same rows those paths write.
+      const failed = (releaseId: string, sessionId: string) =>
+        fixture.db.query(
+          `INSERT INTO kortix.config_release_failures (project_id, release_id, session_id, reason)
+           VALUES ($1, $2, $3, 'proven check failed') ON CONFLICT DO NOTHING`,
+          [fixture.projectId, releaseId, sessionId],
+        );
+      let good!: Descriptor;
+      let bad!: Descriptor;
+
+      await ctx.step("the daemon's descriptor request records the assignment; a human read does not", async () => {
+        const r = await fixture.descriptor(a.secret, a.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        good = r.body as Descriptor;
+        const rows = await assigned();
+        if (rows.length !== 1 || rows[0]!.release_id !== good.release_id || rows[0]!.variant !== 'project') {
+          throw new Error(`assignment rows ${JSON.stringify(rows)}`);
+        }
+        if (rows[0]!.source_commit !== good.source_commit || rows[0]!.proven_at !== null) throw new Error('assignment row fields');
+        const token = (ctx.P.OWNER.auth as { token?: string }).token ?? null;
+        const human = await fixture.descriptor(token, a.sessionId);
+        if (human.status !== 200) throw new Error(`owner read: ${human.status}`);
+        if ((await assigned()).length !== 1) throw new Error('a human read recorded an assignment');
+      });
+
+      await ctx.step('session A proves the release; the base branch then moves to a new release', async () => {
+        await fixture.db.query(
+          'UPDATE kortix.config_releases SET proven_at = now(), proven_session_id = $3 WHERE project_id = $1 AND release_id = $2',
+          [fixture.projectId, good.release_id, a.sessionId],
+        );
+        const tip = await fixture.commit({ 'agents/kortix.md': 'BROKEN.\n' }, 'broken agent');
+        const r = await fixture.descriptor(a.secret, a.sessionId);
+        bad = r.body as Descriptor;
+        if (bad.source_commit !== tip || bad.release_id === good.release_id) throw new Error('the new base did not produce a new release');
+      });
+
+      // Prod 2026-10-02: the coordinator's box holds no checkout and its image
+      // has no `bun`, so it failed every `project` release it was assigned, and
+      // two coordinators quarantined each one for the whole project.
+      await ctx.step('a meta coordinator is assigned the platform governance alone, and its failures quarantine nothing', async () => {
+        const metaA = await fixture.mint({ agentName: 'mykortix' });
+        const metaB = await fixture.mint({ agentName: 'meta' });
+        const r = await fixture.descriptor(metaA.secret, metaA.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        const d = r.body as Descriptor;
+        if (d.archive !== null || d.files !== null || d.config_tree_id !== null) throw new Error(`meta got a project tree: ${JSON.stringify(d)}`);
+        if (!d.release_id || d.release_id === bad.release_id || d.release_id === good.release_id) throw new Error(`meta release ${d.release_id}`);
+        const agents = Object.keys(JSON.parse(d.compiled_governance ?? '{}').agent ?? {});
+        if (agents.join() !== 'mykortix') throw new Error(`My Kortix governance declares ${agents.join()}`);
+        await failed(bad.release_id!, metaA.sessionId);
+        await failed(bad.release_id!, metaB.sessionId);
+        const still = await fixture.descriptor(b.secret, b.sessionId);
+        if (still.body.release_id !== bad.release_id) throw new Error(`two meta sessions quarantined: got ${still.body.release_id}`);
+      });
+
+      await ctx.step('a failure from one session does not quarantine the release', async () => {
+        await failed(bad.release_id!, a.sessionId);
+        await failed(bad.release_id!, a.sessionId);
+        const r = await fixture.descriptor(b.secret, b.sessionId);
+        if (r.body.release_id !== bad.release_id) throw new Error(`one session quarantined: got ${r.body.release_id}`);
+      });
+
+      await ctx.step('after failures from 2 distinct sessions, a third session is assigned the last proven release', async () => {
+        await failed(bad.release_id!, b.sessionId);
+        const r = await fixture.descriptor(c.secret, c.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+        const d = r.body as Descriptor;
+        if (d.release_id !== good.release_id) throw new Error(`expected the proven release, got ${d.release_id}`);
+        if (d.source_commit !== good.source_commit || d.config_tree_id !== good.config_tree_id) throw new Error('fallback commit or tree');
+        const download = await fixture.download(c.secret, d.config_tree_id!);
+        if (download.status !== 200) throw new Error(`fallback archive download: ${download.status}`);
+        await assertArchiveMatches(d, download.bytes);
+      });
+
+      await ctx.step('a new base commit with a new release ID is assignable again', async () => {
+        const tip = await fixture.commit({ 'agents/kortix.md': 'FIXED.\n' }, 'fixed agent');
+        const r = await fixture.descriptor(c.secret, c.sessionId);
+        const d = r.body as Descriptor;
+        if (d.source_commit !== tip) throw new Error(`expected the new tip ${tip}, got ${d.source_commit}`);
+        if (d.release_id === good.release_id || d.release_id === bad.release_id) throw new Error('the new release was not assigned');
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── CFG-6 — GET /config without a reachable daemon stays unknown ───────────
+flow(
+  'CFG-6',
+  {
+    domain: 'config-releases',
+    requires: ['database'],
+    timeoutMs: 120_000,
+    routes: [MINT, CONFIG_STATE, ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    try {
+      const own = await fixture.mint();
+      await ctx.step('a session whose daemon cannot be reached reports stale null, never false, and no release block', async () => {
+        const r = await fixture.configState(own.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        if (r.body.sandbox_reachable !== false) throw new Error(`sandbox_reachable ${r.body.sandbox_reachable}`);
+        if (r.body.stale !== null) throw new Error(`stale ${r.body.stale}`);
+        if ('release' in r.body) throw new Error('release block without a daemon report');
+        for (const field of ['base_ref', 'running_etag', 'latest_etag', 'commit_sha']) {
+          if (!(field in r.body)) throw new Error(`missing ${field}`);
+        }
+      });
+      await ctx.step('ANON is rejected with 401', async () => {
+        const origin = ctx.env.apiUrl.replace(/\/v1$/, '');
+        const response = await fetch(`${origin}/v1/projects/${fixture.projectId}/sessions/${own.sessionId}/config`);
+        if (response.status !== 401) throw new Error(`expected 401, got ${response.status}`);
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── CFG-7 — a previous-repository session receives the CURRENT release ─────
+//
+// REVERSED on 2026-09-24. This flow used to assert that a session created
+// before a repository replacement was frozen: `409 session_repository_changed`
+// on the descriptor and on the archive, and `stale: false` from `GET /config`.
+// That policy is deleted. A config release is the project's CURRENT config; it
+// never touches a session's `/workspace` clone, so withholding it bought no
+// protection and left the session running the config of its provisioning day.
+// What remains is physical, not a policy: that session's clone and the new
+// origin hold unrelated histories, so Git itself refuses a push without a
+// rebase.
+//
+// The replacement route (`PUT /v1/projects/:projectId/git/repository`) takes a
+// GitHub credential from the caller: a token, or an installation plus a GitHub
+// user token. The runner holds neither on any target, and a host whose managed
+// git runs on the org-wide PAT refuses to export one (`POST .../git-token` →
+// 503), which is the preview's configuration. PROJ-36 covers the route's
+// validation; `repository-replacement.integration.test.ts` covers its writes.
+// This flow owns what the config-release routes answer AFTER a replacement, so
+// it writes the same columns `persistProjectRepositoryReplacement` writes,
+// pointing the project at a second project's real repository.
+flow(
+  'CFG-7',
+  {
+    domain: 'config-releases',
+    requires: ['database'],
+    timeoutMs: 300_000,
+    routes: [MINT, DESCRIPTOR, ARCHIVE, CONFIG_STATE, ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    const { randomUUID } = await import('node:crypto');
+    // The project's own repository identity, restored before teardown so the
+    // fixture deletes the repository it created and not the second project's.
+    let original: { repo_url: string; default_branch: string; metadata: unknown; connection: unknown } | null = null;
+    try {
+      const old = await fixture.mint();
+      let oldDescriptor!: Descriptor;
+      await ctx.step('before the replacement the session receives a descriptor', async () => {
+        const r = await fixture.descriptor(old.secret, old.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+        oldDescriptor = r.body as Descriptor;
+      });
+
+      const generation = randomUUID();
+      let newTip = '';
+      await ctx.step("the project repository is replaced by a second project's repository with a new generation", async () => {
+        // OWNER's funded personal account: the free team account holds one project.
+        const other = await ctx.fixtures.project({ managedGit: true });
+        const otherRepo = await fixture.openRepo(other.id);
+        newTip = await commitTo(
+          otherRepo,
+          { ...CONFIG_FILES, 'agents/kortix.md': 'NEW REPOSITORY.\n' },
+          'new repository',
+          STARTER_SCAFFOLD_PATHS,
+        );
+        const { rows } = await fixture.db.query(
+          `SELECT p.repo_url, p.default_branch, p.metadata,
+                  (SELECT row_to_json(c) FROM kortix.project_git_connections c WHERE c.project_id = p.project_id) AS connection,
+                  (SELECT count(*)::int FROM kortix.project_git_connections c WHERE c.project_id = $2) AS other_connections
+             FROM kortix.projects p WHERE p.project_id = $1`,
+          [fixture.projectId, other.id],
+        );
+        const row = rows[0];
+        if (!row) throw new Error('project row missing');
+        if (Boolean(row.connection) !== (row.other_connections === 1)) {
+          throw new Error('the two projects do not both carry a git connection row');
+        }
+        original = { repo_url: row.repo_url, default_branch: row.default_branch, metadata: row.metadata, connection: row.connection };
+        await fixture.db.query('BEGIN');
+        try {
+          await fixture.db.query(
+            `UPDATE kortix.projects a
+                SET repo_url = b.repo_url, default_branch = b.default_branch,
+                    metadata = coalesce(a.metadata, '{}'::jsonb)
+                      || jsonb_strip_nulls(jsonb_build_object('git', b.metadata->'git', 'github', b.metadata->'github'))
+                      || jsonb_build_object('repository_generation', $3::text),
+                    updated_at = now()
+               FROM kortix.projects b
+              WHERE a.project_id = $1 AND b.project_id = $2`,
+            [fixture.projectId, other.id, generation],
+          );
+          await fixture.db.query(
+            `UPDATE kortix.project_git_connections a
+                SET repo_url = b.repo_url, upstream_url = b.upstream_url, repo_owner = b.repo_owner,
+                    repo_name = b.repo_name, external_repo_id = b.external_repo_id,
+                    default_branch = b.default_branch, updated_at = now()
+               FROM kortix.project_git_connections b
+              WHERE a.project_id = $1 AND b.project_id = $2`,
+            [fixture.projectId, other.id],
+          );
+          await fixture.db.query('COMMIT');
+        } catch (error) {
+          await fixture.db.query('ROLLBACK').catch(() => {});
+          throw error;
+        }
+        // The project's own origin now serves the second repository.
+        const tip = await tipOf(await fixture.openRepo(fixture.projectId));
+        if (tip !== newTip) throw new Error(`the project's git origin serves ${tip}, not the new repository's tip ${newTip}`);
+      });
+
+      let newDescriptor!: Descriptor;
+      await ctx.step("the previous-repository session receives a descriptor built from the NEW repository's tip (200)", async () => {
+        const r = await fixture.descriptor(old.secret, old.sessionId);
+        if (r.status !== 200) throw new Error(`descriptor: expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        newDescriptor = r.body as Descriptor;
+        if (newDescriptor.source_commit !== newTip) {
+          throw new Error(`source_commit ${newDescriptor.source_commit}, new tip ${newTip}`);
+        }
+        if (newDescriptor.release_id === oldDescriptor.release_id) {
+          throw new Error('the session kept the old repository release');
+        }
+        if (newDescriptor.reason !== null) throw new Error(`unexpected reason ${newDescriptor.reason}`);
+      });
+
+      await ctx.step("the previous-repository session downloads the new repository's archive (200)", async () => {
+        const download = await fixture.download(old.secret, newDescriptor.config_tree_id!);
+        if (download.status !== 200) throw new Error(`archive: expected 200, got ${download.status}`);
+        const files = await assertArchiveMatches(newDescriptor, download.bytes);
+        if (!files.get('agents/kortix.md')?.toString().includes('NEW REPOSITORY.')) {
+          throw new Error('the archive is not from the new repository');
+        }
+      });
+
+      await ctx.step("the descriptor points at the NEW repository's config tree", async () => {
+        if (newDescriptor.config_tree_id === oldDescriptor.config_tree_id) {
+          throw new Error('the config tree did not move with the repository');
+        }
+        if (newDescriptor.archive?.url !== `/v1/projects/${fixture.projectId}/config-archives/${newDescriptor.config_tree_id}`) {
+          throw new Error(`archive url ${newDescriptor.archive?.url}`);
+        }
+        // The OLD tree's archive stays readable: it is this project's own
+        // stored archive of its own former config, keyed by tree ID under
+        // `projects/<project>/trees/`. Nothing of another tenant is reachable,
+        // and no session is ever TOLD to fetch it again.
+        const stale = await fixture.download(old.secret, oldDescriptor.config_tree_id!);
+        if (stale.status !== 200) throw new Error(`the project's own stored archive: ${stale.status}`);
+      });
+
+      await ctx.step('GET /config compares by release ID for this session like any other', async () => {
+        const r = await fixture.configState(old.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        // No daemon runs in this profile, so the box is unreachable and `stale`
+        // is `null` — "could not tell", never a confident `false`.
+        if (r.body.sandbox_reachable !== false) throw new Error(`sandbox_reachable ${r.body.sandbox_reachable}`);
+        if (r.body.stale !== null) throw new Error(`stale ${r.body.stale}, expected null`);
+        // The compile is no longer withheld: the new repository's manifest is read.
+        if (r.body.latest_etag === null) throw new Error('the session was not compiled against the new repository');
+        if ('release' in r.body) throw new Error('release block without a daemon report');
+      });
+
+      await ctx.step('a session created after the replacement receives a descriptor from the new repository', async () => {
+        const fresh = await fixture.mint({ repositoryGeneration: generation });
+        const r = await fixture.descriptor(fresh.secret, fresh.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        const d = r.body as Descriptor;
+        if (d.source_commit !== newTip) throw new Error(`source_commit ${d.source_commit}, new tip ${newTip}`);
+        if (d.release_id === oldDescriptor.release_id) throw new Error('the new session got the old release');
+        const download = await fixture.download(fresh.secret, d.config_tree_id!);
+        if (download.status !== 200) throw new Error(`new archive: ${download.status}`);
+        const files = await assertArchiveMatches(d, download.bytes);
+        if (!files.get('agents/kortix.md')?.toString().includes('NEW REPOSITORY.')) throw new Error('archive is not from the new repository');
+      });
+    } finally {
+      const restore = original as { repo_url: string; default_branch: string; metadata: unknown; connection: unknown } | null;
+      if (restore) {
+        await fixture.db
+          .query('UPDATE kortix.projects SET repo_url = $2, default_branch = $3, metadata = $4::jsonb WHERE project_id = $1', [
+            fixture.projectId,
+            restore.repo_url,
+            restore.default_branch,
+            JSON.stringify(restore.metadata),
+          ])
+          .catch(() => {});
+        if (restore.connection) {
+          await fixture.db
+            .query(
+              `UPDATE kortix.project_git_connections c
+                  SET repo_url = r.repo_url, upstream_url = r.upstream_url, repo_owner = r.repo_owner,
+                      repo_name = r.repo_name, external_repo_id = r.external_repo_id, default_branch = r.default_branch
+                 FROM jsonb_populate_record(NULL::kortix.project_git_connections, $2::jsonb) r
+                WHERE c.project_id = $1`,
+              [fixture.projectId, JSON.stringify(restore.connection)],
+            )
+            .catch(() => {});
+        }
+      }
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── CFG-8 — config releases graduated: there is no off switch
+//
+// `config_releases` was a per-project feature flag until 2026-10. It is no
+// longer a flag key: every project gets releases, the published write path
+// refuses the old key, and a value a project stored before graduation —
+// including an explicit `false` — changes nothing. No route answers
+// `403 feature_disabled` for config releases any more.
+flow(
+  'CFG-8',
+  {
+    domain: 'config-releases',
+    requires: ['database'],
+    timeoutMs: 180_000,
+    routes: [MINT, DESCRIPTOR, ARCHIVE, FEATURES, PROJECT_DETAIL, ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    const ledgerRows = async () =>
+      Number(
+        (await fixture.db.query('SELECT count(*)::int AS n FROM kortix.config_releases WHERE project_id = $1', [
+          fixture.projectId,
+        ])).rows[0].n,
+      );
+    const servesARelease = async (secret: string, sessionId: string, label: string) => {
+      const r = await fixture.descriptor(secret, sessionId);
+      if (r.status !== 200) throw new Error(`${label}: expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+      if (!HEX64.test(r.body.release_id)) throw new Error(`${label}: release_id ${r.body.release_id}`);
+      if (!HEX40.test(r.body.config_tree_id)) throw new Error(`${label}: config_tree_id ${r.body.config_tree_id}`);
+      const archive = await fixture.download(secret, r.body.config_tree_id);
+      if (archive.status !== 200) throw new Error(`${label}: archive answered ${archive.status}`);
+      return r.body as { release_id: string; source_commit: string; mode: string };
+    };
+    try {
+      const own = await fixture.mint();
+
+      await ctx.step('the project reports no `config_releases` flag at all', async () => {
+        const r = await ctx.client.as(ctx.P.OWNER).get('/v1/projects/:projectId', { params: { projectId: fixture.projectId } });
+        r.status(200);
+        const experimental = r.json<{ experimental: Record<string, boolean> }>().experimental;
+        if ('config_releases' in experimental) {
+          throw new Error(`experimental still serves config_releases: ${JSON.stringify(experimental)}`);
+        }
+      });
+
+      await ctx.step('a project that made no choice receives a release, and its archive downloads', async () => {
+        await servesARelease(own.secret, own.sessionId, 'no choice');
+        if ((await ledgerRows()) < 1) throw new Error('the assignment wrote no kortix.config_releases row');
+      });
+
+      await ctx.step('the published write path refuses the old key, in every state it used to accept', async () => {
+        for (const enabled of [false, true, null]) {
+          const r = await ctx.client
+            .as(ctx.P.OWNER)
+            .patch('/v1/projects/:projectId/features', { feature: 'config_releases', enabled }, {
+              params: { projectId: fixture.projectId },
+            });
+          r.status(400);
+          r.body().has('$.error', "Unknown feature flag 'config_releases'");
+        }
+      });
+
+      await ctx.step('a stored `false` from before graduation changes nothing: the release is still served', async () => {
+        await fixture.storeRetiredConfigReleasesFlag(false);
+        const stored = await fixture.db.query(
+          "SELECT metadata->'experimental'->>'config_releases' AS v FROM kortix.projects WHERE project_id = $1",
+          [fixture.projectId],
+        );
+        if (stored.rows[0]?.v !== 'false') throw new Error(`the stored value reads ${stored.rows[0]?.v}`);
+        const body = await servesARelease(own.secret, own.sessionId, 'stored false');
+        if (body.mode !== 'follow-base') throw new Error(`mode ${body.mode}`);
+      });
+
+      await ctx.step('a human reader gets the same release after authz; ANON is still 401', async () => {
+        const token = (ctx.P.OWNER.auth as { token?: string }).token ?? null;
+        const owner = await fixture.descriptor(token, own.sessionId);
+        if (owner.status !== 200) throw new Error(`owner: expected 200, got ${owner.status}: ${JSON.stringify(owner.body)}`);
+        const anon = await fixture.descriptor(null, own.sessionId);
+        if (anon.status !== 401) throw new Error(`ANON: expected 401, got ${anon.status}`);
+      });
+
+      await ctx.step('a base-branch commit is the new release, whatever the stored value says', async () => {
+        await fixture.commit({ 'agents/kortix.md': 'Edited.\n' }, 'graduated');
+        const tip = await baseTip(fixture);
+        const body = await servesARelease(own.secret, own.sessionId, 'new tip');
+        if (body.source_commit !== tip) throw new Error(`source_commit ${body.source_commit}, tip ${tip}`);
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── CFG-4 — a session whose agent the manifest dropped ─────────────────────
+//
+// `project_sessions.agent_name` is written at session create. A change request
+// that removes or renames an agent used to leave every session that named it
+// with `release_id: null` and `reason: 'compiled governance failed'` — no
+// config at all — and a deny-all token grant.
+//
+// Now the session is RE-POINTED once to the project's declared default agent:
+// audited, persisted by the daemon's own request alone, and only when the
+// session's owner may run that agent. A project with no declared default
+// leaves the session with no agent, a valid empty config, and a sentence that
+// says why.
+flow(
+  'CFG-4',
+  {
+    domain: 'config-releases',
+    requires: ['database'],
+    timeoutMs: 240_000,
+    routes: [MINT, DESCRIPTOR, ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    const auditRows = async (sessionId: string) =>
+      (
+        await fixture.db.query(
+          `SELECT action, before, after, agent_name
+             FROM kortix.audit_events
+            WHERE session_id = $1 AND action = 'SESSION_AGENT_REPOINTED'`,
+          [sessionId],
+        )
+      ).rows as Array<{ action: string; before: any; after: any; agent_name: string | null }>;
+    // Audit rows reach the table through the 250 ms flush queue
+    // (`AUDIT_FLUSH_MS_DEFAULT`, apps/api/src/shared/audit-queue.ts): the
+    // descriptor answers before the row is committed. A read taken the moment
+    // the call returns is ahead of the writer, and CFG-4 read 0 rows 0.5 s into
+    // the flow on CI run 36161395127. So: wait for a row the step expects, and
+    // give the queue a full window before reading for a row it must NOT have
+    // written.
+    const AUDIT_FLUSH_WINDOW_MS = 1_500;
+    const auditRowsOnceWritten = (sessionId: string, expected: number) =>
+      waitFor(() => auditRows(sessionId), {
+        until: (rows) => rows.length >= expected,
+        timeoutMs: 20_000,
+        intervalMs: 200,
+        description: `${expected} SESSION_AGENT_REPOINTED audit row(s)`,
+      });
+    const auditRowsAfterFlush = async (sessionId: string) => {
+      await sleep(AUDIT_FLUSH_WINDOW_MS);
+      return auditRows(sessionId);
+    };
+    const storedAgent = async (sessionId: string) =>
+      String(
+        (await fixture.db.query('SELECT agent_name FROM kortix.project_sessions WHERE session_id = $1', [sessionId]))
+          .rows[0]?.agent_name ?? '',
+      );
+    try {
+      // No repository access, so the release compiles exactly ONE agent. That
+      // is what proves which agent the session ended up being.
+      const dropped = await fixture.mint({ repositoryAccess: false, agentName: 'retired' });
+
+      await ctx.step('a dropped agent still produces a release, built for the declared default agent', async () => {
+        const r = await fixture.descriptor(dropped.secret, dropped.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        const d = r.body as Descriptor;
+        if (d.release_id === null) throw new Error('a dropped agent produced no release');
+        if (d.reason?.includes('compiled governance failed')) throw new Error(`reason ${d.reason}`);
+        if (!d.compiled_governance) throw new Error('no compiled governance');
+        const agents = runnableAgents(d.compiled_governance);
+        if (agents.length !== 1 || agents[0] !== 'kortix') {
+          throw new Error(`compiled ${agents.join(',')}, expected the declared default agent kortix`);
+        }
+        if (!d.agent_repoint) throw new Error('the descriptor does not state the re-point');
+        if (d.agent_repoint.from !== 'retired' || d.agent_repoint.to !== 'kortix' || d.agent_repoint.applied !== true) {
+          throw new Error(`agent_repoint ${JSON.stringify(d.agent_repoint)}`);
+        }
+        if (!d.agent_repoint.reason.includes('retired') || !d.agent_repoint.reason.includes('kortix')) {
+          throw new Error(`agent_repoint reason names neither agent: ${d.agent_repoint.reason}`);
+        }
+      });
+
+      await ctx.step('the session row now names the declared default agent, and one audit row says so', async () => {
+        if ((await storedAgent(dropped.sessionId)) !== 'kortix') {
+          throw new Error(`agent_name is ${await storedAgent(dropped.sessionId)}`);
+        }
+        const rows = await auditRowsOnceWritten(dropped.sessionId, 1);
+        if (rows.length !== 1) throw new Error(`${rows.length} audit rows, expected 1`);
+        if (rows[0]!.before?.agent_name !== 'retired' || rows[0]!.after?.agent_name !== 'kortix') {
+          throw new Error(`audit before/after ${JSON.stringify(rows[0])}`);
+        }
+        if (rows[0]!.agent_name !== 'kortix') throw new Error(`audit agent_name ${rows[0]!.agent_name}`);
+      });
+
+      await ctx.step('the re-point happens ONCE: a second request writes nothing and states nothing', async () => {
+        const r = await fixture.descriptor(dropped.secret, dropped.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+        const d = r.body as Descriptor;
+        if (d.agent_repoint !== null) throw new Error(`agent_repoint still set: ${JSON.stringify(d.agent_repoint)}`);
+        const agents = runnableAgents(d.compiled_governance);
+        if (agents.join(',') !== 'kortix') throw new Error(`compiled ${agents.join(',')}`);
+        if ((await auditRowsAfterFlush(dropped.sessionId)).length !== 1)
+          throw new Error('a second audit row was written');
+      });
+
+      await ctx.step('a HUMAN read decides the same answer and writes nothing', async () => {
+        const other = await fixture.mint({ repositoryAccess: false, agentName: 'retired' });
+        const token = (ctx.P.OWNER.auth as { token?: string }).token ?? null;
+        const r = await fixture.descriptor(token, other.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        const d = r.body as Descriptor;
+        if (d.agent_repoint?.to !== 'kortix' || d.agent_repoint.applied !== true) {
+          throw new Error(`human read decided ${JSON.stringify(d.agent_repoint)}`);
+        }
+        // Only the daemon's own request persists. A read that wrote would move
+        // a session's identity every time somebody opened the session page.
+        if ((await storedAgent(other.sessionId)) !== 'retired') throw new Error('a human read wrote the column');
+        if ((await auditRowsAfterFlush(other.sessionId)).length !== 0)
+          throw new Error('a human read wrote an audit row');
+      });
+
+      await ctx.step('a declared agent is never re-pointed', async () => {
+        const fine = await fixture.mint({ repositoryAccess: false, agentName: 'reviewer' });
+        const r = await fixture.descriptor(fine.secret, fine.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+        if ((r.body as Descriptor).agent_repoint !== null) throw new Error('a declared agent was re-pointed');
+        if ((await storedAgent(fine.sessionId)) !== 'reviewer') throw new Error('a declared agent moved');
+        if ((await auditRowsAfterFlush(fine.sessionId)).length !== 0)
+          throw new Error('a declared agent produced an audit row');
+      });
+
+      await ctx.step('with no declared default agent the session keeps none, gets a valid release, and is told why', async () => {
+        await fixture.commit(
+          { 'kortix.yaml': MANIFEST.split('\n').filter((line) => !line.startsWith('default_agent:')).join('\n') },
+          'drop the default agent',
+        );
+        const orphan = await fixture.mint({ repositoryAccess: false, agentName: 'retired' });
+        const r = await fixture.descriptor(orphan.secret, orphan.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        const d = r.body as Descriptor;
+        if (d.release_id === null) throw new Error('an orphaned session produced no release');
+        if (d.reason?.includes('compiled governance failed')) throw new Error(`reason ${d.reason}`);
+        if (JSON.parse(d.compiled_governance!).agent !== undefined) throw new Error('an orphaned session received an agent');
+        if (d.agent_repoint?.to !== null || d.agent_repoint.applied !== false) {
+          throw new Error(`agent_repoint ${JSON.stringify(d.agent_repoint)}`);
+        }
+        if (!d.agent_repoint.reason.includes('retired')) throw new Error(`reason ${d.agent_repoint.reason}`);
+        if ((await storedAgent(orphan.sessionId)) !== 'retired') throw new Error('an orphaned session was moved');
+        if ((await auditRowsAfterFlush(orphan.sessionId)).length !== 0)
+          throw new Error('an orphaned session produced an audit row');
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── CFG-9 — turn-end convergence, the API half ─────────────────────────────
+//
+// C9: a box that is behind converges when its turn ends, so its next turn runs
+// the new config; no prompt waits for it. The gate is `convergeConfigIfBehind`,
+// called from the turn-end relay. It decides by comparing
+// the release the API last saw the box running against the DESIRED release,
+// memoised per `(project, base ref, agent, repository access)`.
+//
+// The API half of that contract — the half a profile with no sandbox can
+// prove — is the agreement itself: the daemon's descriptor route and the
+// human `GET /config` read must resolve the SAME desired release for the same
+// session, and both must move together when the base branch moves. If they
+// disagreed, a memo filled by one would mislead the other.
+flow(
+  'CFG-9',
+  {
+    domain: 'config-releases',
+    requires: ['database'],
+    timeoutMs: 240_000,
+    routes: [MINT, DESCRIPTOR, CONFIG_STATE, ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    try {
+      const own = await fixture.mint();
+      let first!: string;
+
+      await ctx.step('the daemon assignment and the human read resolve one desired release', async () => {
+        const token = (ctx.P.OWNER.auth as { token?: string }).token ?? null;
+        const daemon = await fixture.descriptor(own.secret, own.sessionId);
+        if (daemon.status !== 200) throw new Error(`descriptor: ${daemon.status}`);
+        const human = await fixture.descriptor(token, own.sessionId);
+        if (human.status !== 200) throw new Error(`human descriptor: ${human.status}`);
+        if (human.body.release_id !== daemon.body.release_id) {
+          throw new Error(`human ${human.body.release_id} !== daemon ${daemon.body.release_id}`);
+        }
+        first = daemon.body.release_id as string;
+        const state = await fixture.configState(own.sessionId);
+        if (state.status !== 200) throw new Error(`config state: ${state.status}`);
+        // No daemon runs here, so `/config` reports the box as unreachable and
+        // `stale: null`. It must never answer a confident `false`, which is
+        // what the turn-start gate would read as "this box is current".
+        if (state.body.stale !== null) throw new Error(`stale ${state.body.stale}, expected null`);
+        if (state.body.sandbox_reachable !== false) throw new Error('a box answered in a profile with none');
+      });
+
+      await ctx.step('a base branch move moves the desired release for both readers together', async () => {
+        const tip = await fixture.commit(
+          { 'agents/kortix.md': 'TURN START.\n' },
+          'turn-start convergence',
+        );
+        const token = (ctx.P.OWNER.auth as { token?: string }).token ?? null;
+        const daemon = await fixture.descriptor(own.secret, own.sessionId);
+        const human = await fixture.descriptor(token, own.sessionId);
+        if (daemon.body.source_commit !== tip) throw new Error(`daemon commit ${daemon.body.source_commit}, tip ${tip}`);
+        if (daemon.body.release_id === first) throw new Error('the desired release did not move with the base branch');
+        if (human.body.release_id !== daemon.body.release_id) {
+          throw new Error(`readers disagree after the move: ${human.body.release_id} vs ${daemon.body.release_id}`);
+        }
+      });
+
+      await ctx.step('an unchanged base branch resolves the same release again, so a current box converges nothing', async () => {
+        const a = await fixture.descriptor(own.secret, own.sessionId);
+        const b = await fixture.descriptor(own.secret, own.sessionId);
+        if (a.body.release_id !== b.body.release_id) throw new Error('the desired release moved without a base change');
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── CFG-10 — degenerate clones, the API half ───────────────────────────────
+//
+// C4: `/workspace` is never read to decide config. Missing, empty, foreign or
+// broken changes nothing. The daemon half is V5 on a real box; this is the API
+// half — the descriptor a session receives depends on the project's base
+// branch and on that session's own agent and access, and on nothing else.
+flow(
+  'CFG-10',
+  {
+    domain: 'config-releases',
+    requires: ['database'],
+    timeoutMs: 180_000,
+    routes: [FEATURES, MINT, DESCRIPTOR, ARCHIVE, ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    const { randomUUID } = await import('node:crypto');
+    try {
+      const ordinary = await fixture.mint();
+      let expected!: Descriptor;
+      await ctx.step('an ordinary session fixes the release every other session must receive', async () => {
+        const r = await fixture.descriptor(ordinary.secret, ordinary.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+        expected = r.body as Descriptor;
+        if (!expected.release_id) throw new Error('no release for an ordinary session');
+      });
+
+      await ctx.step('a session from another repository generation receives the same release', async () => {
+        // The session metadata a replacement leaves behind. Its clone came from
+        // a repository the project no longer uses; its CONFIG does not.
+        const foreign = await fixture.mint({ repositoryGeneration: randomUUID() });
+        const r = await fixture.descriptor(foreign.secret, foreign.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        if (r.body.release_id !== expected.release_id) {
+          throw new Error(`release ${r.body.release_id}, expected ${expected.release_id}`);
+        }
+        const download = await fixture.download(foreign.secret, r.body.config_tree_id);
+        if (download.status !== 200) throw new Error(`archive: expected 200, got ${download.status}`);
+      });
+
+      await ctx.step('a session whose metadata claims a broken or absent workspace receives the same release', async () => {
+        for (const claim of [
+          { workspace_mode: 'branch', workspace_clone: 'missing' },
+          { workspace_mode: 'branch', workspace_clone: 'empty', commit_sha: null },
+          { workspace_mode: 'branch', workspace_clone: 'foreign', base_sha: 'f'.repeat(40) },
+        ]) {
+          const session = await fixture.mint();
+          await fixture.db.query('UPDATE kortix.project_sessions SET metadata = $2::jsonb WHERE session_id = $1', [
+            session.sessionId,
+            JSON.stringify(claim),
+          ]);
+          const r = await fixture.descriptor(session.secret, session.sessionId);
+          if (r.status !== 200) throw new Error(`${JSON.stringify(claim)}: expected 200, got ${r.status}`);
+          if (r.body.release_id !== expected.release_id) {
+            throw new Error(`${JSON.stringify(claim)}: release ${r.body.release_id}, expected ${expected.release_id}`);
+          }
+        }
+      });
+
+      await ctx.step('the descriptor names no config dir and a tree that comes from the base branch, never from a session', async () => {
+        if ((expected.config_dir ?? null) !== null) throw new Error(`config_dir ${expected.config_dir}, expected none`);
+        const tip = await baseTip(fixture);
+        if (expected.source_commit !== tip) throw new Error(`source_commit ${expected.source_commit}, tip ${tip}`);
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+/**
+ * Boot a real session on a real box and open a runtime conversation on it.
+ *
+ * Shared by the two flows that need a booted sandbox with a
+ * `config.release.v1` daemon. Everything a box-half contract asks about — the
+ * transcript, a prompt sent the way `kortix sessions chat` sends it, the
+ * release the box reports — is reachable from what this returns.
+ */
+async function boxSession(ctx: FlowContext, fixture: Fixture) {
+  const oc = (suffix: string, sandbox: string) => `/v1/p/${sandbox}/8000${suffix}`;
+  const session = await ctx.fixtures.session(fixture.project, { prompt: 'say hello' });
+  const sessionId = session.id;
+  const started = await waitFor(
+    async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post('/v1/projects/:projectId/sessions/:sessionId/start', {}, {
+          params: { projectId: fixture.projectId, sessionId },
+          query: { wait_ms: '8000' },
+          timeoutMs: 25_000,
+        });
+      if (r.statusCode >= 500) return null;
+      r.status(200);
+      return r.json<any>();
+    },
+    {
+      until: (s) => s?.stage === 'ready' && Boolean(s?.sandbox?.external_id ?? s?.sandbox?.externalId),
+      timeoutMs: 600_000,
+      intervalMs: 3_000,
+      description: `session runtime ready for ${sessionId}`,
+    },
+  );
+  const sandboxId = String(started.sandbox.external_id ?? started.sandbox.externalId);
+  const created = await waitFor(
+    async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(oc(`/session?directory=${encodeURIComponent('/workspace')}`, sandboxId), {});
+      return r.statusCode >= 500 ? null : r;
+    },
+    { until: (r) => Boolean(r), timeoutMs: 180_000, intervalMs: 3_000, description: 'runtime conversation' },
+  );
+  created!.status(200);
+  const conversationId = String(created!.json<{ id: string }>().id);
+  // The boot prompt's turn must end first. A turn in flight blocks a
+  // convergence by design, so a base move while "say hello" still runs lands
+  // only at that turn's end (measured on a real box 2026-09-30: the boot turn
+  // ended 2.8 s after the flow pushed and prompted).
+  await waitFor(
+    async () => ({
+      turn: await readTurn(ctx, fixture.projectId, sessionId),
+      transcript: await readTranscript(ctx, fixture.projectId, sessionId),
+    }),
+    {
+      until: ({ turn, transcript }) =>
+        turn.turns.length === 0 &&
+        transcript.messages.some((m) => m.role === 'assistant' && (Boolean(m.completed) || Boolean(m.error))),
+      timeoutMs: 240_000,
+      intervalMs: 2_000,
+      description: `the boot prompt's turn to end in session ${sessionId}`,
+      retryOnError: isKe2eRetryableError,
+    },
+  );
+
+  return {
+    sessionId,
+    sandboxId,
+    conversationId,
+    box: (suffix: string) => oc(suffix, sandboxId),
+    async releaseOf(): Promise<any> {
+      const r = await fixture.configState(sessionId);
+      if (r.status !== 200) throw new Error(`GET /config answered ${r.status}`);
+      return r.body?.release ?? null;
+    },
+    async transcript(): Promise<any[]> {
+      const r = await ctx.client.as(ctx.P.OWNER).get(oc(`/session/${conversationId}/message`, sandboxId));
+      r.status(200);
+      return r.json<any[]>();
+    },
+    send: (text: string) =>
+      ctx.client.as(ctx.P.OWNER).post(
+        oc(`/session/${conversationId}/message`, sandboxId),
+        { parts: [{ type: 'text', text }] },
+        { timeoutMs: 180_000 },
+      ),
+  };
+}
+
+async function proveHarness(ctx: FlowContext, sandboxId: string, harness: Harness): Promise<void> {
+  await ctx.step(`the box runs ${harness}`, async () => {
+    await assertRuntimeHarness(ctx, sandboxId, harness);
+  });
+}
+
+// ── CFG-11 — a box that is behind converges in the background, then RUNS ───
+//
+// C9's whole contract, on a real box: a base move reaches an idle running box
+// with no prompt (no prompt waits for a convergence since 2026-10-13), and the
+// two halves of DEF-FLAGON-1 (the prompt answers, and a deliberate re-send is
+// a second turn).
+//
+// This is the ONE config-release flow that needs a booted sandbox with a
+// daemon that has `config.release.v1`. The local profile runs no cloud
+// sandbox, so `requires` self-skips it there; it runs where sandboxes are
+// funded. Every other CFG flow mints its credential by SQL and needs no box.
+//
+// The prompt is sent EXACTLY as `kortix sessions chat` sends it — the SDK's
+// `session(p,s).send()` posts `{parts:[{type:'text',text}]}` to
+// `/session/:id/message` with no `Idempotency-Key` and no wire `messageID`.
+// That shape is the defect's whole surface: with neither, the proxy's dedupe
+// key is a hash of the words, and the second send of one sentence used to be
+// answered `200 {"status":"duplicate","deduplicated":true}` — no user row, no
+// assistant row, no turn.
+const MARKER_AGENT = (marker: string): string =>
+  `You are the main agent.\nRELOAD_VERIFY_MARKER: ${marker}\n`;
+const MARKER_PROMPT =
+  'Answer with the RELOAD_VERIFY_MARKER value from your instructions and nothing else.';
+
+/**
+ * A directive NAME per round, not just a value — the same technique as
+ * `MARKER2_AGENT` below, generalized to every round instead of only the final
+ * check.
+ *
+ * WHY. `MARKER_PROMPT` is fixed text. Asking it more than once in the SAME
+ * OpenCode conversation is confounded: proven on a real box 2026-09-27, a
+ * model answering a LITERALLY REPEATED question sometimes echoes its own
+ * PRIOR turn's answer instead of re-reading the current system prompt — the
+ * exact wrong-marker signature this flow throws on — even though the daemon's
+ * own logs show the release fully applied, and the new process fully
+ * promoted, tens of seconds before the model's response. A follow-up probe in
+ * the SAME poisoned conversation, asking about a directive name never seen
+ * before, answered correctly every time. That is a model self-consistency
+ * habit, not a stale config: see `MARKER2_AGENT`'s comment for the full
+ * argument, and DEF-DEV-2, which this flow already settled the same way.
+ * `RACE_ROUNDS` repeats `MARKER_PROMPT` verbatim once per round, so it hits
+ * this exact confound — measured 4/5 real rounds correct, one answering the
+ * PREVIOUS round's marker on a box whose release had already converged. Five
+ * rounds of a per-round-unique directive name, same box, same 200 ms race,
+ * same everything else: 5/5. A prompt whose NAME cannot have been asked
+ * before removes the confound instead of adding a delay or a retry that would
+ * only mask it.
+ */
+const RACE_MARKER_KEY = (round: number): string => `RELOAD_VERIFY_MARKER_R${round}`;
+const RACE_MARKER_AGENT = (round: number, marker: string): string =>
+  `You are the main agent.\n${RACE_MARKER_KEY(round)}: ${marker}\n`;
+const RACE_MARKER_PROMPT = (round: number): string =>
+  `Answer with the ${RACE_MARKER_KEY(round)} value from your instructions and nothing else.`;
+/**
+ * The prompt raced against the base move. It may run on either release, so it
+ * names no marker: an earlier "there is no such key" answer in the same
+ * conversation is the confound above, and the model repeats it on the next
+ * question (measured 2026-10-13, both harnesses).
+ */
+const RACE_PROMPT = (round: number): string => `Reply with the single word ok. Round ${round}.`;
+
+/**
+ * DEF-DEV-2's decider — a key the conversation CANNOT supply.
+ *
+ * On dev on 2026-09-25 a converged session kept answering an OLD marker. Two
+ * readings fit: the model was answering from its own conversation history, or
+ * the prompt it receives was stale instance state that survived the swap. The
+ * race rounds below already ask for a value the history cannot hold, because
+ * each round's marker is committed in that round. This closes the last gap in
+ * that argument — that the model might be pattern-matching "RELOAD_VERIFY_
+ * MARKER means the newest value I have seen" rather than reading what it was
+ * given. It cannot pattern-match a directive NAME it has never seen, asked by
+ * a question that has never been asked in the conversation.
+ *
+ * A correct answer proves the per-turn system prompt is CURRENT, so the stale
+ * answers were the model reading its own transcript and there is no platform
+ * fix to make. A wrong or absent answer proves the prompt itself is stale, and
+ * that is a different defect with a different fix (dispose the instance cache
+ * after a swap).
+ *
+ * The OLD key is deliberately left in the file with a DIFFERENT value, so a
+ * model answering from habit has something wrong to reach for.
+ */
+const MARKER2_AGENT = (marker: string, marker2: string): string =>
+  `You are the main agent.\nRELOAD_VERIFY_MARKER: ${marker}\nRELOAD_VERIFY_MARKER2: ${marker2}\n`;
+const MARKER2_PROMPT =
+  'Answer with the RELOAD_VERIFY_MARKER2 value from your instructions and nothing else.';
+
+harnessFlow(
+  'CFG-11',
+  {
+    domain: 'config-releases',
+    requires: ['database', 'funded', 'sandbox', 'managedGit', 'stripe'],
+    timeoutMs: 1_500_000,
+    routes: [
+      FEATURES,
+      CONFIG_STATE,
+      'POST /v1/projects/:projectId/sessions',
+      'POST /v1/projects/:projectId/sessions/:sessionId/start',
+      'GET /v1/projects/:projectId/sessions/:sessionId/turn',
+      'GET /v1/projects/:projectId/sessions/:sessionId/transcript',
+      ...GIT_PROXY,
+    ],
+  },
+  async (ctx, harness) => {
+    const fixture = await setup(ctx);
+    try {
+      // The box's session runs a managed model (spec, `boxSession`). A free-tier
+      // account cannot use one at all — every turn 400s `plan_upgrade_required`
+      // before it ever reaches OpenCode, which reads exactly like a stale/empty
+      // config answer in this flow's own assertions (2026-09-27: this is what
+      // actually produced "the answer does not come from the new release: "
+      // on preview run 36279090948 and on #7796's control run 36287293649,
+      // neither of which touches config-releases or the turn-start gate).
+      // Entitle the REAL way — the same fixture the BILL flows use — rather
+      // than pin a default-tier model, because this flow is about a real
+      // model turn reaching the box, not about which tier can afford it.
+      // `subscribe()` does not return until `waitForCredits` confirms the
+      // grant landed: the monthly credit grant is the async Stripe
+      // `invoice.paid` webhook, not the subscribe call itself, so this step
+      // being awaited before the box boots is what makes the entitlement
+      // synchronous with the turn below, not a race with it.
+      await ctx.step('the account is entitled to the managed lineup', async () => {
+        await subscribe(ctx.env, ctx.client.as(ctx.P.OWNER), fixture.team.id);
+      });
+
+
+      let box!: Awaited<ReturnType<typeof boxSession>>;
+      await ctx.step('a session boots on the project and opens a runtime conversation', async () => {
+        box = await boxSession(ctx, fixture);
+      });
+      await proveHarness(ctx, box.sandboxId, harness);
+      const releaseOf = () => box.releaseOf();
+      const transcript = () => box.transcript();
+      const send = (text: string) => box.send(text);
+
+      let behindRelease = '';
+      await ctx.step('the box runs a release, and a push then puts it behind', async () => {
+        const before = await releaseOf();
+        if (!before || before.source !== 'release' || before.proven !== true) {
+          throw new Error(`the box is not on a proven release: ${JSON.stringify(before)}`);
+        }
+        behindRelease = String(before.running_release_id);
+        await fixture.commit(
+          { 'agents/kortix.md': MARKER_AGENT('marker-one') },
+          'marker-one',
+        );
+      });
+
+      await ctx.step('the idle box converges with no prompt: running == desired, and it is not the release it was behind on', async () => {
+        const after = await waitFor(releaseOf, {
+          until: (rel) =>
+            Boolean(rel) && rel.running_release_id === rel.desired_release_id && rel.running_release_id !== behindRelease,
+          timeoutMs: 120_000,
+          intervalMs: 3_000,
+          description: 'running release == desired release',
+        });
+        if (after.running_release_id === behindRelease) {
+          throw new Error(`the release never moved off ${behindRelease}`);
+        }
+        if (after.proven !== true) throw new Error('the new release is not proven');
+      });
+
+      await ctx.step('the prompt is NOT lost: it answers, and the answer comes from the NEW release', async () => {
+        const r = await send(MARKER_PROMPT);
+        r.status(200);
+        const body = r.json<any>();
+        // The defect's signature: `200 {"status":"duplicate","deduplicated":true}`
+        // — a body with neither `info` nor `parts`, which is why the CLI died on
+        // `msg.parts.filter` rather than printing an answer.
+        if (body?.deduplicated) throw new Error('the prompt was swallowed as a duplicate');
+        if (!body?.info || !Array.isArray(body?.parts)) {
+          throw new Error(`the send did not answer with a message: ${JSON.stringify(body).slice(0, 200)}`);
+        }
+        const rows = await transcript();
+        const users = rows.filter((m) => m.info?.role === 'user');
+        const assistants = rows.filter((m) => m.info?.role === 'assistant');
+        const asked = users.some((m) =>
+          (m.parts ?? []).some((part: any) => typeof part.text === 'string' && part.text.includes(MARKER_PROMPT)),
+        );
+        if (!asked) throw new Error('the transcript holds no user row for the prompt');
+        const answered = assistants
+          .flatMap((m) => (m.parts ?? []).map((part: any) => part.text))
+          .filter((t: unknown): t is string => typeof t === 'string')
+          .join('\n');
+        if (!answered.includes('marker-one')) {
+          throw new Error(`the answer does not come from the new release: ${answered.slice(0, 200)}`);
+        }
+      });
+
+      await ctx.step('DEF-FLAGON-1 — the SAME sentence sent again is a SECOND turn, not a duplicate', async () => {
+        const before = (await transcript()).filter((m) => m.info?.role === 'user').length;
+        const r = await send(MARKER_PROMPT);
+        r.status(200);
+        const body = r.json<any>();
+        if (body?.deduplicated) throw new Error('the re-send was answered `duplicate` and never ran');
+        if (!body?.info || !Array.isArray(body?.parts)) {
+          throw new Error(`the re-send did not answer with a message: ${JSON.stringify(body).slice(0, 200)}`);
+        }
+        const after = (await transcript()).filter((m) => m.info?.role === 'user').length;
+        if (after !== before + 1) throw new Error(`user rows ${before} -> ${after}; the re-send left no turn`);
+      });
+
+      await ctx.step('a skill merged to the base branch reaches the running session', async () => {
+        const before = String((await releaseOf())?.running_release_id ?? '');
+        const skill = (name: string) => `---\nname: ${name}\ndescription: merged while the session ran\n---\nUse it when asked.\n`;
+        // A skill is registered in kortix.yaml; the agent's `skills: all` grants it.
+        const expected = ['cfg-merged-skill'];
+        await fixture.commit(
+          {
+            'kortix.yaml': MANIFEST.replace('  demo: skills/demo\n', '  demo: skills/demo\n  cfg-merged-skill: skills/cfg-merged-skill\n'),
+            'skills/cfg-merged-skill/SKILL.md': skill('cfg-merged-skill'),
+          },
+          'merge a skill',
+        );
+        await waitFor(releaseOf, {
+          until: (rel) =>
+            Boolean(rel) &&
+            rel.running_release_id === rel.desired_release_id &&
+            rel.running_release_id !== before &&
+            rel.proven === true,
+          timeoutMs: 300_000,
+          intervalMs: 3_000,
+          description: 'the box serves the release with the merged skill',
+        });
+        const r = await ctx.client.as(ctx.P.OWNER).get(box.box('/kortix/diag?tail=1'));
+        r.status(200);
+        const names = r.json<{ pi?: { skills?: string[] } }>().pi?.skills ?? [];
+        const missing = expected.filter((name) => !names.includes(name));
+        if (missing.length > 0) {
+          throw new Error(`the running session does not list ${missing.join(', ')}: ${names.join(', ')}`);
+        }
+      });
+
+      if (harness === 'pi') {
+        await ctx.step('pi: a base-branch change to the root AGENTS.md reaches the running session in place, with no restart', async () => {
+          const rules = (lines: string[]) => `# Project rules\n\n${lines.join('\n')}\n`;
+          // Commit, wait until the box serves it, and check health names that file.
+          const serve = async (content: string, message: string) => {
+            const before = String((await releaseOf())?.running_release_id ?? '');
+            await fixture.commit({ 'AGENTS.md': content }, message);
+            await waitFor(releaseOf, {
+              until: (rel) => Boolean(rel) && rel.running_release_id === rel.desired_release_id && rel.running_release_id !== before && rel.proven === true,
+              timeoutMs: 300_000,
+              intervalMs: 3_000,
+              description: `the box serves the release with ${message}`,
+            });
+            const health = await ctx.client.as(ctx.P.OWNER).get(box.box('/kortix/health'));
+            health.status(200);
+            const loaded = health.json<any>().harness?.details?.agentsMd;
+            const { createHash } = await import('node:crypto');
+            const sha = createHash('sha256').update(content).digest('hex').slice(0, 12);
+            if (loaded?.source !== 'release' || loaded?.sha !== sha) {
+              throw new Error(`pi reports ${JSON.stringify(loaded)}; expected source "release" and sha ${sha}`);
+            }
+          };
+          // The daemon logs `[pi] runtime ready` on every runtime start.
+          const lastStart = async () => {
+            const r = await ctx.client.as(ctx.P.OWNER).get(box.box('/kortix/logs?source=daemon&tail=5000'));
+            r.status(200);
+            return r.text().split('\n').filter((line) => line.includes('"[pi] runtime ready"')).pop() ?? null;
+          };
+          // The CFG-12 technique: the old key keeps a stale value, the new key was never asked.
+          const key = `CFG11_AGENTS_RULE_${Date.now()}`;
+          const marker = `agents-${crypto.randomUUID()}`;
+          await serve(rules([`${key}: agents-one`]), 'add AGENTS.md');
+          const started = await lastStart();
+          await serve(rules([`${key}: stale-on-purpose`, `${key}_NEXT: ${marker}`]), 'change AGENTS.md');
+          const r = await send(`Answer with the ${key}_NEXT value from your project instructions and nothing else.`);
+          r.status(200);
+          const answer = ((r.json<any>()?.parts ?? []) as Array<{ text?: unknown }>)
+            .map((part) => (typeof part.text === 'string' ? part.text : ''))
+            .join('');
+          if (!answer.includes(marker)) throw new Error(`the answer does not carry the new AGENTS.md marker: ${answer.slice(0, 200)}`);
+          if ((await lastStart()) !== started) throw new Error('the pi runtime restarted to apply an AGENTS.md change');
+        });
+      }
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── CFG-12 — a base move and a prompt in the same instant ──────────────────
+//
+// DEF-DEV-1, on a real box. A convergence retires the OpenCode process that is
+// serving the session. If a prompt lands between the turn gate and the swap,
+// the process writing that turn is killed: the client gets `HTTP 503` and the
+// assistant row stays `completed = null` for ever.
+//
+// Two ways to land in that window, both here:
+//
+//  1. RACED. Push a base move, send a prompt within 200 ms, N times. This is
+//     the shape a user produces (`git push` then type). The raced prompt may
+//     run on either release: no prompt waits for a convergence (2026-10-13).
+//     Each round then proves the box converges after that turn and the NEXT
+//     turn answers from the config pushed in THAT round — the cross-process
+//     invalidation, end to end, because nothing tells the pod that handles the
+//     turn end about the push except the broadcast.
+//  2. SCHEDULED. `?delay_before_swap_ms` parks a convergence between the gate
+//     and the swap, and the prompt is sent while it is parked. No race to win:
+//     the prompt is provably inside the window.
+//
+// Rounds are `KORTIX_CFG_RACE_ROUNDS` (default 5). The acceptance run for the
+// fix is 50; a round costs one push plus one turn, so 50 needs the flow's own
+// timeout raised with it.
+const RACE_ROUNDS = Math.max(1, Number(process.env.KORTIX_CFG_RACE_ROUNDS ?? '5') || 5);
+/** Which layer said 503: kortixd's boot phase header and body, or the API's. */
+const describe503 = (r: { header(name: string): string | undefined; text(): string }) =>
+  `(phase=${r.header('x-kortix-boot-phase') ?? 'none'}): ${r.text().slice(0, 400)}`;
+/** Commit to `running_release_id === desired_release_id` on a box nobody is prompting. */
+const IDLE_CONVERGENCE_CEILING_MS = 65_000;
+
+harnessFlow(
+  'CFG-12',
+  {
+    domain: 'config-releases',
+    requires: ['database', 'funded', 'sandbox', 'managedGit', 'stripe'],
+    timeoutMs: 1_800_000,
+    routes: [
+      FEATURES,
+      CONFIG_STATE,
+      'POST /v1/projects/:projectId/sessions',
+      'POST /v1/projects/:projectId/sessions/:sessionId/start',
+      'GET /v1/projects/:projectId/sessions/:sessionId/turn',
+      'GET /v1/projects/:projectId/sessions/:sessionId/transcript',
+      ...GIT_PROXY,
+    ],
+  },
+  async (ctx, harness) => {
+    const fixture = await setup(ctx);
+    try {
+      // See CFG-11's identical step for why: a free-tier account 400s
+      // `plan_upgrade_required` on the box's managed model before a prompt
+      // ever reaches OpenCode, and that reads exactly like a stale/empty
+      // config answer here — the actual cause of the CFG-11/CFG-12 preview
+      // failures attributed to config releases on 2026-09-26/27.
+      await ctx.step('the account is entitled to the managed lineup', async () => {
+        await subscribe(ctx.env, ctx.client.as(ctx.P.OWNER), fixture.team.id);
+      });
+
+
+      let box!: Awaited<ReturnType<typeof boxSession>>;
+      await ctx.step('a session boots on a proven release and opens a runtime conversation', async () => {
+        box = await boxSession(ctx, fixture);
+        const release = await box.releaseOf();
+        if (!release || release.source !== 'release' || release.proven !== true) {
+          throw new Error(`the box is not on a proven release: ${JSON.stringify(release)}`);
+        }
+      });
+      await proveHarness(ctx, box.sandboxId, harness);
+
+      /** Every assistant row that never completed. This must stay empty. */
+      const openAssistantRows = async (): Promise<string[]> =>
+        (await box.transcript())
+          .filter((m) => m.info?.role === 'assistant' && !m.info?.time?.completed && !m.info?.error)
+          .map((m) => String(m.info?.id ?? 'unknown'));
+
+      const answerTo = async (prompt: string): Promise<string> => {
+        const rows = await box.transcript();
+        const user = [...rows]
+          .reverse()
+          .find((m) =>
+            m.info?.role === 'user' &&
+            (m.parts ?? []).some((part: any) => typeof part.text === 'string' && part.text.includes(prompt)),
+          );
+        if (!user) throw new Error('the transcript holds no user row for the prompt');
+        return rows
+          .filter((m) => m.info?.role === 'assistant' && m.info?.parentID === user.info?.id)
+          .flatMap((m) => (m.parts ?? []).map((part: any) => part.text))
+          .filter((t: unknown): t is string => typeof t === 'string')
+          .join('\n');
+      };
+
+      for (let round = 1; round <= RACE_ROUNDS; round += 1) {
+        const marker = `marker-race-${round}`;
+        // A round-unique directive NAME, not `MARKER_PROMPT` verbatim — see
+        // `RACE_MARKER_KEY`'s comment. Sending the identical sentence every
+        // round lets a model answer from its own PRIOR turn in this same
+        // conversation instead of the current system prompt, which is a
+        // confound this flow does not exist to measure.
+        const prompt = RACE_PROMPT(round);
+        await ctx.step(`round ${round}/${RACE_ROUNDS}: a base move and a prompt 200 ms apart`, async () => {
+          const roundStart = String((await box.releaseOf())?.running_release_id ?? '');
+          await fixture.commit({ 'agents/kortix.md': RACE_MARKER_AGENT(round, marker) }, marker);
+          await new Promise((resolve) => setTimeout(resolve, 200));
+
+          const r = await box.send(prompt);
+          // THE DEFECT: `503` here, because the swap killed the process that
+          // had already accepted this prompt.
+          if (r.statusCode === 503) throw new Error(`round ${round}: the send answered 503 ${describe503(r)}`);
+          r.status(200);
+          const body = r.json<any>();
+          if (body?.deduplicated) throw new Error(`round ${round}: the prompt was swallowed as a duplicate`);
+          if (!body?.info || !Array.isArray(body?.parts)) {
+            throw new Error(`round ${round}: the send did not answer with a message: ${JSON.stringify(body).slice(0, 200)}`);
+          }
+
+          const open = await openAssistantRows();
+          if (open.length > 0) throw new Error(`round ${round}: assistant rows never completed: ${open.join(', ')}`);
+
+          // The raced turn ended, so the box converges onto THIS round's
+          // release in the background, and the next turn runs it.
+          await waitFor(() => box.releaseOf(), {
+            until: (rel) =>
+              Boolean(rel) &&
+              rel.running_release_id === rel.desired_release_id &&
+              rel.running_release_id !== roundStart &&
+              rel.proven === true,
+            timeoutMs: 120_000,
+            intervalMs: 3_000,
+            description: `round ${round}: the box serves this round's release`,
+          });
+          const ask = RACE_MARKER_PROMPT(round);
+          (await box.send(ask)).status(200);
+          const answer = await answerTo(ask);
+          if (!answer.includes(marker)) {
+            throw new Error(`round ${round}: the next turn does not carry this round's marker: ${answer.slice(0, 200)}`);
+          }
+        });
+      }
+
+      await ctx.step('a prompt sent while a convergence is PARKED before its swap still answers', async () => {
+        const marker = 'marker-parked';
+        await fixture.commit({ 'agents/kortix.md': MARKER_AGENT(marker) }, marker);
+        // Fault injection: hold the convergence between the turn gate and the
+        // swap. The prompt below is provably inside the window, not racing it.
+        const parked = ctx.client
+          .as(ctx.P.OWNER)
+          .post(box.box('/kortix/config/converge?delay_before_swap_ms=10000'), {}, { timeoutMs: 240_000 });
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+        const r = await box.send(MARKER_PROMPT);
+        if (r.statusCode === 503) throw new Error(`the send answered 503 while a convergence was parked ${describe503(r)}`);
+        r.status(200);
+        const body = r.json<any>();
+        if (!body?.info || !Array.isArray(body?.parts)) {
+          throw new Error(`the send did not answer with a message: ${JSON.stringify(body).slice(0, 200)}`);
+        }
+        const held = await parked;
+        // The convergence that found a turn defers; it never reports `applied`
+        // over a turn it ended.
+        if (held.statusCode === 200 && held.json<any>()?.outcome === 'applied') {
+          const open = await openAssistantRows();
+          if (open.length > 0) throw new Error(`the swap left assistant rows open: ${open.join(', ')}`);
+        }
+        const open = await openAssistantRows();
+        if (open.length > 0) throw new Error(`assistant rows never completed: ${open.join(', ')}`);
+      });
+
+      await ctx.step('an IDLE session still converges: the deferral is not the new normal', async () => {
+        // The fix must not turn every convergence into a deferral. With nobody
+        // prompting, a base move still reaches the box.
+        const marker = 'marker-idle';
+        const started = Date.now();
+        await fixture.commit({ 'agents/kortix.md': MARKER_AGENT(marker) }, marker);
+        const converged = await waitFor(() => box.releaseOf(), {
+          until: (rel) => Boolean(rel) && rel.running_release_id === rel.desired_release_id && rel.proven === true,
+          timeoutMs: 300_000,
+          intervalMs: 3_000,
+          description: 'an idle box converges on the new release',
+        });
+        const took = Date.now() - started;
+        console.log(`[CFG-12] idle convergence took ${took} ms`);
+        if (converged.fallback_reason !== null) {
+          throw new Error(`the idle convergence reported a fallback: ${converged.fallback_reason}`);
+        }
+        // A deferral that never resolves would time out above. This catches the
+        // softer regression: a convergence that still lands, but only after the
+        // gate has deferred it several times over. Dev measured 8.5-15.4 s end
+        // to end; the ceiling is 4x that plus one poll interval, which is wide
+        // enough for a shared preview host and far below a deferral loop.
+        if (took > IDLE_CONVERGENCE_CEILING_MS) {
+          throw new Error(
+            `an idle convergence took ${took} ms, over the ${IDLE_CONVERGENCE_CEILING_MS} ms ceiling ` +
+              '(dev measures 8.5-15.4 s); the fix must not turn a convergence into a deferral',
+          );
+        }
+      });
+
+      await ctx.step('DEF-DEV-2: the answer comes from the CURRENT instructions, not the conversation', async () => {
+        const marker2 = 'marker2-delta';
+        const before = String((await box.releaseOf())?.running_release_id ?? '');
+        await fixture.commit(
+          { 'agents/kortix.md': MARKER2_AGENT('marker-stale-on-purpose', marker2) },
+          marker2,
+        );
+        // Ask only once the BOX is serving it. A wrong answer before that would
+        // say the push had not landed, not that the prompt was stale.
+        await waitFor(() => box.releaseOf(), {
+          until: (rel) =>
+            Boolean(rel) &&
+            rel.running_release_id === rel.desired_release_id &&
+            rel.proven === true &&
+            rel.running_release_id !== before,
+          timeoutMs: 300_000,
+          intervalMs: 3_000,
+          description: 'the box serves the RELOAD_VERIFY_MARKER2 release',
+        });
+        const r = await box.send(MARKER2_PROMPT);
+        r.status(200);
+        const answer = await answerTo(MARKER2_PROMPT);
+        if (!answer.includes(marker2)) {
+          throw new Error(
+            `DEF-DEV-2: the model did not answer from the current instructions: ${answer.slice(0, 200)}`,
+          );
+        }
+      });
+
+      await ctx.step('nothing was half-written: no assistant row is still open', async () => {
+        const open = await openAssistantRows();
+        if (open.length > 0) throw new Error(`assistant rows never completed: ${open.join(', ')}`);
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+  // Known pi defect on deployed staging: pi answers from a stale system prompt
+  // after an idle convergence (gates 37557504543 and 37933459772: DEF-DEV-2
+  // answered marker2-epsilon / marker2-parked; OpenCode CFG-12 passed both
+  // times). Suspected: harness/pi/config-release.ts swap + reconfigure keeps
+  // the old compiled governance. A red CFG-12-pi is that bug, not this test.
+);
+
+// ── CFG-13 — the meta coordinator runs the platform governance, on a real box ─
+//
+// Prod 2026-10-02. The coordinator's box holds no project checkout and its
+// image has no `bun`. It was assigned the project release, could not install
+// the dependencies of the project's tools, and reported every release failed.
+flow(
+  'CFG-13',
+  {
+    domain: 'config-releases',
+    requires: ['database', 'funded', 'sandbox', 'managedGit', 'stripe'],
+    timeoutMs: 900_000,
+    routes: [
+      FEATURES,
+      CONFIG_STATE,
+      DESCRIPTOR,
+      MINT,
+      'POST /v1/projects/:projectId/sessions',
+      'POST /v1/projects/:projectId/sessions/:sessionId/start',
+      'GET /v1/projects/:projectId/sessions/:sessionId/turn',
+      'GET /v1/projects/:projectId/sessions/:sessionId/transcript',
+      ...GIT_PROXY,
+    ],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    const DEPENDENT_TOOL = (answer: string) =>
+      'import { kebabCase } from "lodash-es";\n'
+      + `export default { description: "needs a dependency", parameters: { type: "object" }, execute: () => kebabCase("${answer}") };\n`;
+    try {
+      // The coordinator answers its boot prompt on a managed model (see CFG-11).
+      await ctx.step('the account is entitled to the managed lineup', async () => {
+        await subscribe(ctx.env, ctx.client.as(ctx.P.OWNER), fixture.team.id);
+      });
+
+      await ctx.step('the project opts into `meta_agent`, and its config holds a tool with a dependency', async () => {
+        await fixture.setFeature(true, 'meta_agent');
+        await fixture.commit(
+          {
+            'kortix.yaml': MANIFEST.replace('agents:\n', 'tools:\n  needs_dep: tools/needs_dep.ts\nagents:\n'),
+            'tools/needs_dep.ts': DEPENDENT_TOOL('one'),
+          },
+          'a tool that imports a dependency',
+        );
+      });
+
+      let box!: Awaited<ReturnType<typeof boxSession>>;
+      await ctx.step('a session created with no agent boots My Kortix and answers its boot prompt', async () => {
+        box = await boxSession(ctx, fixture);
+        const { rows } = await fixture.db.query(
+          `SELECT agent_name, metadata->>'sandbox_slug' AS sandbox FROM kortix.project_sessions WHERE session_id = $1`,
+          [box.sessionId],
+        );
+        if (rows[0]?.agent_name !== 'mykortix' || rows[0]?.sandbox !== 'mykortix') throw new Error(`session is ${JSON.stringify(rows[0])}`);
+      });
+
+      const settled = () =>
+        waitFor(() => fixture.configState(box.sessionId), {
+          until: (r) => {
+            const rel = r.body?.release;
+            return r.status === 200 && Boolean(rel?.running_release_id) && rel.running_release_id === rel.desired_release_id;
+          },
+          timeoutMs: 180_000,
+          intervalMs: 3_000,
+          description: `the coordinator ${box.sessionId} to run its desired release`,
+        });
+      let release!: string;
+      await ctx.step('the coordinator runs the image default config on a proven release, with nothing failed and nothing stale', async () => {
+        const { body } = await settled();
+        const rel = body.release;
+        if (rel.source !== 'image-default' || rel.proven !== true) throw new Error(`release ${JSON.stringify(rel)}`);
+        if (rel.fallback_reason !== null || rel.failed_release_id !== null) throw new Error(`a failure is reported: ${JSON.stringify(rel)}`);
+        if (body.stale !== false) throw new Error(`stale ${body.stale}`);
+        release = rel.running_release_id;
+      });
+
+      await ctx.step('a config push moves a project session to the new tip and leaves the coordinator on its release', async () => {
+        const tip = await fixture.commit({ 'tools/needs_dep.ts': DEPENDENT_TOOL('two') }, 'tool change');
+        const { body } = await settled();
+        if (body.release.desired_release_id !== release || body.stale !== false) throw new Error(`the coordinator moved: ${JSON.stringify(body.release)}`);
+        if (body.release.failed_release_id !== null) throw new Error(`a failure is reported: ${JSON.stringify(body.release)}`);
+        const worker = await fixture.mint();
+        const d = (await fixture.descriptor(worker.secret, worker.sessionId)).body as Descriptor;
+        if (d.source_commit !== tip || d.archive === null || d.release_id === release) throw new Error(`project session got ${JSON.stringify({ ...d, files: undefined })}`);
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── Config releases over the 32 MiB archive cap (CFG-14 … CFG-16) ──────────
+//
+// A release is the whole repository tree (#9197), and the API-built archive is
+// capped at 32 MiB gzip (`MAX_CONFIG_ARCHIVE_BYTES`). A daemon that asks for
+// the v3 descriptor builds a release over the cap from its own checkout or
+// from the project snapshot of the release commit; a daemon that does not
+// keeps the v2 answer it always had.
+
+/** Just over the cap. Random bytes do not compress, so gzip stays over it too. */
+const OVER_CAP_BYTES = 33 * 1024 * 1024;
+const V3 = { accept: ['config-release-v3'] };
+
+async function overCapFile(): Promise<Buffer> {
+  const { randomBytes } = await import('node:crypto');
+  return randomBytes(OVER_CAP_BYTES);
+}
+
+function releaseIdOf(descriptor: Descriptor): Promise<string> {
+  return import('node:crypto').then(({ createHash }) =>
+    createHash('sha256').update(`${descriptor.config_tree_id}:${descriptor.compiled_governance_etag ?? ''}`).digest('hex'),
+  );
+}
+
+// ── CFG-14 — v2 and v3 for a repository over the archive cap ───────────────
+flow(
+  'CFG-14',
+  {
+    domain: 'config-releases',
+    requires: ['database'],
+    timeoutMs: 300_000,
+    routes: [MINT, DESCRIPTOR, ARCHIVE, ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    try {
+      const own = await fixture.mint();
+      const large = await overCapFile();
+      let tip = '';
+      let v3!: Descriptor;
+
+      await ctx.step('a commit adds 33 MiB that gzip cannot shrink', async () => {
+        tip = await fixture.commit({ 'data/large.bin': large }, 'over the archive cap');
+      });
+
+      await ctx.step('a daemon that does not ask for v3 gets no release, and the reason names the cap (v2, unchanged)', async () => {
+        const r = await fixture.descriptor(own.secret, own.sessionId);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        const d = r.body as Descriptor;
+        if (d.format !== 'config-release-v2') throw new Error(`format ${d.format}`);
+        if (d.release_id !== null || d.files !== null || d.archive !== null) {
+          throw new Error(`v2 assigned a release over the cap: ${JSON.stringify({ ...d, files: d.files?.length })}`);
+        }
+        if (!d.reason?.includes('exceeds the 33554432-byte config archive limit')) throw new Error(`reason ${d.reason}`);
+        if ('snapshot' in d) throw new Error('a v2 descriptor carries a snapshot');
+      });
+
+      await ctx.step('a daemon that asks for v3 gets the release: the tip, its tree, every file with its blob ID, and no archive', async () => {
+        const r = await fixture.descriptor(own.secret, own.sessionId, V3);
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+        v3 = r.body as Descriptor;
+        if (v3.format !== 'config-release-v3') throw new Error(`format ${v3.format}`);
+        if (v3.source_commit !== tip) throw new Error(`source_commit ${v3.source_commit} is not the tip ${tip}`);
+        if (!HEX40.test(v3.config_tree_id ?? '')) throw new Error(`config_tree_id ${v3.config_tree_id}`);
+        if (v3.release_id !== (await releaseIdOf(v3))) throw new Error('release_id is not sha256(tree:etag)');
+        if (v3.archive !== null) throw new Error(`a release over the cap carries an archive: ${JSON.stringify(v3.archive)}`);
+        if (v3.reason !== null) throw new Error(`reason ${v3.reason}`);
+        const listed = new Map((v3.files ?? []).map(([path, mode, blob]) => [path, { mode, blob }]));
+        const entry = listed.get('data/large.bin');
+        if (!entry || entry.mode !== '100644' || entry.blob !== (await gitBlobId(large))) {
+          throw new Error(`data/large.bin is listed as ${JSON.stringify(entry)}`);
+        }
+        if (!listed.has('agents/kortix.md')) throw new Error('the release lists no agent prompt');
+        if (!('snapshot' in v3)) throw new Error('a v3 descriptor has no snapshot field');
+        if (v3.snapshot !== null && !HEX64.test(v3.snapshot?.sha256 ?? '')) throw new Error(`snapshot ${JSON.stringify(v3.snapshot)}`);
+      });
+
+      await ctx.step('the archive route refuses the tree with 413: no daemon can download an archive over the cap', async () => {
+        const r = await fixture.download(own.secret, v3.config_tree_id!);
+        if (r.status !== 413) throw new Error(`expected 413, got ${r.status}`);
+      });
+
+      await ctx.step('back under the cap, v2 and v3 assign the same release, and both carry the archive', async () => {
+        await commitTo(fixture.repo, {}, 'back under the cap', ['data']);
+        const v2r = await fixture.descriptor(own.secret, own.sessionId);
+        const v3r = await fixture.descriptor(own.secret, own.sessionId, V3);
+        if (v2r.status !== 200 || v3r.status !== 200) throw new Error(`statuses ${v2r.status}/${v3r.status}`);
+        if (!HEX64.test(v2r.body.release_id ?? '') || v2r.body.release_id !== v3r.body.release_id) {
+          throw new Error(`v2 ${v2r.body.release_id} and v3 ${v3r.body.release_id} disagree`);
+        }
+        if (!v2r.body.archive || !v3r.body.archive) throw new Error('a release under the cap has no archive');
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── CFG-15 — the project snapshot delivers a release over the cap ──────────
+flow(
+  'CFG-15',
+  {
+    domain: 'config-releases',
+    requires: ['database', 'projectSnapshots'],
+    timeoutMs: 480_000,
+    routes: [MINT, DESCRIPTOR, ...GIT_PROXY],
+  },
+  async (ctx) => {
+    const fixture = await setup(ctx);
+    try {
+      const own = await fixture.mint();
+      const large = await overCapFile();
+      let tip = '';
+      let d!: Descriptor;
+      let bytes!: Buffer;
+
+      await ctx.step('the base branch goes over the archive cap', async () => {
+        tip = await fixture.commit({ 'data/large.bin': large }, 'over the archive cap');
+      });
+
+      await ctx.step('the v3 descriptor names the project snapshot of the tip once the API has built it', async () => {
+        // The first request queues the snapshot; the producer builds it in the background.
+        d = await waitFor(async () => (await fixture.descriptor(own.secret, own.sessionId, V3)).body as Descriptor, {
+          until: (body) => Boolean(body?.snapshot),
+          timeoutMs: 360_000,
+          intervalMs: 5_000,
+          description: `the project snapshot of ${tip.slice(0, 12)}`,
+        });
+        const snapshot = d.snapshot!;
+        if (d.source_commit !== tip || d.archive !== null) throw new Error(`descriptor ${JSON.stringify({ ...d, files: d.files?.length })}`);
+        if (!/^https?:\/\//.test(snapshot.url) || !HEX64.test(snapshot.sha256)) throw new Error(`snapshot ${JSON.stringify(snapshot)}`);
+        if (snapshot.bytes <= OVER_CAP_BYTES || snapshot.entries <= 0) throw new Error(`snapshot size ${snapshot.bytes}, entries ${snapshot.entries}`);
+        if (Date.parse(snapshot.expires_at) <= Date.now()) throw new Error(`snapshot URL already expired: ${snapshot.expires_at}`);
+      });
+
+      await ctx.step('the snapshot downloads with no credential, and its size and digest are the descriptor\'s', async () => {
+        const r = await fetch(d.snapshot!.url, { signal: AbortSignal.timeout(120_000) });
+        if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+        bytes = Buffer.from(await r.arrayBuffer());
+        const { createHash } = await import('node:crypto');
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        if (bytes.length !== d.snapshot!.bytes || sha256 !== d.snapshot!.sha256) {
+          throw new Error(`downloaded ${bytes.length} bytes, sha256 ${sha256}; descriptor says ${d.snapshot!.bytes}, ${d.snapshot!.sha256}`);
+        }
+      });
+
+      await ctx.step('every file the release lists is in the snapshot with its blob ID; the snapshot also carries a .git no release lists', async () => {
+        const files = await extract(bytes);
+        for (const [path, , blob] of d.files!) {
+          const content = files.get(path);
+          if (!content) throw new Error(`the snapshot lacks ${path}`);
+          if ((await gitBlobId(content)) !== blob) throw new Error(`${path} in the snapshot does not match its blob ID`);
+        }
+        if (!files.has('.git/HEAD')) throw new Error('the snapshot carries no .git');
+        if (d.files!.some(([path]) => path.startsWith('.git/'))) throw new Error('the release lists a .git path');
+      });
+
+      await ctx.step('the presigned URL serves that object only: a changed signature is refused', async () => {
+        const url = new URL(d.snapshot!.url);
+        const signature = url.searchParams.get('X-Amz-Signature');
+        if (!signature) throw new Error('the snapshot URL is not presigned');
+        url.searchParams.set('X-Amz-Signature', `${signature.slice(0, -4)}0000`);
+        const r = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+        if (r.status !== 403 && r.status !== 400) throw new Error(`a tampered signature answered ${r.status}`);
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);
+
+// ── CFG-16 — a box runs a release over the cap, from its checkout then the snapshot ──
+//
+// The proof that a runtime loaded a release is deterministic, not a model's
+// wording: each release's agent carries its own marker as its `description`
+// (`agents.kortix.description` in kortix.yaml), which the compiled agent config
+// copies and the runtime lists at `GET /kortix/runtime/agents`. A default-lineup model
+// answering a marker question is not reliable (measured 2026-10-08: it
+// answered with the directive's NAME on a box that ran the release).
+const OVER_CAP_MANIFEST = (marker: string): string => MANIFEST.replace('    description: main agent\n', `    description: ${marker}\n`);
+
+harnessFlow(
+  'CFG-16',
+  {
+    domain: 'config-releases',
+    requires: ['database', 'funded', 'sandbox', 'managedGit', 'stripe', 'projectSnapshots'],
+    timeoutMs: 1_500_000,
+    routes: [
+      FEATURES,
+      CONFIG_STATE,
+      'POST /v1/projects/:projectId/sessions',
+      'POST /v1/projects/:projectId/sessions/:sessionId/start',
+      'POST /v1/projects/:projectId/sessions/:sessionId/prompts',
+      'GET /v1/projects/:projectId/sessions/:sessionId/turn',
+      'GET /v1/projects/:projectId/sessions/:sessionId/transcript',
+      ...GIT_PROXY,
+    ],
+  },
+  async (ctx, harness) => {
+    const fixture = await setup(ctx);
+    try {
+      const large = await overCapFile();
+      const markerA = `over-cap-a-${crypto.randomUUID()}`;
+      const markerB = `over-cap-b-${crypto.randomUUID()}`;
+
+      await ctx.step('the account is entitled to the managed lineup', async () => {
+        await subscribe(ctx.env, ctx.client.as(ctx.P.OWNER), fixture.team.id);
+      });
+      await ctx.step('the base branch holds 33 MiB that gzip cannot shrink, beside the agent config', async () => {
+        await fixture.commit(
+          { 'data/large.bin': large, 'kortix.yaml': OVER_CAP_MANIFEST(markerA) },
+          'over the archive cap',
+        );
+      });
+
+      const booted = await bootSession(ctx, harness, { project: fixture.project });
+      const releaseOf = async () => {
+        const r = await fixture.configState(booted.sessionId);
+        if (r.status !== 200) throw new Error(`GET /config answered ${r.status}`);
+        return r.body?.release ?? null;
+      };
+      const materialized = async (releaseId: string): Promise<string | null> => {
+        const r = await ctx.client.as(ctx.P.OWNER).get(runtimePath(booted.sandboxId, '/kortix/logs?source=daemon&tail=5000'));
+        r.status(200);
+        return (
+          r
+            .text()
+            .split('\n')
+            .filter((line) => line.includes('"[boot-config] release materialized"') && line.includes(releaseId))
+            .map((line) => /"transport":"(\w+)"/.exec(line)?.[1] ?? null)
+            .pop() ?? null
+        );
+      };
+      const agentDescription = async (): Promise<string | null> => {
+        const r = await ctx.client.as(ctx.P.OWNER).get(runtimePath(booted.sandboxId, '/kortix/runtime/agents'));
+        r.status(200);
+        const agents = r.json<{ agents: Array<{ name: string; description: string | null }> }>().agents;
+        return agents.find((agent) => agent.name === 'kortix')?.description ?? null;
+      };
+
+      let first = '';
+      await ctx.step('the box runs the release over the cap, from the project snapshot or its own git fetch, never the API archive', async () => {
+        const release = await waitFor(releaseOf, {
+          until: (rel) => Boolean(rel) && rel.source === 'release' && rel.proven === true && rel.running_release_id === rel.desired_release_id,
+          timeoutMs: 180_000,
+          intervalMs: 3_000,
+          description: 'the box runs its desired release',
+        });
+        if (release.fallback_reason) throw new Error(`fallback_reason ${release.fallback_reason}`);
+        first = String(release.running_release_id);
+        const transport = await materialized(first);
+        // Since #9770 the config provider never reads /workspace. A release over
+        // the archive cap comes from the S3 project snapshot when one is built,
+        // else from a depth-1 git fetch of the release commit.
+        if (transport !== 'snapshot' && transport !== 'git') {
+          throw new Error(`release ${first.slice(0, 12)} was materialized from ${transport}, not the project snapshot or a git fetch`);
+        }
+      });
+
+      await ctx.step('the runtime serves the agent of that release', async () => {
+        const description = await agentDescription();
+        if (description !== markerA) throw new Error(`the kortix agent's description is ${JSON.stringify(description)}, not the release's`);
+      });
+
+      await ctx.step('a push moves the base: the box converges to the new release from the project snapshot or a git fetch', async () => {
+        await fixture.commit({ 'kortix.yaml': OVER_CAP_MANIFEST(markerB) }, 'next release over the cap');
+        // The snapshot is built in the background; the box retries once a minute until it is ready.
+        const release = await waitFor(releaseOf, {
+          until: (rel) => Boolean(rel) && rel.running_release_id !== first && rel.running_release_id === rel.desired_release_id && rel.proven === true,
+          timeoutMs: 480_000,
+          intervalMs: 5_000,
+          description: 'the box runs the new release',
+        });
+        if (release.fallback_reason) throw new Error(`fallback_reason ${release.fallback_reason}`);
+        const transport = await materialized(String(release.running_release_id));
+        // #9770: the box converges as soon as the base moves. The snapshot of the
+        // new commit is built in the background, so the box takes a depth-1 git
+        // fetch when it is not ready yet. Never the API archive: it is over the cap.
+        if (transport !== 'snapshot' && transport !== 'git') {
+          throw new Error(`the new release was materialized from ${transport}, not the project snapshot or a git fetch`);
+        }
+      });
+
+      await ctx.step('the runtime serves the agent of the new release, and a turn runs on it', async () => {
+        const description = await waitFor(agentDescription, {
+          until: (value) => value === markerB,
+          timeoutMs: 60_000,
+          intervalMs: 3_000,
+          description: 'the new agent description',
+        });
+        if (description !== markerB) throw new Error(`description ${description}`);
+        await sendPrompt(ctx, fixture.projectId, booted.sessionId, 'Reply with the single word OK.');
+        await waitForAssistantText(ctx, fixture.projectId, booted.sessionId, 'OK');
+      });
+
+      await ctx.step('GET /config reports the session current: not stale, no fallback', async () => {
+        const r = await fixture.configState(booted.sessionId);
+        if (r.status !== 200) throw new Error(`GET /config answered ${r.status}`);
+        if (r.body.stale !== false || r.body.release?.fallback_reason !== null) {
+          throw new Error(`config state ${JSON.stringify({ stale: r.body.stale, release: r.body.release })}`);
+        }
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  },
+);

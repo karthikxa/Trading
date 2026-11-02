@@ -1,0 +1,85 @@
+# Cloudflare Worker that fronts the public API and routes to the active backend.
+# Deploy:
+#   wrangler deploy --env prod    # api.kortix.com      → api-kortix-router
+#   wrangler deploy --env staging # staging-api.kortix.com → staging-api-kortix-router
+#   wrangler deploy --env dev     # dev-api.kortix.com  → dev-api-kortix-router
+#
+# Auth: a scoped CLOUDFLARE_API_TOKEN (Workers Scripts:Edit + Workers Routes:Edit
+# + DNS:Edit on kortix.com). CI also supports CLOUDFLARE_EMAIL +
+# CLOUDFLARE_GLOBAL_API_KEY for the REST API fallback used by deploy-staging.
+#
+# Flip a backend live WITHOUT redeploying code:
+#   wrangler secret put / or set the plain-text var ACTIVE_BACKEND in the dash,
+#   e.g. wrangler deploy --env prod --var ACTIVE_BACKEND:eks
+# Values: "ecs-fargate" (EU ECS), "eks" (EKS standby), or "us-east-2" (Ohio
+# ECS). Production stays on "ecs-fargate" until the database cutover. Check
+# the selected value in the Worker binding; responses do not disclose it.
+
+# Gateway control-plane gate: `wrangler secret put INTERNAL_EDGE_KEY --env <env>` makes
+# the API host answer 404 to /internal/* unless the caller sends the same value in
+# x-kortix-internal-edge-key. Set KORTIX_INTERNAL_EDGE_KEY on the gateway FIRST.
+main = "worker.mjs"
+compatibility_date = "2026-06-01"
+workers_dev = false
+account_id = "9785405a992435bb0c7bd19f9b6d26d5"
+
+# ── PROD: api.kortix.com + gateway.kortix.com ─────────────────────────────────
+[env.prod]
+name = "api-kortix-router"
+routes = [
+  { pattern = "api.kortix.com", custom_domain = true },
+  { pattern = "gateway.kortix.com/*", zone_name = "kortix.com" },
+]
+
+[env.prod.vars]
+# ECS Fargate (eu-west-2) is the ONLY prod backend. EKS was decommissioned
+# 2026-08-02 (was costing ~$937/mo as an unused warm standby).
+ACTIVE_BACKEND = "ecs-fargate"
+BACKEND_ECS_FARGATE = "https://api-ecs-fargate.kortix.com"
+GATEWAY_ACTIVE_BACKEND = "ecs-fargate"
+GATEWAY_BACKEND_ECS_FARGATE = "https://gateway-ecs-fargate.kortix.com"
+# Vercel Edge Config is exposed through this web route. The Worker caches it
+# for two seconds and blocks mutating API/gateway requests at the edge when the
+# level is "blocking". The API origin and database are not part of this read.
+MAINTENANCE_STATE_URL = "https://kortix.com/api/maintenance/edge"
+# An operator sets this to "blocking" to keep the edge write gate closed
+# while Vercel is unavailable. The message falls back to the generic text in
+# worker.mjs.
+MAINTENANCE_LEVEL_OVERRIDE = "none"
+MAINTENANCE_TITLE_OVERRIDE = "Scheduled maintenance"
+
+# ── STAGING: staging-api.kortix.com + gateway-staging.kortix.com ──────────────
+[env.staging]
+name = "staging-api-kortix-router"
+# staging-api is a Worker ROUTE over a proxied (cfargotunnel) record — NOT a
+# custom domain like dev/prod — so keep it a route to avoid clobbering that DNS.
+routes = [
+  { pattern = "staging-api.kortix.com/*", zone_name = "kortix.com" },
+  { pattern = "gateway-staging.kortix.com/*", zone_name = "kortix.com" },
+]
+
+[env.staging.vars]
+# Staging runs in eu-west-2, next to its database (infra/terraform/environments/
+# staging-eu-west-2). The old us-west-2 stack ("ecs-fargate") was destroyed on
+# 2026-10-12. Deploy Staging writes these same bindings (deploy-staging.yml).
+ACTIVE_BACKEND = "eu-west-2"
+BACKEND_EU_WEST_2 = "https://staging-api-euw2.kortix.com"
+GATEWAY_ACTIVE_BACKEND = "eu-west-2"
+GATEWAY_BACKEND_EU_WEST_2 = "https://gateway-staging-euw2.kortix.com"
+
+# ── DEV: dev-api.kortix.com + gateway-dev.kortix.com ──────────────────────────
+[env.dev]
+name = "dev-api-kortix-router"
+routes = [
+  { pattern = "dev-api.kortix.com", custom_domain = true },
+  { pattern = "gateway-dev.kortix.com/*", zone_name = "kortix.com" },
+]
+
+[env.dev.vars]
+# Dev runs in us-east-2, next to its database (infra/terraform/environments/
+# dev-us-east-2). The old us-west-2 stack ("ecs-fargate") was destroyed on
+# 2026-10-12.
+ACTIVE_BACKEND = "us-east-2"
+BACKEND_US_EAST_2 = "https://dev-api-use2.kortix.com"
+GATEWAY_ACTIVE_BACKEND = "us-east-2"
+GATEWAY_BACKEND_US_EAST_2 = "https://gateway-dev-use2.kortix.com"

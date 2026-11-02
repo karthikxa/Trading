@@ -1,0 +1,403 @@
+import { upstreamFetch } from '../../upstream-fetch';
+import { CATALOG, catalogModelForWireModel } from '@kortix/llm-catalog';
+import { InvalidPromptError, generateText, streamText } from 'ai';
+import type { UpstreamDescriptor } from '../../domain';
+import { NetworkError, UpstreamHttpError, looksLikeTerminalAuthFailure } from '../../errors';
+import {
+  type AiSdkFetch,
+  aiSdkFamilyFor,
+  clampMaxOutputTokensForBedrock,
+  isCodexDescriptor,
+  resolveAiModel,
+} from './model';
+import { buildAiSdkArgs } from './request';
+import { openAiJsonFromResult, openAiSseFromFullStream } from './sse';
+
+export type { AiSdkFetch } from './model';
+export {
+  aiSdkFamilyFor,
+  isCodexDescriptor,
+  resolveAiModel,
+} from './model';
+
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function sseResponse(stream: ReadableStream<Uint8Array>): Response {
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    },
+  });
+}
+
+// Map an AI SDK error into the gateway's transport error taxonomy so the
+// dispatch plan (pipeline/dispatch.ts) treats it like a direct-path failure.
+//
+// Defect (2026-07-17, live-confirmed): not every AI-SDK provider error carries
+// a numeric `.statusCode` — an AWS credential/SigV4 resolution failure
+// (Bedrock) can throw before any HTTP response ever exists, and some AI-SDK
+// error classes don't expose one at all. Without the message-based fallback
+// below, those errors always fell through to a generic NetworkError — which
+// was treated as retryable — so an invalid/dead upstream key got retried into
+// a permanently empty, hung session turn (11+ attempts over 2+ minutes, no
+// error ever surfaced) instead of failing fast on attempt one.
+export function toTransportError(err: unknown, provider: string): Error {
+  // The AI SDK validates the built prompt CLIENT-SIDE, before any request
+  // ever goes out (e.g. `messages` resolving to an empty array — a body with
+  // no `messages` field at all, or a `messages: []`) — no native transport
+  // ever had this check; it always forwarded whatever body it was given
+  // straight to the upstream, which would itself 400 the malformed request.
+  // Classified the same way a real upstream 400 would be here so it fails
+  // fast (a 400 is a request error, never a transient one) instead of falling
+  // through to the generic NetworkError case below, which a transient fallback
+  // chain moves past on a request that can never succeed.
+  if (InvalidPromptError.isInstance(err)) {
+    return new UpstreamHttpError(400, err.message, provider);
+  }
+  const e = err as {
+    statusCode?: number;
+    responseBody?: string;
+    responseHeaders?: Record<string, string>;
+    message?: string;
+    url?: string;
+    cause?: { statusCode?: number; responseHeaders?: Record<string, string> };
+  };
+  // A `cause`-wrapped statusCode (some AI-SDK error classes nest the original
+  // API-call error there) counts the same as a top-level one.
+  const statusCode =
+    typeof e?.statusCode === 'number'
+      ? e.statusCode
+      : typeof e?.cause?.statusCode === 'number'
+        ? e.cause.statusCode
+        : undefined;
+  if (typeof statusCode === 'number') {
+    // `responseBody` is the RAW upstream body — the actionable text lives there
+    // when the AI SDK's own `.message` fell back to `response.statusText`
+    // (generic "Bad Request"/"Internal Server Error") because the body failed
+    // the provider's error-schema parse. Prefer it whenever it is non-empty;
+    // only fall back to the AI SDK's `.message` (which may itself be the real
+    // `error.message` when the schema DID match) when no body was captured.
+    // `parseUpstreamErrorBody` mines the real `error.message`/`error.code` out
+    // of this raw body.
+    const body =
+      typeof e.responseBody === 'string' && e.responseBody.trim().length > 0
+        ? e.responseBody
+        : (e.message ?? '');
+    // `responseHeaders` carries the upstream's `Retry-After` on a 429/503. The
+    // pipeline relays it CLAMPED (`clampRetryAfterSeconds`) — never verbatim, because
+    // OpenCode >= 1.18.17 sleeps for whatever it is told, up to 24.8 days.
+    const headers = e.responseHeaders ?? e.cause?.responseHeaders;
+    return new UpstreamHttpError(statusCode, body, provider, headers);
+  }
+  const message = e?.message ?? (err instanceof Error ? err.message : String(err));
+  if (looksLikeTerminalAuthFailure(message)) {
+    return new UpstreamHttpError(401, message, provider);
+  }
+  return new NetworkError(`ai-sdk call to ${provider} failed`, err);
+}
+
+// `streamText`'s result exposes several lazily-computed promises (usage, text,
+// finishReason, steps, toolCalls, ...) that resolve/reject as the SAME
+// underlying stream `fullStream` drives progresses (ai's `DelayedPromise`:
+// resolve/reject always update its internal status, and ALSO forward onto the
+// real native Promise the instant one has been created by any earlier access
+// — including one made internally by the SDK's own onFinish/telemetry
+// plumbing, not just by our code). This transport only ever consumes
+// `fullStream` (below) — nothing here ever awaits `result.usage` etc. — so if
+// the upstream call fails mid-stream and something upstream of us ends up
+// materializing one of these promises, its rejection has no attached handler:
+// an unhandled promise rejection, which crashes the whole Bun worker process,
+// dropping the connection as a bare Cloudflare 502 BEFORE the `error` part
+// `openAiSseFromFullStream` (sse.ts) turns into a clean SSE error frame ever
+// gets a chance to run, and before any settle/logging path in the pipeline
+// runs — the real upstream error is lost, not surfaced. Attaching a no-op
+// catch to every one of them makes a rejection here inert; the actual error
+// the caller sees is still the `error` part sse.ts already handles correctly.
+// Applies to every provider's streaming call, not just Anthropic's.
+export function guardAgainstUnhandledResultRejections(result: {
+  usage: PromiseLike<unknown>;
+  text: PromiseLike<unknown>;
+  finishReason: PromiseLike<unknown>;
+  steps: PromiseLike<unknown>;
+  toolCalls: PromiseLike<unknown>;
+  finalStep: PromiseLike<unknown>;
+  providerMetadata: PromiseLike<unknown>;
+}): void {
+  for (const p of [
+    result.usage,
+    result.text,
+    result.finishReason,
+    result.steps,
+    result.toolCalls,
+    result.finalStep,
+    result.providerMetadata,
+  ]) {
+    void Promise.resolve(p).catch(() => {});
+  }
+}
+
+type StreamPart = { type: string; [k: string]: unknown };
+
+// Parts that only report liveness. They carry no model output, so a failure
+// after them still left the client with nothing.
+const LIVENESS_PARTS = new Set(['start', 'start-step']);
+
+/**
+ * How long a stream may stay without output before the transport answers the
+ * client anyway. Provider errors (429, 400, auth, overload) arrive in well
+ * under a second; a large prefill can hold Bedrock's response headers for
+ * minutes, and the synthetic headers must reach the client before
+ * Cloudflare's 100 s response deadline.
+ */
+export const STREAM_COMMIT_MS = Number(process.env.GATEWAY_STREAM_COMMIT_MS) || 30_000;
+
+/**
+ * Reads `fullStream` until the first output part, an error, or `commitAfterMs`.
+ *
+ * An error before any output throws, as the same transport error a
+ * non-streaming call throws, so the caller can retry it on another key or
+ * provider. Otherwise the returned iterable replays what was read and then
+ * continues the provider stream, and a later error stays in-band.
+ */
+export async function openStream(
+  fullStream: AsyncIterable<StreamPart>,
+  provider: string,
+  commitAfterMs: number,
+): Promise<AsyncIterable<StreamPart>> {
+  const iterator = fullStream[Symbol.asyncIterator]();
+  const read: StreamPart[] = [];
+  let inFlight: Promise<IteratorResult<StreamPart>> | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const commit = new Promise<'commit'>((resolve) => {
+    timer = setTimeout(() => resolve('commit'), commitAfterMs);
+  });
+  try {
+    for (;;) {
+      inFlight = iterator.next();
+      const next = await Promise.race([inFlight, commit]);
+      if (next === 'commit') {
+        // The replay hands this read to the SSE bridge, which handles its result.
+        inFlight.catch(() => {});
+        break;
+      }
+      inFlight = null;
+      if (next.done) break;
+      if (next.value.type === 'error') {
+        await iterator.return?.();
+        throw toTransportError(next.value.error, provider);
+      }
+      read.push(next.value);
+      if (!LIVENESS_PARTS.has(next.value.type)) break;
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+  return {
+    [Symbol.asyncIterator]: () => ({
+      next: () => {
+        const buffered = read.shift();
+        if (buffered) return Promise.resolve({ done: false, value: buffered });
+        const pending = inFlight;
+        inFlight = null;
+        return pending ?? iterator.next();
+      },
+      return: async (value?: unknown) => (await iterator.return?.(value)) ?? { done: true, value: undefined },
+    }),
+  };
+}
+
+// Both `generateText`'s and `streamText`'s settled results expose tool calls
+// as an array of `{toolCallId, toolName, input}` (plus provider-specific
+// fields we don't need) — normalize either into what openAiJsonFromResult
+// wants, once, instead of duplicating the `.map` at both call sites below.
+// Exported so ai-sdk.test.ts can drive the exact same collapse sequence
+// callUpstreamViaAiSdk's Codex/non-streaming branch runs, against a real
+// `streamText()` result from a mock model, without needing network access.
+export function mapToolCalls(
+  toolCalls: ReadonlyArray<{ toolCallId: string; toolName: string; input?: unknown }> | undefined,
+): Array<{ toolCallId: string; toolName: string; input: unknown }> | undefined {
+  return toolCalls?.map((tc) => ({
+    toolCallId: tc.toolCallId,
+    toolName: tc.toolName,
+    input: tc.input,
+  }));
+}
+
+// The AI-SDK transport engine. Given the same OpenAI chat.completions body and
+// descriptor the native path receives, drive the AI SDK provider package and
+// return a Response in the SAME OpenAI-compatible shape (SSE for stream, JSON
+// otherwise) — so the pipeline, billing, and opencode see no difference.
+//
+// Both modes throw a provider failure that happens before any output, so the
+// dispatch plan can retry it. Streaming waits for the first output part for at
+// most `commitAfterMs` (see openStream); a failure after that point surfaces as
+// an in-stream OpenAI error frame.
+export async function callUpstreamViaAiSdk(
+  body: Record<string, unknown>,
+  descriptor: UpstreamDescriptor,
+  opts: { signal?: AbortSignal; fetch?: AiSdkFetch; requestId?: string; commitAfterMs?: number } = {},
+): Promise<Response> {
+  const family = aiSdkFamilyFor(descriptor);
+  const isCodex = isCodexDescriptor(descriptor);
+  const model = resolveAiModel(descriptor, {
+    fetch: opts.fetch ?? upstreamFetch,
+    // Kortix-internal correlation id, mirrored onto the upstream request as a
+    // best-effort header — every provider here tolerates unknown headers.
+    // This is the ai-sdk-engine equivalent of what the retired native
+    // transport's `callUpstream` used to attach directly onto the built
+    // request (see http/call-upstream.ts).
+    extraHeaders: opts.requestId ? { 'x-kortix-request-id': opts.requestId } : undefined,
+  });
+  const args = buildAiSdkArgs(body, family, {
+    // The ChatGPT Codex backend always expects a reasoning effort; the native
+    // transport defaults to 'low' when the caller sends none (see
+    // openai-responses/request.ts's `chatToResponses`) — mirrored here via
+    // buildAiSdkArgs's opt-in default rather than in buildAiSdkArgs itself, so
+    // every non-Codex caller's "no default effort" behavior is untouched.
+    defaultReasoningEffort: isCodex ? 'low' : undefined,
+    // Codex needs `store: false` and no output-token cap (see request.ts).
+    providerName: descriptor.provider,
+    // The resolved catalog model for the WIRE model id (managed slug, BYOK
+    // `provider/id`, or `codex/id` — `catalogModelForWireModel` stitches all
+    // three), so buildAiSdkArgs can gate reasoning_effort/temperature/top_p/
+    // max_tokens against its real models.dev capabilities (see request.ts's
+    // normalizeRequest). `undefined` for an unknown/unresolvable id → no gating
+    // (permissive parity). Keyed off the client wire id, not descriptor
+    // .resolvedModel (which is the UPSTREAM id — a Bedrock/OpenRouter slug that
+    // wouldn't resolve here). The bundled static CATALOG is authoritative for
+    // capability shape; the transport has no live snapshot.
+    model: catalogModelForWireModel(String(body.model ?? ''), CATALOG),
+    // The UPSTREAM model id — gates the bedrock adapter's Claude-Converse-only
+    // primitives (cachePoint, adaptive reasoningConfig). Same signal
+    // clampMaxOutputTokensForBedrock (below) keys the Nova clamp off of, so a
+    // non-Claude Bedrock model (global.openai.*, Nova) never gets Claude fields.
+    resolvedModel: descriptor.resolvedModel,
+  });
+  const clientWantsStream = body.stream === true;
+  const ctx = {
+    model: descriptor.resolvedModel || String(body.model ?? ''),
+    provider: descriptor.provider,
+  };
+
+  const shared = {
+    model,
+    system: args.system,
+    messages: args.messages,
+    tools: args.tools,
+    toolChoice: args.toolChoice,
+    temperature: args.temperature,
+    topP: args.topP,
+    // Clamped for small Bedrock models (Nova) whose Converse API hard-rejects
+    // an over-large ceiling instead of silently capping it — see model.ts's
+    // clampMaxOutputTokensForBedrock. A no-op for every other family/model.
+    maxOutputTokens: clampMaxOutputTokensForBedrock(
+      args.maxOutputTokens,
+      family,
+      descriptor.resolvedModel,
+    ),
+    stopSequences: args.stopSequences,
+    seed: args.seed,
+    frequencyPenalty: args.frequencyPenalty,
+    presencePenalty: args.presencePenalty,
+    // Drives response_format (JSON mode / structured output) — see
+    // request.ts's buildResponseFormatOutput. `undefined` here is exactly
+    // streamText/generateText's own default (plain text), so a request with
+    // no response_format is completely unaffected by this field existing.
+    output: args.output,
+    providerOptions: args.providerOptions,
+    // The gateway owns retry/failover/circuit-breaking; keep the SDK from adding a
+    // second, opaque retry layer on top.
+    maxRetries: 0,
+    abortSignal: opts.signal,
+  } as const;
+
+  // Codex's backend is stream-only — a non-streaming Responses call
+  // (`stream:false`, what `generateText`'s `doGenerate` always sends) 400s
+  // there (same constraint the native transport works around by forcing
+  // `stream: true` in chatToResponses regardless of what the client asked
+  // for — see its comment). The AI SDK has no equivalent per-call override:
+  // the only way to get `stream:true` on the wire is to drive the model
+  // through `streamText` (`doStream`). So a Codex call ALWAYS goes through
+  // streamText below, even when the client itself asked for a non-streaming
+  // completion — that settled result is then collapsed into one JSON response
+  // instead of relayed as SSE, matching openai-responses/response.ts's
+  // `collectStreamAsChat` for the identical client-non-streaming/
+  // upstream-stream-only combination.
+  if (clientWantsStream || isCodex) {
+    // The provider's own failure (status, body, headers). A streaming client
+    // reads it from fullStream's `error` part; the settled promises the JSON
+    // collapse below awaits reject with a generic NoOutputGeneratedError.
+    let streamError: unknown;
+    const result = streamText({
+      ...shared,
+      onError: ({ error }) => {
+        // Kept for the JSON collapse; handling it here also keeps the
+        // rejection from going unhandled.
+        streamError = error;
+      },
+    });
+    guardAgainstUnhandledResultRejections(result);
+
+    if (clientWantsStream) {
+      const opened = await openStream(
+        result.fullStream,
+        descriptor.provider,
+        opts.commitAfterMs ?? STREAM_COMMIT_MS,
+      );
+      return sseResponse(openAiSseFromFullStream(opened, ctx));
+    }
+
+    // Codex + a client that wants JSON: await the same settled-result promises
+    // `guardAgainstUnhandledResultRejections` already made safe to await, and
+    // build the identical JSON shape `generateText`'s branch below produces.
+    try {
+      const [text, reasoningText, toolCalls, finishReason, usage] = await Promise.all([
+        result.text,
+        result.reasoningText,
+        result.toolCalls,
+        result.finishReason,
+        result.usage,
+      ]);
+      return jsonResponse(
+        openAiJsonFromResult(
+          {
+            text,
+            reasoningText,
+            toolCalls: mapToolCalls(toolCalls),
+            finishReason,
+            usage,
+          },
+          ctx,
+        ),
+      );
+    } catch (err) {
+      throw toTransportError(streamError ?? err, descriptor.provider);
+    }
+  }
+
+  try {
+    const result = await generateText(shared);
+    return jsonResponse(
+      openAiJsonFromResult(
+        {
+          text: result.text,
+          reasoningText: result.reasoningText,
+          toolCalls: mapToolCalls(result.toolCalls),
+          finishReason: result.finishReason,
+          usage: result.usage,
+        },
+        ctx,
+      ),
+    );
+  } catch (err) {
+    throw toTransportError(err, descriptor.provider);
+  }
+}

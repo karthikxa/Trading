@@ -1,0 +1,221 @@
+/**
+ * Typed environment/config resolution for ke2e.
+ *
+ * The suite is environment-agnostic: point it at a local dev API, dev-api.kortix.com,
+ * or prod via env vars. Primary names are KE2E_(star), with E2E_(star) + standard fallbacks so
+ * existing Playwright and deployed-target secrets keep working.
+ *
+ * Bun auto-loads a `.env` in the cwd, so local runs can drop secrets there.
+ */
+
+export type TargetName = 'local' | 'dev' | 'staging' | 'prod' | 'custom';
+
+export interface Capabilities {
+  /** Real cloud sandbox provisioning available (Platinum, the reference provider). */
+  sandbox: boolean;
+  /** Managed GitHub repository provisioning available. */
+  managedGit: boolean;
+  /** Managed repo-scoped push-token export available for CLI ship flows. */
+  managedGitPush: boolean;
+  /** Stripe test-mode billing wired (webhook secret present). */
+  stripe: boolean;
+  /** Supabase service-role admin available (mint/confirm users). */
+  supabaseAdmin: boolean;
+  /** Direct DB access for GC of orphans + role states with no route. */
+  database: boolean;
+  /** Platform-admin token for /v1/ops/* + requireAdmin routes. */
+  admin: boolean;
+  /** Internal service key for authenticated cron routes. */
+  internalCron: boolean;
+  /** The target OWNER account is already funded enough to create sessions. */
+  funded: boolean;
+  /**
+   * The runner can reach an App at its own public hostname. Local Apps are
+   * served under `*.apps.localhost`; a deployed target needs real DNS for its
+   * Apps domain, and a preview sandbox origin has none (the API runs in
+   * direct-edge mode, so `x-kortix-app-host` cannot stand in for it).
+   */
+  appHost: boolean;
+  /**
+   * The target's API publishes project snapshots (`KORTIX_PROJECT_SNAPSHOT_S3_*`),
+   * so a config release over the archive cap reaches a box through one. Dev,
+   * staging and prod do. The local profile and a preview do not.
+   */
+  projectSnapshots: boolean;
+}
+
+export interface Env {
+  /** API base, always /v1-suffixed, no trailing slash. e.g. http://localhost:8008/v1 */
+  apiUrl: string;
+  /** Dashboard/web origin (for CLI-login callback flows). */
+  baseUrl: string;
+  /** LLM gateway base — separate host, NOT /v1-suffixed. e.g. https://gateway-dev.kortix.com */
+  gatewayUrl: string;
+  supabaseUrl: string;
+  supabaseAnonKey: string | null;
+  supabaseServiceRoleKey: string | null;
+  databaseUrl: string | null;
+  /** Seeded long-lived owner (confirmed, billing-capable). */
+  ownerEmail: string | null;
+  ownerPassword: string | null;
+  /** Platform-admin bearer token (kortix_pat_* or kortix_*). */
+  adminToken: string | null;
+  /** Internal service bearer used only by the cron-contract flows. */
+  internalServiceKey: string | null;
+  /** Stripe TEST secret key — to confirm PaymentIntents in the real subscribe flow. */
+  stripeSecretKey: string | null;
+  /**
+   * Stripe webhook signing secret (whsec_…). Lets the suite POST a validly-signed
+   * `customer.subscription.updated` to /v1/billing/webhook/stripe so the real
+   * credit-granting handler runs even on a target whose Stripe→API webhook isn't
+   * delivered (e.g. dev-api). Only used as a fallback when credits don't land on
+   * their own after subscribe.
+   */
+  stripeWebhookSecret: string | null;
+  /** Required non-empty to run destructive (data-creating) flows. */
+  liveConfirm: string | null;
+  target: TargetName;
+  capabilities: Capabilities;
+  /** Email domain for synthetic principal accounts. */
+  testEmailDomain: string;
+  /**
+   * Mailpit HTTP origin that receives the target's email (local stack, preview).
+   * Null on a target without one. Deliberately not a capability: a capability
+   * staging lacks would fail `--require-all` on the prod release gate.
+   */
+  mailpitUrl: string | null;
+  /**
+   * The address on the target API's operator allowlist
+   * (`KORTIX_PLATFORM_ADMIN_EMAILS`) that no principal holds. The local
+   * profile sets it; a cloud target has no allowlist. Not a capability, for
+   * the same reason as `mailpitUrl`.
+   */
+  platformAdminEmail: string | null;
+}
+
+function pick(...names: string[]): string | null {
+  for (const n of names) {
+    const v = process.env[n];
+    if (v != null && v.trim() !== '') return v.trim();
+  }
+  return null;
+}
+
+function stripTrailingSlash(u: string): string {
+  return u.replace(/\/+$/, '');
+}
+
+export function inferTarget(apiUrl: string): TargetName {
+  const explicit = pick('KE2E_TARGET', 'E2E_TARGET');
+  if (
+    explicit === 'local' ||
+    explicit === 'dev' ||
+    explicit === 'staging' ||
+    explicit === 'prod' ||
+    explicit === 'custom'
+  ) {
+    return explicit;
+  }
+  const host = (() => {
+    try {
+      return new URL(apiUrl).hostname;
+    } catch {
+      return '';
+    }
+  })();
+  if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.localhost')) return 'local';
+  if (host.startsWith('dev-api.') || host.startsWith('dev-')) return 'dev';
+  if (host.startsWith('staging-api.') || host.startsWith('staging-')) return 'staging';
+  if (host === 'api.kortix.com' || host.startsWith('api-prod.') || host === 'kortix.com')
+    return 'prod';
+  return 'custom';
+}
+
+export function defaultGatewayUrl(target: TargetName): string {
+  if (target === 'prod') return 'https://gateway.kortix.com';
+  if (target === 'staging') return 'https://gateway-staging.kortix.com';
+  if (target === 'dev') return 'https://gateway-dev.kortix.com';
+  return 'http://localhost:8009';
+}
+
+let cached: Env | null = null;
+
+export function loadEnv(): Env {
+  if (cached) return cached;
+
+  const apiUrl = stripTrailingSlash(
+    pick('KE2E_API_URL', 'E2E_API_URL', 'NEXT_PUBLIC_BACKEND_URL') || 'http://localhost:8008/v1',
+  );
+  const baseUrl = stripTrailingSlash(
+    pick('KE2E_BASE_URL', 'E2E_BASE_URL') ||
+      apiUrl.replace(/\/v1$/, '').replace('://api.', '://').replace('://dev-api.', '://dev.'),
+  );
+  const supabaseUrl = stripTrailingSlash(
+    pick('KE2E_SUPABASE_URL', 'E2E_SUPABASE_URL', 'SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL') ||
+      'http://127.0.0.1:54321',
+  );
+  const supabaseAnonKey = pick(
+    'KE2E_SUPABASE_ANON_KEY',
+    'SUPABASE_ANON_KEY',
+    'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+  );
+  const supabaseServiceRoleKey = pick(
+    'KE2E_SUPABASE_SERVICE_ROLE_KEY',
+    'SUPABASE_SERVICE_ROLE_KEY',
+  );
+  const databaseUrl = pick('KE2E_DATABASE_URL', 'E2E_DATABASE_URL');
+  const ownerEmail = pick('KE2E_OWNER_EMAIL', 'E2E_OWNER_EMAIL');
+  const ownerPassword = pick('KE2E_OWNER_PASSWORD', 'E2E_OWNER_PASSWORD');
+  const adminToken = pick('KE2E_ADMIN_TOKEN', 'E2E_ADMIN_TOKEN', 'ADMIN_TOKEN');
+  const internalServiceKey = pick('KE2E_INTERNAL_SERVICE_KEY');
+  const stripeSecretKey = pick('KE2E_STRIPE_SECRET_KEY');
+  const stripeWebhookSecret = pick('KE2E_STRIPE_WEBHOOK_SECRET');
+  const liveConfirm = pick('KE2E_LIVE_CONFIRM');
+  const target = inferTarget(apiUrl);
+  const gatewayUrl = stripTrailingSlash(pick('KE2E_GATEWAY_URL') || defaultGatewayUrl(target));
+
+  const capabilities: Capabilities = {
+    sandbox: pick('KE2E_CAP_SANDBOX') !== '0',
+    managedGit: pick('KE2E_CAP_MANAGED_GIT') !== '0',
+    managedGitPush: pick('KE2E_CAP_MANAGED_GIT_PUSH') === '1',
+    stripe: stripeSecretKey != null,
+    supabaseAdmin: supabaseServiceRoleKey != null,
+    database: databaseUrl != null,
+    admin: adminToken != null,
+    internalCron: internalServiceKey != null,
+    funded: pick('KE2E_CAP_FUNDED') === '1',
+    appHost: pick('KE2E_CAP_APP_HOST') === '1' || inferTarget(apiUrl) === 'local',
+    projectSnapshots: pick('KE2E_CAP_PROJECT_SNAPSHOTS') !== '0',
+  };
+
+  cached = {
+    apiUrl,
+    baseUrl,
+    gatewayUrl,
+    supabaseUrl,
+    supabaseAnonKey,
+    supabaseServiceRoleKey,
+    databaseUrl,
+    ownerEmail,
+    ownerPassword,
+    adminToken,
+    internalServiceKey,
+    stripeSecretKey,
+    stripeWebhookSecret,
+    liveConfirm,
+    target,
+    capabilities,
+    testEmailDomain: pick('KE2E_EMAIL_DOMAIN') || 'ke2e.kortix.test',
+    mailpitUrl: pick('KE2E_MAILPIT_URL', 'E2E_MAILPIT_URL'),
+    platformAdminEmail: pick('KE2E_PLATFORM_ADMIN_EMAIL')?.toLowerCase() ?? null,
+  };
+  return cached;
+}
+
+export function describeEnv(env: Env): string {
+  const caps = Object.entries(env.capabilities)
+    .filter(([, v]) => v)
+    .map(([k]) => k)
+    .join(', ');
+  return `target=${env.target} api=${env.apiUrl} caps=[${caps}]`;
+}

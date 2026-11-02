@@ -1,0 +1,229 @@
+---
+title: "How we triage on-call alerts before paging a human"
+description: The triage agent we run on Kortix — connected to Sentry, our logs, and GitHub. It works up a first-pass diagnosis on every alert and only pages a human when it can't resolve it.
+date: "2026-02-25"
+author: team
+tags:
+  - SRE
+  - Case Study
+  - Enterprise
+template: oncall-triage
+---
+
+An alert fires at 3am. Before anyone can act on it, someone has to wake up, pull
+the stack trace, check what deployed recently, grep the logs, and work out
+whether this is a real incident or noise. Most of that is mechanical, and most of
+it happens before the human has any context — which is the worst time to be doing
+it.
+
+We run a triage agent on Kortix that does the first pass. When an alert fires, the
+agent gathers the stack trace, the recent deploys, and the correlated logs, posts
+a first-pass diagnosis to the incident channel, and only pages a human when it
+can't resolve the alert or the severity is high. This write-up covers how the
+setup works: the trigger, the session model, and the guardrails.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Every alert, as it fires</Fact>
+  <Fact label="Connected systems">Sentry · Logs · GitHub</Fact>
+  <Fact label="Mode">Trigger-driven · pages a human only when needed</Fact>
+</KeyFacts>
+
+## The problem
+
+The first minutes of an incident are spent gathering context, not fixing
+anything. Which error is this, when did it start, what shipped just before, is it
+one user or all of them — the on-call engineer answers these by hand, half-awake,
+before they can even judge whether the page was warranted.
+
+The common fixes are incomplete. Paging on every alert burns the on-call rotation
+on noise and trains people to ignore the pager. Tuning thresholds cuts the noise
+but also hides real regressions. A runbook helps, but someone still has to be
+awake to follow it. None of it does the gathering for you.
+
+## What we built
+
+On Kortix, each alert triggers an agent. When Sentry fires, the alert spawns an
+isolated session (a cloud sandbox) with scoped, read-only access to Sentry, the
+logs, and GitHub. The agent pulls the stack trace, lists the deploys since the
+error first appeared, correlates the logs around the spike, and posts a first-pass
+diagnosis to the incident channel. It pages a human only when it can't resolve the
+alert or the severity is high.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the incident triage skill and the 5-minute trigger, and
+opens a change request for you to review. Prefer clicks? Choose **Use this
+template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up an on-call triage agent in this project.
+
+1. Create the agent agents/oncall-triage.md. Its job is to triage new Sentry alerts and post a first-pass diagnosis before anyone is paged. It may use the Sentry, Datadog and GitHub connectors, read-only, and post to Slack.
+
+2. Create the skill skills/incident-triage/SKILL.md with these rules:
+   - For each new or unresolved alert, pull the stack trace, the frequency and the first-seen time from Sentry.
+   - Pull the Datadog logs from 10 minutes before to 5 minutes after first-seen, for the services in the trace.
+   - Check the PRs and commits merged to owner/repo in the 2 hours before first-seen. Name the closest match as the suspect deploy, not as a certainty.
+   - Page the on-call rotation in #incidents for any alert at error severity or above, and for any alert you cannot resolve.
+   - Post exactly one diagnosis per alert. Stay read-only: never comment in Sentry, commit, deploy or roll back.
+
+3. Add a cron trigger alert-triage-sweep to kortix.yaml. It runs the oncall-triage agent every 5 minutes with the prompt "Load the incident-triage skill and triage every new or unresolved alert in the backend Sentry project."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your error tracker, your logs,
+your code host and Slack. Credentials are brokered server-side and never enter
+the agent's machine.
+
+<ToolList>
+  <ToolNeed name="Sentry" domain="sentry.io" tag="Required" alternatives={[['Datadog', 'datadoghq.com'], ['New Relic', 'newrelic.com']]}>
+    Pulls the stack trace and error spike for each alert.
+  </ToolNeed>
+  <ToolNeed name="GitHub" domain="github.com" tag="Required" alternatives={[['GitLab', 'gitlab.com']]}>
+    Finds the deploy that shipped just before the spike.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com'], ['PagerDuty', 'pagerduty.com']]}>
+    Posts the first-pass diagnosis to the incident channel.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **oncall-triage** agent
+and send this prompt. Check its suspect deploy against what you know before you
+let the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Triage every new or unresolved alert in the backend Sentry project.
+
+1. For each alert, pull the stack trace, the frequency and the first-seen time from Sentry.
+2. Pull the Datadog logs around first-seen for the services in the trace.
+3. List the PRs merged to owner/repo in the 2 hours before first-seen and name the most likely suspect.
+4. Post one diagnosis per alert to #incidents: the error, the logs, the suspect deploy and the severity.
+5. Page the on-call rotation for anything at error severity or above, or anything you cannot resolve. Close benign alerts with the reasoning. Change nothing.`}
+/>
+
+</Step>
+<Step title="Let the 5-minute schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every 5 minutes, each run in a new session on its own cloud computer.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: alert-triage-sweep
+    name: Alert triage sweep
+    on:
+      cron: "0 */5 * * * *"
+    run:
+      agent: oncall-triage
+      prompt: Load the incident-triage skill and triage every new or unresolved alert in the backend Sentry project.`}
+/>
+
+</Step>
+<Step title="Page a person on high severity or doubt">
+
+Anything at error severity or above pages the on-call rotation, however
+confident the diagnosis is. An inconclusive diagnosis pages too, with the
+partial evidence attached. The agent is read-only across Sentry, Datadog and
+GitHub. It never deploys, rolls back or changes a setting, and the person who
+is paged owns every fix.
+
+</Step>
+<Step title="Read the diagnosis">
+
+Each alert ends with one diagnosis in the channel. This is what a run looks
+like in the session:
+
+<ExampleRun
+  title="Alert triage sweep · 03:05"
+  message="Load the incident-triage skill and triage every new or unresolved alert in the backend Sentry project."
+  worked="Worked for 1m 34s"
+  tools={[
+    'sentry · list issues',
+    'sentry · get event × 2',
+    'datadog · search logs × 2',
+    'github · list pull requests',
+    'slack · post message → #incidents × 2',
+  ]}
+  note="Illustrative example. Your alerts depend on your services."
+>
+  Triaged **2** alerts. A spike of **312** checkout timeouts started
+  **4 minutes** after a merged PR that changed the payment client, so it paged
+  on-call with that PR as the suspect. The other alert matches a known
+  third-party rate limit and closed with the reasoning attached.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A **trigger** on every alert spawns a session with scoped, read-only
+  **connectors** into Sentry, the logs, and GitHub. The triage playbook is encoded
+  as **skills** and **memory**. The agent diagnoses first and pages a human only
+  when it can't resolve the alert or the severity is high.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Keep an incident timeline"
+  code="When an alert pages on-call, keep a running timeline of what you found in the Slack thread so the postmortem starts from it."
+/>
+
+<CopyBlock
+  title="Learn known flakes"
+  code="When an engineer replies that a diagnosis was benign, propose a change to the incident-triage skill that records the pattern as a known flake."
+/>
+
+<CopyBlock
+  title="Morning digest"
+  code="Every weekday at 09:00, post the alerts you closed overnight, with the reasoning for each, to #incidents."
+/>
+
+## Guardrails
+
+The agent reads production telemetry, so the access is scoped and contained:
+
+- **Isolation.** Every alert runs in its own isolated sandbox. The session can pull
+  traces, logs, and deploy history to build the diagnosis; only the posted message
+  and any page are written back out.
+- **Scoped secrets.** The Sentry, logging, and GitHub credentials are encrypted in
+  the secrets manager and injected into the sandbox at runtime, scoped to the agents you grant them to.
+- **Human approval gate.** The agent never deploys or rolls back. High-severity and
+  unresolved alerts page a human, who owns any action taken.
+- **Everything is code.** The agent's configuration, skills, and permissions are
+  files in the repo, versioned and changed through a reviewed **change request**
+  rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="First-pass" label="Diagnosis in the channel before the pager fires" />
+  <Stat value="Less noise" label="Benign alerts closed with reasoning, not paged" />
+  <Stat value="3 systems" label="Sentry, logs, and deploy history in one agent" />
+</StatGrid>
+
+The mechanical first minutes of an incident happen before anyone is paged, and
+when the agent does page, it pages with the trace, the suspect deploy, and the
+correlated logs attached. The on-call engineer spends their time deciding and
+fixing rather than gathering context half-awake.

@@ -1,0 +1,295 @@
+'use client';
+
+import { useLocalizedUiCatalog } from '@kortix/ui/i18n';
+import { useTranslations } from '@/i18n/use-translations';
+/**
+ * The rows two different menus both need: Theme, Help, and the log-out flow.
+ *
+ * There are two account-ish menus in the product now — `UserMenu` in the app
+ * header, and `WorkspaceSwitcher` in the project sidebar — and they are NOT the
+ * same menu. The header one is about the person (account settings, billing, user
+ * settings); the sidebar one is about the workspace, and only carries the handful
+ * of account rows that have nowhere else to live. What they share is exactly
+ * what is in this file. Extracted rather than copied so a change to the theme
+ * options or the help links cannot land in one menu and miss the other.
+ */
+
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@kortix/ui/alert-dialog';
+import {
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+} from '@kortix/ui/dropdown-menu';
+
+import Loading from '@kortix/ui/loading';
+import { performSignOut } from '@/lib/auth/perform-sign-out';
+import { openExternalRoute } from '@kortix/ui/internal/lib/desktop';
+import { isInterfaceThemeId } from '@/lib/interface-themes';
+import { useSettingsPanelStore } from '@kortix/ui/internal/stores/settings-panel-store';
+import {
+  ArticleIcon,
+  BookOpenIcon,
+  LifebuoyIcon,
+  Moon,
+  PaintBrushIcon,
+  PaperPlaneTiltIcon,
+  QuestionIcon,
+  ScrollIcon,
+  ShieldCheckIcon,
+  StorefrontIcon,
+  Sun,
+} from '@phosphor-icons/react';
+import Link from 'next/link';
+import * as React from 'react';
+import { useState } from 'react';
+import { INTERFACE_THEME_OPTIONS, ThemeSwatch, useInterfaceTheme } from './interface-theme';
+
+export type MenuLink = {
+  label: string;
+  href: string;
+  Icon: React.ComponentType<{ className?: string }>;
+  /**
+   * Navigate in place instead of opening a new tab. Only Marketplace: it is
+   * somewhere you go and act — browse, install — so it belongs in the session
+   * you are already in. Everything else under Help is something you read, and
+   * losing your workspace to go read it is the wrong trade.
+   */
+  internal?: boolean;
+};
+
+/**
+ * Reference destinations, grouped under Help.
+ *
+ * Hoisted to module scope so the arrays and their objects are allocated once for
+ * the app instead of being rebuilt on every render — these menus mount in both
+ * the sidebar and the header, so this render path is not rare.
+ */
+export const HELP_LINKS: MenuLink[] = [
+  // One support row, not two. The /help and /support pages are gone; support
+  // requests go to the contact page.
+  { label: 'Support', href: '/contact', Icon: LifebuoyIcon },
+  { label: 'Docs', href: '/docs', Icon: BookOpenIcon },
+  { label: 'Blog', href: '/blog', Icon: ArticleIcon },
+  { label: 'Marketplace', href: '/marketplace', Icon: StorefrontIcon, internal: true },
+  { label: 'Contact', href: '/contact', Icon: PaperPlaneTiltIcon },
+];
+
+/** Kept separate so a divider can hold the legal pages apart from the rest. */
+export const LEGAL_LINKS: MenuLink[] = [
+  { label: 'Privacy', href: '/legal?tab=privacy', Icon: ShieldCheckIcon },
+  { label: 'Terms and conditions', href: '/legal/terms', Icon: ScrollIcon },
+];
+
+/**
+ * Theme as a submenu.
+ *
+ * `INTERFACE_THEME_OPTIONS` now carries 44 rows — System, four Kortix
+ * palettes, and 39 curated terminal themes — too many to list in a
+ * dropdown. This submenu shows the System row, the four Kortix rows, and (if
+ * the current selection is a terminal theme) that one extra row so the
+ * checked state is never silently hidden; "More themes…" opens the
+ * Appearance tab's Select, which lists every row grouped and scrollable. That
+ * Select is shared with this submenu — `INTERFACE_THEME_OPTIONS` — so a
+ * person who learns the control here meets the same rows there.
+ *
+ * It used to be a segmented control pinned below Log out — the one row in the
+ * menu that was not a menu item, sitting under the one row that ends your
+ * session. The leading icon shows the theme currently IN EFFECT, not the value
+ * stored: on `system` it tracks what the OS resolved to, which is the only
+ * answer to "what am I looking at right now".
+ */
+export function ThemeSubmenu() {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const t = useTranslations('settings.appearance');
+  const { selected, select, choice, resolvedTheme } = useInterfaceTheme();
+
+  const primaryOptions = INTERFACE_THEME_OPTIONS.filter((option) => option.kind === 'labelled');
+  const selectedOption = INTERFACE_THEME_OPTIONS.find((option) => option.value === selected);
+  const extraSelectedOption =
+    selectedOption && selectedOption.kind === 'named' ? selectedOption : undefined;
+
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>
+        {resolvedTheme === 'dark' ? <Moon /> : <Sun />}
+        {tI18nComplete.raw('text3907fa7f8072')}
+      </DropdownMenuSubTrigger>
+      <DropdownMenuPortal>
+        <DropdownMenuSubContent className="space-y-0.5" sideOffset={6}>
+          <DropdownMenuRadioGroup
+            value={selected}
+            onValueChange={(value) => {
+              if (isInterfaceThemeId(value)) select(value);
+            }}
+          >
+            {primaryOptions.map((option) => (
+              <DropdownMenuRadioItem key={option.value} value={option.value}>
+                <ThemeSwatch value={option.value} choice={choice} />
+                {t(`themes.${option.labelKey}`)}
+              </DropdownMenuRadioItem>
+            ))}
+            {extraSelectedOption && (
+              <DropdownMenuRadioItem value={extraSelectedOption.value}>
+                <ThemeSwatch value={extraSelectedOption.value} choice={choice} />
+                {extraSelectedOption.name}
+              </DropdownMenuRadioItem>
+            )}
+          </DropdownMenuRadioGroup>
+
+          <DropdownMenuSeparator />
+
+          {/* Opens the Appearance tab's own Select, which lists every terminal
+              theme grouped and scrollable — the submenu itself only ever
+              shows the six rows above. */}
+          <DropdownMenuItem
+            onSelect={() => useSettingsPanelStore.getState().openSettings('appearance')}
+          >
+            <PaintBrushIcon />
+            {t('moreThemes')}
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuPortal>
+    </DropdownMenuSub>
+  );
+}
+
+/**
+ * Every reference and legal page collapsed into one submenu, so the top level
+ * only carries things you act on rather than eight links.
+ *
+ * External rows render a real `<a target="_blank" rel="noopener noreferrer">` rather than calling
+ * `window.open` from a handler. Three reasons: the browser opens the tab inside
+ * the click's own user-gesture window, so no popup blocker can eat it — a
+ * deferred close is exactly the kind of gap that trips one; cmd-click and
+ * middle-click keep working; and it is a link, so it reads as one to a screen
+ * reader.
+ *
+ * In the desktop shell `openExternalRoute` fires first and returns true — it
+ * hands the URL to the system browser — so the anchor's own navigation is
+ * cancelled to avoid opening the page twice.
+ */
+export function HelpSubmenu({ onClose }: { onClose: () => void }) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const helpLinks = useLocalizedUiCatalog(HELP_LINKS);
+  const legalLinks = useLocalizedUiCatalog(LEGAL_LINKS);
+  const renderMenuLink = ({ label, href, Icon, internal }: MenuLink) =>
+    internal ? (
+      // An anchor, exactly like the external branch below. `router.push` from a
+      // menu row runs the RSC fetch cold at click time, and that fetch degrades
+      // into a full document load whenever it answers wrong — a build-id skew
+      // mid-deploy, a maintenance redirect, a network blip.
+      <DropdownMenuItem key={href} asChild onClick={onClose}>
+        <Link href={href} prefetch>
+          <Icon />
+          {label}
+        </Link>
+      </DropdownMenuItem>
+    ) : (
+      <DropdownMenuItem key={href} asChild>
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(event) => {
+            if (openExternalRoute(href)) event.preventDefault();
+            onClose();
+          }}
+        >
+          <Icon />
+          {label}
+        </a>
+      </DropdownMenuItem>
+    );
+
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>
+        <QuestionIcon />
+        {tI18nComplete.raw('textb79cac926e0b')}
+      </DropdownMenuSubTrigger>
+      <DropdownMenuPortal>
+        <DropdownMenuSubContent className="space-y-0.5" sideOffset={6}>
+          {helpLinks.map(renderMenuLink)}
+
+          <DropdownMenuSeparator />
+
+          {legalLinks.map(renderMenuLink)}
+        </DropdownMenuSubContent>
+      </DropdownMenuPortal>
+    </DropdownMenuSub>
+  );
+}
+
+/**
+ * Log out, behind a confirmation.
+ *
+ * Returns the dialog as an element rather than rendering it inline, because it
+ * MUST mount as a sibling of the dropdown, never inside its content: Radix
+ * unmounts `DropdownMenuContent` on close, so a dialog living in there would be
+ * torn down the instant the menu closed — which is the exact moment you click
+ * "Log out".
+ */
+export function useLogoutFlow(deferAfterClose: (fn: () => void) => void) {
+  const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+
+  const openConfirm = () => deferAfterClose(() => setConfirmOpen(true));
+
+  // `/auth` cannot be an anchor here: the navigation must run AFTER the session
+  // is actually gone, and an anchor would leave on the click instead. It is not
+  // a `router.push` either — `performSignOut` ends on a DOCUMENT load, which is
+  // the only thing that discards the App Router caches across an identity
+  // change. There is nothing to prefetch: a document load does not read the
+  // segment cache.
+  //
+  // `preventDefault` keeps the dialog UP. Radix closes it on click, which used
+  // to leave the user staring at the unchanged app for as long as the sign-out
+  // took — up to the full step budget on a broken network — with nothing on
+  // screen saying anything was happening. The predictable response is a second
+  // click. `performSignOut` refuses re-entry, but the dialog is the honest
+  // place to say so. The document load is what actually closes this.
+  const performLogout = (event: React.MouseEvent) => {
+    event.preventDefault();
+    setPending(true);
+    void performSignOut();
+  };
+
+  const dialog = (
+    <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{tI18nComplete.raw('texted31daf7d840')}</AlertDialogTitle>
+          <AlertDialogDescription>{tI18nComplete.raw('textcf8f4cd95840')}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={pending}>
+            {tI18nComplete.raw('text19766ed6ccb2')}
+          </AlertDialogCancel>
+          <AlertDialogAction variant="destructive" disabled={pending} onClick={performLogout}>
+            {pending ? <Loading className="size-4 shrink-0" /> : null}
+            {pending
+              ? tI18nComplete.raw('textca9c32c53e90')
+              : tI18nComplete.raw('text49616145514e')}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+
+  return { openConfirm, dialog };
+}

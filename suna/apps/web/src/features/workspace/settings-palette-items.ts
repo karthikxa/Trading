@@ -1,0 +1,288 @@
+/**
+ * The command palette's Settings entries, DERIVED from the settings rail.
+ *
+ * **Why derived.** The palette used to carry a hand-written parallel list of
+ * settings destinations in `lib/menu-registry.ts` (`proj-secrets`, `proj-git`,
+ * `pref-appearance`, `account-tokens`, …). A hand-written list drifts, and it
+ * did: nine of the twenty-six `SettingsTab` ids had no palette entry at all
+ * (profile, connected, snapshots, groups, roles, identity, audit,
+ * experimental, upgrades), `pref-general`'s "profile name email" keywords
+ * opened the project WORKSPACE General tab, and `proj-llm` hid the Models row
+ * behind `llm_gateway` even though `rail.ts` documents that the Models row is
+ * deliberately ungated. Reading `railGroups()` — the same function the rail
+ * and every pane heading already read — makes "a tab exists" and "the palette
+ * can reach it" one fact instead of two.
+ *
+ * **What is NOT derived.** Search keywords. A `RailItem` carries `label` and
+ * `description`, which are pane copy, not query terms: nobody types
+ * "The recipe for the machine a session runs on". `TAB_KEYWORDS` below is the
+ * palette's own vocabulary, and it is a total `Record<SettingsTab, string>` on
+ * purpose — adding a tab to `SETTINGS_TABS` fails the typecheck here until it
+ * is given search terms, so a new tab can never ship findable-by-label-only.
+ *
+ * **Why the two constants below are mirrored rather than imported.**
+ * `ACCOUNT_SCOPED_SETTINGS_TABS` lives in `settings/settings-panel.tsx` and
+ * `STANDALONE_DEFAULT_SETTINGS_TAB` in `settings/standalone-settings-route.tsx`.
+ * Importing either one drags the whole settings tab tree (`MarketplaceView`,
+ * `ScheduleView`, twenty-odd tab modules) into the command-palette chunk —
+ * including on `/accounts/**`, where the palette mounts and the panel never
+ * does. `settings-palette-items.test.ts`-style pinning happens instead:
+ * `command-palette.test.tsx` imports the real constants and asserts these are
+ * identical, so a divergence fails a test rather than shipping.
+ */
+
+import { GearSixIcon } from '@phosphor-icons/react';
+
+import { railGroups, type SettingsRailTranslator } from '@kortix/ui/customize/settings/rail';
+import type { SettingsTab } from '@kortix/ui/customize/settings/settings-tabs';
+import type { RailItem } from '@kortix/ui/customize/settings/type';
+
+/**
+ * Mirrors `ACCOUNT_SCOPED_SETTINGS_TABS` (settings-panel.tsx) — the tabs that
+ * render without a project. See this file's header for why it is a mirror.
+ */
+export const PALETTE_ACCOUNT_SCOPED_TABS: readonly SettingsTab[] = [
+  'profile',
+  'security',
+  'appearance',
+  'sessions',
+  'preferences',
+  'connected',
+  'chrome',
+  'tokens',
+  'credits',
+  'plan',
+  'mcp',
+];
+
+/**
+ * Mirrors `STANDALONE_DEFAULT_SETTINGS_TAB` (standalone-settings-route.tsx).
+ * The tab a settings destination with no named tab resolves to when there is
+ * no project. It equals `DEFAULT_SETTINGS_TAB` today — every tab left in the
+ * overlay is user-scoped, so the "no project" case no longer picks a
+ * different destination — and stays a separate constant because the two
+ * answer different questions and a future project-scoped tab would split them
+ * again.
+ */
+export const PALETTE_NO_PROJECT_DEFAULT_TAB: SettingsTab = 'profile';
+
+/**
+ * Query terms per tab, on top of the rail's `label` and `description`.
+ *
+ * **The rule.** A word belongs on a tab only when it NAMES THAT TAB — a
+ * synonym, an alias, or something the tab itself contains. A word that names a
+ * DIFFERENT row's subject is a defect: it answers a query this row is the
+ * wrong answer to. Ask "if a user typed this word, is this tab a correct
+ * answer?" before adding one.
+ *
+ * **The `project customize` tail is gone.** Twelve bags used to end in it,
+ * carried over verbatim from the old `Customize · X` registry entries, so
+ * "customize" returned twelve settings tabs plus five navigation rows and
+ * "project" returned twelve tabs that are not the Projects page. `customize`
+ * survives on exactly one row here — `workspace`, the tab labelled "General",
+ * which is what the Customize bar's Settings tab used to open — so the legacy
+ * word still lands on the legacy destination and nowhere else.
+ * `project` survives only inside `general`'s phrase "project settings", the
+ * pane's own former name.
+ *
+ * Four further corrections rather than straight carry-overs:
+ *
+ *   - `snapshot` moved off `sandbox` (it was `proj-sandbox`'s keyword) onto
+ *     `snapshots`, which is the tab that word names. Typing "snapshot" used
+ *     to reach Sandbox templates and could not reach Snapshots at all.
+ *   - `profile name email` moved off the workspace `general` tab (they were
+ *     `pref-general`'s keywords, pointing at the wrong of the app's three
+ *     Generals) onto `profile`.
+ *   - `keys` left `preferences` (it meant keyboard keys; `keyboard hotkeys
+ *     keybindings` already say that) because it is the subject word of the
+ *     `api-keys` tab.
+ *   - `sso` left `organization` and `log record` left `snapshots`: `identity`
+ *     is the tab that configures SSO and `audit` is the tab that is a log.
+ */
+const TAB_KEYWORDS: Record<SettingsTab, string> = {
+  // The words a person types when they want to rename this workspace or change
+  // its icon, because nobody searches for "General".
+  //
+  // Deliberately NOT "project". `command-palette-search.test.ts` holds the bar
+  // that a query returns the rows that SAY the word rather than every row
+  // scoped to it — ten `proj-*` rows used to answer "proj" by their ids, and
+  // that is the regression the bar exists to prevent. This row is labelled
+  // "General"; "project" would put it in front of the two rows actually
+  // called Projects.
+  workspace:
+    'workspace general settings name rename title icon emoji glyph avatar picture logo archive delete danger zone repo git repository github clone branch remote',
+  profile: 'profile name email avatar personal you account display organizations',
+  security: 'security two-factor 2fa mfa totp authenticator factor devices sign out sessions',
+  appearance:
+    'appearance theme color mode dark light wallpaper shader shaders background density conversation',
+  sessions: 'sessions sounds audio volume notification notifications sound effects mute alerts',
+  preferences: 'preferences language locale translation shortcuts keyboard hotkeys keybindings',
+  connected: 'connected accounts linked oauth google github identities social sign in providers',
+  chrome:
+    'chrome browser extension edge brave arc connect tabs web page automation control cdp',
+  // The words a person types when they want to sign the CLI in. `pat` and
+  // `personal access token` came off `nav:account-tokens` in
+  // `lib/menu-registry.ts` and landed here, because this is the pane that
+  // holds a personal key now — that row answers for service account tokens.
+  // The word "account" is deliberately absent: it belongs to the rows that
+  // configure one (`command-palette-search.test.ts` pins that every hit for
+  // "account" owns the word).
+  tokens:
+    'api keys key tokens token personal access pat cli command line terminal secret credential authentication ci',
+  // The row that answers "how much have I got left". It carries `usage`
+  // because that is the word Jay used for it and the id could not be
+  // (`settings-tabs.ts` explains why `usage` is spent), and `balance` /
+  // `wallet` because those moved OFF `plan` below — the Plan pane shows
+  // neither now.
+  credits:
+    'credits credit usage balance wallet spend spent remaining left quota allowance topup top up refresh daily monthly cost',
+  // The plan is the other account row in the overlay. Its rail description
+  // says "for this account", so it answers "account" by a word the user reads.
+  //
+  // `credits` deliberately stays on BOTH rows: this is the pane that SELLS
+  // them (`CreditTopupSection`, auto top-up) and `credits` above is the pane
+  // that COUNTS them, so the word names a real subject of each. `wallet` and
+  // `balance` are gone from here — neither is rendered on this pane any more,
+  // and a word that names a different row's subject is the defect this file's
+  // header rule is about.
+  plan: 'plan subscription billing credits buy purchase upgrade downgrade invoice payment portal stripe',
+  // Copy for the two Workspace rows that came back on 2026-09-02 — the words
+  // `proj-sandbox` and `proj-feature-flags` carry in `lib/menu-registry.ts`.
+  sandbox:
+    'sandbox templates template snapshot snapshots builds recipe container machine runtime image',
+  'feature-flags':
+    'feature flags flag experimental beta preview labs toggles switches early access',
+  // The two connect tabs (KRTX-1997). PR #9992 added both tabs to
+  // `SettingsTab` but left this record without their keys, so the total
+  // `Record<SettingsTab, string>` below no longer described every tab. The
+  // rows' own rail copy already carries their vocabulary (title and
+  // description), and KRTX-2475 is about the Computer row's vocabulary being
+  // too greedy, not too thin — so the bags stay empty: the record is whole
+  // again and the rows search exactly the words they render.
+  mcp: '',
+  computer: '',
+  // Every other bag is gone with the tab it named. Thirteen project-
+  // configuration tabs (General, Members, Secrets, Channels, Repositories,
+  // Models, Sandbox templates, Snapshots, Marketplace, Review, Voice, Feature
+  // flags, Upgrades) moved to `/projects/<id>/config`, and eight
+  // account-scoped ones to `/accounts/[id]`. Their words moved with them, onto
+  // the `proj-settings` and `account-*` rows in `lib/menu-registry.ts` — the
+  // same place every other out-of-overlay destination is searched from. A tab
+  // that no longer exists must not be searchable here;
+  // `Record<SettingsTab, ...>` enforces that, so re-adding any key fails the
+  // typecheck.
+};
+
+export interface SettingsPaletteItem {
+  /** Stable cmdk/React key. Namespaced so it can never collide with a `menuRegistry` id. */
+  id: string;
+  tab: SettingsTab;
+  label: string;
+  description?: string;
+  icon: NonNullable<RailItem['icon']>;
+  /** The rail group this row belongs to — rendered as the palette group heading. */
+  groupLabel: string;
+  /** Everything the row is searchable by: label, description, and `TAB_KEYWORDS`. */
+  keywords: string;
+}
+
+export interface SettingsPaletteGroup {
+  label: string;
+  items: SettingsPaletteItem[];
+}
+
+export interface SettingsPaletteParams {
+  /** True only where `SettingsPanel` is mounted — see `openSettingsTab` in command-palette.tsx. */
+  hasProject: boolean;
+  /** The platform offers Kortix in Chrome (`useChromeOffered`); off, its Settings row is not offered. */
+  chromeOffered?: boolean;
+  // `flags: RailFlags` used to sit here. Marketplace, Review and Voice were
+  // the only flag-gated rows and all three moved to `/projects/<id>/config`,
+  // whose own sub-nav composes them
+  // (`capabilities/project-settings/project-settings-sections.ts`). Nothing
+  // left in this rail varies by flag, so `railGroups()` takes none either.
+}
+
+/**
+ * Whether the palette may offer a tab at all.
+ *
+ * Mirrors `isSettingsTabAllowed` (settings-panel-body.tsx): a project-scoped
+ * tab is unreachable without a project.
+ */
+export function isSettingsTabOfferable(tab: SettingsTab, params: SettingsPaletteParams): boolean {
+  if (tab === 'chrome' && !params.chromeOffered) return false;
+  return params.hasProject || PALETTE_ACCOUNT_SCOPED_TABS.includes(tab);
+}
+
+function toPaletteItem(item: RailItem, groupLabel: string): SettingsPaletteItem {
+  return {
+    id: `settings-tab-${item.tab}`,
+    tab: item.tab,
+    label: item.label,
+    description: item.description,
+    icon: item.icon ?? GearSixIcon,
+    groupLabel,
+    keywords: [item.label, item.description ?? '', TAB_KEYWORDS[item.tab], 'settings'].join(' '),
+  };
+}
+
+/**
+ * Every settings tab this user can reach, grouped exactly as the rail groups
+ * it. Groups that lose all their rows disappear whole, so the palette never
+ * renders an empty heading.
+ */
+export function settingsPaletteGroups(
+  params: SettingsPaletteParams,
+  ...args: [] | [SettingsRailTranslator]
+): SettingsPaletteGroup[] {
+  const groups: SettingsPaletteGroup[] = [];
+  for (const group of railGroups(...args)) {
+    const items: SettingsPaletteItem[] = [];
+    for (const item of group.items) {
+      if (isSettingsTabOfferable(item.tab, params)) items.push(toPaletteItem(item, group.label));
+    }
+    if (items.length > 0) groups.push({ label: group.label, items });
+  }
+  return groups;
+}
+
+/**
+ * Everything a settings row is searchable by, and the ONLY thing it is
+ * searchable by. Label, rail group heading, and curated keywords — all three
+ * are text the user has read on screen. `item.tab` used to be in here and is
+ * not any more: it is an internal slug (`api-keys`, `review`), and matching on
+ * it means matching on a string the user has never seen. Every slug's own word
+ * already appears in its `TAB_KEYWORDS` bag, so nothing became unfindable.
+ *
+ * `command-palette.tsx` builds the cmdk `value` from exactly these fields, so
+ * the manual pre-filter and cmdk's own scorer read the same text.
+ */
+export function settingsPaletteSearchText(item: SettingsPaletteItem): string {
+  return `${item.label} ${item.groupLabel} ${item.keywords}`;
+}
+
+/**
+ * One row against one query, using the palette's own rule: every whitespace-
+ * separated word must appear somewhere in the row's text. `groupLabel` is part
+ * of that text, so typing "organization" keeps the whole Organization group —
+ * the same affordance `filterRailGroups` gives the rail.
+ */
+export function settingsPaletteItemMatches(item: SettingsPaletteItem, words: string[]): boolean {
+  const haystack = settingsPaletteSearchText(item).toLowerCase();
+  return words.every((word) => haystack.includes(word));
+}
+
+/** The grouped list narrowed to a query, with empty groups dropped. */
+export function filterSettingsPaletteGroups(
+  groups: SettingsPaletteGroup[],
+  query: string,
+): SettingsPaletteGroup[] {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return groups;
+  const filtered: SettingsPaletteGroup[] = [];
+  for (const group of groups) {
+    const items = group.items.filter((item) => settingsPaletteItemMatches(item, words));
+    if (items.length > 0) filtered.push({ label: group.label, items });
+  }
+  return filtered;
+}

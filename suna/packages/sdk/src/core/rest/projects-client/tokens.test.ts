@@ -1,0 +1,172 @@
+/**
+ * `listAccountTokens` answers two different questions and the caller says
+ * which.
+ *
+ * Bare, it is the account-wide list it has always been: every row the account
+ * owns, which includes other members' keys, the session connector tokens the
+ * runtime mints per sandbox, and service-account bearers. That is an
+ * administrative read.
+ *
+ * With `{ mine: true }` it is the read behind a person's own settings page:
+ * only the keys THEY minted by hand. The narrowing happens server-side
+ * (`listPersonalAccountTokens`, `apps/api/src/repositories/account-tokens.ts`)
+ * because a browser cannot filter on `user_id` / `session_id` /
+ * `service_account_id` — the list payload carries none of them.
+ */
+import { beforeEach, expect, mock, test } from 'bun:test';
+import { configureKortix } from '../../http/config';
+import {
+  approveCliDevice,
+  listAccountTokens,
+  listOAuthGrants,
+  listSignedInDevices,
+  revokeAccountToken,
+  revokeOAuthGrant,
+  signOutDevice,
+} from './tokens';
+
+let calls: { url: string; method: string; body?: unknown }[] = [];
+let nextResponse: { status: number; body: unknown } = { status: 200, body: [] };
+
+beforeEach(() => {
+  calls = [];
+  nextResponse = { status: 200, body: [] };
+  globalThis.fetch = mock(async (url: unknown, opts: { method?: string; body?: unknown } = {}) => {
+    calls.push({ url: String(url), method: opts.method ?? 'GET', body: opts.body });
+    return new Response(JSON.stringify(nextResponse.body), {
+      status: nextResponse.status,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as unknown as typeof fetch;
+});
+
+configureKortix({ backendUrl: 'http://test.local', getToken: async () => 'tok' });
+const last = () => calls[calls.length - 1];
+
+test('listAccountTokens() asks for the account-wide list — no narrowing', async () => {
+  await listAccountTokens('acc-1');
+  expect(last().url).toBe('http://test.local/accounts/tokens?account_id=acc-1');
+  expect(last().method).toBe('GET');
+});
+
+test('listAccountTokens(id, { mine: true }) narrows to the caller’s own keys', async () => {
+  await listAccountTokens('acc-1', { mine: true });
+  expect(last().url).toBe('http://test.local/accounts/tokens?account_id=acc-1&mine=true');
+});
+
+test('`mine` works without an account id — the API resolves the caller’s account', async () => {
+  await listAccountTokens(undefined, { mine: true });
+  expect(last().url).toBe('http://test.local/accounts/tokens?mine=true');
+});
+
+test('`{ mine: false }` sends no flag rather than `mine=false`', async () => {
+  await listAccountTokens('acc-1', { mine: false });
+  expect(last().url).toBe('http://test.local/accounts/tokens?account_id=acc-1');
+});
+
+test('returns the token rows the API answered with', async () => {
+  nextResponse = {
+    status: 200,
+    body: [
+      {
+        token_id: 't1',
+        name: 'my laptop',
+        project_id: null,
+        public_key: 'pk_abc',
+        status: 'active',
+        expires_at: null,
+        last_used_at: null,
+        created_at: '2026-08-18T00:00:00.000Z',
+        revoked_at: null,
+      },
+    ],
+  };
+  const tokens = await listAccountTokens('acc-1', { mine: true });
+  expect(tokens.map((t) => t.token_id)).toEqual(['t1']);
+});
+
+// Connected apps: the OAuth clients (MCP clients, "Sign in with Kortix" apps)
+// the caller approved. Per person, not per account: no account_id on the wire.
+test('listOAuthGrants() reads the caller’s connected apps and returns the grants array', async () => {
+  nextResponse = {
+    status: 200,
+    body: { grants: [{ client_id: 'kortix_client_1', name: 'Claude Code', self_registered: true, active: true }] },
+  };
+  const grants = await listOAuthGrants();
+  expect(last().url).toBe('http://test.local/oauth/grants');
+  expect(last().method).toBe('GET');
+  expect(grants.map((g) => g.client_id)).toEqual(['kortix_client_1']);
+});
+
+test('revokeOAuthGrant(clientId) deletes that grant, escaping the id', async () => {
+  nextResponse = { status: 200, body: { ok: true, revoked_tokens: 2 } };
+  expect(await revokeOAuthGrant('kortix client/1')).toEqual({ ok: true, revoked_tokens: 2 });
+  expect(last().url).toBe('http://test.local/oauth/grants/kortix%20client%2F1');
+  expect(last().method).toBe('DELETE');
+});
+
+// A revoked personal key can be deleted by the same route: the API's
+// `?delete_revoked=true` (`apps/api/src/accounts/core/tokens.ts`) removes the
+// dead row instead of answering 404. The settings page's Delete action for a
+// revoked key rides on this (KRTX-2656).
+test('revokeAccountToken(id) revokes — no delete flag', async () => {
+  nextResponse = { status: 200, body: { ok: true } };
+  expect(await revokeAccountToken('tok-1', 'acc-1')).toEqual({ ok: true });
+  expect(last().url).toBe('http://test.local/accounts/tokens/tok-1?account_id=acc-1');
+  expect(last().method).toBe('DELETE');
+});
+
+test('revokeAccountToken(id, acc, { deleteRevoked: true }) deletes the dead row', async () => {
+  nextResponse = { status: 200, body: { ok: true, deleted: true } };
+  expect(await revokeAccountToken('tok-1', 'acc-1', { deleteRevoked: true })).toEqual({
+    ok: true,
+    deleted: true,
+  });
+  expect(last().url).toBe(
+    'http://test.local/accounts/tokens/tok-1?account_id=acc-1&delete_revoked=true',
+  );
+  expect(last().method).toBe('DELETE');
+});
+
+test('{ deleteRevoked: true } without an account id still reaches the API', async () => {
+  nextResponse = { status: 200, body: { ok: true, deleted: true } };
+  await revokeAccountToken('tok-1', undefined, { deleteRevoked: true });
+  expect(last().url).toBe('http://test.local/accounts/tokens/tok-1?delete_revoked=true');
+});
+
+test('listSignedInDevices() reads the caller’s own browser sign-ins', async () => {
+  const device = {
+    session_id: '00000000-0000-4000-8000-000000000001',
+    user_agent: 'Mozilla/5.0',
+    ip: '203.0.113.7',
+    signed_in_at: '2026-10-01T00:00:00.000Z',
+    last_active_at: '2026-10-05T00:00:00.000Z',
+    current: true,
+  };
+  nextResponse = { status: 200, body: { devices: [device] } };
+  expect(await listSignedInDevices()).toEqual([device]);
+  expect(last().url).toBe('http://test.local/accounts/me/devices');
+  expect(last().method).toBe('GET');
+});
+
+test('signOutDevice(id) ends that one sign-in', async () => {
+  nextResponse = { status: 200, body: { ok: true } };
+  await signOutDevice('00000000-0000-4000-8000-000000000002');
+  expect(last().url).toBe('http://test.local/accounts/me/devices/00000000-0000-4000-8000-000000000002');
+  expect(last().method).toBe('DELETE');
+});
+
+// The browser approval of a CLI device login (`kortix login` without a callback):
+// POST /cli/device/decide { user_code, approve: true } → { ok }.
+test('approveCliDevice(code) approves that device login', async () => {
+  nextResponse = { status: 200, body: { ok: true } };
+  expect(await approveCliDevice('abcd-ef01-2345-6789')).toEqual({ ok: true });
+  expect(last().url).toBe('http://test.local/cli/device/decide');
+  expect(last().method).toBe('POST');
+  expect(JSON.parse(String(last().body))).toEqual({ user_code: 'abcd-ef01-2345-6789', approve: true });
+});
+
+test('approveCliDevice rejects with the API sentence on an expired code', async () => {
+  nextResponse = { status: 404, body: { error: 'Login code expired or already used.' } };
+  await expect(approveCliDevice('abcd-ef01-2345-6789')).rejects.toThrow('Login code expired or already used.');
+});

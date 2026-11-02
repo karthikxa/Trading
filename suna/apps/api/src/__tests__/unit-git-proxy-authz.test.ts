@@ -1,0 +1,488 @@
+/**
+ * Unit tests for authorizeGitProxy — the git proxy's trust boundary.
+ *
+ * The proxy is the UNIVERSAL client-facing git origin (`kortix ship`, `kortix
+ * projects clone`, the sandbox daemon all reach a repo through it), so its
+ * authorization rules decide whether those commands work at all. Token-account
+ * equality alone was too strict: a PAT is bound to ONE account, so anyone in
+ * two accounts (personal + team) could create a project through the API and
+ * then never push to it — while POST /git-token, which hands out a STRONGER
+ * credential, accepted them via the per-project capability. These pin the
+ * rules: same account passes, a cross-account grant passes ONLY through the
+ * IAM leaf, and everything else stays denied.
+ */
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
+
+const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+const OWNER_ACCOUNT = 'acct-owner';
+const OTHER_ACCOUNT = 'acct-other';
+
+let projectRow: Record<string, unknown> | null = null;
+let patResult: Record<string, unknown> = {};
+let apiKeyResult: Record<string, unknown> = {};
+let sandboxRow: Record<string, unknown> | null = null;
+/** The session connector-token grant the sandbox path resolves (account_tokens.agent_grant). */
+let grantRow: Record<string, unknown> | null = null;
+let authorizeAllowed = false;
+let authorizeCalls: Array<{
+  userId: string;
+  accountId: string;
+  action: string;
+  actingTokenId?: string;
+}> = [];
+
+mock.module('../shared/db', () => ({
+  db: {
+    select: (fields?: Record<string, unknown>) => {
+      const rows = fields?.agentGrant
+        ? () => (grantRow ? [grantRow] : [])
+        : fields?.sessionMetadata
+          ? () => (sandboxRow ? [sandboxRow] : [])
+          : () => (projectRow ? [projectRow] : []);
+      return {
+        from: () => ({
+          innerJoin: () => ({ where: () => ({ limit: async () => rows() }) }),
+          where: () => ({ limit: async () => rows() }),
+        }),
+      };
+    },
+  },
+  hasDatabase: true,
+}));
+// Spread the real modules and override only the seams under test — replacing
+// them wholesale would strip exports other importers in this process need.
+const realAccountTokens = await import('../repositories/account-tokens');
+const realApiKeys = await import('../repositories/api-keys');
+const realIamActions = await import('../iam/actions');
+const realIamAuthorize = await import('../iam/authorize');
+
+let validateCalls = 0;
+mock.module('../repositories/account-tokens', () => ({
+  ...realAccountTokens,
+  validateAccountToken: async () => {
+    validateCalls += 1;
+    return patResult;
+  },
+}));
+mock.module('../repositories/api-keys', () => ({
+  ...realApiKeys,
+  validateSecretKey: async () => apiKeyResult,
+}));
+mock.module('../iam/actions', () => ({ ...realIamActions }));
+mock.module('../iam/authorize', () => ({
+  ...realIamAuthorize,
+  // The acting token is now part of the Actor's credential, not a trailing
+  // argument — this assertion is the point of the test, so read it back out of
+  // the credential the git proxy built.
+  authorize: async (
+    actor: { userId: string; accountId: string; credential: { tokenId?: string } },
+    action: string,
+  ) => {
+    authorizeCalls.push({
+      userId: actor.userId,
+      accountId: actor.accountId,
+      action,
+      actingTokenId: actor.credential.tokenId,
+    });
+    return { allowed: authorizeAllowed, reason: 'role' };
+  },
+}));
+
+const { authorizeGitProxy, __resetGitProxyAuthzMemoForTests } = await import('../projects/lib/git');
+
+beforeEach(() => {
+  __resetGitProxyAuthzMemoForTests();
+  projectRow = { projectId: PROJECT_ID, accountId: OWNER_ACCOUNT, status: 'active' };
+  patResult = { isValid: true, accountId: OWNER_ACCOUNT, userId: 'user-1', tokenId: 'tok-1' };
+  apiKeyResult = { isValid: false };
+  sandboxRow = null;
+  grantRow = null;
+  authorizeAllowed = false;
+  authorizeCalls = [];
+});
+
+describe('authorizeGitProxy — CLI PAT', () => {
+  // Account membership is not project access. A same-account PAT used to skip
+  // the project role entirely, so any account member could mint a personal
+  // token and push to `main` of a project they hold no role on.
+  test('a same-account PAT without the project git role is denied', async () => {
+    authorizeAllowed = false;
+    const res = await authorizeGitProxy('kortix_pat_x', PROJECT_ID, 'write');
+    expect(res).toMatchObject({ ok: false, status: 403 });
+    expect(authorizeCalls).toEqual([
+      { userId: 'user-1', accountId: OWNER_ACCOUNT, action: 'project.gitops.push', actingTokenId: 'tok-1' },
+    ]);
+  });
+
+  test('a same-account personal PAT clone needs project.gitops.push: the proxy serves every session branch', async () => {
+    authorizeAllowed = false;
+    const res = await authorizeGitProxy('kortix_pat_x', PROJECT_ID, 'read');
+    expect(res).toMatchObject({ ok: false, status: 403 });
+    expect(authorizeCalls.map((call) => call.action)).toEqual(['project.gitops.push']);
+  });
+
+  test('a same-account PAT whose user holds the git role is allowed', async () => {
+    authorizeAllowed = true;
+    const res = await authorizeGitProxy('kortix_pat_x', PROJECT_ID, 'write');
+    expect(res.ok).toBe(true);
+    expect(authorizeCalls.map((call) => call.action)).toEqual(['project.gitops.push']);
+  });
+
+  test('a session PAT for a runtime workspace is denied before account ownership can allow it', async () => {
+    patResult = {
+      isValid: true,
+      accountId: OWNER_ACCOUNT,
+      userId: 'user-1',
+      tokenId: 'tok-1',
+      projectId: PROJECT_ID,
+      sessionId: 'sandbox-1',
+    };
+    sandboxRow = {
+      sandboxId: 'sandbox-1',
+      sessionId: 'sandbox-1',
+      branchName: 'sandbox-1',
+      sessionMetadata: { repository_access: false },
+    };
+
+    const res = await authorizeGitProxy('kortix_pat_x', PROJECT_ID, 'read');
+
+    expect(res).toMatchObject({
+      ok: false,
+      status: 403,
+      message: 'session workspace does not allow repository access',
+    });
+  });
+
+  test('a session-scoped PAT surfaces the grant stamped on its token row', async () => {
+    patResult = {
+      isValid: true,
+      accountId: OWNER_ACCOUNT,
+      userId: 'user-1',
+      tokenId: 'tok-1',
+      projectId: PROJECT_ID,
+      sessionId: 'sandbox-1',
+      agentGrant: { agent: 'main', permissions: 'all', connectors: 'all' },
+    };
+    sandboxRow = {
+      sandboxId: 'sandbox-1',
+      sessionId: 'sandbox-1',
+      branchName: 'sandbox-1',
+      sessionMetadata: { workspace_mode: 'branch' },
+    };
+
+    const res = await authorizeGitProxy('kortix_pat_x', PROJECT_ID, 'write');
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.agentGrant).toEqual({ agent: 'main', permissions: 'all', connectors: 'all' });
+      expect(res.principal).toMatchObject({ kind: 'session', userId: 'user-1', tokenId: 'tok-1' });
+    }
+  });
+
+  test('a PAT on another account passes when the user holds the git capability', async () => {
+    patResult = { isValid: true, accountId: OTHER_ACCOUNT, userId: 'user-1', tokenId: 'tok-1' };
+    authorizeAllowed = true;
+
+    const res = await authorizeGitProxy('kortix_pat_x', PROJECT_ID, 'write');
+
+    expect(res.ok).toBe(true);
+    // Evaluated against the PROJECT's account, not the token's, and threading
+    // the acting token so the agent-grant fold fires.
+    expect(authorizeCalls).toEqual([
+      {
+        userId: 'user-1',
+        accountId: OWNER_ACCOUNT,
+        action: 'project.gitops.push',
+        actingTokenId: 'tok-1',
+      },
+    ]);
+  });
+
+  test('a PAT on another account is denied when the capability is denied', async () => {
+    patResult = { isValid: true, accountId: OTHER_ACCOUNT, userId: 'user-1', tokenId: 'tok-1' };
+    authorizeAllowed = false;
+
+    const res = await authorizeGitProxy('kortix_pat_x', PROJECT_ID, 'write');
+
+    expect(res).toMatchObject({ ok: false, status: 403 });
+  });
+
+  test('a personal PAT on another account also needs project.gitops.push to read', async () => {
+    patResult = { isValid: true, accountId: OTHER_ACCOUNT, userId: 'user-1', tokenId: 'tok-1' };
+    authorizeAllowed = true;
+
+    await authorizeGitProxy('kortix_pat_x', PROJECT_ID, 'read');
+
+    expect(authorizeCalls[0]?.action).toBe('project.gitops.push');
+  });
+
+  test('a project-scoped PAT for a different project is rejected before any capability check', async () => {
+    patResult = {
+      isValid: true,
+      accountId: OWNER_ACCOUNT,
+      userId: 'user-1',
+      projectId: 'other-project',
+    };
+    authorizeAllowed = true;
+
+    const res = await authorizeGitProxy('kortix_pat_x', PROJECT_ID, 'write');
+
+    expect(res).toMatchObject({ ok: false, status: 403 });
+    expect(authorizeCalls).toHaveLength(0);
+  });
+
+  test('an invalid PAT is 401, never a capability lookup', async () => {
+    patResult = { isValid: false, error: 'revoked' };
+
+    const res = await authorizeGitProxy('kortix_pat_x', PROJECT_ID, 'write');
+
+    expect(res).toMatchObject({ ok: false, status: 401 });
+    expect(authorizeCalls).toHaveLength(0);
+  });
+
+  test('an archived project is 404 regardless of the token', async () => {
+    projectRow = { projectId: PROJECT_ID, accountId: OWNER_ACCOUNT, status: 'archived' };
+
+    const res = await authorizeGitProxy('kortix_pat_x', PROJECT_ID, 'write');
+
+    expect(res).toMatchObject({ ok: false, status: 404 });
+  });
+});
+
+describe('authorizeGitProxy — account API key', () => {
+  test('an API key for another account stays denied — it carries no user to evaluate', async () => {
+    patResult = { isValid: false };
+    apiKeyResult = { isValid: true, accountId: OTHER_ACCOUNT, type: 'user' };
+    authorizeAllowed = true; // would pass IF the fallback applied — it must not
+
+    const res = await authorizeGitProxy('kortix_abc', PROJECT_ID, 'write');
+
+    expect(res).toMatchObject({ ok: false, status: 403 });
+    expect(authorizeCalls).toHaveLength(0);
+  });
+
+  test('an API key on the owning account is allowed', async () => {
+    patResult = { isValid: false };
+    apiKeyResult = { isValid: true, accountId: OWNER_ACCOUNT, type: 'user' };
+
+    const res = await authorizeGitProxy('kortix_abc', PROJECT_ID, 'write');
+
+    expect(res.ok).toBe(true);
+  });
+
+  test('a non-Kortix credential is 401', async () => {
+    const res = await authorizeGitProxy('ghp_something', PROJECT_ID, 'read');
+    expect(res).toMatchObject({ ok: false, status: 401 });
+  });
+});
+
+describe('authorizeGitProxy — sandbox token', () => {
+  beforeEach(() => {
+    patResult = { isValid: false };
+    apiKeyResult = {
+      isValid: true,
+      accountId: OWNER_ACCOUNT,
+      type: 'sandbox',
+      sandboxId: 'sandbox-1',
+    };
+  });
+
+  test('runtime sessions cannot read Git objects', async () => {
+    sandboxRow = {
+      sandboxId: 'sandbox-1',
+      sessionId: 'sandbox-1',
+      branchName: 'sandbox-1',
+      sessionMetadata: { repository_access: false },
+    };
+
+    const res = await authorizeGitProxy('kortix_abc', PROJECT_ID, 'read');
+
+    expect(res).toMatchObject({
+      ok: false,
+      status: 403,
+      message: 'sandbox workspace does not allow Git access',
+    });
+  });
+
+  test('branch sessions retain Git access', async () => {
+    sandboxRow = {
+      sandboxId: 'sandbox-1',
+      sessionId: 'sandbox-1',
+      branchName: 'sandbox-1',
+      sessionMetadata: { workspace_mode: 'branch' },
+    };
+
+    const res = await authorizeGitProxy('kortix_abc', PROJECT_ID, 'write');
+
+    expect(res.ok).toBe(true);
+  });
+
+  test('legacy sessions without a workspace mode retain Git access', async () => {
+    sandboxRow = { sandboxId: 'sandbox-1', sessionId: 'sandbox-1', branchName: 'sandbox-1', sessionMetadata: {} };
+
+    const res = await authorizeGitProxy('kortix_abc', PROJECT_ID, 'read');
+
+    expect(res.ok).toBe(true);
+  });
+
+  test('a branch session surfaces its agent grant so the ref gate can widen the lane', async () => {
+    sandboxRow = {
+      sandboxId: 'sandbox-1',
+      sessionId: 'sandbox-1',
+      branchName: 'sandbox-1',
+      sessionMetadata: { workspace_mode: 'branch' },
+    };
+    grantRow = { userId: 'launcher-1', tokenId: 'session-token-1', agentGrant: { agent: 'main', permissions: ['project.gitops.ref.any'], connectors: 'all' } };
+
+    const res = await authorizeGitProxy('kortix_abc', PROJECT_ID, 'write');
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.agentGrant).toEqual({ agent: 'main', permissions: ['project.gitops.ref.any'], connectors: 'all' });
+      expect(res.principal).toMatchObject({ kind: 'session', userId: 'launcher-1', tokenId: 'session-token-1' });
+    }
+  });
+
+  test('a session with no connector-token grant reads null, not widened', async () => {
+    sandboxRow = {
+      sandboxId: 'sandbox-1',
+      sessionId: 'sandbox-1',
+      branchName: 'sandbox-1',
+      sessionMetadata: { workspace_mode: 'branch' },
+    };
+    grantRow = null;
+
+    const res = await authorizeGitProxy('kortix_abc', PROJECT_ID, 'write');
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.agentGrant).toBeNull();
+  });
+
+  test('a sandbox token without a live session stays denied', async () => {
+    sandboxRow = null;
+
+    const res = await authorizeGitProxy('kortix_abc', PROJECT_ID, 'read');
+
+    expect(res).toMatchObject({
+      ok: false,
+      status: 403,
+      message: 'sandbox token is not scoped to this project',
+    });
+  });
+});
+
+describe('authorizeGitProxy — verdict memo', () => {
+  // These cases pin the cache, not the role: their user holds the git role.
+  beforeEach(() => {
+    authorizeAllowed = true;
+  });
+
+  test('a repository switch invalidates a cached authorization', async () => {
+    projectRow = { ...projectRow, repoUrl: 'https://github.com/example-org/old.git' };
+    validateCalls = 0;
+    expect((await authorizeGitProxy('kortix_pat_switch', PROJECT_ID, 'read')).ok).toBe(true);
+    projectRow = { ...projectRow, repoUrl: 'https://github.com/example-org/new.git', metadata: { repository_generation: 'new' } };
+    patResult = { isValid: false, error: 'revoked' };
+    const result = await authorizeGitProxy('kortix_pat_switch', PROJECT_ID, 'read');
+    expect(result).toMatchObject({ ok: false, status: 401 });
+    expect(validateCalls).toBe(2);
+  });
+
+  test('an old session keeps Git access through the stable proxy after a repository switch', async () => {
+    apiKeyResult = { isValid: true, accountId: OWNER_ACCOUNT, type: 'sandbox', sandboxId: 'sandbox-1' };
+    sandboxRow = { sandboxId: 'sandbox-1', sessionId: 'sandbox-1', branchName: 'sandbox-1', sessionMetadata: { workspace_mode: 'branch' } };
+    expect((await authorizeGitProxy('kortix_session_switch', PROJECT_ID, 'write')).ok).toBe(true);
+    projectRow = { ...projectRow, repoUrl: 'https://github.com/example-org/new.git', metadata: { repository_generation: 'new' } };
+    const result = await authorizeGitProxy('kortix_session_switch', PROJECT_ID, 'write');
+    expect(result).toMatchObject({
+      ok: true,
+      project: { repoUrl: 'https://github.com/example-org/new.git' },
+      principal: { kind: 'session', sessionId: 'sandbox-1', branch: 'sandbox-1' },
+    });
+  });
+
+  test("a positive verdict is reused for the clone's follow-up requests without re-validating", async () => {
+    validateCalls = 0;
+    patResult = { isValid: true, accountId: OWNER_ACCOUNT, userId: 'user-1', tokenId: 'tok-1' };
+    const first = await authorizeGitProxy('kortix_pat_memo', PROJECT_ID, 'read');
+    expect(first.ok).toBe(true);
+    expect(validateCalls).toBe(1);
+    // Same token+project+scope inside the TTL → memoized, no second validation
+    // even though the token would now be refused.
+    patResult = { isValid: false, error: 'revoked' };
+    const second = await authorizeGitProxy('kortix_pat_memo', PROJECT_ID, 'read');
+    expect(second.ok).toBe(true);
+    expect(validateCalls).toBe(1);
+    // A different scope is a fresh verdict — and sees the revocation.
+    const write = await authorizeGitProxy('kortix_pat_memo', PROJECT_ID, 'write');
+    expect(write.ok).toBe(false);
+    expect(validateCalls).toBe(2);
+  });
+
+  test('denials are never memoized', async () => {
+    patResult = { isValid: false, error: 'revoked' };
+    const denied = await authorizeGitProxy('kortix_pat_denied', PROJECT_ID, 'read');
+    expect(denied.ok).toBe(false);
+    patResult = { isValid: true, accountId: OWNER_ACCOUNT, userId: 'user-1', tokenId: 'tok-1' };
+    const allowed = await authorizeGitProxy('kortix_pat_denied', PROJECT_ID, 'read');
+    expect(allowed.ok).toBe(true);
+  });
+});
+
+describe('a refused git credential still names who presented it', () => {
+  // The V1 finding: any account member could clone and push `main` of a
+  // project they held no role on. The refusal is now in place — and an audit
+  // row that cannot say WHO was refused is no evidence at all. The request's
+  // audit scope must carry the identity the token proved before the refusal.
+  const { runWithContext } = require('../lib/request-context');
+  const { attachInboundAuditScope } = require('../shared/audit-scope');
+
+  async function principalAfter(token: string, scope: 'read' | 'write') {
+    return runWithContext('POST', `/v1/git/${PROJECT_ID}/git-receive-pack`, async () => {
+      const audit = attachInboundAuditScope({ owner: 'edge', method: 'POST' });
+      const res = await authorizeGitProxy(token, PROJECT_ID, scope);
+      return { res, principal: audit.principal };
+    });
+  }
+
+  test('a same-account PAT refused for lack of a project role names its user and token', async () => {
+    authorizeAllowed = false;
+    const { res, principal } = await principalAfter('kortix_pat_x', 'write');
+    expect(res).toMatchObject({ ok: false, status: 403 });
+    expect(principal).toMatchObject({
+      accountId: OWNER_ACCOUNT,
+      projectId: PROJECT_ID,
+      actorUserId: 'user-1',
+      actorType: 'human',
+      authoritativeSource: 'api_key',
+      authMethod: { kind: 'account_token', token_id: 'tok-1' },
+    });
+  });
+
+  test('an invalid PAT names only the project it was aimed at', async () => {
+    patResult = { isValid: false, error: 'Invalid PAT' };
+    const { res, principal } = await principalAfter('kortix_pat_x', 'read');
+    expect(res).toMatchObject({ ok: false, status: 401 });
+    expect(principal).toEqual({ accountId: OWNER_ACCOUNT, projectId: PROJECT_ID });
+  });
+
+  test('a sandbox token refused for another project names the agent credential', async () => {
+    apiKeyResult = { isValid: true, type: 'sandbox', sandboxId: 'sbx-1', accountId: OWNER_ACCOUNT };
+    const { res, principal } = await principalAfter('kortix_sbx_x', 'read');
+    expect(res).toMatchObject({ ok: false, status: 403 });
+    expect(principal).toMatchObject({
+      projectId: PROJECT_ID,
+      actorType: 'agent',
+      actorUserId: null,
+      authoritativeSource: 'agent',
+      authMethod: { kind: 'sandbox_token', sandbox_id: 'sbx-1' },
+    });
+  });
+
+  test('an unknown project binds nothing: there is no owner to show it to', async () => {
+    projectRow = null;
+    const { res, principal } = await principalAfter('kortix_pat_x', 'read');
+    expect(res).toMatchObject({ ok: false, status: 404 });
+    expect(principal).toEqual({});
+  });
+});

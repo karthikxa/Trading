@@ -1,0 +1,42 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, test } from 'bun:test';
+import { expandI18nSource } from '@/i18n/test-source';
+import { pruneRequiredConnectors } from '@kortix/ui/customize/sections/view/connectors-personal';
+import { uiSourcePath } from '@/test-utils/read-source';
+import { fileURLToPath } from 'node:url';
+
+describe('pruneRequiredConnectors', () => {
+  test('keeps entries that are still granted', () => {
+    expect(pruneRequiredConnectors(['gmail'], ['gmail', 'slack'])).toEqual(['gmail']);
+  });
+
+  test('drops an entry whose grant was just removed', () => {
+    expect(pruneRequiredConnectors(['gmail', 'slack'], ['gmail'])).toEqual(['gmail']);
+  });
+
+  test("an 'all' grant keeps everything", () => {
+    expect(pruneRequiredConnectors(['gmail', 'slack'], 'all')).toEqual(['gmail', 'slack']);
+  });
+
+  test('clearing the grant clears the required set', () => {
+    expect(pruneRequiredConnectors(['gmail'], 'none')).toBeUndefined();
+    expect(pruneRequiredConnectors(['gmail'], [])).toBeUndefined();
+    expect(pruneRequiredConnectors(['gmail'], undefined)).toBeUndefined();
+  });
+
+  test('returns undefined (not []) so the key is omitted from the YAML', () => {
+    expect(pruneRequiredConnectors(['slack'], ['gmail'])).toBeUndefined();
+    expect(pruneRequiredConnectors([], ['gmail'])).toBeUndefined();
+    expect(pruneRequiredConnectors(undefined, ['gmail'])).toBeUndefined();
+  });
+
+  test('the editor uses canonical required terminology', async () => {
+    const source = expandI18nSource(
+      readFileSync(uiSourcePath('customize/sections/view/agent-editor-access-fields.tsx'), 'utf8'),
+    );
+    expect(source).toContain('RequiredConnectorToggle');
+    expect(source).toContain('Required before session start');
+    expect(source).not.toContain('PersonalConnectorToggle');
+    expect(source).not.toContain('draft.connectors_personal');
+  });
+});

@@ -1,0 +1,406 @@
+import { describe, expect, test } from 'bun:test';
+
+import { createGatewayRouteResolver } from './resolve-route';
+
+const principal = { userId: 'u1', accountId: 'a1' };
+
+describe('gateway control-plane route resolver', () => {
+  const resolveRoute = createGatewayRouteResolver({
+    defaultModel: 'model-default',
+    visionModel: 'model-vision',
+    policies: [{
+      id: 'default-degrade',
+      models: ['model-default'],
+      fallbackModels: ['model-fallback'],
+      fallbackOn: 'any-error',
+    }],
+    supportsImage: (model) => model === 'model-default' || model === 'model-vision',
+  });
+
+  test('a legacy or prefixed id gets the fallback chain of the model it resolves to', async () => {
+    const aliased = createGatewayRouteResolver({
+      defaultModel: 'model-default', visionModel: undefined, supportsImage: () => true,
+      policies: [{ id: 'resilience', models: ['model-default'], fallbackModels: ['model-fallback'], fallbackOn: 'transient' }],
+      canonicalModel: (model) => (model === 'retired-model' || model === 'kortix/model-default' ? 'model-default' : model),
+    });
+    for (const requestedModel of ['retired-model', 'kortix/model-default']) {
+      expect(await aliased(principal, { requestedModel, requires: { imageInput: false } })).toMatchObject({
+        policyId: 'resilience', primaryModel: requestedModel, fallbackModels: ['model-fallback'],
+      });
+    }
+  });
+
+  test('does not resolve stale auto into the platform default', async () => {
+    expect(await resolveRoute(principal, {
+      requestedModel: 'auto',
+      requires: { imageInput: false },
+    })).toEqual({
+      policyId: 'direct',
+      primaryModel: 'auto',
+      fallbackModels: [],
+      fallbackOn: 'transient',
+      generationDefaults: undefined,
+      generationDefaultsForModel: expect.any(Function),
+    });
+  });
+
+  test('the principal default is the default request; every other model stays explicit', async () => {
+    // `account-model` lacks image input: only as the principal's default does
+    // an image request reroute it to the vision model.
+    const imageRequest = { requestedModel: 'account-model', requires: { imageInput: true } };
+    expect((await resolveRoute({ ...principal, defaultModel: 'account-model' }, imageRequest)).primaryModel)
+      .toBe('model-vision');
+    expect((await resolveRoute(principal, imageRequest)).primaryModel).toBe('account-model');
+
+    expect(await resolveRoute(principal, {
+      requestedModel: 'model-default',
+      requires: { imageInput: false },
+    })).toEqual({
+      policyId: 'default-degrade',
+      primaryModel: 'model-default',
+      fallbackModels: ['model-fallback'],
+      fallbackOn: 'any-error',
+      generationDefaults: undefined,
+      generationDefaultsForModel: expect.any(Function),
+    });
+    expect(await resolveRoute(principal, {
+      requestedModel: 'explicit-model',
+      requires: { imageInput: false },
+    })).toEqual({
+      policyId: 'direct',
+      primaryModel: 'explicit-model',
+      fallbackModels: [],
+      fallbackOn: 'transient',
+      generationDefaults: undefined,
+      generationDefaultsForModel: expect.any(Function),
+    });
+  });
+
+  test('selects the configured vision model only when the chosen model lacks image input', async () => {
+    const route = await resolveRoute({ ...principal, defaultModel: 'text-only' }, {
+      requestedModel: 'text-only',
+      requires: { imageInput: true },
+    });
+    expect(route?.primaryModel).toBe('model-vision');
+
+    const explicit = await resolveRoute(principal, {
+      requestedModel: 'explicit-text-model',
+      requires: { imageInput: true },
+    });
+    expect(explicit.primaryModel).toBe('explicit-text-model');
+  });
+
+  test('project exact rules override the project chain, and the chain covers every other model', async () => {
+    const projectResolver = createGatewayRouteResolver({
+      defaultModel: 'platform-default',
+      visionModel: 'platform-vision',
+      policies: [],
+      supportsImage: () => false,
+      getProjectPolicy: async () => ({
+        visionModel: 'project-vision',
+        defaultFallback: { models: ['project-fallback'], fallbackOn: 'any-error' },
+        rules: [
+          {
+            model: 'explicit-primary',
+            fallbackModels: ['specific-fallback'],
+            fallbackOn: 'transient',
+          },
+          {
+            model: 'platform-default',
+            fallbackModels: ['default-rule-fallback'],
+            fallbackOn: 'transient',
+          },
+        ],
+      }),
+    });
+
+    // The default request matches both the exact rule and the default chain;
+    // the exact rule wins.
+    expect(await projectResolver({ ...principal, projectId: 'p1' }, {
+      requestedModel: 'platform-default',
+      requires: { imageInput: false },
+    })).toMatchObject({
+      policyId: 'project:exact:platform-default',
+      fallbackModels: ['default-rule-fallback'],
+      fallbackOn: 'transient',
+    });
+
+    expect(await projectResolver({ ...principal, projectId: 'p1' }, {
+      requestedModel: 'explicit-primary',
+      requires: { imageInput: false },
+    })).toEqual({
+      policyId: 'project:exact:explicit-primary',
+      primaryModel: 'explicit-primary',
+      fallbackModels: ['specific-fallback'],
+      fallbackOn: 'transient',
+      generationDefaults: undefined,
+      generationDefaultsForModel: expect.any(Function),
+    });
+
+    // Incident 2026-10-02: a model that was not the principal's default routed
+    // `direct`, so a trigger on an agent with its own default got the provider's
+    // usage-limit 429 while the project had a chain. The chain is a catch-all.
+    expect(await projectResolver({ ...principal, projectId: 'p1' }, {
+      requestedModel: 'unmatched-primary',
+      requires: { imageInput: false },
+    })).toEqual({
+      policyId: 'project:default',
+      primaryModel: 'unmatched-primary',
+      fallbackModels: ['project-fallback'],
+      fallbackOn: 'any-error',
+      generationDefaults: undefined,
+      generationDefaultsForModel: expect.any(Function),
+    });
+  });
+
+  test('a session on an agent with its own default takes the project chain for any model', async () => {
+    const projectResolver = createGatewayRouteResolver({
+      defaultModel: 'platform-default',
+      visionModel: undefined,
+      policies: [{ id: 'platform', models: ['platform-default'], fallbackModels: ['platform-fallback'], fallbackOn: 'transient' }],
+      supportsImage: () => true,
+      getProjectPolicy: async () => ({
+        visionModel: null,
+        defaultFallback: { models: ['project-fallback'], fallbackOn: 'any-error' },
+        rules: [],
+      }),
+    });
+    const session = { ...principal, projectId: 'p1', sessionId: 's1', defaultModel: 'agent-default' };
+    for (const requestedModel of ['project-default', 'agent-default', 'platform-default', 'hand-picked']) {
+      expect(await projectResolver(session, { requestedModel, requires: { imageInput: false } })).toMatchObject({
+        policyId: 'project:default',
+        primaryModel: requestedModel,
+        fallbackModels: ['project-fallback'],
+        fallbackOn: 'any-error',
+      });
+    }
+    // A principal default dropped at authentication (every account paused)
+    // changes nothing: the chain does not depend on it.
+    const { defaultModel: _dropped, ...paused } = session;
+    expect(await projectResolver(paused, { requestedModel: 'project-default', requires: { imageInput: false } }))
+      .toMatchObject({ policyId: 'project:default', fallbackModels: ['project-fallback'] });
+  });
+
+  test('"No fallback" covers every model, and a project with no chain keeps the platform route', async () => {
+    let defaultFallback: { models: string[]; fallbackOn: 'any-error' } | null = { models: [], fallbackOn: 'any-error' };
+    const projectResolver = createGatewayRouteResolver({
+      defaultModel: 'platform-default',
+      visionModel: undefined,
+      policies: [{ id: 'platform', models: ['platform-default'], fallbackModels: ['platform-fallback'], fallbackOn: 'transient' }],
+      supportsImage: () => true,
+      getProjectPolicy: async () => ({ visionModel: null, defaultFallback, rules: [] }),
+    });
+    const route = (requestedModel: string) =>
+      projectResolver({ ...principal, projectId: 'p1', defaultModel: 'agent-default' }, { requestedModel, requires: { imageInput: false } });
+
+    expect(await route('platform-default')).toMatchObject({ policyId: 'project:default', fallbackModels: [] });
+    expect(await route('hand-picked')).toMatchObject({ policyId: 'project:default', fallbackModels: [] });
+
+    defaultFallback = null;
+    expect(await route('platform-default')).toMatchObject({ policyId: 'platform', fallbackModels: ['platform-fallback'] });
+    expect(await route('hand-picked')).toMatchObject({ policyId: 'direct', fallbackModels: [] });
+  });
+
+  test('the concrete default uses project fallback and vision policies', async () => {
+    let disabled = false;
+    const projectResolver = createGatewayRouteResolver({
+      defaultModel: 'platform-default',
+      visionModel: 'platform-vision',
+      policies: [],
+      supportsImage: (model) => model === 'project-vision',
+      getProjectPolicy: async () => ({
+        visionModel: 'project-vision',
+        defaultFallback: {
+          models: disabled ? [] : ['project-fallback'],
+          fallbackOn: 'any-error',
+        },
+        rules: [],
+      }),
+    });
+
+    expect(await projectResolver({ ...principal, projectId: 'p1', defaultModel: 'project-default' }, {
+      requestedModel: 'project-default',
+      requires: { imageInput: false },
+    })).toEqual({
+      policyId: 'project:default',
+      primaryModel: 'project-default',
+      fallbackModels: ['project-fallback'],
+      fallbackOn: 'any-error',
+      generationDefaults: undefined,
+      generationDefaultsForModel: expect.any(Function),
+    });
+
+    const vision = await projectResolver(
+      { ...principal, projectId: 'p1', defaultModel: 'text-only' },
+      { requestedModel: 'text-only', requires: { imageInput: true } },
+    );
+    expect(vision.primaryModel).toBe('project-vision');
+    expect(vision.fallbackModels).toEqual(['project-fallback']);
+
+    disabled = true;
+    const noFallback = await projectResolver(
+      { ...principal, projectId: 'p1' },
+      { requestedModel: 'platform-default', requires: { imageInput: false } },
+    );
+    expect(noFallback.fallbackModels).toEqual([]);
+    expect(noFallback.policyId).toBe('project:default');
+  });
+});
+
+describe('gateway control-plane route resolver — generation-defaults clamping', () => {
+  const genPrincipal = { ...principal, projectId: 'p1' };
+
+  const reasoningModel = {
+    id: 'reasoning-model',
+    name: 'Reasoning Model',
+    reasoning: true,
+    reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high'] }],
+    temperature: false,
+    limit: { output: 4096 },
+  };
+
+  function resolverFor(modelGenerationConfig: Record<string, unknown>) {
+    return createGatewayRouteResolver({
+      defaultModel: 'model-default',
+      visionModel: 'model-vision',
+      policies: [],
+      supportsImage: () => true,
+      getProjectPolicy: async () => ({
+        visionModel: null,
+        defaultFallback: null,
+        rules: [],
+        modelGenerationConfig: modelGenerationConfig as never,
+      }),
+      catalogModelFor: (model) => (model === 'reasoning-model' ? (reasoningModel as never) : undefined),
+    });
+  }
+
+  test('attaches a clamped generationDefaults for the resolved primary model', async () => {
+    const resolveRoute = resolverFor({
+      'reasoning-model': { reasoningEffort: 'high', maxOutputTokens: 999_999 },
+    });
+    const route = await resolveRoute(genPrincipal, {
+      requestedModel: 'reasoning-model',
+      requires: { imageInput: false },
+    });
+    // maxOutputTokens is clamped to the model's limit.output (4096).
+    expect(route.generationDefaults).toEqual({ reasoningEffort: 'high', maxOutputTokens: 4096 });
+  });
+
+  test('drops a capability the resolved model does not support (temperature:false)', async () => {
+    const resolveRoute = resolverFor({
+      'reasoning-model': { temperature: 1.5, topP: 0.9 },
+    });
+    const route = await resolveRoute(genPrincipal, {
+      requestedModel: 'reasoning-model',
+      requires: { imageInput: false },
+    });
+    expect(route.generationDefaults).toBeUndefined();
+  });
+
+  // MUST-FIX regression (adversarial review of PR #4995): `generationDefaults`
+  // alone only ever covers `primaryModel` — a failover candidate needs its OWN
+  // freshly-clamped defaults, re-derived against ITS OWN capabilities, not the
+  // primary's. `generationDefaultsForModel` is what the gateway's failover
+  // loop (packages/llm-gateway's runFailover) actually calls per candidate.
+  test('generationDefaultsForModel re-clamps per model, a fallback never gets the primary\'s values', async () => {
+    const tempModel = {
+      id: 'temp-model',
+      name: 'Temperature Model',
+      reasoning: false,
+      temperature: true,
+      limit: { output: 8192 },
+    };
+    const resolveRoute = createGatewayRouteResolver({
+      defaultModel: 'model-default',
+      visionModel: 'model-vision',
+      policies: [],
+      supportsImage: () => true,
+      getProjectPolicy: async () => ({
+        visionModel: null,
+        defaultFallback: null,
+        rules: [],
+        modelGenerationConfig: {
+          'temp-model': { temperature: 0.9, maxOutputTokens: 999_999 },
+          'reasoning-model': { reasoningEffort: 'high', temperature: 0.9 },
+        } as never,
+      }),
+      catalogModelFor: (model) =>
+        model === 'reasoning-model'
+          ? (reasoningModel as never)
+          : model === 'temp-model'
+            ? (tempModel as never)
+            : undefined,
+    });
+    const route = await resolveRoute(genPrincipal, {
+      requestedModel: 'temp-model',
+      requires: { imageInput: false },
+    });
+    expect(route.generationDefaultsForModel).toBeDefined();
+    // The primary model (temp-model) — accepts temperature, clamps
+    // maxOutputTokens to its own 8192 ceiling.
+    expect(route.generationDefaultsForModel?.('temp-model')).toEqual({
+      temperature: 0.9,
+      maxOutputTokens: 8192,
+    });
+    // A DIFFERENT (e.g. failover) model — temperature:false, so its
+    // configured temperature is dropped; reasoningEffort survives because
+    // this model supports it. Never the primary's clamp result.
+    expect(route.generationDefaultsForModel?.('reasoning-model')).toEqual({
+      reasoningEffort: 'high',
+    });
+    // A model with no configured entry at all → undefined, not a leak of
+    // some other model's defaults.
+    expect(route.generationDefaultsForModel?.('unconfigured-model')).toBeUndefined();
+  });
+
+  test('an unresolved principal default is read only when the route depends on it', async () => {
+    let reads = 0;
+    const lazy = createGatewayRouteResolver({
+      defaultModel: 'model-default', visionModel: 'model-vision', policies: [],
+      supportsImage: (model) => model === 'model-vision',
+      resolveDefaultModel: async () => { reads += 1; return 'account-model'; },
+    });
+    // A text request: the default changes nothing, so it is not read.
+    expect((await lazy(principal, { requestedModel: 'account-model', requires: { imageInput: false } })).primaryModel)
+      .toBe('account-model');
+    expect(reads).toBe(0);
+    // An image request: the default decides the reroute, so it is read, as eager resolution would.
+    expect((await lazy(principal, { requestedModel: 'account-model', requires: { imageInput: true } })).primaryModel)
+      .toBe('model-vision');
+    expect(reads).toBe(1);
+    // A principal that carries its default is never re-read.
+    await lazy({ ...principal, defaultModel: 'account-model' }, { requestedModel: 'x', requires: { imageInput: true } });
+    expect(reads).toBe(1);
+  });
+
+  test('requires.imageOutput absent keeps chat routing unchanged', async () => {
+    let policyReads = 0;
+    const imageRequests: string[] = [];
+    const withImages = createGatewayRouteResolver({
+      defaultModel: 'model-default', visionModel: undefined, supportsImage: () => false,
+      policies: [{ id: 'default-degrade', models: ['model-default'], fallbackModels: ['model-fallback'], fallbackOn: 'any-error' }],
+      getProjectPolicy: async () => { policyReads += 1; return null; },
+      imageRoute: async (_principal, requestedModel) => {
+        imageRequests.push(requestedModel);
+        return { policyId: 'image', primaryModel: 'codex/gpt-image-2', fallbackModels: [], fallbackOn: 'any-error' };
+      },
+    });
+    const chat = { requestedModel: 'model-default', requires: { imageInput: false } };
+    const chatPlan = {
+      policyId: 'default-degrade', primaryModel: 'model-default', fallbackModels: ['model-fallback'],
+      fallbackOn: 'any-error' as const, generationDefaults: undefined, generationDefaultsForModel: expect.any(Function),
+    };
+    const project = { ...principal, projectId: 'p1' };
+    expect(await withImages(project, chat)).toEqual(chatPlan);
+    expect(await withImages(project, { ...chat, requires: { imageInput: false, imageOutput: false } })).toEqual(chatPlan);
+    expect(imageRequests).toEqual([]);
+    expect(policyReads).toBe(2);
+
+    // An image request takes the image plan and never reads the chat policy.
+    expect(await withImages(project, { requestedModel: 'auto', requires: { imageInput: false, imageOutput: true } }))
+      .toEqual({ policyId: 'image', primaryModel: 'codex/gpt-image-2', fallbackModels: [], fallbackOn: 'any-error' });
+    expect(imageRequests).toEqual(['auto']);
+    expect(policyReads).toBe(2);
+  });
+});

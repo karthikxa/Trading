@@ -1,0 +1,171 @@
+import { afterEach, beforeEach, expect, jest, mock, test } from 'bun:test';
+let drains = 0;
+let drainMs = 0;
+let concurrent = 0;
+let maxConcurrent = 0;
+const config = { KORTIX_TRIGGER_SCHEDULER_ENABLED: true };
+mock.module('../../config', () => ({ config }));
+let listening = false;
+let dueHandler: ((dueAtMs: number) => void) | null = null;
+mock.module('../../shared/pg-broadcast', () => ({
+  isPgBroadcastListening: () => listening,
+  onLifecycleCommandDue: (handler: ((dueAtMs: number) => void) | null) => {
+    dueHandler = handler;
+  },
+}));
+mock.module('./drain', () => ({
+  drainSessionLifecycleQueue: async () => {
+    drains++;
+    concurrent++;
+    maxConcurrent = Math.max(maxConcurrent, concurrent);
+    if (drainMs > 0) await Bun.sleep(drainMs);
+    concurrent--;
+    return {};
+  },
+}));
+const { startSessionLifecycleWorker, stopSessionLifecycleWorker } = await import('../../workers/session-lifecycle-worker');
+const { wakeAt, DRAIN_FALLBACK_MS, MIN_DRAIN_GAP_MS } = await import('../../workers/session-lifecycle-worker');
+// A fake clock: the worker's 1 s tick, its wake timers, Date.now() and the
+// mocked drain's sleep all advance only through `elapse`, so every case runs in
+// milliseconds and no loaded runner can delay a timer past an assertion.
+async function elapse(ms: number) {
+  jest.advanceTimersByTime(ms);
+  await Promise.resolve();
+}
+beforeEach(() => {
+  jest.useFakeTimers();
+});
+afterEach(async () => {
+  stopSessionLifecycleWorker();
+  await elapse(drainMs + 20);
+  jest.useRealTimers();
+  drainMs = 0;
+  listening = false;
+});
+
+test('delivery starts without cron leadership and recurring retries stop cleanly', async () => {
+  drains = 0;
+  startSessionLifecycleWorker();
+  expect(drains).toBe(1);
+  await elapse(1_050);
+  expect(drains).toBe(2);
+  stopSessionLifecycleWorker();
+  await elapse(1_050);
+  expect(drains).toBe(2);
+});
+
+test('restarting replaces the previous interval', async () => {
+  drains = 0;
+  startSessionLifecycleWorker();
+  await elapse(10);
+  startSessionLifecycleWorker();
+  expect(drains).toBe(2);
+  await elapse(1_050);
+  expect(drains).toBe(3);
+});
+
+test('a drain slower than the interval never overlaps the next tick', async () => {
+  // A drain delivers prompts over the network (~1.3 s). Overlapping ticks
+  // stacked unbounded drains on every API task and starved the DB pool.
+  //
+  // WAIT for the second drain instead of sleeping a fixed 3_200 ms. The old
+  // form left a 200 ms margin: drain 1 runs 0 -> 2_500, the 1_000 ms ticks at
+  // 1_000 and 2_000 are correctly skipped, and drain 2 can only start at the
+  // 3_000 ms tick — 200 ms before the assertion. A loaded runner delays a
+  // timer past that easily, and this test then reports `drains === 1` for a
+  // worker that is behaving perfectly. It failed exactly that way on `main`
+  // (run 35257494646, 5_886 ms for a 3_200 ms test) while `worker.ts` was
+  // untouched. The learnings register's rule is a 5x margin between the paced
+  // event and the budget asserted; polling removes the margin question
+  // entirely.
+  //
+  // Both invariants still hold, and they are the point of the test: drains
+  // never overlap (`maxConcurrent === 1`), and a 2_500 ms drain under a
+  // 1_000 ms interval yields exactly 2 drains, never a stack of skipped
+  // ticks firing at once. The deadline only bounds the failure.
+  drains = 0;
+  maxConcurrent = 0;
+  drainMs = 2_500;
+  startSessionLifecycleWorker();
+  const deadline = Date.now() + 20_000;
+  while (drains < 2 && Date.now() < deadline) await elapse(25);
+  expect(maxConcurrent).toBe(1);
+  expect(drains).toBe(2);
+});
+
+test('an explicitly disabled background scheduler does not start delivery retries', async () => {
+  config.KORTIX_TRIGGER_SCHEDULER_ENABLED = false;
+  drains = 0;
+  startSessionLifecycleWorker();
+  expect(drains).toBe(0);
+  config.KORTIX_TRIGGER_SCHEDULER_ENABLED = true;
+});
+
+test('a due time wakes the drain at that moment, never sooner than the gap after the last drain', () => {
+  const now = 100_000;
+  expect(wakeAt(now + 3_000, now - 5_000, now)).toBe(now + 3_000);
+  expect(wakeAt(now, now - 200, now)).toBe(now - 200 + MIN_DRAIN_GAP_MS);
+  expect(wakeAt(now - 60_000, 0, now)).toBe(now);
+  expect(wakeAt(now + 60 * 60_000, 0, now)).toBeNull();
+});
+
+test('with the LISTEN live, the tick is only a fallback and a NOTIFY wakes the drain', async () => {
+  listening = true;
+  drains = 0;
+  startSessionLifecycleWorker();
+  expect(drains).toBe(1);
+  await elapse(1_200);
+  // No 1 s poll while the LISTEN is live.
+  expect(drains).toBe(1);
+  dueHandler?.(Date.now());
+  const deadline = Date.now() + 5_000;
+  while (drains < 2 && Date.now() < deadline) await elapse(25);
+  expect(drains).toBe(2);
+});
+
+test('a storm of NOTIFYs drains at most once per gap', async () => {
+  listening = true;
+  drains = 0;
+  startSessionLifecycleWorker();
+  const until = Date.now() + 2_100;
+  while (Date.now() < until) {
+    dueHandler?.(Date.now());
+    await elapse(20);
+  }
+  // 1 at start + one per MIN_DRAIN_GAP_MS over ~2.1 s.
+  expect(drains).toBeGreaterThanOrEqual(2);
+  expect(drains).toBeLessThanOrEqual(3);
+});
+
+test('the fallback tick drains when no NOTIFY came for the fallback window', async () => {
+  listening = true;
+  drains = 0;
+  startSessionLifecycleWorker();
+  const deadline = Date.now() + DRAIN_FALLBACK_MS + 3_000;
+  while (drains < 2 && Date.now() < deadline) await elapse(50);
+  expect(drains).toBe(2);
+}, 15_000);
+
+test('a later due time keeps its own wake after an earlier one drains', async () => {
+  listening = true;
+  drains = 0;
+  startSessionLifecycleWorker();
+  const t0 = Date.now();
+  dueHandler?.(t0 + 1_500);
+  dueHandler?.(t0 + 3_000);
+  // Both wakes fire long before the 5 s fallback tick could.
+  const deadline = t0 + 4_500;
+  while (drains < 3 && Date.now() < deadline) await elapse(25);
+  expect(drains).toBe(3);
+  expect(Date.now() - t0).toBeLessThan(4_000);
+}, 10_000);
+
+test('a drain stuck on a cold boot no longer blocks the next drain, up to a bound', async () => {
+  const { canStartDrain, DRAIN_STALL_MS, MAX_CONCURRENT_DRAINS } = await import('../../workers/session-lifecycle-worker');
+  const now = 1_000_000;
+  expect(canStartDrain([], now)).toBe(true);
+  expect(canStartDrain([now - 1_000], now)).toBe(false);
+  expect(canStartDrain([now - DRAIN_STALL_MS], now)).toBe(true);
+  const stuck = Array.from({ length: MAX_CONCURRENT_DRAINS }, () => now - 5 * 60_000);
+  expect(canStartDrain(stuck, now)).toBe(false);
+});

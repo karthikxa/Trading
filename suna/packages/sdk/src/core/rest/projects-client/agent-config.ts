@@ -1,0 +1,235 @@
+import { backendApi } from '../../http/api-client';
+import type { AgentCapabilityGrant } from './agent-capabilities';
+import { canonicalizeRequiredConnectors } from './agent-connectors';
+import { unwrap } from './shared';
+
+// ── Full agent-config editor (the "agent builder", agent-first spec §2.2,
+// redirected 2026-07-05 — "one home per concern") ──
+// Round-trips the agent's TWO homes as one wire shape: `block` (governance —
+// connectors/secrets/skills/kortix_permissions/repository_access/enabled, written to
+// kortix.yaml) and `block.opencode` (OpenCode BEHAVIOR — mode/model/
+// temperature/top_p/steps/variant/color/hidden/permission/prompt, written to
+// the agent's own `.md` (`block.file`, e.g. `agents/<name>.md`) frontmatter +
+// body). The backend route is what merges the two files into this one
+// response/request shape — see apps/api/src/projects/routes/agent-config.ts.
+// Distinct from setAgentScope (agent-scope.ts), which writes only the
+// secrets/connectors grant subset. Manager-gated server-side
+// (project.agent.write). `editable` on the GET is the server's verdict; the UI
+// shows a read-only page when it is false. A block also carries the per-agent
+// grants of the project registries (`subagents`, `commands`, `extensions`).
+
+/** A Kortix governance grant on the wire: an allowlist, or the sentinels. */
+export type AgentGrantSetV2 = 'all' | 'none' | string[];
+
+/** A single OpenCode permission action. */
+export type PermissionAction = 'ask' | 'allow' | 'deny';
+
+/** A permission rule: a bare action, or a glob-pattern → action map. */
+export type PermissionRule = PermissionAction | Record<string, PermissionAction>;
+
+/** The OpenCode `permission` tree — a bare action, or a per-capability object. */
+export type PermissionConfig = PermissionAction | Record<string, PermissionRule | PermissionAction>;
+
+/** The agent's BEHAVIOR half — everything that lives in the agent's own
+ *  `.md` frontmatter (+ `prompt`, the file's BODY text, not a path). */
+export interface RuntimeAgentConfig {
+  description?: string;
+  mode?: 'primary' | 'subagent' | 'all';
+  model?: string;
+  variant?: string;
+  temperature?: number;
+  top_p?: number;
+  /** The agent's system prompt — the `.md`'s BODY text (frontmatter stripped),
+   *  not a file path/reference. */
+  prompt?: string;
+  hidden?: boolean;
+  options?: Record<string, unknown>;
+  color?: string;
+  steps?: number;
+  permission?: PermissionConfig;
+}
+
+/** @deprecated Renamed to `RuntimeAgentConfig`. Removed in the next major. */
+export type OpencodeAgentConfig = RuntimeAgentConfig;
+
+/** The full agent block on the wire — mirrors `AgentBlockV3` in
+ *  @kortix/manifest-schema PLUS the merged `behavior` half (a wire-only
+ *  convenience; kortix.yaml itself never nests it — see the module doc
+ *  above). */
+export interface AgentConfigBlock {
+  /** Repo-relative path of the agent's `.md` (e.g. `agents/support.md`). The
+   *  server owns it: it records the path it read or wrote. Send back the value
+   *  a read returned; a different value is refused. */
+  file?: string;
+  enabled?: boolean;
+  sandbox?: string;
+  /** The space the agent works in (a `spaces:` key, or a bare slug).
+   *  Grouping only. Empty string clears it. */
+  space?: string;
+  connectors?: AgentGrantSetV2;
+  /** Connectors that must resolve before the session starts. */
+  connectors_required?: string[];
+  /** @deprecated Input alias for `connectors_required`. Responses use only
+   *  `connectors_required`. */
+  connectors_personal?: string[];
+  /** Connector slug → policy set name (`connectors[].policy_sets`). A slug
+   *  without an entry uses the connector's base rules. Omitted on a write keeps
+   *  the declared value; a change needs `project.connector.write`. */
+  policy_sets?: Record<string, string>;
+  secrets?: AgentGrantSetV2;
+  /** The skills this agent may load. v3 also takes `{ exclude: [...] }`: every skill but those. */
+  skills?: AgentCapabilityGrant;
+  /** v3: the tools this agent may call. Omitted: all. `{ exclude: [...] }`: every tool but those. */
+  tools?: AgentCapabilityGrant;
+  /** v3: pi's codemode tool. Omitted: `on`. */
+  codemode?: 'on' | 'only' | 'off';
+  /** v3: the declared subagents this agent may start (`mode` `subagent` or `all`). */
+  subagents?: AgentGrantSetV2;
+  /** v3: the registered commands this agent may run. */
+  commands?: AgentGrantSetV2;
+  /** v3: the registered extensions a session of this agent loads. `{ exclude: [...] }`: every one but those. */
+  extensions?: AgentCapabilityGrant;
+  /** Kortix Apps (by App slug) this agent may open when the App is
+   *  `restricted` or `private`. Deny by default. A `project`-mode App needs
+   *  only `project.app.read` in `kortix_permissions`. */
+  apps?: AgentGrantSetV2;
+  /** Kortix permissions: the `project.*` actions this agent may exercise. */
+  kortix_permissions?: AgentGrantSetV2;
+  /** @deprecated Renamed to `kortix_permissions`. Servers accept it as an input
+   *  alias and answer with `kortix_permissions`. Removed in the next major. */
+  kortix_cli?: AgentGrantSetV2;
+  /** Whether new sessions can access the project repository. The API always answers it; an
+   *  omitted value is false. */
+  repository_access?: boolean;
+  /** @deprecated Use repository_access. Legacy read requires an explicit choice. */
+  workspace?: 'runtime' | 'read' | 'branch';
+  /** The agent's behavior half: its `.md` frontmatter, plus the body as `prompt`. */
+  behavior?: RuntimeAgentConfig;
+  /**
+   * @deprecated The pre-W4 name of `behavior`; servers answer both with one
+   * value. Send the behavior once, as `behavior`: a body that carries both
+   * with different values keeps the one that differs from the stored
+   * behavior, and two different edits are refused. Removed in the next major.
+   */
+  opencode?: RuntimeAgentConfig;
+}
+
+export interface AgentConfigResponse {
+  agent: string;
+  /** @deprecated The manifest has no version: one schema. Do not branch on it. Removed in the next major. */
+  schema_version: number;
+  /** True iff the full block is editable. The server decides. */
+  editable: boolean;
+  /** The manifest's top-level `default_agent`, or null when it names none. */
+  default_agent: string | null;
+  /** The declared block, or null for an agent not declared yet. */
+  block: AgentConfigBlock | null;
+  /** The harness a new session of this project runs (`opencode` or `pi`). Absent from an older API. */
+  harness?: string;
+  /** The `behavior` settings that harness ignores (pi: `options`, `color`). Absent from an older API. */
+  ignored_settings?: string[];
+  /** Set for a built-in agent (`my_kortix` for `mykortix`): platform-owned, never
+   *  editable, `block` is null. Absent for a declared agent and from an older API. */
+  builtin?: 'my_kortix';
+}
+
+/**
+ * The caller draws every failure of this read (the agent page's not-found and
+ * error states), so it does not also reach the host's global `onError` toast.
+ */
+export async function getAgentConfig(projectId: string, agentName: string) {
+  const response = unwrap(
+    await backendApi.get<AgentConfigResponse>(
+      `/projects/${projectId}/agents/${encodeURIComponent(agentName)}/config`,
+      { showErrors: false },
+    ),
+  );
+  return {
+    ...response,
+    block: response.block ? canonicalizeAgentBlock(response.block) : null,
+  };
+}
+
+export async function updateAgentConfig(
+  projectId: string,
+  agentName: string,
+  block: AgentConfigBlock,
+) {
+  const canonicalBlock = canonicalizeAgentBlock(block, true);
+  const response = unwrap(
+    await backendApi.put<{
+      ok: boolean;
+      agent: string;
+      schema_version: number;
+      block: AgentConfigBlock | null;
+    }>(`/projects/${projectId}/agents/${encodeURIComponent(agentName)}/config`, canonicalBlock),
+  );
+  return {
+    ...response,
+    block: response.block ? canonicalizeAgentBlock(response.block) : null,
+  };
+}
+
+function canonicalizeAgentBlock(block: AgentConfigBlock, writing = false): AgentConfigBlock {
+  const next = canonicalizeRequiredConnectors(block);
+  if (next.workspace === undefined) return next;
+  const legacyAccess = next.workspace === 'branch';
+  if (next.repository_access !== undefined && next.repository_access !== legacyAccess) {
+    throw new Error('repository_access conflicts with workspace');
+  }
+  if (writing && next.workspace === 'read' && next.repository_access === undefined) {
+    throw new Error('Legacy read is unavailable. Set repository_access explicitly.');
+  }
+  next.repository_access ??= legacyAccess;
+  delete next.workspace;
+  return next;
+}
+
+export interface GrantSecretToAgentResponse {
+  identifier: string;
+  agent: string;
+  /** True when the agent's list already admitted the identifier, so no commit ran. */
+  already_granted: boolean;
+  /** True when this edit wrote the manifest's FIRST `agents:` block. From then
+   *  on an agent that is not listed receives no project secrets. */
+  adopted_governance: boolean;
+}
+
+/**
+ * Grant one project secret to one agent: merge the IDENTIFIER into that agent's
+ * `secrets:` list in kortix.yaml, upserting the agent entry when the manifest
+ * does not declare it yet.
+ *
+ * Broker and network-boundary delivery reach a session only through such an
+ * explicit list — `secrets: all` withholds both — so this is the one-click fix
+ * for the `no_agent_grant` verdict `ProjectSecret.delivery_blocked_reason`
+ * reports. Distinct from `setAgentScope` (agent-scope.ts), which REPLACES an
+ * already-declared agent's grant set.
+ */
+export async function grantSecretToAgent(
+  projectId: string,
+  identifier: string,
+  agentName: string,
+) {
+  return unwrap(
+    await backendApi.post<GrantSecretToAgentResponse>(
+      `/projects/${projectId}/secrets/${encodeURIComponent(identifier)}/grant`,
+      { agent: agentName },
+    ),
+  );
+}
+
+export interface UpdateProjectDefaultAgentResponse {
+  ok: boolean;
+  default_agent: string;
+}
+
+/** Set the declared project default in `kortix.yaml` (v2 and v3 projects). */
+export async function updateProjectDefaultAgent(projectId: string, agentName: string) {
+  return unwrap(
+    await backendApi.put<UpdateProjectDefaultAgentResponse>(
+      `/projects/${projectId}/default-agent`,
+      { agent: agentName },
+    ),
+  );
+}

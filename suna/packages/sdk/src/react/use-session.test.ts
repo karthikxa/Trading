@@ -1,0 +1,1549 @@
+import { wireIdClock, wireIdClockAt, wireIdClockDelta } from '../core/session/wire-message-id';
+import { mintSessionWireMessageId } from './use-opencode-sessions/messages';
+import { beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
+
+// Mock the lowest network boundary the reply/send paths go through — the
+// OpenCode SDK client singleton — so the REAL `permissions.ts` wrappers and
+// `promptRuntimeMessage` run for real, matching session.test.ts's approach of
+// stubbing the boundary rather than the wrapper.
+let permissionReplyImpl: (args: unknown) => Promise<{
+  data?: unknown;
+  error?: unknown;
+  response?: Response;
+}> = async () => ({ data: {} });
+let questionReplyImpl: (args: unknown) => Promise<{
+  data?: unknown;
+  error?: unknown;
+  response?: Response;
+}> = async () => ({ data: {} });
+let questionRejectImpl: (args: unknown) => Promise<{
+  data?: unknown;
+  error?: unknown;
+  response?: Response;
+}> = async () => ({ data: {} });
+let sessionPromptImpl: (args: unknown) => Promise<{
+  data?: unknown;
+  error?: unknown;
+  response?: Response;
+}> = async () => ({ data: {} });
+
+class RuntimeNotReadyError extends Error {
+  constructor(message = '[kortix-runtime] Server URL not ready — sandbox is still loading') {
+    super(message);
+    this.name = 'RuntimeNotReadyError';
+  }
+}
+
+mock.module('../core/runtime/client', () => ({
+  RuntimeNotReadyError,
+  getClient: () => ({
+    permission: { reply: (args: unknown) => permissionReplyImpl(args) },
+    question: {
+      reply: (args: unknown) => questionReplyImpl(args),
+      reject: (args: unknown) => questionRejectImpl(args),
+    },
+    session: { promptAsync: (args: unknown) => sessionPromptImpl(args) },
+  }),
+}));
+
+import {
+  getSessionSyncController,
+  resetSessionSyncControllers,
+} from '../browser/session-sync/session-sync-registry';
+import { useRuntimePendingStore } from '../browser/stores/opencode-pending-store';
+import { useSyncStore } from '../browser/stores/sync-store';
+import { BillingError } from '../core/http/api/errors';
+import { clearSessionFresh, markSessionFresh } from '../core/http/fresh-sessions';
+import { SessionStartError, type SessionStartResult } from '../core/rest/projects-client';
+import { setCurrentRuntime } from '../core/session/current-runtime';
+import type { ModelKey } from './use-model-store';
+import { promptRuntimeMessage } from './use-opencode-sessions/messages';
+import {
+  SESSION_START_FRESH_MS,
+  SESSION_START_POLL_MS,
+  SESSION_START_POLL_OPTIONS,
+  START_INCONCLUSIVE_GIVE_UP_MS,
+  answerPermission,
+  answerQuestion,
+  beginOptimisticPlainTextSend,
+  buildSessionCommandInput,
+  cachedStartResultIsReady,
+  classifySendError,
+  computeStartSettled,
+  hasStartGivenUp,
+  markDispatchedForPartIds,
+  nextInconclusiveSince,
+  presenceReturnReopensSession,
+  rejectQuestion,
+  resolveSendOptions,
+  resolveSessionRuntimeUrl,
+  sendReceiptId,
+  sendStateOnError,
+  sendStateOnStart,
+  sessionPromptFromParts,
+  sessionStartStaleTime,
+  shouldPollSessionStart,
+  shouldRetrySessionStart,
+} from './use-session';
+import { derivePhase } from './use-session-phase';
+import { OPTIMISTIC_RECEIPT_MAX_MS, projectWorking } from '../core/session/working';
+
+function seedQuestion(id: string, sessionID = 'sess-1') {
+  useRuntimePendingStore.getState().addQuestion({
+    id,
+    sessionID,
+    questions: [{ text: 'Continue?', options: [] }],
+  } as any);
+}
+
+function seedPermission(id: string, sessionID = 'sess-1') {
+  useRuntimePendingStore.getState().addPermission({
+    id,
+    sessionID,
+    permission: 'bash',
+    patterns: [],
+    metadata: {},
+    always: [],
+  } as any);
+}
+
+beforeEach(() => {
+  resetSessionSyncControllers();
+  setCurrentRuntime(null);
+  useRuntimePendingStore.getState().clear();
+  permissionReplyImpl = async () => ({ data: {} });
+  questionReplyImpl = async () => ({ data: {} });
+  questionRejectImpl = async () => ({ data: {} });
+  sessionPromptImpl = async () => ({ data: {} });
+});
+
+/**
+ * What replaced the prompt-observation machine.
+ *
+ * The three tests here used to assert `isPromptObservedBusy` — a busy override
+ * a phase machine set on send and released from a stall timer. The send half
+ * of that contract is now one value, the send receipt, and the deciding half is
+ * `projectWorking`: the receipt claims `working` until a server source answers,
+ * and it is bounded so a send whose answer never comes cannot latch the UI.
+ */
+describe('send receipts', () => {
+  test('names the submission by the host\'s own key when it gave one', () => {
+    expect(sendReceiptId('ses_1', [{ type: 'text', text: 'hi', id: 'prt_1' }], 'queue-7')).toBe(
+      'queue-7',
+    );
+  });
+
+  test('falls back to the optimistic part id the send is correlated by', () => {
+    expect(sendReceiptId('ses_1', [{ type: 'text', text: 'hi', id: 'prt_1' }])).toBe('prt_1');
+  });
+
+  test('falls back to the session when no part carries an id', () => {
+    expect(sendReceiptId('ses_1', [{ type: 'text', text: 'hi' }])).toBe('ses_1');
+  });
+
+  test('an accepted send reads as working until a server read that saw it', () => {
+    const sentAt = 1_000_000;
+    const pending = { messageId: 'prt_1', atMs: sentAt };
+    const accepted = { ...pending, acceptedAtMs: sentAt + 400 };
+
+    // The poll in flight when the user pressed send cannot answer for it.
+    expect(
+      projectWorking({
+        optimistic: pending,
+        server: { turns: [], atMs: sentAt - 200 },
+        stream: null,
+        nowMs: sentAt + 50,
+      }),
+    ).toMatchObject({ state: 'working', source: 'optimistic' });
+
+    // Nor can one issued while the send is still on the wire: it is stamped
+    // after the receipt and still cannot see the prompt.
+    expect(
+      projectWorking({
+        optimistic: pending,
+        server: { turns: [], atMs: sentAt + 100 },
+        stream: null,
+        nowMs: sentAt + 150,
+      }),
+    ).toMatchObject({ state: 'working', source: 'optimistic' });
+
+    // One issued after the server ACCEPTED it can.
+    expect(
+      projectWorking({
+        optimistic: accepted,
+        server: { turns: [], atMs: sentAt + 3_000 },
+        stream: null,
+        nowMs: sentAt + 3_100,
+      }),
+    ).toMatchObject({ state: 'idle', source: 'server' });
+  });
+
+  test('a receipt nobody ever answers stops claiming working — no latch', () => {
+    const receipt = { messageId: 'prt_1', atMs: 0 };
+    expect(
+      projectWorking({
+        optimistic: receipt,
+        server: null,
+        stream: null,
+        nowMs: OPTIMISTIC_RECEIPT_MAX_MS,
+      }).state,
+    ).toBe('idle');
+  });
+});
+
+describe('answerQuestion', () => {
+  test('success calls question.reply with the request id + answers and removes the pending entry', async () => {
+    seedQuestion('q1');
+    let captured: unknown;
+    questionReplyImpl = async (args) => {
+      captured = args;
+      return { data: {} };
+    };
+
+    await answerQuestion('q1', [['yes']]);
+
+    expect(captured).toEqual({ requestID: 'q1', answers: [['yes']] });
+    expect(useRuntimePendingStore.getState().questions['q1']).toBeUndefined();
+  });
+
+  test('failure keeps the pending entry and throws a typed KortixSendError', async () => {
+    seedQuestion('q1');
+    questionReplyImpl = async () => ({ error: { message: 'boom' } });
+
+    await expect(answerQuestion('q1', [['yes']])).rejects.toMatchObject({
+      kind: 'runtime-error',
+      message: 'boom',
+    });
+    expect(useRuntimePendingStore.getState().questions['q1']).toBeDefined();
+  });
+});
+
+describe('rejectQuestion', () => {
+  test('success calls question.reject with the request id and removes the pending entry', async () => {
+    seedQuestion('q1');
+    let captured: unknown;
+    questionRejectImpl = async (args) => {
+      captured = args;
+      return { data: {} };
+    };
+
+    await rejectQuestion('q1');
+
+    expect(captured).toEqual({ requestID: 'q1' });
+    expect(useRuntimePendingStore.getState().questions['q1']).toBeUndefined();
+  });
+
+  test('failure keeps the pending entry and throws a typed error', async () => {
+    seedQuestion('q1');
+    questionRejectImpl = async () => ({ error: { message: 'nope' } });
+
+    await expect(rejectQuestion('q1')).rejects.toMatchObject({
+      kind: 'runtime-error',
+    });
+    expect(useRuntimePendingStore.getState().questions['q1']).toBeDefined();
+  });
+});
+
+describe('answerPermission', () => {
+  test('success calls permission.reply with the request id + reply and removes the pending entry', async () => {
+    seedPermission('p1');
+    let captured: unknown;
+    permissionReplyImpl = async (args) => {
+      captured = args;
+      return { data: {} };
+    };
+
+    await answerPermission('p1', 'once', 'go ahead');
+
+    expect(captured).toEqual({
+      requestID: 'p1',
+      reply: 'once',
+      message: 'go ahead',
+    });
+    expect(useRuntimePendingStore.getState().permissions['p1']).toBeUndefined();
+  });
+
+  test('failure keeps the pending entry and throws a typed error', async () => {
+    seedPermission('p1');
+    permissionReplyImpl = async () => ({
+      error: { message: 'denied by server' },
+    });
+
+    await expect(answerPermission('p1', 'always')).rejects.toMatchObject({
+      kind: 'runtime-error',
+    });
+    expect(useRuntimePendingStore.getState().permissions['p1']).toBeDefined();
+  });
+
+  // KRTX-2190 (prod 2026-10-12): two reply affordances raced for one request;
+  // the runtime answered the first and answered the second with 404
+  // `Permission request not found: per_<id>`, which reached the browser as an
+  // unhandled promise rejection and paged Sentry. The request is gone — the
+  // pending entry must drop and the reply must NOT throw.
+  test('a 404 permission-request-not-found reply resolves and drops the pending entry', async () => {
+    seedPermission('p1');
+    permissionReplyImpl = async () => ({
+      error: { message: 'Permission request not found: per_x' },
+      response: new Response(null, { status: 404 }),
+    });
+
+    await expect(answerPermission('p1', 'once')).resolves.toBeUndefined();
+    expect(useRuntimePendingStore.getState().permissions['p1']).toBeUndefined();
+  });
+
+  test('a lowercase permission-request-not-found 404 (pi harness wording) resolves too', async () => {
+    seedPermission('p1');
+    permissionReplyImpl = async () => ({
+      error: 'permission request not found',
+      response: new Response(null, { status: 404 }),
+    });
+
+    await expect(answerPermission('p1', 'reject')).resolves.toBeUndefined();
+    expect(useRuntimePendingStore.getState().permissions['p1']).toBeUndefined();
+  });
+
+  test('a 404 that is not an already-answered reply still throws', async () => {
+    seedPermission('p1');
+    permissionReplyImpl = async () => ({
+      error: { message: 'no such route' },
+      response: new Response(null, { status: 404 }),
+    });
+
+    await expect(answerPermission('p1', 'always')).rejects.toMatchObject({
+      kind: 'runtime-error',
+    });
+    expect(useRuntimePendingStore.getState().permissions['p1']).toBeDefined();
+  });
+
+  test('a second concurrent reply for the same request joins the first instead of double-sending', async () => {
+    seedPermission('p1');
+    let calls = 0;
+    permissionReplyImpl = async () => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return { data: {} };
+    };
+
+    // The composer card and the tool-card inline prompt (or the allow-everything
+    // flow and the auto-approve backstop) both funnel into the same reply verb;
+    // racing them must not POST twice for one request id.
+    await Promise.all([answerPermission('p1', 'once'), answerPermission('p1', 'always')]);
+
+    expect(calls).toBe(1);
+    expect(useRuntimePendingStore.getState().permissions['p1']).toBeUndefined();
+  });
+
+  test('after a reply settles, a later reply for the same request sends again (the in-flight entry cleared)', async () => {
+    seedPermission('p1');
+    let calls = 0;
+    permissionReplyImpl = async () => {
+      calls += 1;
+      if (calls === 1) return { data: {} };
+      return {
+        error: { message: 'Permission request not found: per_x' },
+        response: new Response(null, { status: 404 }),
+      };
+    };
+
+    await answerPermission('p1', 'once');
+    // A stale caller retries the same request after the first reply settled;
+    // the runtime answers it with the already-answered 404, which resolves.
+    seedPermission('p1');
+    await expect(answerPermission('p1', 'always')).resolves.toBeUndefined();
+
+    expect(calls).toBe(2);
+    expect(useRuntimePendingStore.getState().permissions['p1']).toBeUndefined();
+  });
+});
+
+describe('classifySendError', () => {
+  test('classifies a runtime-not-ready error from getClient()', () => {
+    const err = new Error('[kortix-runtime] Server URL not ready — sandbox is still loading');
+    expect(classifySendError(err).kind).toBe('runtime-not-ready');
+  });
+
+  test('classifies a RuntimeNotReadyError via instanceof, even with a non-matching message', () => {
+    const err = new RuntimeNotReadyError('totally different wording');
+    const result = classifySendError(err);
+    expect(result.kind).toBe('runtime-not-ready');
+    expect(result.cause).toBe(err);
+  });
+
+  test('classifies a 402-shaped error as billing', () => {
+    const err = new Error('Payment Required') as Error & {
+      status?: number;
+      data?: unknown;
+    };
+    err.status = 402;
+    err.data = { message: 'Insufficient credits. Balance: $-0.06' };
+
+    const result = classifySendError(err);
+    expect(result.kind).toBe('billing');
+    expect(result.billing).toBeInstanceOf(BillingError);
+    expect(result.message).toBe('Insufficient credits. Balance: $-0.06');
+  });
+
+  test('falls back to runtime-error for a generic failure', () => {
+    const result = classifySendError(new Error('opencode went sideways'));
+    expect(result.kind).toBe('runtime-error');
+    expect(result.message).toContain('opencode went sideways');
+    expect(result.gateway).toBeUndefined();
+  });
+
+  // The thrown error's message is often an HTTP body, not a sentence — the
+  // same `{"message":…,"code":401}` string OpenCode persists into
+  // `UnknownError.data.message`. The runtime-error message must be the
+  // sentence inside it, never the serialized body.
+  test('a runtime-error whose message is a JSON body reports the sentence inside it', () => {
+    const result = classifySendError(
+      new Error('{"message":"Provided authentication token is expired.","code":401}'),
+    );
+    expect(result.kind).toBe('runtime-error');
+    expect(result.message).toBe('Provided authentication token is expired.');
+  });
+
+  // ERROR-TAXONOMY fix: a runtime-error carrying the gateway's structured
+  // envelope (provider/code/suggestion/request_id) surfaces those fields on
+  // `.gateway` instead of discarding everything but the bare message.
+  test('a runtime-error carrying the gateway envelope (via responseBody) surfaces .gateway', () => {
+    const err = {
+      name: 'APIError',
+      data: {
+        message: 'No upstream configured for model "openai/gpt-4.1"',
+        responseBody: JSON.stringify({
+          message: 'No upstream configured for model "openai/gpt-4.1"',
+          code: 'provider_not_connected',
+          provider: 'openai',
+          request_id: 'req_send_1',
+          suggestion: 'Add an openai API key in project settings, then retry.',
+        }),
+      },
+    };
+    const result = classifySendError(err);
+    expect(result.kind).toBe('runtime-error');
+    expect(result.message).toBe('No upstream configured for model "openai/gpt-4.1"');
+    expect(result.gateway).toEqual({
+      provider: 'openai',
+      code: 'provider_not_connected',
+      suggestion: 'Add an openai API key in project settings, then retry.',
+      upstreamStatus: undefined,
+      requestId: 'req_send_1',
+    });
+  });
+});
+
+describe('send state transitions (sendStateOnStart / sendStateOnError)', () => {
+  test('a send failure with a 402-shaped error clears pending and yields a billing sendError', async () => {
+    sessionPromptImpl = async () => ({
+      error: { data: { message: 'Insufficient credits. Balance: $-0.06' } },
+      response: new Response(null, { status: 402 }),
+    });
+
+    const thrown = await promptRuntimeMessage({
+      sessionId: 'sess-1',
+      parts: [{ type: 'text', text: 'hi' }],
+    }).then(
+      () => undefined,
+      (e) => e,
+    );
+
+    const state = sendStateOnError(thrown);
+    expect(state.pending).toBeNull();
+    expect(state.sendError?.kind).toBe('billing');
+    expect(state.sendError?.billing).toBeInstanceOf(BillingError);
+  });
+
+  test('sendError resets to null on the next sendStateOnStart', () => {
+    const errored = sendStateOnError(new Error('boom'));
+    expect(errored.sendError).not.toBeNull();
+
+    const restarted = sendStateOnStart('a new message');
+    expect(restarted.sendError).toBeNull();
+    expect(restarted.pending).toBe('a new message');
+  });
+});
+
+// ── T15: one user bubble ────────────────────────────────────────────
+//
+// `send()` used to build its outgoing part as `{ type: 'text', text }` with no
+// id, so `markDispatchedForPartIds` (called unconditionally by `sendParts`)
+// could never find anything to correlate — the optimistic message never got
+// marked dispatched, and the sync store's `message.updated` supersession
+// fallback (which requires `isDispatched`) could never retire it. The user's
+// text rendered twice until the session went idle and `clearOptimisticMessages`
+// swept it. `beginOptimisticPlainTextSend` mints ONE id shared by the
+// optimistic part and the outgoing wire part, closing the gap.
+function userMessageUpdatedEvent(id: string, sessionID: string) {
+  return {
+    id: 'evt_test',
+    type: 'message.updated',
+    properties: {
+      info: { id, sessionID, role: 'user', time: { created: Date.now() } },
+    },
+  } as never;
+}
+
+describe('beginOptimisticPlainTextSend', () => {
+  beforeEach(() => {
+    useSyncStore.getState().reset();
+  });
+
+  test('adds the user message and writes NO status — the bubble is not a turn', () => {
+    // The fabricated `{type:'busy'}` is gone: `sessionStatus` is where the
+    // runtime's own SSE frames land, and a write there is indistinguishable
+    // from one the daemon sent — it outranked a real `GET .../turn` read
+    // stamped after it. `sendParts` files a `SendReceipt` instead.
+    const { messageId, parts } = beginOptimisticPlainTextSend('sess-plain-1', 'hello there');
+
+    const msgs = useSyncStore.getState().messages['sess-plain-1'];
+    expect(msgs).toHaveLength(1);
+    expect(msgs?.[0]).toMatchObject({ id: messageId, role: 'user' });
+    expect('sess-plain-1' in useSyncStore.getState().sessionStatus).toBe(false);
+    expect(parts).toEqual([{ type: 'text', text: 'hello there', id: expect.any(String) }]);
+  });
+
+  test('the optimistic part and the outgoing wire part carry the SAME id', () => {
+    const { messageId, parts } = beginOptimisticPlainTextSend('sess-plain-2', 'hi');
+
+    const wireId = (parts[0] as { id?: string }).id;
+    expect(typeof wireId).toBe('string');
+    expect(useSyncStore.getState().parts[messageId]?.[0]?.id).toBe(wireId as string);
+  });
+
+  test('adds no optimistic parts for empty/whitespace-only text, but still sends a wire part', () => {
+    const { messageId, parts } = beginOptimisticPlainTextSend('sess-plain-3', '   ');
+
+    expect(parts).toHaveLength(1);
+    expect(useSyncStore.getState().parts[messageId] ?? []).toHaveLength(0);
+  });
+
+  test('two calls for the same session mint two different ids', () => {
+    const first = beginOptimisticPlainTextSend('sess-plain-4', 'one');
+    const second = beginOptimisticPlainTextSend('sess-plain-4', 'two');
+
+    expect(first.messageId).not.toBe(second.messageId);
+    expect((first.parts[0] as { id?: string }).id).not.toBe(
+      (second.parts[0] as { id?: string }).id,
+    );
+  });
+});
+
+describe('send() supersession: optimistic + server echo → one user message', () => {
+  beforeEach(() => {
+    useSyncStore.getState().reset();
+  });
+
+  test('marking dispatched via the shared part id lets the server echo supersede the optimistic message', () => {
+    const sessionId = 'sess-echo-1';
+    const { messageId, parts } = beginOptimisticPlainTextSend(sessionId, 'hello there');
+
+    // What `sendParts` does next, unconditionally, once the parts carry ids.
+    markDispatchedForPartIds(sessionId, parts);
+
+    // The server's real message — a different id, no parts populated yet
+    // (matches the live SSE order: `message.updated` arrives before
+    // `message.part.updated`).
+    useSyncStore.getState().applyEvent(userMessageUpdatedEvent('msg_server_real', sessionId));
+
+    const finalMsgs = useSyncStore.getState().messages[sessionId];
+    expect(finalMsgs).toHaveLength(1);
+    expect(finalMsgs?.[0]?.id).toBe('msg_server_real');
+    expect(finalMsgs?.some((m) => m.id === messageId)).toBe(false);
+  });
+
+  test('regression pin: WITHOUT an id on the outgoing part, the optimistic message is never dispatched and both survive', () => {
+    // The exact pre-fix shape `send()` used to build.
+    const sessionId = 'sess-echo-2';
+    const { messageId } = beginOptimisticPlainTextSend(sessionId, 'hello there');
+
+    markDispatchedForPartIds(sessionId, [{ type: 'text', text: 'hello there' }]); // no `id` → no-op
+
+    useSyncStore.getState().applyEvent(userMessageUpdatedEvent('msg_server_real_2', sessionId));
+
+    const finalMsgs = useSyncStore.getState().messages[sessionId];
+    // Both the optimistic AND the real message survive — this is the bug.
+    expect(finalMsgs?.map((m) => m.id).sort()).toEqual(
+      [messageId, 'msg_server_real_2'].sort(),
+    );
+  });
+});
+
+describe('buildSessionCommandInput', () => {
+  test('preserves the command model, agent, and variant overrides', () => {
+    expect(
+      buildSessionCommandInput('ses_root', 'review', 'src', {
+        agent: 'coder',
+        model: { providerID: 'kortix', modelID: 'anthropic/claude-sonnet-4-6' },
+        variant: 'high',
+      }),
+    ).toEqual({
+      sessionId: 'ses_root',
+      command: 'review',
+      args: 'src',
+      agent: 'coder',
+      model: 'kortix/anthropic/claude-sonnet-4-6',
+      variant: 'high',
+    });
+  });
+
+  test('omits empty optional overrides', () => {
+    expect(
+      buildSessionCommandInput('ses_root', 'review', '', {
+        agent: null,
+        model: null,
+        variant: null,
+      }),
+    ).toEqual({
+      sessionId: 'ses_root',
+      command: 'review',
+      args: '',
+    });
+  });
+});
+
+describe('shouldRetrySessionStart', () => {
+  const startError = (status: number) => new SessionStartError('nope', { status, terminal: true });
+
+  test('retries a 404 for a fresh session within the grace window, then gives up', () => {
+    markSessionFresh('fresh');
+    try {
+      expect(shouldRetrySessionStart(0, startError(404), 'fresh')).toBe(true);
+      expect(shouldRetrySessionStart(11, startError(404), 'fresh')).toBe(true);
+      expect(shouldRetrySessionStart(12, startError(404), 'fresh')).toBe(false);
+    } finally {
+      clearSessionFresh('fresh');
+    }
+  });
+
+  test('does NOT retry a 404 for a non-fresh session (genuinely missing / no access)', () => {
+    expect(shouldRetrySessionStart(0, startError(404), 'stale')).toBe(false);
+  });
+
+  test('does not retry other terminal start errors even when fresh', () => {
+    markSessionFresh('fresh');
+    try {
+      expect(shouldRetrySessionStart(0, startError(403), 'fresh')).toBe(false);
+      expect(shouldRetrySessionStart(0, startError(402), 'fresh')).toBe(false);
+    } finally {
+      clearSessionFresh('fresh');
+    }
+  });
+
+  test('retries a few times on transient (non-start) errors', () => {
+    const transient = new Error('network blip');
+    expect(shouldRetrySessionStart(0, transient, 'x')).toBe(true);
+    expect(shouldRetrySessionStart(2, transient, 'x')).toBe(true);
+    expect(shouldRetrySessionStart(3, transient, 'x')).toBe(false);
+  });
+});
+
+describe('shouldPollSessionStart', () => {
+  const at = (stage: string) => ({ stage }) as never;
+
+  test('keeps polling while the box is still coming up', () => {
+    expect(shouldPollSessionStart(null, at('provisioning'))).toBe(SESSION_START_POLL_MS);
+    expect(shouldPollSessionStart(null, at('starting'))).toBe(SESSION_START_POLL_MS);
+  });
+
+  test('a null payload (transient transport failure) still polls — the box did not go away', () => {
+    expect(shouldPollSessionStart(null, null)).toBe(SESSION_START_POLL_MS);
+    expect(shouldPollSessionStart(null, undefined)).toBe(SESSION_START_POLL_MS);
+  });
+
+  test('stops on every terminal stage', () => {
+    expect(shouldPollSessionStart(null, at('ready'))).toBe(false);
+    expect(shouldPollSessionStart(null, at('failed'))).toBe(false);
+    expect(shouldPollSessionStart(null, at('stopped'))).toBe(false);
+  });
+
+  test('stops when the server marks an otherwise non-terminal stage non-retriable', () => {
+    const failedWake = {
+      stage: 'starting',
+      retriable: false,
+    } as never;
+    expect(shouldPollSessionStart(null, failedWake)).toBe(false);
+  });
+
+  test('a cooldown answer waits out the server retry time the payload already names', () => {
+    // The wake-ladder cooldown payload (`stoppedWakeResult`'s cooling_down
+    // branch, apps/api routes/shared.ts) answers instantly with
+    // `stage: 'starting'`, `retriable: true` and a `next_retry_at` the server
+    // itself will honor. Polling faster than that cannot change the answer;
+    // the fleet poll cadence drove a sustained ~8k POST /start/hour from one
+    // workspace's wedged boxes (KRTX-385).
+    const cooldown = {
+      stage: 'starting',
+      retriable: true,
+      failure: {
+        category: 'sandbox-provider',
+        message: 'The runtime did not start (attempt 2). Retrying automatically.',
+        retryable: true,
+        evidence: {
+          check: 'runtime_wake_failed',
+          observed_at: new Date().toISOString(),
+          error: null,
+          attempts: 2,
+          next_retry_at: new Date(Date.now() + 30_000).toISOString(),
+        },
+      },
+    } as never;
+    const pause = shouldPollSessionStart(null, cooldown);
+    expect(typeof pause).toBe('number');
+    expect(pause as number).toBeGreaterThan(20_000);
+    expect(pause as number).toBeLessThanOrEqual(60_000);
+  });
+
+  test('a cooldown hours away still rechecks once a minute, so an open tab notices the lapse', () => {
+    const cooldown = {
+      stage: 'starting',
+      retriable: true,
+      failure: {
+        category: 'sandbox-provider',
+        message: 'Retrying automatically.',
+        retryable: true,
+        evidence: {
+          check: 'runtime_wake_failed',
+          observed_at: new Date().toISOString(),
+          error: null,
+          attempts: 1,
+          next_retry_at: new Date(Date.now() + 3_600_000).toISOString(),
+        },
+      },
+    } as never;
+    expect(shouldPollSessionStart(null, cooldown)).toBe(60_000);
+  });
+
+  test('a lapsed cooldown returns to the normal cadence — the server is re-attempting now', () => {
+    const lapsed = {
+      stage: 'starting',
+      retriable: true,
+      failure: {
+        category: 'sandbox-provider',
+        message: 'Retrying automatically.',
+        retryable: true,
+        evidence: {
+          check: 'runtime_wake_failed',
+          observed_at: new Date().toISOString(),
+          error: null,
+          attempts: 1,
+          next_retry_at: new Date(Date.now() - 5_000).toISOString(),
+        },
+      },
+    } as never;
+    expect(shouldPollSessionStart(null, lapsed)).toBe(SESSION_START_POLL_MS);
+  });
+
+  test('a non-terminal answer without retry evidence keeps the fast cadence', () => {
+    // A cold boot's `provisioning`/`starting` answers carry no failure payload;
+    // the 1.5s cadence stays exactly as it was.
+    expect(shouldPollSessionStart(null, at('provisioning'))).toBe(SESSION_START_POLL_MS);
+    expect(shouldPollSessionStart(null, at('starting'))).toBe(SESSION_START_POLL_MS);
+  });
+
+  test('stops on a terminal client error, which polling cannot fix', () => {
+    const err = new SessionStartError('gone', { status: 403, terminal: true });
+    expect(shouldPollSessionStart(err, at('provisioning'))).toBe(false);
+  });
+});
+
+describe('SESSION_START_POLL_OPTIONS', () => {
+  test('keeps interval fetches active while the document is hidden', () => {
+    expect(SESSION_START_POLL_OPTIONS.refetchIntervalInBackground).toBe(true);
+  });
+
+  test('the live callback delegates to the injected-clock pacing', () => {
+    expect(
+      SESSION_START_POLL_OPTIONS.refetchInterval({
+        state: { error: null, data: { stage: 'ready' } as never },
+      } as never),
+    ).toBe(60_000);
+  });
+
+});
+
+// The pace logic is the injected-clock pure function; the live callback above
+// delegates to it at Date.now(). A wedged box answers `/start` after its 8s
+// server long-poll with the SAME non-terminal `starting` payload, for days
+// (KRTX-385): the interval must grow while nothing changes, reset the moment
+// the answer changes, and stop with the poll on a terminal answer.
+describe('sessionStartRefetchIntervalMs', () => {
+  const interval = (query: Parameters<typeof SESSION_START_POLL_OPTIONS.refetchInterval>[0], now: number) => {
+    setSystemTime(now);
+    try {
+      return SESSION_START_POLL_OPTIONS.refetchInterval(query);
+    } finally {
+      setSystemTime();
+    }
+  };
+  const startingQuery = () => ({
+    state: {
+      error: null,
+      data: { stage: 'starting', retriable: true } as never,
+    },
+  });
+
+  test('an unchanged non-terminal answer stretches the poll — a wedged box stops hammering', () => {
+    const query = startingQuery();
+    expect(interval(query, 0)).toBe(SESSION_START_POLL_MS);
+    expect(interval(query, 45_000)).toBe(5_000);
+    expect(interval(query, 250_000)).toBe(30_000);
+    // Still inside the pace TTL: the cap holds.
+    expect(interval(query, 290_000)).toBe(30_000);
+  });
+
+  test('a pace left unpollied longer than its TTL starts fresh, not at the cap', () => {
+    // A query nobody polled for minutes (unmounted, tab closed) must not
+    // inherit a stretched interval on its next answer.
+    const query = startingQuery();
+    expect(interval(query, 0)).toBe(SESSION_START_POLL_MS);
+    expect(interval(query, 45_000)).toBe(5_000);
+    expect(interval(query, 400_000)).toBe(SESSION_START_POLL_MS);
+  });
+
+  test('a changed answer resets the stretch back to the normal cadence', () => {
+    const query = startingQuery();
+    expect(interval(query, 0)).toBe(SESSION_START_POLL_MS);
+    expect(interval(query, 45_000)).toBe(5_000);
+    // The provider now reports progress (a different reason): back to fast.
+    expect(
+      interval(
+        { state: { error: null, data: { stage: 'starting', retriable: true, reason: 'runtime_waking' } as never } },
+        45_001,
+      ),
+    ).toBe(SESSION_START_POLL_MS);
+  });
+
+  test('a terminal answer forgets the pace state and stops the interval', () => {
+    const query = startingQuery();
+    expect(interval(query, 0)).toBe(SESSION_START_POLL_MS);
+    expect(interval(query, 45_000)).toBe(5_000);
+    const stopped = {
+      state: { error: null, data: { stage: 'stopped', retriable: false } as never },
+    };
+    expect(interval(stopped, 45_001)).toBe(false);
+    // A brand-new query object after the stop starts at the normal cadence —
+    // the pace never leaks across a fresh query's first answer.
+    expect(interval(startingQuery(), 45_002)).toBe(SESSION_START_POLL_MS);
+  });
+
+  test('the retry cooldown and the no-progress stretch take the larger pause', () => {
+    // A cooldown answer whose next_retry_at is further out than the stretch:
+    // the pause is the cooldown's. One payload, both mechanisms live.
+    const nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+    const query = {
+      state: {
+        error: null,
+        data: {
+          stage: 'starting',
+          retriable: true,
+          reason: 'runtime_wake_cooldown',
+          failure: {
+            category: 'sandbox-provider',
+            message: 'Retrying automatically.',
+            retryable: true,
+            evidence: {
+              check: 'runtime_wake_failed',
+              observed_at: new Date(nowMs).toISOString(),
+              error: null,
+              attempts: 1,
+              next_retry_at: new Date(nowMs + 65_000).toISOString(),
+            },
+          } as never,
+        } as never,
+      },
+    };
+    // 65s out clamps to the 60s cap at t=0.
+    expect(interval(query, nowMs)).toBe(60_000);
+    // At 45s the stretch alone would say 5s; the server's own cooldown says
+    // "not before 65s" — the cooldown wins.
+    expect(interval(query, nowMs + 45_000)).toBe(65_000 - 45_000 + 1_000);
+  });
+});
+
+// T5 — outcome-aware staleTime: a remount renders a cached `ready`
+// result instantly (no network `/start` before first paint), everything else
+// stays maximally stale so it still refetches on every mount.
+describe('sessionStartStaleTime', () => {
+  const withData = (data: unknown) => ({ state: { data } }) as never;
+
+  test('grants the fresh window ONLY to a ready result', () => {
+    expect(sessionStartStaleTime(withData({ stage: 'ready' }))).toBe(SESSION_START_FRESH_MS);
+  });
+
+  test('stays maximally stale (0) for every in-flight or terminal-but-not-ready stage', () => {
+    for (const stage of ['provisioning', 'starting', 'stopped', 'failed']) {
+      expect(sessionStartStaleTime(withData({ stage }))).toBe(0);
+    }
+  });
+
+  test('stays maximally stale (0) with no cached data at all', () => {
+    expect(sessionStartStaleTime(withData(null))).toBe(0);
+    expect(sessionStartStaleTime(withData(undefined))).toBe(0);
+  });
+});
+
+// T8 defect 1 — the mount-time decision that feeds
+// `markRuntimeReadyVerified()`. Pure so the "should this mount seed the
+// connection store's ready-verified flag" call is unit-testable without
+// rendering the hook or a component tree — see the `useIsomorphicLayoutEffect`
+// in `useSession` for how this wires into the ordering fix.
+describe('cachedStartResultIsReady', () => {
+  test('true only when the cached /start state already says ready', () => {
+    expect(cachedStartResultIsReady({ data: { stage: 'ready' } as never })).toBe(true);
+  });
+
+  test('false for every other stage — still in flight or terminal-but-not-ready', () => {
+    for (const stage of ['provisioning', 'starting', 'stopped', 'failed']) {
+      expect(cachedStartResultIsReady({ data: { stage } as never })).toBe(false);
+    }
+  });
+
+  test('false with no cached entry at all', () => {
+    expect(cachedStartResultIsReady({ data: null })).toBe(false);
+    expect(cachedStartResultIsReady({ data: undefined })).toBe(false);
+    expect(cachedStartResultIsReady(undefined)).toBe(false);
+  });
+});
+
+// `startProjectSession` swallows every 5xx/408/429/transport failure into a
+// `null` result instead of throwing, so on a persistent /start outage
+// `shouldPollSessionStart(null, null)` polls forever with no error to
+// observe — `startSettled` could never become true, pinning `phase` at
+// 'starting' forever when a runtime error coexists with it. These tests pin
+// the give-up bound that makes "settled" reachable in bounded time, and the
+// wiring (`computeStartSettled`) that the hook's `phase` line actually calls.
+describe('hasStartGivenUp', () => {
+  test('never gives up while /start has SOMETHING to say — data or error', () => {
+    const longAgo = Date.now() - START_INCONCLUSIVE_GIVE_UP_MS * 10;
+    expect(hasStartGivenUp({ stage: 'starting' } as never, null, longAgo, Date.now())).toBe(false);
+    expect(hasStartGivenUp(null, new Error('boom'), longAgo, Date.now())).toBe(false);
+  });
+
+  test('does not give up before the budget elapses', () => {
+    const now = Date.now();
+    expect(hasStartGivenUp(null, null, now - (START_INCONCLUSIVE_GIVE_UP_MS - 1), now)).toBe(false);
+  });
+
+  test('gives up once the budget elapses with nothing but silence', () => {
+    const now = Date.now();
+    expect(hasStartGivenUp(null, null, now - START_INCONCLUSIVE_GIVE_UP_MS, now)).toBe(true);
+  });
+
+  test('no timestamp yet (the very first inconclusive tick) is never a give-up', () => {
+    expect(hasStartGivenUp(null, null, null, Date.now())).toBe(false);
+  });
+});
+
+// `computeStartSettled` no longer takes a raw timestamp pair
+// (`inconclusiveSinceMs`/`nowMs`). It takes `hasGivenUp` — an
+// ALREADY-RESOLVED boolean the caller computed once, in its own effect, from
+// `hasStartGivenUp` (see that describe block above for the time-crossing
+// behavior itself). Every other input here (`enabled`, `isFetching`, `data`,
+// `error`) is read fresh, every call — the point of this signature change is
+// that NONE of those four can ever be stale, because they are never stored;
+// only `hasGivenUp` is state in the real hook, and it is the one piece that
+// inherently needs wall-clock tracking. See the `describe` block below this
+// one for the regression this was actually fixing.
+describe('computeStartSettled', () => {
+  test('a disabled query settles immediately — it was never "still working"', () => {
+    expect(
+      computeStartSettled({
+        enabled: false,
+        isFetching: false,
+        data: null,
+        error: null,
+        hasGivenUp: false,
+      }),
+    ).toBe(true);
+  });
+
+  test('a fetch in flight is unsettled only while /start has NOT given up', () => {
+    expect(
+      computeStartSettled({
+        enabled: true,
+        isFetching: true,
+        data: null,
+        error: null,
+        hasGivenUp: false,
+      }),
+    ).toBe(false);
+  });
+
+  // `hasGivenUp` must be tested BEFORE `isFetching`. /start keeps polling
+  // after give-up — `shouldPollSessionStart(null, null)` returns 1500ms
+  // forever. So past the 45s budget this function answered false while a
+  // poll was in flight and true in the gap between polls, `phase` oscillated
+  // 'starting' <-> 'error', and the runtime error card blinked on and off
+  // once per poll cycle for the whole outage. `startGivenUp` is sticky by
+  // construction (the effect only
+  // clears it when /start actually answers, or the session changes, or the
+  // query is disabled), so give-up now short-circuits ABOVE the fetch check
+  // and both frames of the cycle agree.
+  test('once /start has given up, both frames of the poll cycle read settled — no 1500ms blink', () => {
+    const givenUp = { enabled: true, data: null, error: null, hasGivenUp: true } as const;
+    // Mid-poll. Under the old ordering this was `false` — the blink's OFF frame.
+    expect(computeStartSettled({ ...givenUp, isFetching: true })).toBe(true);
+    // Between polls. Was already `true`, which is what made the two disagree.
+    expect(computeStartSettled({ ...givenUp, isFetching: false })).toBe(true);
+  });
+
+  test('a terminal stage settles immediately, same as today, regardless of hasGivenUp', () => {
+    expect(
+      computeStartSettled({
+        enabled: true,
+        isFetching: false,
+        data: { stage: 'failed' } as never,
+        error: null,
+        hasGivenUp: false,
+      }),
+    ).toBe(true);
+  });
+
+  test('an unresolved poll is settled only once hasGivenUp says so — the boolean passes through unchanged', () => {
+    expect(
+      computeStartSettled({
+        enabled: true,
+        isFetching: false,
+        data: null,
+        error: null,
+        hasGivenUp: false,
+      }),
+    ).toBe(false);
+    expect(
+      computeStartSettled({
+        enabled: true,
+        isFetching: false,
+        data: null,
+        error: null,
+        hasGivenUp: true,
+      }),
+    ).toBe(true);
+  });
+
+  test('disabled always wins over a stale hasGivenUp=true carried from a prior enabled window', () => {
+    // An earlier fix addressed the RAW TIMESTAMP leaking across a disabled
+    // period. This test pins a second instance of the same hole one layer
+    // up, in the DERIVED BOOLEAN (`startSettled`, stored via `useState`): the
+    // effect stored the FULL settled decision, including the `!enabled ->
+    // true` branch, so a disabled -> enabled transition could read a stale
+    // `true` for one committed, painted frame — with a live runtimeError in
+    // that window, `derivePhase` rendered 'error' before a single real
+    // /start request had fired. Moving `enabled` (and isFetching, and the
+    // terminal-stage check) to be ALWAYS-FRESH render-time inputs — never
+    // state — makes this structurally impossible: `enabled: false` here
+    // wins regardless of what `hasGivenUp` claims, because `hasGivenUp` is
+    // never even consulted.
+    expect(
+      computeStartSettled({
+        enabled: false,
+        isFetching: false,
+        data: null,
+        error: null,
+        hasGivenUp: true,
+      }),
+    ).toBe(true); // "settled" (=inert), NOT because it gave up — because it's disabled.
+  });
+
+  test('the crux line: a persistent /start outage + a live runtime error reaches phase "error" within the budget, not a permanent spinner', () => {
+    const since = Date.now();
+    const runtimeError = { status: 503, body: { error: 'sandbox not ready (status: stopped)' } };
+
+    // Still inside the budget: phase must stay 'starting', not flip to 'error'.
+    const stillWaitingGivenUp = hasStartGivenUp(
+      null,
+      null,
+      since,
+      since + START_INCONCLUSIVE_GIVE_UP_MS - 1,
+    );
+    const stillWaitingSettled = computeStartSettled({
+      enabled: true,
+      isFetching: false,
+      data: null,
+      error: null,
+      hasGivenUp: stillWaitingGivenUp,
+    });
+    expect(
+      derivePhase({
+        terminal: false,
+        startError: null,
+        runtimeError,
+        startSettled: stillWaitingSettled,
+        switched: false,
+      }),
+    ).toBe('starting');
+
+    // Budget elapsed with nothing but silence: this MUST reach 'error', not hang.
+    const gaveUp = hasStartGivenUp(null, null, since, since + START_INCONCLUSIVE_GIVE_UP_MS);
+    const settledAfterGivingUp = computeStartSettled({
+      enabled: true,
+      isFetching: false,
+      data: null,
+      error: null,
+      hasGivenUp: gaveUp,
+    });
+    expect(
+      derivePhase({
+        terminal: false,
+        startError: null,
+        runtimeError,
+        startSettled: settledAfterGivingUp,
+        switched: false,
+      }),
+    ).toBe('error');
+  });
+});
+
+// The effect that stamped `startInconclusiveSinceRef` had no `enabled`
+// guard, so it armed the clock even while the /start query was disabled
+// (auth load, billing-blocked). The stale stamp then carried into the
+// enabled window, and the first non-fetching null tick after enabling could
+// already read as "given up" — reintroducing the exact premature error card
+// commit f49e9e38c2 removed. `nextInconclusiveSince` is the extracted,
+// unit-testable arm/reset decision the effect now just calls; these tests
+// pin the invariant directly, since the earlier composed
+// `computeStartSettled` + `derivePhase` test could not see this bug (it
+// hand-fed `inconclusiveSinceMs` and never exercised how that value gets
+// PRODUCED).
+describe('nextInconclusiveSince', () => {
+  test('stays null while disabled, even with a fetch settled and nothing to show', () => {
+    expect(
+      nextInconclusiveSince({
+        current: null,
+        enabled: false,
+        hasData: false,
+        hasError: false,
+        isFetching: false,
+        nowMs: Date.now(),
+      }),
+    ).toBeNull();
+  });
+
+  test('disabling clears an existing stamp — it must not survive into the enabled window', () => {
+    const staleStamp = Date.now() - START_INCONCLUSIVE_GIVE_UP_MS * 10;
+    expect(
+      nextInconclusiveSince({
+        current: staleStamp,
+        enabled: false,
+        hasData: false,
+        hasError: false,
+        isFetching: false,
+        nowMs: Date.now(),
+      }),
+    ).toBeNull();
+  });
+
+  test('arms fresh at nowMs on the first genuinely inconclusive tick while enabled', () => {
+    const now = Date.now();
+    expect(
+      nextInconclusiveSince({
+        current: null,
+        enabled: true,
+        hasData: false,
+        hasError: false,
+        isFetching: false,
+        nowMs: now,
+      }),
+    ).toBe(now);
+  });
+
+  test('keeps the original stamp on later inconclusive ticks — the clock only starts once', () => {
+    const armedAt = Date.now() - 1_000;
+    expect(
+      nextInconclusiveSince({
+        current: armedAt,
+        enabled: true,
+        hasData: false,
+        hasError: false,
+        isFetching: false,
+        nowMs: Date.now(),
+      }),
+    ).toBe(armedAt);
+  });
+
+  test('clears the instant data arrives', () => {
+    const armedAt = Date.now() - 1_000;
+    expect(
+      nextInconclusiveSince({
+        current: armedAt,
+        enabled: true,
+        hasData: true,
+        hasError: false,
+        isFetching: false,
+        nowMs: Date.now(),
+      }),
+    ).toBeNull();
+  });
+
+  test('clears the instant an error arrives', () => {
+    const armedAt = Date.now() - 1_000;
+    expect(
+      nextInconclusiveSince({
+        current: armedAt,
+        enabled: true,
+        hasData: false,
+        hasError: true,
+        isFetching: false,
+        nowMs: Date.now(),
+      }),
+    ).toBeNull();
+  });
+
+  test('a fetch in flight keeps counting toward an existing stamp — it does not reset the clock', () => {
+    const armedAt = Date.now() - 1_000;
+    expect(
+      nextInconclusiveSince({
+        current: armedAt,
+        enabled: true,
+        hasData: false,
+        hasError: false,
+        isFetching: true,
+        nowMs: Date.now(),
+      }),
+    ).toBe(armedAt);
+  });
+
+  test('the first fetch arms the deadline so a never-settling request cannot spin forever', () => {
+    const nowMs = Date.now();
+    expect(
+      nextInconclusiveSince({
+        current: null,
+        enabled: true,
+        hasData: false,
+        hasError: false,
+        isFetching: true,
+        nowMs,
+      }),
+    ).toBe(nowMs);
+  });
+
+  test('sitting disabled past the budget, then enabling, does not pre-consume the grace window', () => {
+    let current: number | null = null;
+    const disabledStart = Date.now() - START_INCONCLUSIVE_GIVE_UP_MS * 2;
+    // Simulate ticks while disabled (e.g. auth still loading, or
+    // billing-blocked) for well over a full budget's worth of time — the ref
+    // must never arm.
+    for (
+      let t = disabledStart;
+      t < disabledStart + START_INCONCLUSIVE_GIVE_UP_MS;
+      t += SESSION_START_POLL_MS
+    ) {
+      current = nextInconclusiveSince({
+        current,
+        enabled: false,
+        hasData: false,
+        hasError: false,
+        isFetching: false,
+        nowMs: t,
+      });
+    }
+    expect(current).toBeNull();
+
+    // Now enable it. The very first non-fetching, dataless tick must arm
+    // FRESH at "now", not read as already-given-up from the disabled period.
+    const enabledAt = Date.now();
+    current = nextInconclusiveSince({
+      current,
+      enabled: true,
+      hasData: false,
+      hasError: false,
+      isFetching: false,
+      nowMs: enabledAt,
+    });
+    expect(current).toBe(enabledAt);
+
+    // Mirrors the real effect's two-step pipeline: hasStartGivenUp first
+    // (the time-aware part), then computeStartSettled (the always-fresh
+    // part) consumes that as a plain boolean.
+    const givenUpImmediatelyAfterEnabling = hasStartGivenUp(null, null, current, enabledAt);
+    expect(givenUpImmediatelyAfterEnabling).toBe(false);
+    const settledImmediatelyAfterEnabling = computeStartSettled({
+      enabled: true,
+      isFetching: false,
+      data: null,
+      error: null,
+      hasGivenUp: givenUpImmediatelyAfterEnabling,
+    });
+    expect(settledImmediatelyAfterEnabling).toBe(false);
+  });
+});
+
+describe('classifySendError — connector refusals', () => {
+  const connection = {
+    id: '11111111-1111-4111-a111-111111111111',
+    slug: 'gmail',
+    name: 'Gmail',
+    authorization_strategy: 'project' as const,
+  };
+  const refusal = (data: Record<string, unknown>) =>
+    Object.assign(new Error('Failed to send message'), { status: 409, data });
+
+  test('a required-connector 409 is its own kind, not a generic runtime error', () => {
+    // It used to collapse into `runtime-error`, so a host could only say
+    // "something went wrong" for the one failure with an obvious remedy — and the
+    // platform had already refused the turn before the sandbox saw it.
+    const result = classifySendError(
+      refusal({
+        code: 'CONNECTOR_CONNECTION_REQUIRED',
+        message: 'Connect the required connectors before continuing this session.',
+        connector_connections: [connection],
+      }),
+    );
+
+    expect(result.kind).toBe('connector');
+    expect(result.connectors).toEqual([connection]);
+    expect(result.message).toBe('Connect the required connectors before continuing this session.');
+  });
+
+  test('classification keys on the CODE, never the prose', () => {
+    // The message is written for humans and will be reworded.
+    expect(classifySendError(refusal({ message: 'Connect the required connectors.' })).kind).toBe(
+      'runtime-error',
+    );
+  });
+
+  test('a refusal naming no usable connection stays generic', () => {
+    // A connect prompt that cannot say WHICH connector is worse than the generic
+    // error it replaced.
+    expect(classifySendError(refusal({ code: 'CONNECTOR_CONNECTION_REQUIRED' })).kind).toBe(
+      'runtime-error',
+    );
+    expect(
+      classifySendError(
+        refusal({
+          code: 'CONNECTOR_CONNECTION_REQUIRED',
+          connector_connections: [{ id: 'x' }],
+        }),
+      ).kind,
+    ).toBe('runtime-error');
+  });
+
+  test('an unknown authorization strategy is dropped rather than guessed', () => {
+    // The strategy decides whether a connect button can help at all; inventing
+    // one would offer a button that 409s.
+    expect(
+      classifySendError(
+        refusal({
+          code: 'CONNECTOR_CONNECTION_REQUIRED',
+          connector_connections: [{ ...connection, authorization_strategy: 'workspace' }],
+        }),
+      ).kind,
+    ).toBe('runtime-error');
+  });
+
+  test('billing still wins — a 402 is not a connector problem', () => {
+    expect(classifySendError(refusal({ code: 'CONNECTOR_CONNECTION_REQUIRED' })).kind).not.toBe(
+      'billing',
+    );
+  });
+});
+
+// ── resolveSessionRuntimeUrl — the runtime URL `useSession` now returns ──────
+//
+// `/start` carries `runtime_url`, and `startProjectSession` already derives the
+// same absolute URL for the session-runtime registry — but `useSession`
+// returned only `sandbox`, so a host that needed the URL (a TUI PTY attach, a
+// file read, anything below the hook's own actions) had to rebuild it. These
+// pin the resolution, including the part the raw field cannot be used for:
+// `runtime_url` is a RELATIVE path (`/p/<ext>/8000`, see
+// `apps/api/src/projects/session-open/index.ts:526`), never an absolute URL.
+
+describe('resolveSessionRuntimeUrl', () => {
+  const sandbox = (externalId: string | null) =>
+    ({ external_id: externalId }) as NonNullable<SessionStartResult['sandbox']>;
+
+  test('is null until /start answers', () => {
+    expect(resolveSessionRuntimeUrl(null)).toBeNull();
+    expect(resolveSessionRuntimeUrl(undefined)).toBeNull();
+  });
+
+  test('is null while the box is still booting', () => {
+    // A sandbox row exists from `provisioning` onward. Handing its URL out
+    // before `stage==='ready'` would invite a host to dial a box that is not
+    // serving yet — the exact class of bug `SessionNotReadyError` exists for.
+    for (const stage of ['provisioning', 'starting', 'stopped', 'failed'] as const) {
+      expect(
+        resolveSessionRuntimeUrl({ stage, sandbox: sandbox('ext-1'), runtime_url: '/p/ext-1/8000' }),
+      ).toBeNull();
+    }
+  });
+
+  test('derives the absolute proxy URL from the sandbox external id', () => {
+    expect(
+      resolveSessionRuntimeUrl({ stage: 'ready', sandbox: sandbox('ext-1'), runtime_url: null }),
+    ).toBe('http://localhost:8008/v1/p/ext-1/8000');
+  });
+
+  test('composes the relative runtime_url against the backend when no external id is known', () => {
+    // The server sends `/p/<ext>/8000`, a PATH. Returning it verbatim would
+    // hand the host a string it cannot fetch.
+    expect(
+      resolveSessionRuntimeUrl({ stage: 'ready', sandbox: null, runtime_url: '/p/ext-9/8000' }),
+    ).toBe('http://localhost:8008/v1/p/ext-9/8000');
+  });
+
+  test('passes an absolute runtime_url through unchanged', () => {
+    expect(
+      resolveSessionRuntimeUrl({
+        stage: 'ready',
+        sandbox: null,
+        runtime_url: 'https://box.example.com/p/ext-9/8000',
+      }),
+    ).toBe('https://box.example.com/p/ext-9/8000');
+  });
+
+  test('is null when a ready payload carries neither an external id nor a path', () => {
+    expect(
+      resolveSessionRuntimeUrl({ stage: 'ready', sandbox: sandbox(null), runtime_url: null }),
+    ).toBeNull();
+  });
+});
+
+// ── resolveSendOptions — picks vs per-send override ─────────────────────────
+//
+// `variant` (reasoning effort) is new in `SessionPicks`. Every host kept it in
+// a store of its own and passed it on every call, so the ONE thing that must
+// not change is the payload for a caller that never sets a variant: the key
+// has to stay absent, not become `undefined` or `null`.
+
+describe('sessionPromptFromParts (W5 E4: sendParts goes through the prompt inbox)', () => {
+  const WIRE_ID = /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+
+  test('parts, picks and a server-placed wire id become one inbox prompt', () => {
+    const prompt = sessionPromptFromParts(
+      'ses_root',
+      [
+        { type: 'text', text: 'hello', id: 'prt_client' },
+        { type: 'file', mime: 'image/png', url: 'data:image/png;base64,AA==', filename: 'a.png' },
+        { type: 'agent', name: 'reviewer' },
+      ],
+      { model: { providerID: 'kortix', modelID: 'claude' }, agent: 'coder', variant: 'high', directory: '/workspace/app' },
+      undefined,
+      1_700_000_000_000,
+    );
+    expect(prompt).toEqual({
+      clientMessageId: prompt.messageId,
+      messageId: expect.stringMatching(WIRE_ID),
+      // The part id is the host's own correlation key; the inbox drops it.
+      parts: [
+        { type: 'text', text: 'hello' },
+        { type: 'file', mime: 'image/png', url: 'data:image/png;base64,AA==', filename: 'a.png' },
+        { type: 'agent', name: 'reviewer' },
+      ],
+      overrides: {
+        model: { providerID: 'kortix', modelID: 'claude' },
+        agent: 'coder',
+        variant: 'high',
+        directory: '/workspace/app',
+      },
+      remintOnDelivery: true,
+      clientSentAtMs: 1_700_000_000_000,
+    });
+  });
+
+  test('one clientMessageId keeps one wire id across retries; no picks sends no overrides', () => {
+    const first = sessionPromptFromParts('ses_root', [{ type: 'text', text: 'x' }], {}, 'queue-1');
+    const retry = sessionPromptFromParts('ses_root', [{ type: 'text', text: 'x' }], {}, 'queue-1');
+    expect(first.clientMessageId).toBe('queue-1');
+    expect(retry.messageId).toBe(first.messageId);
+    expect('overrides' in first).toBe(false);
+    expect(sessionPromptFromParts('ses_root', [{ type: 'text', text: 'x' }], {}).messageId).not.toBe(first.messageId);
+  });
+});
+
+describe('beginOptimisticPlainTextSend: the optimistic message is drawn under the wire id', () => {
+  test('a given id names the message and its part; the wire codec reads it at the server clock', () => {
+    const wire = mintSessionWireMessageId('ses_codec');
+    const { messageId, parts } = beginOptimisticPlainTextSend('ses_codec', 'hello', wire);
+    expect(messageId).toBe(wire);
+    expect(useSyncStore.getState().messages.ses_codec?.at(-1)?.id).toBe(wire);
+    expect(parts).toHaveLength(1);
+    // `ascendingId` is another clock: read by the wire codec it lands ~3.5 days ahead of the
+    // server's ids, so it must never be a wire id.
+    const delta = Number(wireIdClockDelta(wireIdClock(messageId)!, wireIdClockAt(Date.now())));
+    expect(Math.abs(delta) / 4096).toBeLessThan(10 * 60 * 1000);
+  });
+});
+
+describe('sessionPromptFromParts: one id from the optimistic message to the session log', () => {
+  test('the id the host drew its optimistic message under is the wire id, so the log replaces it by id', () => {
+    const { messageId, parts } = beginOptimisticPlainTextSend('ses_root', 'hello');
+    const prompt = sessionPromptFromParts('ses_root', parts, {}, undefined, 1_700_000_000_000, messageId);
+    expect(prompt.messageId).toBe(messageId);
+    expect(prompt.clientMessageId).toBe(messageId);
+    // A host queue key stays the idempotency key; the wire id is still the drawn one.
+    expect(sessionPromptFromParts('ses_root', parts, {}, 'queue-9', 1, messageId)).toMatchObject({ clientMessageId: 'queue-9', messageId });
+  });
+});
+
+describe('resolveSendOptions', () => {
+  const none = { model: null, agent: null, variant: null };
+  const M: ModelKey = { providerID: 'anthropic', modelID: 'claude' };
+  const M2: ModelKey = { providerID: 'openai', modelID: 'gpt' };
+
+  test('no selection and no override sends no options at all', () => {
+    expect(resolveSendOptions(none)).toEqual({});
+    expect(resolveSendOptions(none, {})).toEqual({});
+  });
+
+  test('an unset variant never reaches the wire as a key', () => {
+    // The regression this guards: `{ variant: undefined }` is not `{}` to a
+    // JSON body builder that iterates keys.
+    const opts = resolveSendOptions({ model: M, agent: 'a', variant: null });
+    expect('variant' in opts).toBe(false);
+    expect(opts).toEqual({ model: M, agent: 'a' });
+  });
+
+  test('picks are applied when the call carries no override', () => {
+    expect(resolveSendOptions({ model: M, agent: 'a', variant: 'high' })).toEqual({
+      model: M,
+      agent: 'a',
+      variant: 'high',
+    });
+  });
+
+  test('a per-send override wins over the session pick, for all three', () => {
+    expect(
+      resolveSendOptions(
+        { model: M, agent: 'a', variant: 'high' },
+        { model: M2, agent: 'a2', variant: 'low' },
+      ),
+    ).toEqual({ model: M2, agent: 'a2', variant: 'low' });
+  });
+
+  test('variant falls back to the pick exactly like model and agent do', () => {
+    expect(resolveSendOptions({ model: null, agent: null, variant: 'high' }, {})).toEqual({
+      variant: 'high',
+    });
+    expect(
+      resolveSendOptions({ model: null, agent: null, variant: 'high' }, { variant: null }),
+    ).toEqual({ variant: 'high' });
+  });
+
+  test('directory is a per-send concern only — never a session pick', () => {
+    expect(resolveSendOptions(none, { directory: '/workspace/x' })).toEqual({
+      directory: '/workspace/x',
+    });
+  });
+});
+
+describe('presenceReturnReopensSession', () => {
+  test("a returning human releases this tab's own stop hold", () => {
+    expect(presenceReturnReopensSession(true, 'stopped')).toBe(true);
+    expect(presenceReturnReopensSession(true, null)).toBe(true);
+  });
+
+  test('a returning human re-opens a poll that died on a dormant answer', () => {
+    // The idle reaper and a Stop from any other host land here: the cached
+    // terminal-`stopped` answer stopped the poll, and without this the only
+    // ways back were an explicit Restart or a page remount.
+    expect(presenceReturnReopensSession(false, 'stopped')).toBe(true);
+  });
+
+  test('a live, waking or failed session is untouched by a return', () => {
+    expect(presenceReturnReopensSession(false, 'ready')).toBe(false);
+    expect(presenceReturnReopensSession(false, 'starting')).toBe(false);
+    expect(presenceReturnReopensSession(false, 'failed')).toBe(false);
+    expect(presenceReturnReopensSession(false, null)).toBe(false);
+    expect(presenceReturnReopensSession(false, undefined)).toBe(false);
+  });
+});

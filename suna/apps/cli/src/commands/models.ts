@@ -1,0 +1,359 @@
+/**
+ * `kortix models <subcommand>` — which models this project OFFERS, and which
+ * one it starts sessions with. The CLI half of Project admin → Models.
+ *
+ * Two independent server-owned things live here, and they must not be confused:
+ *
+ *  1. ENABLEMENT (`ls` / `enable` / `disable` / `reset`) — display only. The
+ *     project stores EXCEPTIONS to the catalog default (newest model per
+ *     family), not the resolved set; `PUT /model-enablement` replaces the WHOLE
+ *     exception map, so every write here reads the current map first and merges
+ *     into it. The gateway still serves a disabled model if a caller names it
+ *     outright (apps/api/src/projects/routes/models.ts).
+ *  2. DEFAULTS (`default`) — what `auto` resolves to, at project or account
+ *     scope. The per-AGENT pin stays on `kortix agents model <agent> <id>`.
+ *
+ * Both writes assert `project.model.write`.
+ */
+
+import type { ModelDefaultsResponse } from '@kortix/sdk';
+import { splitHelp } from '../command-argv.ts';
+import {
+  emitJson,
+  fail,
+  missing,
+  resolveProjectContext,
+  surfaceApiError,
+  takeFlagBool,
+  takeFlagValue,
+} from '../command-helpers.ts';
+import { C, help, pad, status } from '../style.ts';
+
+/** One entry of GET /projects/:id/model-picker `models` (GatewayCatalogModel). */
+interface PickerModel {
+  name?: string;
+  provider?: string;
+  enabled?: boolean;
+  free?: boolean;
+  reasoning?: boolean;
+  tool_call?: boolean;
+  /** `false`: kept because a default names it, but its provider is not
+   *  connected for you, so the gateway would refuse it (KRTX-3011). */
+  available?: boolean;
+  availability?: 'login' | 'provider';
+}
+
+/** The connect command for a served model that is not runnable, else ''. */
+function connectHint(id: string, model: PickerModel): string {
+  if (model.available !== false) return '';
+  const provider = model.provider ?? id.split('/')[0];
+  const command = model.availability === 'login' ? 'kortix providers login openai' : `kortix providers set ${provider}`;
+  return `  ${C.yellow}not connected: ${command}${C.reset}`;
+}
+
+/** GET /projects/:id/model-picker (routes/models.ts). */
+interface ModelPicker {
+  models: Record<string, PickerModel>;
+  catalog?: Record<string, { provider?: string; availability: string }>;
+  modelOverrides?: Record<string, boolean>;
+  usingDefaults?: boolean;
+  defaultModel?: string;
+}
+
+const HELP = help`Usage: kortix models <subcommand> [options]
+
+Which models this project offers, and which one it starts with. Same surface as
+the dashboard's Project admin → Models.
+
+The list is yours: Kortix models, plus models you reach through a provider API
+key or a ChatGPT subscription — your own, one shared with you, or one shared
+with the whole project. \`kortix sessions new --model <id>\` runs such a model on
+every key you may use for it, and they rotate.
+
+A project stores only its EXCEPTIONS to the catalog default (the newest model of
+each family). \`enable\`/\`disable\` merge into that stored map; \`reset\` empties it.
+Enablement is display-only — it decides what pickers OFFER, never what the
+gateway serves.
+
+Subcommands:
+  ls [--json]                     List served and unavailable catalog ids,
+                                  availability, state, origin, how it is
+                                  paid for (VIA), provider.
+  enable <model-id>...            Offer these models.
+  disable <model-id>...           Stop offering them. The project default
+                                  refuses with 409 — change the default first.
+  reset                           Drop every exception; back to catalog default.
+  default [--json]                Print the default chain (project → account →
+                                  platform) and what it resolves to.
+  default <model-id> [--account]  Set the project default (or the account-wide
+                                  one with --account).
+  default --clear [--account]     Clear the project (or account) default.
+
+Model ids are gateway wire ids — a bare managed id (\`deepseek-v4.1-flash\`) or a BYOK
+\`provider/model\`. Copy one from \`kortix models ls --json\`.
+
+Per-agent pins live on \`kortix agents model <agent> <model-id>\`.
+
+Options:
+  --account          default: act on the ACCOUNT scope, not this project.
+  --clear            default: remove the pin instead of setting one.
+  --json             Machine-readable output (ls, default).
+  --project <id>     Operate on this project id (default: linked).
+  --host <name>      Operate against a non-default Kortix host.
+  -h, --help         Show this help.
+
+Writes need the \`project.model.write\` permission.
+`;
+
+export async function runModels(argv: string[]): Promise<number> {
+  const helpCode = splitHelp(argv, HELP);
+  if (helpCode !== null) return helpCode;
+
+  const sub = argv[0];
+  const rest = argv.slice(1);
+  let json = false;
+  let account = false;
+  let clear = false;
+  let projectFlag: string | undefined;
+  let hostFlag: string | undefined;
+  try {
+    json = takeFlagBool(rest, ['--json']);
+    account = takeFlagBool(rest, ['--account']);
+    clear = takeFlagBool(rest, ['--clear', '--unset']);
+    projectFlag = takeFlagValue(rest, ['--project']);
+    hostFlag = takeFlagValue(rest, ['--host']);
+  } catch (err) {
+    return fail((err as Error).message);
+  }
+  const positional = rest.filter((a) => !a.startsWith('-'));
+
+  const ctx = await resolveProjectContext({ projectArg: projectFlag, hostArg: hostFlag });
+  if (!ctx) return 1;
+  const base = `/projects/${ctx.projectId}`;
+
+  try {
+    switch (sub) {
+      case 'ls':
+      case 'list':
+        return await modelsLs(ctx.client, base, json);
+      case 'enable':
+      case 'disable':
+        return await modelsToggle(ctx.client, base, positional, sub === 'enable', json);
+      case 'reset':
+        return await modelsReset(ctx.client, base, json);
+      case 'default':
+      case 'defaults':
+        return await modelsDefault(ctx.client, base, positional[0], { account, clear, json });
+      default:
+        process.stderr.write(`${status.err(`unknown subcommand "${sub}"`)}\n\n${HELP}`);
+        return 2;
+    }
+  } catch (err) {
+    return surfaceApiError(err);
+  }
+}
+
+type Client = NonNullable<Awaited<ReturnType<typeof resolveProjectContext>>>['client'];
+
+async function modelsLs(client: Client, base: string, json: boolean): Promise<number> {
+  const picker = await client.get<ModelPicker>(`${base}/model-picker`);
+  if (json) {
+    emitJson(picker);
+    return 0;
+  }
+  const overrides = picker.modelOverrides ?? {};
+  const rows = Object.entries(picker.models ?? {}).sort(([aId, a], [bId, b]) => {
+    const p = (a.provider ?? '').localeCompare(b.provider ?? '');
+    return p !== 0 ? p : aId.localeCompare(bId);
+  });
+  const unavailable = Object.entries(picker.catalog ?? {}).filter(([id]) => !(id in picker.models));
+  if (rows.length === 0 && unavailable.length === 0) {
+    // Same state the web Models tab's empty state answers ("Add a key on the
+    // Providers tab"): a fresh account on internal billing serves nothing until
+    // a provider key is connected. Name the CLI path instead of a bare dead end.
+    process.stdout.write(
+      `  ${C.dim}No models yet — connect a provider key with ${C.reset}${C.cyan}kortix providers set <provider>${C.reset}` +
+        `${C.dim} or ${C.reset}${C.cyan}kortix providers login <provider>${C.reset}${C.dim}.` +
+        ` The models it unlocks show up here.${C.reset}\n`,
+    );
+    return 0;
+  }
+  const idW = Math.max(...rows.map(([id]) => id.length), ...unavailable.map(([id]) => id.length), 5);
+  process.stdout.write('\n');
+  process.stdout.write(
+    `  ${C.dim}${pad('MODEL', idW)}   STATE   ORIGIN     ${pad('VIA', 8)}  PROVIDER${C.reset}\n`,
+  );
+  let enabledCount = 0;
+  for (const [id, model] of rows) {
+    const on = model.enabled !== false;
+    if (on) enabledCount += 1;
+    const isDefault = id === picker.defaultModel;
+    const marker = isDefault ? `${C.green}●${C.reset} ` : '  ';
+    const state = on
+      ? `${C.green}${pad('on', 6)}${C.reset}`
+      : `${C.faded}${pad('off', 6)}${C.reset}`;
+    const origin = id in overrides ? 'override' : 'default';
+    process.stdout.write(
+      `${marker}${pad(id, idW)}   ${state}  ${pad(origin, 9)}  ${pad(paidVia(id, model.provider), 8)}  ${C.faded}${model.provider ?? '—'}${C.reset}${connectHint(id, model)}\n`,
+    );
+  }
+  if (unavailable.length > 0) {
+    process.stdout.write(`\n  ${C.dim}Unavailable catalog ids (not served by this project):${C.reset}\n`);
+    for (const [id, model] of unavailable.sort(([a], [b]) => a.localeCompare(b))) {
+      process.stdout.write(`  ${pad(id, idW)}   ${model.availability}\n`);
+    }
+    process.stdout.write(
+      '  plan = managed-model plan required; login = connect ChatGPT with kortix providers login openai;\n' +
+      '  provider = configure provider access with kortix providers set (some providers need dashboard setup).\n',
+    );
+  }
+  const exceptions = Object.keys(overrides).length;
+  process.stdout.write(
+    `\n  ${C.dim}${enabledCount}/${rows.length} offered · ` +
+      `${exceptions === 0 ? 'no exceptions (catalog default)' : `${exceptions} exception${exceptions === 1 ? '' : 's'}`} · ` +
+      `${C.reset}${C.green}●${C.reset}${C.dim} = project default (${picker.defaultModel ?? '—'})${C.reset}\n`,
+  );
+  if (rows.some(([id, model]) => paidVia(id, model.provider) !== 'Kortix')) {
+    process.stdout.write(
+      `  ${C.dim}API key and ChatGPT models run on every key you may use for them; they rotate.${C.reset}\n`,
+    );
+  }
+  process.stdout.write('\n');
+  return 0;
+}
+
+/** How a model is paid for: a ChatGPT subscription, a provider API key, or Kortix. */
+export function paidVia(
+  id: string,
+  provider: string | undefined,
+): 'ChatGPT' | 'API key' | 'Kortix' {
+  if (id.startsWith('codex/') || provider === 'codex') return 'ChatGPT';
+  if (!id.includes('/') || provider === 'kortix') return 'Kortix';
+  return 'API key';
+}
+
+/**
+ * `PUT /model-enablement` REPLACES the stored exception map — a bare
+ * `{ id: false }` would silently drop every other exception the project made.
+ * So read the current map off /model-picker, merge, then PUT.
+ */
+async function modelsToggle(
+  client: Client,
+  base: string,
+  ids: string[],
+  enabled: boolean,
+  json: boolean,
+): Promise<number> {
+  const verb = enabled ? 'enable' : 'disable';
+  if (ids.length === 0) return missing(`at least one model id to ${verb}`);
+
+  const picker = await client.get<ModelPicker>(`${base}/model-picker`);
+  const known = new Set(Object.keys(picker.models ?? {}));
+  const unknown = ids.filter((id) => !known.has(id));
+  if (unknown.length > 0) {
+    // With nothing served, "list the ids with models ls" points at an empty
+    // list — the dead end behind KRTX-1538. Answer how to get models instead.
+    const hint =
+      known.size === 0
+        ? `This project serves no models yet — connect one with ${C.cyan}kortix providers set <provider>${C.reset} ` +
+          `or ${C.cyan}kortix providers login <provider>${C.reset}; ${C.cyan}kortix models ls${C.reset} lists what they unlock.`
+        : `List the ids with ${C.cyan}kortix models ls${C.reset}.`;
+    process.stderr.write(
+      `${status.err(`Not served by this project: ${unknown.join(', ')}`)} ${hint}\n`,
+    );
+    return 1;
+  }
+  const next: Record<string, boolean> = { ...(picker.modelOverrides ?? {}) };
+  for (const id of ids) next[id] = enabled;
+
+  const resp = await client.put<{ ok: boolean; modelOverrides: Record<string, boolean> }>(
+    `${base}/model-enablement`,
+    { modelOverrides: next },
+  );
+  if (json) {
+    emitJson(resp);
+    return 0;
+  }
+  process.stdout.write(
+    `${status.ok(`${ids.length} model${ids.length === 1 ? '' : 's'} ${enabled ? 'offered' : 'hidden'}: ${C.bold}${ids.join(', ')}${C.reset}`)}\n`,
+  );
+  return 0;
+}
+
+async function modelsReset(client: Client, base: string, json: boolean): Promise<number> {
+  const resp = await client.put<{ ok: boolean; modelOverrides: Record<string, boolean> }>(
+    `${base}/model-enablement`,
+    { modelOverrides: {} },
+  );
+  if (json) {
+    emitJson(resp);
+    return 0;
+  }
+  process.stdout.write(
+    `${status.ok('Every exception dropped')} ${C.dim}— the project offers the catalog default again.${C.reset}\n`,
+  );
+  return 0;
+}
+
+async function modelsDefault(
+  client: Client,
+  base: string,
+  model: string | undefined,
+  opts: { account: boolean; clear: boolean; json: boolean },
+): Promise<number> {
+  const path = `${base}/model-defaults`;
+  const scope = opts.account ? 'account' : 'project';
+
+  if (opts.clear) {
+    const resp = await client.delete<{ ok: boolean }>(`${path}?scope=${scope}`);
+    if (opts.json) {
+      emitJson(resp);
+      return 0;
+    }
+    process.stdout.write(`${status.ok(`Cleared the ${scope} default model`)}\n`);
+    return 0;
+  }
+
+  if (!model) {
+    const d = await client.get<ModelDefaultsResponse>(path);
+    if (opts.json) {
+      emitJson(d);
+      return 0;
+    }
+    process.stdout.write('\n');
+    row('project', d.projectDefault);
+    row('account', d.accountDefault);
+    row('platform', d.platformDefault);
+    process.stdout.write(
+      `\n  ${C.dim}resolves to ${C.reset}${C.bold}${d.resolvedForCaller ?? '—'}${C.reset}` +
+        `${d.resolvedSource ? ` ${C.dim}(${d.resolvedSource})${C.reset}` : ''}\n`,
+    );
+    const pins = Object.keys(d.agentDefaults ?? {}).length;
+    if (pins > 0) {
+      process.stdout.write(
+        `  ${C.dim}${pins} per-agent pin${pins === 1 ? '' : 's'} — see ${C.reset}${C.cyan}kortix agents models${C.reset}\n`,
+      );
+    }
+    process.stdout.write('\n');
+    return 0;
+  }
+
+  const resp = await client.put<{ ok: boolean; scope: string; model: string }>(path, {
+    scope,
+    model,
+  });
+  if (opts.json) {
+    emitJson(resp);
+    return 0;
+  }
+  process.stdout.write(
+    `${status.ok(`${scope} default → ${C.cyan}${model}${C.reset}`)} ${C.dim}(applies to new sessions)${C.reset}\n`,
+  );
+  return 0;
+}
+
+function row(label: string, value: string | null): void {
+  process.stdout.write(
+    `  ${C.dim}${pad(label, 9)}${C.reset} ${value ? `${C.cyan}${value}${C.reset}` : `${C.faded}unset${C.reset}`}\n`,
+  );
+}

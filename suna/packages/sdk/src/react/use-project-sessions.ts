@@ -1,0 +1,281 @@
+/**
+ * The project session list, paged.
+ *
+ * `GET /projects/:id/sessions` used to answer with every session row the viewer
+ * could see. On a project that had accumulated 12,617 sessions that is a
+ * multi-megabyte body — and the sidebar re-fetches this list every 5 seconds
+ * for as long as ANY one row sits in `queued`/`branching`/`provisioning`, which
+ * over twelve thousand rows is effectively always. The browser paid three times
+ * per tick: parsing the body, letting react-query structurally share 12k
+ * objects, then re-sorting and re-grouping them into sections.
+ *
+ * The list is now a bounded keyset page (`listProjectSessionsPage`). This module
+ * holds the two pure pieces of the `useInfiniteQuery` wiring so they can be
+ * tested without mounting react-query, plus the hook itself.
+ */
+
+import { focusManager, keepPreviousData, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import {
+  listProjectSessionsPage,
+  type ListProjectSessionsOptions,
+  type ProjectSession,
+  type ProjectSessionPage,
+} from '../core/rest/projects-client/sessions';
+import { qk } from './query-keys';
+import { contract } from './query-contracts';
+
+/**
+ * `getNextPageParam`. Returns `undefined` — not `null` — at the end of the
+ * list: `undefined` is what react-query reads as "no more pages", and it is
+ * what makes `hasNextPage` go false. Handing back `null` leaves `hasNextPage`
+ * true and a Load-more button that re-fetches page one forever.
+ */
+export function projectSessionsPageParam(page: ProjectSessionPage): string | undefined {
+  return page.next_cursor ?? undefined;
+}
+
+/**
+ * Flatten the fetched pages into the flat array every consumer of this list
+ * already renders.
+ *
+ * De-duplicates by `session_id`, keeping first occurrence. A session prompted
+ * between two page fetches moves to the top of the `updated_at DESC` order, so
+ * a row already served on page 1 legitimately reappears on page 2 — keyset
+ * paging makes that a shifted window, not a bug to fix server-side. Rendering
+ * it twice would hand React two children with the same key.
+ */
+export function flattenProjectSessionPages(
+  data: { pages: ProjectSessionPage[]; pageParams: unknown[] } | undefined,
+): ProjectSession[] {
+  if (!data) return [];
+  const seen = new Set<string>();
+  const flat: ProjectSession[] = [];
+  for (const page of data.pages) {
+    for (const session of page.items) {
+      if (seen.has(session.session_id)) continue;
+      seen.add(session.session_id);
+      flat.push(session);
+    }
+  }
+  return flat;
+}
+
+/**
+ * How many pages the list reads on its own while every page so far was empty.
+ * Each server page scans a bounded number of rows, so 5 pages cover about
+ * 2,400 newer rows the viewer cannot see. Past that, the viewer presses
+ * Load more.
+ */
+export const EMPTY_SESSION_PAGE_SCAN_LIMIT = 5;
+
+/**
+ * Whether to read the next page on its own (KRTX-1727). The server drops rows
+ * the viewer may not see, and deleted ones, after a bounded scan, so a page
+ * can be empty and still carry a cursor. That is not an empty list.
+ */
+export function shouldScanPastEmptySessionPages(
+  data: { pages: ProjectSessionPage[]; pageParams: unknown[] } | undefined,
+  hasNextPage: boolean,
+): boolean {
+  if (!data || !hasNextPage) return false;
+  if (data.pages.length >= EMPTY_SESSION_PAGE_SCAN_LIMIT) return false;
+  return data.pages.every((page) => page.items.length === 0);
+}
+
+type ProjectSessionPages = { pages: ProjectSessionPage[]; pageParams: unknown[] };
+
+/**
+ * Put a fresh read of page one in front of the loaded pages. Rows the fresh
+ * page pushed off stay in page one: page two's cursor starts after them, so
+ * dropping them would hide them until the next full refetch. Page one keeps
+ * its cursor for the same reason.
+ */
+function withFreshFirstPage(data: ProjectSessionPages | undefined, fresh: ProjectSessionPage): ProjectSessionPages | undefined {
+  const [first, ...rest] = data?.pages ?? [];
+  if (!data || !first) return data;
+  const freshIds = new Set(fresh.items.map((session) => session.session_id));
+  const pushedOff = first.items.filter((session) => !freshIds.has(session.session_id));
+  return { ...data, pages: [{ ...first, items: [...fresh.items, ...pushedOff] }, ...rest] };
+}
+
+export interface UseProjectSessionsOptions
+  extends Pick<
+    ListProjectSessionsOptions,
+    'scope' | 'limit' | 'parent' | 'startedBy' | 'q' | 'labels' | 'view' | 'spaceId' | 'group' | 'createdBy' | 'agent' | 'updatedAfter'
+  > {
+  enabled?: boolean;
+  /** Milliseconds, or false. Evaluated against the sessions loaded SO FAR. */
+  refetchInterval?: number | false | ((sessions: ProjectSession[]) => number | false);
+  /**
+   * Experimental. With `refetchInterval`, poll page one only, not every
+   * loaded page: new and newly active sessions (they sort first) show up,
+   * and an older page the viewer loaded is not re-read on every tick. Its
+   * rows refresh on the next full refetch (a mutation, a window focus).
+   */
+  pollFirstPageOnly?: boolean;
+  refetchOnWindowFocus?: boolean;
+  /**
+   * When a filter changes, keep the previous filter's rows (`isPlaceholderData`
+   * true, `isLoading` false) until the new list answers, so a search field
+   * does not blank the list on every keystroke.
+   */
+  keepPreviousData?: boolean;
+}
+
+/**
+ * One project's sessions, newest activity first, fetched a page at a time.
+ *
+ * Returns the flat `sessions` array plus the paging controls, so a list that
+ * previously read `data ?? []` changes only where the array comes from.
+ */
+export function useProjectSessions(projectId: string, options?: UseProjectSessionsOptions) {
+  const scope = options?.scope ?? 'visible';
+  const { parent, startedBy, q, labels, view, spaceId, group, createdBy, agent, updatedAfter } = options ?? {};
+  const filters = { parent, startedBy, q, labels, view, spaceId, group, createdBy, agent, updatedAfter };
+  const queryKey = qk.project.sessionsPaged(projectId, scope, filters);
+  const readPage = (cursor: string | null) =>
+    listProjectSessionsPage(projectId, { scope, limit: options?.limit, cursor, ...filters });
+  const intervalFor = (data: ProjectSessionPages | undefined) => {
+    const interval = options?.refetchInterval;
+    if (typeof interval !== 'function') return interval ?? false;
+    return interval(flattenProjectSessionPages(data));
+  };
+  const pollFirstPageOnly = options?.pollFirstPageOnly === true;
+  const query = useInfiniteQuery({
+    queryKey,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => readPage(pageParam),
+    getNextPageParam: projectSessionsPageParam,
+    enabled: options?.enabled ?? true,
+    refetchOnWindowFocus: options?.refetchOnWindowFocus,
+    placeholderData: options?.keepPreviousData ? keepPreviousData : undefined,
+    ...contract('inventory'),
+    refetchInterval: (query) => (pollFirstPageOnly ? false : intervalFor(query.state.data)),
+  });
+
+  // pollFirstPageOnly: one timer per answer. A tick skipped while the window
+  // is not focused (as `refetchInterval` does), or a failed read, re-arms it.
+  const queryClient = useQueryClient();
+  const [rearm, setRearm] = useState(0);
+  const pollMs = pollFirstPageOnly && query.isSuccess ? intervalFor(query.data) : false;
+  useEffect(() => {
+    if (!pollMs) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      if (!focusManager.isFocused()) return setRearm((n) => n + 1);
+      readPage(null).then(
+        (fresh) => {
+          if (live) queryClient.setQueryData<ProjectSessionPages>(queryKey, (data) => withFreshFirstPage(data, fresh));
+        },
+        () => live && setRearm((n) => n + 1),
+      );
+    }, pollMs);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+    // The answer's timestamp re-arms the timer; the key's parts identify the list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pollMs, query.dataUpdatedAt, rearm, projectId, scope, parent, startedBy, q, view, spaceId, group, createdBy, agent, updatedAfter, options?.limit]);
+
+  // A failed fetch ends the scan: Load more (or a refetch) is the retry.
+  const isScanning = shouldScanPastEmptySessionPages(query.data, query.hasNextPage) && !query.isError;
+  const { isFetching, data, dataUpdatedAt, fetchNextPage } = query;
+  useEffect(() => {
+    // `data` and `dataUpdatedAt` run this on each answer: a fast page can land
+    // before React renders its fetch, and `isFetching` then reads false twice.
+    if (isScanning && !isFetching) void fetchNextPage();
+  }, [isScanning, isFetching, data, dataUpdatedAt, fetchNextPage]);
+
+  return {
+    ...query,
+    /**
+     * True while every page so far was empty and the list reads the next one
+     * on its own. Render it as loading, never as "no sessions". A failed
+     * fetch ends it: offer Load more, which is the retry.
+     */
+    isScanning,
+    /**
+     * Every page loaded so far, flattened and de-duplicated.
+     *
+     * A poll refetches EVERY loaded page, so a viewer who has pressed
+     * "Load more" several times pays for each of them on every tick. That is
+     * the intended trade — it is bounded by what the viewer actually asked to
+     * see, where the old behavior was bounded by nothing. `pollFirstPageOnly`
+     * opts out of it.
+     */
+    sessions: flattenProjectSessionPages(query.data),
+  };
+}
+
+export interface UseSessionChildrenOptions extends Pick<ListProjectSessionsOptions, 'limit' | 'q'> {
+  /** Set false until the parent is expanded — children load lazily. */
+  enabled?: boolean;
+  /** Poll every this many ms while the page is visible (a live agent list). Omit for no poll. */
+  refetchInterval?: number;
+}
+
+/** The pages with `parentSessionId`'s `child_count` raised to at least `count`;
+ *  the same object when no row changes, so react-query notifies nobody. The
+ *  count only rises: `child_count` also counts children this viewer may not list. */
+function raiseChildCount(
+  data: ProjectSessionPages | undefined,
+  parentSessionId: string,
+  count: number,
+): ProjectSessionPages | undefined {
+  if (!data) return data;
+  let changed = false;
+  const pages = data.pages.map((page) => {
+    const index = page.items.findIndex(
+      (session) => session.session_id === parentSessionId && (session.child_count ?? 0) < count,
+    );
+    if (index < 0) return page;
+    changed = true;
+    const items = page.items.slice();
+    items[index] = { ...items[index]!, child_count: count };
+    return { ...page, items };
+  });
+  return changed ? { ...data, pages } : data;
+}
+
+/**
+ * One session's children (`parent=<sessionId>`), newest first, a page at a
+ * time. Its own cache slot per (parent, q), so an expanded row and a search
+ * never share entries.
+ */
+export function useSessionChildren(
+  projectId: string,
+  parentSessionId: string,
+  options?: UseSessionChildrenOptions,
+) {
+  const q = options?.q;
+  const queryClient = useQueryClient();
+  const query = useInfiniteQuery({
+    queryKey: qk.project.sessionChildren(projectId, parentSessionId, q),
+    initialPageParam: null as string | null,
+    queryFn: async ({ pageParam }) => {
+      const page = await listProjectSessionsPage(projectId, {
+        parent: parentSessionId,
+        limit: options?.limit,
+        cursor: pageParam,
+        q,
+      });
+      // The session list opens a row's children only when the row counts
+      // some, and nothing tells that list a child was created. A first page
+      // read without a search is a lower bound on the count.
+      if (pageParam === null && !q?.trim() && page.items.length > 0) {
+        queryClient.setQueriesData<ProjectSessionPages>(
+          { queryKey: [...qk.project.sessionsScope(projectId), 'list-paged'] },
+          (data) => raiseChildCount(data, parentSessionId, page.items.length),
+        );
+      }
+      return page;
+    },
+    getNextPageParam: projectSessionsPageParam,
+    enabled: options?.enabled ?? true,
+    ...contract('inventory'),
+    ...(options?.refetchInterval ? { refetchInterval: options.refetchInterval, refetchIntervalInBackground: false } : {}),
+  });
+  return { ...query, sessions: flattenProjectSessionPages(query.data) };
+}

@@ -1,0 +1,226 @@
+---
+title: "How we flag at-risk accounts"
+description: A daily cron scores accounts on leading churn signals across product usage, support, and billing, then posts a ranked at-risk list to Slack with a reason and a suggested next step for each.
+date: "2026-04-28"
+author: team
+tags:
+  - Customer Success
+  - Case Study
+  - Enterprise
+template: churn-risk
+---
+
+Churn is usually visible before it happens. Usage tapers off, support threads get
+more frequent and more frustrated, a payment fails, a renewal approaches. The
+signals are there, but they sit in different systems, and no one is watching all
+of them at once. By the time an account cancels, the warning signs had been
+accumulating for weeks.
+
+We run a churn-risk agent on Kortix that reads those signals every day and posts a
+ranked at-risk list to our customer-success Slack channel. It only reads customer
+data; the single output is the Slack post. This is how we watch our own accounts.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Daily cron</Fact>
+  <Fact label="Connected systems">Postgres · Plain · Stripe · Slack</Fact>
+  <Fact label="Mode">Read-only · one Slack post per day</Fact>
+</KeyFacts>
+
+## The problem
+
+The signals that predict churn live in separate systems: product usage in
+Postgres, support friction in Plain, payment health in Stripe, renewal dates in
+billing. Each one is a partial view. An account with declining usage might be
+fine; an account with declining usage, a rising support load, and a renewal next
+month is not.
+
+The common approaches don't combine them. A usage dashboard shows one signal and
+leaves the reader to correlate the rest. A health score baked into one tool only
+sees that tool's data. Manual account reviews are thorough but happen quarterly,
+long after the signals first appeared, and depend on someone remembering to look.
+
+## What we built
+
+On Kortix, a daily cron triggers an agent. It spawns an isolated session (a cloud
+sandbox) with read-only access to Postgres, Plain, and Stripe, scores every
+account on leading churn signals — declining usage, rising support friction,
+missed or failed payments, an upcoming renewal — and posts a ranked at-risk list
+to the customer-success Slack channel, with the reason for each account and a
+suggested next step. It writes nothing back to customer systems.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the churn-signals skill and the daily
+trigger, and opens a change request for you to review. Prefer clicks? Choose
+**Use this template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a daily churn-risk agent in this project.
+
+1. Create the agent agents/churn-risk.md. Its job is to score every account for churn risk and post a ranked list. It may use the Postgres, Stripe and Slack connectors and the Plain API key. It only reads Postgres, Plain and Stripe.
+
+2. Create the skill skills/churn-signals/SKILL.md with these rules:
+   - Usage is declining when core activity drops 20% or more against the prior 30 days, and dormant after 14 days with almost no activity.
+   - Support friction is rising when thread volume climbs above the account's history or threads stay unresolved. Cancellation language counts as escalated.
+   - Billing is at risk after a missed or failed payment. A renewal is imminent within 30 days.
+   - No single signal is high risk on its own. Rank accounts with declining usage, rising support friction and an imminent renewal or failed payment first.
+   - Give every listed account a reason and one next step. Never write to Postgres, Plain or Stripe, and never contact a customer.
+
+3. Add a cron trigger daily-churn-scan to kortix.yaml. It runs the churn-risk agent every day at 06:00 UTC with the prompt "Load the churn-signals skill and run one complete churn-risk scan."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your product database, Stripe
+and Slack, and add your Plain API key as a secret. Credentials are brokered server-side and never enter the
+agent's machine.
+
+<ToolList>
+  <ToolNeed name="PostgreSQL" domain="postgresql.org" tag="Required" alternatives={[['Snowflake', 'snowflake.com'], ['BigQuery', 'cloud.google.com']]}>
+    Reads product usage trends, read-only.
+  </ToolNeed>
+  <ToolNeed name="Plain" domain="plain.com" tag="Required" alternatives={[['Zendesk', 'zendesk.com'], ['Intercom', 'intercom.com']]}>
+    Reads support thread volume and tone, read-only.
+  </ToolNeed>
+  <ToolNeed name="Stripe" domain="stripe.com" tag="Required" alternatives={[['Chargebee', 'chargebee.com']]}>
+    Reads payment status and renewal dates, read-only.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com']]}>
+    Posts the ranked at-risk list with a next step each.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **churn-risk** agent
+and send this prompt. Check the ranking against what your team knows before
+you let the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one churn-risk scan. Read only.
+
+1. Read each account's usage for the last 30 days against the prior 30 from Postgres.
+2. Read support thread volume and tone per account from Plain.
+3. Read payment status and renewal date per account from Stripe.
+4. Score every account on the combination of signals, and leave out accounts with no risk.
+5. Post the ranked list to #customer-success with a reason and one next step per account.`}
+/>
+
+</Step>
+<Step title="Let the daily schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every day at 06:00 UTC, each run in a new session on its own cloud computer. To change the time, edit the cron line, or open
+**Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: daily-churn-scan
+    name: Daily churn-risk scan
+    on:
+      cron: "0 0 6 * * *"
+    run:
+      agent: churn-risk
+      prompt: Load the churn-signals skill and run one complete churn-risk scan.`}
+/>
+
+</Step>
+<Step title="Keep every customer system read-only">
+
+The agent reads Postgres, Plain and Stripe and writes only the Slack post. It
+sends no email, replies to no ticket and changes no subscription. A person on
+customer success decides what to do with each account.
+
+</Step>
+<Step title="Read the ranked list">
+
+Each run ends with one message in the channel. This is what a run looks like
+in the session:
+
+<ExampleRun
+  title="Daily churn-risk scan · 06:00"
+  message="Load the churn-signals skill and run one complete churn-risk scan."
+  worked="Worked for 3m 40s"
+  tools={[
+    'postgresql · run query × 3',
+    'plain · list threads',
+    'stripe · list subscriptions',
+    'stripe · list invoices',
+    'slack · post message → #customer-success',
+  ]}
+  note="Illustrative example. Your list depends on your accounts and signals."
+>
+  Flagged **8** accounts. **2** are highest risk: usage down **34%** in 30 days,
+  an escalated support thread, and a renewal in the next 30 days. For both, the
+  suggested next step is a renewal conversation this week.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A daily **cron** spawns a session with read-only **connectors** into Postgres,
+  Plain, and Stripe. The scoring lives as **skills** and **memory**. The agent
+  reads everything and writes nothing but the Slack post.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Send each owner their accounts"
+  code="Send each flagged account CSM a Slack DM with the reason and the next step, in addition to the channel post."
+/>
+
+<CopyBlock
+  title="Renewal prep"
+  code="For each account that renews in the next 30 days, add its usage trend and open support threads to the post."
+/>
+
+<CopyBlock
+  title="Tune the score"
+  code="Once a month, list the accounts that churned and show which signals fired for them in the weeks before, so we can tune the rules."
+/>
+
+## Guardrails
+
+The agent reads across every customer system, so its access is scoped and
+one-directional:
+
+- **Isolation.** Every run happens in its own isolated sandbox. The session is granted access only to the systems it's scoped to, and only the Slack post is written back out.
+- **Scoped secrets.** The Postgres, Plain, and Stripe credentials are encrypted in
+  the Secrets Manager and injected into the sandbox at runtime, scoped to the agents you grant them to.
+- **Read-only.** The connectors into customer data are read-only. The agent cannot
+  change an account, a ticket, or a subscription; it can only report.
+- **Everything is code.** The agent's scoring rules, skills, and per-system
+  permissions are files in the repo, versioned and changed through a reviewed
+  **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every day" label="Accounts rescored on the current state of the data" />
+  <Stat value="Read-only" label="Nothing written back to any customer system" />
+  <Stat value="4 signals" label="Usage, support, billing, and renewal in one score" />
+</StatGrid>
+
+Churn signals that used to sit in four separate systems now arrive as one ranked
+list in the channel where the team already works, each account carrying the reason
+it surfaced and a suggested next step. The agent only reads; the people decide
+what to do about each account.

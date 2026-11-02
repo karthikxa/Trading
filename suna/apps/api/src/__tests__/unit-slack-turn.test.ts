@@ -1,0 +1,567 @@
+import { beforeEach, describe, expect, mock, test } from 'bun:test';
+
+// ─── Slack API spy ────────────────────────────────────────────────────────────
+// Every Slack call the stream lifecycle can make, recorded for assertions.
+type Call = { fn: string; args: unknown[] };
+let slackCalls: Call[] = [];
+let appendStreamResult: { ok: boolean; error?: string } = { ok: true };
+
+const record = (fn: string) => (...args: unknown[]) => {
+  slackCalls.push({ fn, args });
+};
+
+mock.module('../channels/slack-api', () => ({
+  addReaction: async (...a: unknown[]) => record('addReaction')(...a),
+  appendStream: async (...a: unknown[]) => {
+    record('appendStream')(...a);
+    return appendStreamResult;
+  },
+  deleteMessage: async (...a: unknown[]) => record('deleteMessage')(...a),
+  joinChannel: async (...a: unknown[]) => {
+    record('joinChannel')(...a);
+    return true;
+  },
+  postBlocks: async (...a: unknown[]) => {
+    record('postBlocks')(...a);
+    return '99.99';
+  },
+  postMessage: async (...a: unknown[]) => {
+    record('postMessage')(...a);
+    return '99.99';
+  },
+  removeReaction: async (...a: unknown[]) => record('removeReaction')(...a),
+  startStream: async (...a: unknown[]) => {
+    record('startStream')(...a);
+    return '11.11';
+  },
+  stopStream: async (...a: unknown[]) => record('stopStream')(...a),
+  updateBlocks: async (...a: unknown[]) => {
+    record('updateBlocks')(...a);
+    return true; // chat.update succeeded (real updateBlocks returns a boolean)
+  },
+  updateMessage: async (...a: unknown[]) => record('updateMessage')(...a),
+}));
+
+mock.module('../channels/install-store', () => ({
+  loadSlackBotIdForProject: async () => null,
+  ensureSlackBotId: async () => null,
+  loadSlackTokenForProject: async () => 'xoxb-test',
+  saveSlackOauthInstall: async () => {},
+}));
+
+mock.module('../channels/slack/interactivity', () => ({
+  respondViaUrl: async () => {},
+}));
+
+// Slack names U0TEST2; it cannot name U0TEST3.
+const nameLookups: Array<{ token: string; teamId: string; ids: string[] }> = [];
+mock.module('../channels/slack/labels', () => ({
+  slackUserNames: async (token: string, teamId: string, ids: string[]) => {
+    nameLookups.push({ token, teamId, ids });
+    return new Map(ids.filter((id) => id === 'U0TEST2').map((id) => [id, 'Alex Kim']));
+  },
+  slackMessageLabels: async ({ event }: { event: { text?: string } }) => ({ channel: null, user: null, text: event.text ?? '' }),
+}));
+
+mock.module('../channels/slack/app', () => ({
+  STREAM_TTL_MS: 15 * 60 * 1000,
+  ASK_TTL_MS: 15 * 60 * 1000,
+  WORKING_EMOJI: 'hourglass_flowing_sand',
+  FIVE_MINUTES: 300,
+  EVENT_DEDUPE_TTL_MS: 5 * 60 * 1000,
+  PICKER_TTL_MS: 60 * 60 * 1000,
+}));
+
+// ─── DB mock ──────────────────────────────────────────────────────────────────
+// One FIFO of results; every awaited query chain pops the next entry. Tests
+// enqueue results in the exact order the code under test issues queries.
+let dbResults: unknown[][] = [];
+let dbWrites: Array<{ op: string; payload?: unknown }> = [];
+
+function makeChain(op: string): any {
+  const chain: any = {};
+  for (const m of ['from', 'where', 'limit', 'onConflictDoUpdate', 'onConflictDoNothing', 'returning']) {
+    chain[m] = () => chain;
+  }
+  chain.values = (payload: unknown) => {
+    dbWrites.push({ op: `${op}.values`, payload });
+    return chain;
+  };
+  chain.set = (payload: unknown) => {
+    dbWrites.push({ op: `${op}.set`, payload });
+    return chain;
+  };
+  chain.then = (resolve: (rows: unknown[]) => unknown, reject?: (err: unknown) => unknown) => {
+    void reject;
+    return Promise.resolve(resolve(dbResults.shift() ?? []));
+  };
+  return chain;
+}
+
+mock.module('../shared/db', () => ({
+  db: {
+    select: () => makeChain('select'),
+    insert: () => makeChain('insert'),
+    update: () => makeChain('update'),
+    delete: () => {
+      dbWrites.push({ op: 'delete' });
+      return makeChain('delete');
+    },
+  },
+  hasDatabase: () => true,
+}));
+
+const {
+  finalizeTurn,
+  repaintLivePlan,
+  relayTurnAnswerDetailed,
+  relayTurnEnd,
+  relayTurnStepDetailed,
+  relayProvisioningFailure,
+} = await import('../channels/slack/turn');
+const relayTurnStep = async (...args: Parameters<typeof relayTurnStepDetailed>) =>
+  (await relayTurnStepDetailed(...args)).ok;
+const relayTurnAnswer = async (...args: Parameters<typeof relayTurnAnswerDetailed>) =>
+  (await relayTurnAnswerDetailed(...args)).ok;
+
+function liveHandle(overrides: Record<string, unknown> = {}) {
+  return {
+    channel: 'C1',
+    ts: '11.11',
+    token: 'xoxb-test',
+    triggerTs: '10.10',
+    steps: [
+      { type: 'task_update', id: 'step-0', title: 'Reading logs', status: 'in_progress' },
+    ],
+    expiry: Date.now() + 60_000,
+    finalized: false,
+    projectId: 'proj-1',
+    sessionId: 'sess-1',
+    teamId: 'T1',
+    originatingEvent: { type: 'app_mention', channel: 'C1', ts: '10.10', user: 'U1' },
+    ...overrides,
+  } as any;
+}
+
+// DB row shape for loadTurn (chat_turn_streams select).
+function streamRow(overrides: Record<string, unknown> = {}) {
+  return {
+    sessionId: 'sess-1',
+    projectId: 'proj-1',
+    teamId: 'T1',
+    channel: 'C1',
+    triggerTs: '10.10',
+    messageTs: '11.11',
+    streaming: true,
+    placeholderActive: false,
+    finalized: false,
+    steps: [
+      { type: 'task_update', id: 'step-0', title: 'Reading logs', status: 'in_progress' },
+    ],
+    originatingEvent: { type: 'app_mention', channel: 'C1', ts: '10.10', user: 'U1' },
+    expiresAt: new Date(Date.now() + 60_000),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+const calls = (fn: string) => slackCalls.filter((c) => c.fn === fn);
+
+beforeEach(() => {
+  slackCalls = [];
+  dbResults = [];
+  dbWrites = [];
+  appendStreamResult = { ok: true };
+  nameLookups.length = 0;
+});
+
+describe('finalizeTurn (chat.update only — no streaming)', () => {
+  test('silent close completes the last step and renders plan-only; adds nothing', async () => {
+    const handle = liveHandle();
+    await finalizeTurn(handle, {});
+
+    expect(calls('stopStream').length).toBe(0); // streaming is gone
+    const updates = calls('updateBlocks');
+    expect(updates.length).toBe(1);
+    expect(updates[0]!.args[3]).toBe('Task complete');
+    const blocks = updates[0]!.args[4] as Array<{ type: string; tasks?: Array<{ status: string }> }>;
+    // silent close invents no answer body; 'context' = the "Open session" footer
+    expect(blocks.map((b) => b.type)).toEqual(['plan', 'context']);
+    expect(blocks[0]!.tasks![0]!.status).toBe('complete'); // last step closed
+
+    expect(calls('removeReaction').length).toBe(1);
+    expect(calls('addReaction').length).toBe(0); // ✅ reserved for a real answer
+  });
+
+  test('answer close renders plan + answer section via chat.update and adds ✅', async () => {
+    const handle = liveHandle();
+    await finalizeTurn(handle, { answer: 'All done.' });
+
+    expect(calls('stopStream').length).toBe(0);
+    const updates = calls('updateBlocks');
+    expect(updates.length).toBe(1);
+    expect(updates[0]!.args[3]).toBe('Task complete');
+    const blocks = updates[0]!.args[4] as Array<{ type: string; tasks?: Array<{ status: string }> }>;
+    expect(blocks[0]!.type).toBe('plan');
+    expect(blocks[0]!.tasks![0]!.status).toBe('complete');
+    expect(blocks.map((b) => b.type)).toEqual(['plan', 'section', 'context']);
+    expect(calls('addReaction').length).toBe(1);
+  });
+
+  test('error close marks the last step error and titles the plan Run failed', async () => {
+    const handle = liveHandle();
+    await finalizeTurn(handle, { error: '_It broke._' });
+
+    expect(calls('stopStream').length).toBe(0);
+    const update = calls('updateBlocks')[0]!;
+    expect(update.args[3]).toBe('Run failed');
+    const blocks = update.args[4] as Array<{ type: string; tasks?: Array<{ status: string }> }>;
+    expect(blocks[0]!.tasks![0]!.status).toBe('error');
+    expect(blocks.map((b) => b.type)).toEqual(['plan', 'section', 'context']);
+    expect(calls('addReaction').length).toBe(0);
+  });
+
+  test('no plan message + an answer → posts the reply fresh in-thread', async () => {
+    const handle = liveHandle({ ts: '', steps: [] });
+    await finalizeTurn(handle, { answer: 'Quick reply.' });
+
+    expect(calls('updateBlocks').length).toBe(0);
+    expect(calls('postMessage').length).toBe(1);
+    expect(String(calls('postMessage')[0]!.args[2])).toBe('Quick reply.');
+    expect(calls('addReaction').length).toBe(1);
+  });
+
+  test('silent close with no plan message leaves the thread untouched (just clears ⏳)', async () => {
+    const handle = liveHandle({ ts: '', steps: [] });
+    await finalizeTurn(handle, {});
+
+    expect(calls('updateBlocks').length).toBe(0);
+    expect(calls('postMessage').length).toBe(0);
+    expect(calls('removeReaction').length).toBe(1);
+  });
+});
+
+describe('repaintLivePlan', () => {
+  test('paints the current steps with a working title via chat.update', async () => {
+    const handle = liveHandle();
+    await repaintLivePlan(handle);
+    const update = calls('updateBlocks')[0]!;
+    expect(update.args[3]).toBe('Working on it…');
+    const blocks = update.args[4] as Array<{ type: string; title: string }>;
+    expect(blocks[0]!.title).toBe('Working on it…');
+  });
+});
+
+describe('relayTurnStep (chat.update model)', () => {
+  test('first step creates the plan message (startStream → immediate stopStream → chat.update)', async () => {
+    dbResults = [
+      [streamRow({ messageTs: null, steps: [] })], // loadTurn → no plan message yet
+      [], // saveTurn upsert
+    ];
+
+    const ok = await relayTurnStep('sess-1', 'Reading logs');
+    expect(ok).toBe(true);
+    // Native plan message is opened then immediately closed; never left streaming.
+    expect(calls('startStream').length).toBe(1);
+    expect(calls('stopStream').length).toBe(1);
+    expect(calls('appendStream').length).toBe(0); // the streaming-append path is gone
+    expect(calls('updateBlocks').length).toBe(1);
+  });
+
+  test('subsequent step appends + repaints via chat.update, never appendStream/startStream', async () => {
+    dbResults = [
+      [streamRow()], // loadTurn → plan message already exists
+      [], // saveTurn upsert
+    ];
+
+    const ok = await relayTurnStep('sess-1', 'Next step');
+    expect(ok).toBe(true);
+    expect(calls('appendStream').length).toBe(0);
+    expect(calls('startStream').length).toBe(0);
+    const update = calls('updateBlocks')[0]!;
+    expect(update.args[3]).toBe('Working on it…');
+    const blocks = update.args[4] as Array<{ tasks: Array<{ title: string; status: string }> }>;
+    expect(blocks[0]!.tasks.map((t) => t.title)).toEqual(['Reading logs', 'Next step']);
+  });
+});
+
+// Regression cover for the 2026-09-04/05 Slack incident threads: a run whose
+// quiet stretches outlived STREAM_TTL_MS lost its stream, and every later step
+// plus the final answer was dropped on the floor. `expires_at` is no longer a
+// reaper in loadTurn, and an answer with no row left is still delivered.
+describe('a turn row past expires_at is still live', () => {
+  test('delivers a late answer instead of dropping it', async () => {
+    dbResults = [
+      [streamRow({ expiresAt: new Date(Date.now() - 60_000) })], // loadTurn (past expiry)
+      [{ sessionId: 'sess-1' }], // claimFinalize
+      [], // deleteTurn
+    ];
+
+    const ok = await relayTurnAnswer('sess-1', 'Late answer.');
+    expect(ok).toBe(true);
+    const [update] = calls('updateBlocks');
+    expect(update?.args[3]).toBe('Task complete');
+    expect(calls('addReaction').length).toBe(1); // ✅ on a real answer
+    expect(calls('removeReaction').length).toBe(1); // ⏳ cleared
+  });
+
+  test('keeps streaming steps instead of reaping the row mid-run', async () => {
+    dbResults = [
+      [streamRow({ expiresAt: new Date(Date.now() - 60_000) })], // loadTurn (past expiry)
+      [], // saveTurn upsert
+    ];
+
+    const ok = await relayTurnStep('sess-1', 'Still working');
+    expect(ok).toBe(true);
+    expect(calls('updateBlocks').length).toBe(1); // plan repainted, not dropped
+    expect(dbWrites.some((w) => w.op === 'delete')).toBe(false);
+    // The step re-arms the row's own bound, so a live run cannot age out.
+    const saved = dbWrites.find((w) => w.op === 'insert.values')?.payload as { expiresAt: Date };
+    expect(saved.expiresAt.getTime()).toBeGreaterThan(Date.now());
+  });
+});
+
+describe('answer rescue when the GC already deleted the row', () => {
+  const sessionRow = (metadata: unknown) => [{ projectId: 'proj-1', metadata }];
+
+  test('posts the answer into the Slack thread from session metadata', async () => {
+    dbResults = [
+      [], // loadTurn — row gone (GC closed and deleted it)
+      sessionRow({ slack: { channel: 'C1', thread_ts: '10.10' } }),
+      [{ eventId: 'slack:answerrescue:sess-1' }], // claimAnswerRescue wins
+    ];
+
+    const ok = await relayTurnAnswer('sess-1', 'The fix is deployed.');
+    expect(ok).toBe(true);
+    const [post] = calls('postBlocks');
+    expect(post?.args[1]).toBe('C1'); // channel
+    expect(post?.args[4]).toBe('10.10'); // posted in-thread, not top-level
+    const blocks = post?.args[3] as Array<{ type: string }>;
+    expect(blocks.map((b) => b.type)).toEqual(['section', 'context']);
+  });
+
+  test('stays silent for a session that did not come from Slack', async () => {
+    dbResults = [
+      [], // loadTurn — no row
+      sessionRow({ source: 'ui' }), // no metadata.slack
+    ];
+
+    expect(await relayTurnAnswer('sess-1', 'x')).toBe(false);
+    expect(calls('postBlocks').length).toBe(0);
+    expect(calls('postMessage').length).toBe(0);
+  });
+
+  test('a duplicate slack send cannot post the answer twice', async () => {
+    dbResults = [
+      [], // loadTurn — no row
+      sessionRow({ slack: { channel: 'C1', thread_ts: '10.10' } }),
+      [], // claimAnswerRescue loses — a rescue already posted
+    ];
+
+    expect(await relayTurnAnswer('sess-1', 'again')).toBe(false);
+    expect(calls('postBlocks').length).toBe(0);
+  });
+});
+
+describe('relayTurnEnd', () => {
+  test('idle gracefully closes a turn as Task complete via chat.update', async () => {
+    dbResults = [
+      [streamRow()], // loadTurn
+      [{ sessionId: 'sess-1' }], // claimFinalize
+      [], // deleteTurn
+    ];
+
+    const ok = await relayTurnEnd('sess-1', 'idle');
+    expect(ok).toBe(true);
+    expect(calls('stopStream').length).toBe(0);
+    expect(calls('updateBlocks')[0]!.args[3]).toBe('Task complete');
+    expect(calls('removeReaction').length).toBe(1);
+    expect(calls('addReaction').length).toBe(0);
+  });
+
+  // The server no longer re-checks the relayed opencode id against the DB pin —
+  // the sandbox filters subagents by parentID before relaying, and a stale-pin
+  // re-check here is exactly what used to drop a real turn's idle and spin the ⏳
+  // forever. So a relayed root idle ALWAYS finalizes, with no pin lookup.
+  test('finalizes unconditionally — no pin lookup gates the close', async () => {
+    dbResults = [
+      [streamRow()], // loadTurn
+      [{ sessionId: 'sess-1' }], // claimFinalize
+      [], // deleteTurn
+    ];
+
+    const ok = await relayTurnEnd('sess-1', 'idle');
+    expect(ok).toBe(true);
+    expect(calls('removeReaction').length).toBe(1);
+  });
+
+  test('idle on a turn with no plan message + no steps just clears ⏳', async () => {
+    dbResults = [
+      [streamRow({ messageTs: null, steps: [] })], // loadTurn
+      [{ sessionId: 'sess-1' }], // claimFinalize
+      [], // deleteTurn
+    ];
+
+    const ok = await relayTurnEnd('sess-1', 'idle');
+    expect(ok).toBe(true);
+    expect(calls('updateBlocks').length).toBe(0);
+    expect(calls('postMessage').length).toBe(0);
+    expect(calls('removeReaction').length).toBe(1);
+  });
+
+  test('error close on a turn with no plan message posts failure copy + session footer', async () => {
+    dbResults = [
+      [streamRow({ messageTs: null, steps: [] })], // loadTurn
+      [{ sessionId: 'sess-1' }], // claimFinalize
+      [], // deleteTurn
+    ];
+
+    const ok = await relayTurnEnd('sess-1', 'error');
+    expect(ok).toBe(true);
+    // No plan stream → fresh post, now as blocks so it carries an "Open session" footer.
+    expect(calls('postMessage').length).toBe(0);
+    const posted = calls('postBlocks')[0]!;
+    expect(String(posted.args[2])).toContain('error');
+    const blocks = posted.args[3] as Array<{ type: string }>;
+    expect(blocks.map((b) => b.type)).toEqual(['section', 'context']);
+    expect(calls('addReaction').length).toBe(0);
+  });
+
+  test('out-of-credits error renders the credits copy + "Out of credits" title', async () => {
+    dbResults = [
+      [streamRow()], // loadTurn (has a plan message)
+      [{ sessionId: 'sess-1' }], // claimFinalize
+      [], // deleteTurn
+    ];
+
+    const ok = await relayTurnEnd('sess-1', 'error', {
+      name: 'APIError',
+      statusCode: 402,
+      message: 'Payment Required: Insufficient credits. Balance: $-0.06',
+    });
+    expect(ok).toBe(true);
+    const update = calls('updateBlocks')[0]!;
+    expect(update.args[3]).toBe('Out of credits');
+    const blocks = update.args[4] as Array<{ type: string; text?: { text: string } }>;
+    const section = blocks.find((b) => b.type === 'section');
+    expect(section?.text?.text.toLowerCase()).toContain('out of credits');
+    expect(section?.text?.text).toContain('-6 credits');
+    expect(calls('addReaction').length).toBe(0); // ✅ is reserved for real answers
+  });
+
+  test('usage-limit error renders the rate-limit copy + "Usage limit reached" title', async () => {
+    dbResults = [
+      [streamRow()], // loadTurn
+      [{ sessionId: 'sess-1' }], // claimFinalize
+      [], // deleteTurn
+    ];
+
+    const ok = await relayTurnEnd('sess-1', 'error', { statusCode: 429, message: 'Too Many Requests' });
+    expect(ok).toBe(true);
+    expect(calls('updateBlocks')[0]!.args[3]).toBe('Usage limit reached');
+  });
+
+  test('aborted run closes quietly — retitled, no failure body, no ✅', async () => {
+    dbResults = [
+      [streamRow()], // loadTurn
+      [{ sessionId: 'sess-1' }], // claimFinalize
+      [], // deleteTurn
+    ];
+
+    const ok = await relayTurnEnd('sess-1', 'error', { name: 'MessageAbortedError', message: 'aborted' });
+    expect(ok).toBe(true);
+    const update = calls('updateBlocks')[0]!;
+    expect(update.args[3]).toBe('Run stopped');
+    const blocks = update.args[4] as Array<{ type: string; tasks?: Array<{ status: string }> }>;
+    // No failure section — just the (re-titled) plan + the footer.
+    expect(blocks.map((b) => b.type)).toEqual(['plan', 'context']);
+    expect(blocks[0]!.tasks![0]!.status).toBe('complete'); // not 'error'
+    expect(calls('addReaction').length).toBe(0);
+  });
+});
+
+describe('relayProvisioningFailure', () => {
+  test('posts the platform reason AS-IS (no re-classification) with a "Couldn\'t start" title', async () => {
+    dbResults = [
+      [streamRow()], // loadTurn — turn row was saved at session-create time
+      [{ sessionId: 'sess-1' }], // claimFinalize
+      [], // deleteTurn
+    ];
+
+    const ok = await relayProvisioningFailure('sess-1', 'The sandbox provider is at capacity right now. Try again in a minute.');
+    expect(ok).toBe(true);
+    const update = calls('updateBlocks')[0]!;
+    expect(update.args[3]).toBe("Couldn't start");
+    const blocks = update.args[4] as Array<{ type: string; text?: { text: string } }>;
+    const section = blocks.find((b) => b.type === 'section');
+    expect(section?.text?.text).toContain('at capacity');
+    expect(calls('removeReaction').length).toBe(1); // ⏳ cleared
+    expect(calls('addReaction').length).toBe(0); // not a success
+  });
+
+  // Teams keeps its turns in the same table, with a `channel_ref`. In a project
+  // with both installed, this relay took a Teams turn for a Slack one: the
+  // Slack post failed and the Teams row was deleted, its card left spinning.
+  test('a Teams turn row is not Slack\'s: nothing posted, claimed or deleted', async () => {
+    // The claim would succeed: only the channel_ref keeps this relay away.
+    dbResults = [
+      [streamRow({ channelRef: { platform: 'teams', serviceUrl: 'https://smba/', conversationId: 'conv-1' } })],
+      [{ sessionId: 'sess-1' }],
+    ];
+    const ok = await relayProvisioningFailure('sess-1', 'The sandbox provider is at capacity right now.');
+    expect(ok).toBe(false);
+    expect(dbResults).toHaveLength(1); // the claim was never attempted
+    expect(calls('updateBlocks').length).toBe(0);
+    expect(calls('postMessage').length).toBe(0);
+    expect(dbWrites.some((w) => w.op === 'delete')).toBe(false);
+  });
+
+  test('no open turn (non-Slack session) → no-op', async () => {
+    dbResults = [[]]; // loadTurn finds nothing
+    const ok = await relayProvisioningFailure('sess-unknown', 'whatever');
+    expect(ok).toBe(false);
+    expect(calls('updateBlocks').length).toBe(0);
+    expect(calls('postMessage').length).toBe(0);
+  });
+});
+
+// A `<@U…>` in a step printed as raw markup on the plan (2026-10-02); as a live
+// mention it would notify that person on every repaint. The relay writes the
+// person's name as text, and a channel reference renders as Slack's channel
+// element. No mention markup reaches Slack from a step.
+describe('relayTurnStep: mentions in a step', () => {
+  test('title, detail and the previous output carry names as text; a channel renders natively', async () => {
+    dbResults = [
+      [streamRow()], // loadTurn → plan message already exists
+      [], // saveTurn upsert
+    ];
+
+    const ok = await relayTurnStep('sess-1', 'Asking <@U0TEST2>', {
+      detail: 'waiting on <@U0TEST2> in <#C0OPS|ops>, cc <!here>',
+      outputForPrev: 'found by <@U0TEST3>',
+    });
+
+    expect(ok).toBe(true);
+    expect(nameLookups).toEqual([{ token: 'xoxb-test', teamId: 'T1', ids: ['U0TEST2', 'U0TEST3'] }]);
+    const blocks = calls('updateBlocks')[0]!.args[4] as Array<{ tasks: Array<Record<string, any>> }>;
+    const [prev, step] = blocks[0]!.tasks;
+    expect(step!.title).toBe('Asking @Alex Kim');
+    expect(step!.details.elements[0].elements).toEqual([
+      { type: 'text', text: 'waiting on @Alex Kim in ' },
+      { type: 'channel', channel_id: 'C0OPS' },
+      { type: 'text', text: ', cc @here' },
+    ]);
+    expect(prev!.output.elements[0].elements).toEqual([{ type: 'text', text: 'found by @U0TEST3' }]);
+    const sent = JSON.stringify(blocks);
+    expect(sent).not.toContain('<@');
+    expect(sent).not.toContain('<!');
+    expect(sent).not.toContain('"type":"user"');
+    expect(sent).not.toContain('"type":"broadcast"');
+  });
+
+  test('a step with no mentions asks Slack nothing', async () => {
+    dbResults = [[streamRow()], []];
+    await relayTurnStep('sess-1', 'Reading the logs', { detail: 'from <https://example.test|the dashboard>' });
+    expect(nameLookups).toEqual([]);
+  });
+});

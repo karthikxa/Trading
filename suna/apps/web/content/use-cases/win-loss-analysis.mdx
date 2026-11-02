@@ -1,0 +1,230 @@
+---
+title: "How we analyze why deals are won and lost"
+description: The win-loss agent we run on Kortix — a weekly cron reads every HubSpot deal closed-won or closed-lost since the last run and posts the patterns by segment, competitor, price, and stage of death to Slack.
+date: "2026-05-16"
+author: team
+tags:
+  - Sales
+  - Case Study
+  - Enterprise
+template: win-loss-analysis
+---
+
+Every closed deal is a data point about why customers choose us or choose
+someone else, but the reason usually lives in one line of a HubSpot field,
+written by a rep in a hurry between calls. Read one at a time, those lines say
+nothing. Read across a hundred deals a quarter, they say exactly where we're
+strong, where a competitor is beating us, and where our own pipeline quietly
+falls apart.
+
+We run a win-loss analysis agent on Kortix that reads closed deals from
+HubSpot every week and posts the patterns to our sales Slack channel. It only
+reads deal data; the single output is the Slack post. This is how we watch our
+own win rate.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Weekly cron</Fact>
+  <Fact label="Connected systems">HubSpot · Slack</Fact>
+  <Fact label="Mode">Read-only · one Slack post per week</Fact>
+</KeyFacts>
+
+## The problem
+
+Close reasons and competitor mentions get logged in HubSpot because the CRM
+asks for them, not because anyone reads them back. A closed-lost deal gets a
+one-line reason and maybe a competitor field, then disappears into the pipeline
+history. Nobody aggregates it, so the same loss pattern — a competitor
+consistently winning on price in one segment, a deal category that reliably
+dies at the same stage — can repeat for two quarters before a sales leader
+notices it by gut feel in a QBR.
+
+The common approaches don't fix this. A win-rate number on a dashboard tells
+you the score changed, not why. A quarterly deal-review deck is thorough but
+looks back three months too late to change this week's playbook. And nobody
+wants to be the person who reads two hundred close-reason fields by hand every
+Monday.
+
+## What we built
+
+On Kortix, a weekly cron triggers an agent. It spawns a fresh session (a cloud
+sandbox) with read-only access to HubSpot, pulls every deal closed-won or
+closed-lost since the last run, and breaks the outcomes down by segment,
+competitor, price band, and the stage where lost deals actually die. It
+synthesizes the patterns into themes and concrete recommendations, and posts
+the summary to Slack. It writes nothing back to HubSpot.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the win-loss skill and the weekly trigger, and opens a change request for you to review. Prefer
+clicks? Choose **Use this template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a weekly win-loss analysis agent in this project.
+
+1. Create the agent agents/win-loss-analysis.md. Its job is to find patterns in closed HubSpot deals and post them to Slack. It may use the HubSpot connector, read-only.
+
+2. Create the skill skills/win-loss-patterns/SKILL.md with these rules:
+   - Read every deal closed won or closed lost in the last 7 days, with closed_lost_reason and competitor read verbatim.
+   - Report the win rate and the won and lost value for the window.
+   - Break outcomes down by segment, by competitor, by price band from our own deal sizes, and by the stage where lost deals died.
+   - Cluster close reasons into themes by meaning. Report a blank field as not recorded. Never guess.
+   - Pair every theme with one concrete recommendation, and post it all to #sales.
+   - Never write to HubSpot, and never contact a rep or a prospect.
+
+3. Add a cron trigger weekly-win-loss-review to kortix.yaml. It runs the win-loss-analysis agent every Monday at 09:00 with the prompt "Load the win-loss-patterns skill and post this week's win-loss analysis to #sales."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your CRM with read-only access,
+and Slack for the post. Credentials are brokered server-side and never enter
+the agent's machine.
+
+<ToolList>
+  <ToolNeed name="HubSpot" domain="hubspot.com" tag="Required" alternatives={[['Salesforce', 'salesforce.com'], ['Pipedrive', 'pipedrive.com']]}>
+    Reads deals closed won and lost in the lookback window.
+  </ToolNeed>
+  <ToolNeed name="Gong" domain="gong.io" tag="Optional" alternatives={[['Google Drive', 'drive.google.com']]}>
+    Adds a call quote that supports each loss theme.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com']]}>
+    Posts the themes and recommendations.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **win-loss-analysis**
+agent and send this prompt. Check the themes against what your reps tell you
+before you let the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one win-loss analysis on HubSpot. Read only. Change nothing.
+
+1. Read every deal closed won or closed lost in the last 7 days, with closed_lost_reason and competitor.
+2. Compute the win rate and the won and lost value.
+3. Break the outcomes down by segment, competitor, price band and the stage where lost deals died.
+4. Cluster the close reasons into themes and pair each theme with one recommendation.
+5. Post it all to #sales.`}
+/>
+
+</Step>
+<Step title="Let the weekly schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every Monday at 09:00, each run in a new session on its own cloud computer.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: weekly-win-loss-review
+    name: Weekly win-loss review
+    on:
+      cron: "0 0 9 * * 1"
+    run:
+      agent: win-loss-analysis
+      prompt: Load the win-loss-patterns skill and post this week's win-loss analysis to #sales.`}
+/>
+
+</Step>
+<Step title="Keep HubSpot read-only">
+
+The agent reads closed deals and writes nothing back, not even to fill a blank
+close reason. It never contacts a rep or a lost prospect. The Slack post is its
+only output, and the sales team decides what to change in the playbook.
+
+</Step>
+<Step title="Read the weekly analysis">
+
+Each run ends with one message in #sales. This is what a run looks like
+in the session:
+
+<ExampleRun
+  title="Weekly win-loss review · Mon 09:00"
+  message="Load the win-loss-patterns skill and post this week's win-loss analysis to #sales."
+  worked="Worked for 2m 29s"
+  tools={[
+    'hubspot · search deals (closed)',
+    'hubspot · get stage history × 19',
+    'slack · post message → #sales',
+  ]}
+  note="Illustrative example. Your numbers depend on your closed deals."
+>
+  **31** deals closed this week: **12** won and **19** lost, a **39%** win
+  rate. Most lost deals died at **Proposal**, and the top theme is price on the
+  enterprise tier. Recommendation: review enterprise packaging.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A weekly **cron** spawns a fresh session with a read-only **connector** into
+  HubSpot. The breakdown rules live as a **skill**. The agent reads every
+  closed deal and writes nothing but the Slack post.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Quarterly trend"
+  code="On the first Monday of each quarter, compare win rate by segment and by competitor to the previous quarter."
+/>
+
+<CopyBlock
+  title="Flag missing close reasons"
+  code="List the lost deals this week that have no close reason, with their owners, so a manager can follow up."
+/>
+
+<CopyBlock
+  title="Add call evidence"
+  code="Once Gong is connected, add one quote from the last call of each lost deal that supports its theme."
+/>
+
+## Guardrails
+
+The agent reads every closed deal in HubSpot, so its access is scoped and
+one-directional:
+
+- **Isolation.** Every run happens in its own isolated sandbox. The session is granted access only to HubSpot, and only the Slack post is written back out.
+- **Scoped secrets.** The HubSpot credential is encrypted in the Secrets
+  Manager and injected into the sandbox at runtime, scoped to the agents you grant them to
+  or the logs.
+- **Read-only.** The connector into HubSpot is read-only. The agent cannot
+  change a deal's stage, close reason, competitor field, or amount; it can
+  only report on what's already there.
+- **Report only.** The agent never contacts a rep, a prospect, or a lost deal.
+  It surfaces the pattern; a human decides what to do about it.
+- **Everything is code.** The agent's breakdown rules, skill, and HubSpot
+  permissions are files in the repo, versioned and changed through a reviewed
+  **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Every week" label="Closed deals rescored from HubSpot's current state" />
+  <Stat value="Read-only" label="Nothing written back to any HubSpot deal" />
+  <Stat value="4 cuts" label="Segment, competitor, price, and stage of death in one post" />
+</StatGrid>
+
+Win-loss reasons that used to sit unread in a HubSpot field now arrive as one
+weekly summary in the channel where the sales team already works, with the
+themes named and a recommendation attached to each. The agent only reads;
+the people decide what to change in the playbook.

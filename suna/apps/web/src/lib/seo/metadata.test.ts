@@ -1,0 +1,114 @@
+import { describe, expect, test } from 'bun:test';
+
+import { locales } from '@/i18n/config';
+import {
+  languageAlternates,
+  localePath,
+  marketingMetadata,
+  metaDescription,
+  openGraphLocales,
+} from '@/lib/seo/metadata';
+import { getPublicContentRecords } from '@/lib/seo/public-content';
+import { CANONICAL_ORIGIN } from '@kortix/ui/internal/lib/site-metadata';
+
+const marketingRecords = getPublicContentRecords({ includeUseCases: true }).filter(
+  (record) => record.kind === 'marketing',
+);
+
+describe('marketing page metadata contract', () => {
+  test('every marketing record resolves to complete page metadata', () => {
+    for (const record of marketingRecords) {
+      const metadata = marketingMetadata(record.htmlPath);
+      const url = `${CANONICAL_ORIGIN}${record.htmlPath}`;
+      expect(metadata.title, record.htmlPath).toBe(record.title);
+      expect(metadata.description, record.htmlPath).toBeTruthy();
+      expect(metadata.alternates?.canonical, record.htmlPath).toBe(url);
+      expect(metadata.openGraph?.url, record.htmlPath).toBe(url);
+      const ogImages = metadata.openGraph?.images;
+      expect(
+        Array.isArray(ogImages) ? ogImages.length : ogImages ? 1 : 0,
+        record.htmlPath,
+      ).toBeGreaterThan(0);
+      expect((metadata.twitter as { card?: string })?.card, record.htmlPath).toBe(
+        'summary_large_image',
+      );
+      expect(
+        (metadata.twitter as { images?: string[] })?.images?.length,
+        record.htmlPath,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  test('marketing titles and descriptions are unique', () => {
+    const titles = marketingRecords.map((record) => record.title);
+    const descriptions = marketingRecords.map((record) => record.description);
+    expect(new Set(titles).size).toBe(titles.length);
+    expect(new Set(descriptions).size).toBe(descriptions.length);
+  });
+
+  test('throws for a path without a marketing record', () => {
+    expect(() => marketingMetadata('/no-such-page')).toThrow();
+  });
+});
+
+describe('locale-routed marketing pages', () => {
+  test('localePath prefixes every non-default locale and leaves English unprefixed', () => {
+    expect(localePath('en', '/')).toBe('/');
+    expect(localePath('de', '/')).toBe('/de');
+    expect(localePath('en', '/legal')).toBe('/legal');
+    expect(localePath('fr', '/pricing')).toBe('/fr/pricing');
+  });
+
+  test('languageAlternates carries every locale plus x-default', () => {
+    const languages = languageAlternates('/legal');
+    for (const locale of locales) {
+      expect(languages[locale], locale).toBe(
+        locale === 'en' ? `${CANONICAL_ORIGIN}/legal` : `${CANONICAL_ORIGIN}/${locale}/legal`,
+      );
+    }
+    expect(languages['x-default']).toBe(`${CANONICAL_ORIGIN}/legal`);
+  });
+});
+
+describe('metaDescription', () => {
+  test('keeps whole sentences up to 155 characters', () => {
+    const first = `${'A '.repeat(40).trim()}.`;
+    expect(metaDescription(`${first} ${'B '.repeat(60).trim()}.`)).toBe(first);
+  });
+
+  test('cuts a first sentence longer than the limit at a word', () => {
+    const out = metaDescription(`${'word '.repeat(60).trim()}.`)!;
+    expect(out.length).toBeLessThanOrEqual(155);
+    expect(out).toEndWith('word…');
+  });
+
+  test('returns short text unchanged', () => {
+    expect(metaDescription('Short.')).toBe('Short.');
+  });
+
+  test('every marketing record renders a description of 155 characters or fewer', () => {
+    for (const record of getPublicContentRecords().filter((r) => r.kind === 'marketing')) {
+      const description = marketingMetadata(record.htmlPath, record).description ?? '';
+      expect(description.length, record.htmlPath).toBeLessThanOrEqual(155);
+    }
+  });
+});
+
+// KRTX-3254: every localized page declared og:locale en_US, though its body
+// and hreflang set were translated.
+describe('openGraphLocales', () => {
+  test('names the page locale, and every other locale as an alternate', () => {
+    expect(openGraphLocales('en')).toEqual({
+      locale: 'en_US',
+      alternateLocale: ['de_DE', 'it_IT', 'zh_CN', 'ja_JP', 'pt_BR', 'fr_FR', 'es_ES', 'sr_RS'],
+    });
+    expect(openGraphLocales('de').locale).toBe('de_DE');
+    expect(openGraphLocales('de').alternateLocale).not.toContain('de_DE');
+  });
+
+  test('every locale maps to a distinct language_TERRITORY tag', () => {
+    const tags = locales.map((locale) => openGraphLocales(locale).locale);
+    for (const tag of tags) expect(tag).toMatch(/^[a-z]{2}_[A-Z]{2}$/);
+    expect(new Set(tags).size).toBe(locales.length);
+  });
+});

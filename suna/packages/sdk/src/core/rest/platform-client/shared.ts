@@ -1,0 +1,186 @@
+/**
+ * Platform API client — shared, non-exported helpers.
+ *
+ * These are internal to the platform-client module group. They are exported so
+ * sibling modules can use them, but they are intentionally NOT re-exported from
+ * the barrel index.ts, so the public surface stays unchanged.
+ */
+
+import { backendApi } from '../../http/api-client';
+import { platformConfig } from '../../http/config';
+import { safeEnv } from '../../http/env';
+import { stripTrailingSlashes } from '../../../platform/strings';
+import {
+  listProjectSessions,
+  listProjects,
+  type KortixProject,
+  type ProjectSession,
+  type ProjectSessionSandbox,
+} from '../projects-client';
+import { SANDBOX_PORTS, type SandboxInfo, type SandboxProviderName } from './types';
+
+/**
+ * Get the base URL for platform API calls.
+ *
+ * Uses NEXT_PUBLIC_BACKEND_URL directly (includes /v1).
+ */
+export function getPlatformUrl(): string {
+  // Server-side: prefer BACKEND_URL (internal Docker hostname) over
+  // NEXT_PUBLIC_BACKEND_URL (browser-facing localhost, unreachable from container).
+  // `safeEnv` because this module is isomorphic-core: a bare `process.env` read
+  // throws a ReferenceError in a browser <script> bundle and on React Native.
+  const backendUrl = safeEnv('BACKEND_URL') || platformConfig().backendUrl;
+  if (backendUrl) {
+    return backendUrl;
+  }
+
+  // Fallback for local dev
+  return 'http://localhost:8008/v1';
+}
+
+/** Backend URL → platform API base: trailing slashes stripped, `/v1` appended when absent. */
+export function platformApiBase(backendUrl: string): string {
+  const base = stripTrailingSlashes(backendUrl);
+  return base.endsWith('/v1') ? base : `${base}/v1`;
+}
+
+export function normalizeSandboxId(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const normalized = normalizeSandboxId(item);
+      if (normalized) return normalized;
+    }
+    return undefined;
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return normalizeSandboxId(record.sandboxId ?? record.id ?? record.slug ?? Object.values(record)[0]);
+  }
+  return undefined;
+}
+
+function normalizeSessionStatus(status: string | undefined): string {
+  if (status === 'running' || status === 'active') return 'active';
+  if (status === 'queued' || status === 'branching' || status === 'provisioning') return 'provisioning';
+  if (status === 'failed' || status === 'error') return 'error';
+  if (status === 'stopped' || status === 'completed' || status === 'archived') return 'stopped';
+  return status || 'unknown';
+}
+
+export function projectSessionToSandboxInfo(
+  project: KortixProject,
+  session: ProjectSession,
+  runtime?: ProjectSessionSandbox | null,
+): SandboxInfo {
+  // '' when the session has no sandbox yet: the same falsy value callers test.
+  const externalId = runtime?.external_id || session.sandbox_url?.match(/\/p\/([^/]+)\//)?.[1] || session.sandbox_id || '';
+  return {
+    sandbox_id: runtime?.sandbox_id || session.sandbox_id || session.session_id,
+    external_id: externalId,
+    name: session.name || `${project.name} session`,
+    provider: (runtime?.provider as SandboxProviderName | null) || (session.sandbox_provider as SandboxProviderName | null) || 'platinum',
+    base_url: runtime?.base_url || session.sandbox_url || (runtime?.external_id ? `${getPlatformUrl()}/p/${runtime.external_id}/${SANDBOX_PORTS.KORTIX_MASTER}` : ''),
+    status: normalizeSessionStatus(runtime?.status || session.status),
+    metadata: {
+      ...(session.metadata ?? {}),
+      project_id: project.project_id,
+      session_id: session.session_id,
+      project_name: project.name,
+      runtime_status: runtime?.status,
+      error: session.error,
+    },
+    created_at: runtime?.created_at || session.created_at,
+    updated_at: runtime?.updated_at || session.updated_at,
+  };
+}
+
+export async function listProjectSessionSandboxes(): Promise<Array<{
+  project: KortixProject;
+  session: ProjectSession;
+  runtime: ProjectSessionSandbox | null;
+  sandbox: SandboxInfo;
+}>> {
+  const projects = await listProjects();
+  const rows: Array<{
+    project: KortixProject;
+    session: ProjectSession;
+    runtime: ProjectSessionSandbox | null;
+    sandbox: SandboxInfo;
+  }> = [];
+
+  for (const project of projects) {
+    const sessions = await listProjectSessions(project.project_id).catch(() => []);
+    for (const session of sessions) {
+      // Derive runtime info from the session row — do NOT call /start here, or
+      // listing would wake every sandbox across every project. The single-session
+      // open/create paths below use /start; a passive list must not.
+      const runtime = null;
+      rows.push({
+        project,
+        session,
+        runtime,
+        sandbox: projectSessionToSandboxInfo(project, session, runtime),
+      });
+    }
+  }
+
+  return rows.sort((a, b) => {
+    const priority: Record<string, number> = { active: 0, provisioning: 1, stopped: 2, error: 3 };
+    const statusDelta = (priority[a.sandbox.status] ?? 99) - (priority[b.sandbox.status] ?? 99);
+    if (statusDelta !== 0) return statusDelta;
+    return Date.parse(b.sandbox.updated_at) - Date.parse(a.sandbox.updated_at);
+  });
+}
+
+/**
+ * One session by id, in any project the caller may read:
+ * `GET /v1/sessions/:sessionId` (KRTX-2316). `null` when the id names no
+ * session the caller can see (400: not a session id; 404: unknown, hidden or
+ * deleted). Any other failure throws.
+ */
+export async function getSessionById(sessionId: string): Promise<ProjectSession | null> {
+  const response = await backendApi.get<ProjectSession>(`/sessions/${encodeURIComponent(sessionId)}`, {
+    showErrors: false,
+  });
+  if (response.success && response.data) return response.data;
+  if (response.error?.status === 400 || response.error?.status === 404) return null;
+  throw response.error ?? new Error('Session request failed');
+}
+
+/**
+ * The project and session an id names. A session id is read by id, in one
+ * request, however old the session is. Any other id (a provider external id)
+ * falls back to each project's FIRST sessions page, so it resolves only a
+ * session on that page.
+ */
+export async function resolveProjectSessionId(id: string): Promise<{ projectId: string; sessionId: string } | null> {
+  const session = await getSessionById(id);
+  if (session) return { projectId: session.project_id, sessionId: session.session_id };
+  const row = await findProjectSessionSandbox(id);
+  return row ? { projectId: row.project.project_id, sessionId: row.session.session_id } : null;
+}
+
+/**
+ * Every project's FIRST sessions page, scanned: `sandboxId` omitted picks the
+ * most relevant row (active, then provisioning, stopped, error). Resolve a
+ * session id with `resolveProjectSessionId` instead.
+ */
+export async function findProjectSessionSandbox(sandboxId?: string): Promise<{
+  project: KortixProject;
+  session: ProjectSession;
+  runtime: ProjectSessionSandbox | null;
+  sandbox: SandboxInfo;
+} | null> {
+  const rows = await listProjectSessionSandboxes();
+  if (!sandboxId) return rows[0] ?? null;
+  return rows.find((row) =>
+    row.sandbox.sandbox_id === sandboxId ||
+    row.sandbox.external_id === sandboxId ||
+    row.session.session_id === sandboxId ||
+    row.runtime?.external_id === sandboxId
+  ) ?? null;
+}

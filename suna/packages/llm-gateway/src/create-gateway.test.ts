@@ -1,0 +1,351 @@
+import { describe, expect, test } from 'bun:test';
+
+import { createGateway } from './create-gateway';
+import type { GatewayHooks, ModelCatalog, UpstreamDescriptor } from './domain';
+import type { FetchImpl } from './http';
+
+// Piece B: the Anthropic Messages ingress (`gateway.messages`) must run
+// through the SAME pipeline as `gateway.chatCompletions` — these tests drive
+// it end to end (translate in -> pipeline -> translate out) rather than just
+// the pure translation functions covered by ingress/anthropic-messages.test.ts.
+
+const principal = { userId: 'u1', accountId: 'a1', projectId: 'p1', keyId: 'k1' };
+
+const managed: UpstreamDescriptor = {
+  provider: 'openrouter',
+  kind: 'openai-compat',
+  baseUrl: 'https://up.test/v1',
+  apiKey: 'sk',
+  billingMode: 'credits',
+  markup: 1,
+};
+
+function makeHooks(over: Partial<GatewayHooks> = {}): GatewayHooks {
+  return {
+    authenticate: async (token) => (token === 'good' ? principal : null),
+    resolveUpstream: async () => [managed],
+    assertBillingActive: async () => {},
+    recordUsage: async () => {},
+    recordTrace: async () => {},
+    ...over,
+  };
+}
+
+describe('gateway.messages (Anthropic Messages ingress)', () => {
+  test('400 on invalid JSON, in the Anthropic error envelope', async () => {
+    const res = await createGateway(makeHooks()).messages({
+      authorization: 'Bearer good',
+      rawBody: 'not json',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { type: string; error: { type: string } };
+    expect(body.type).toBe('error');
+    expect(body.error.type).toBe('invalid_request_error');
+  });
+
+  test('non-streaming: translates an Anthropic request through the SAME pipeline as chatCompletions and back to an Anthropic message', async () => {
+    let seenBody: Record<string, unknown> = {};
+    const fetchImpl: FetchImpl = async (_url, init) => {
+      seenBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-1',
+          model: 'anthropic/claude-sonnet-4-6',
+          choices: [
+            {
+              index: 0,
+              message: { role: 'assistant', content: 'hi there' },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 2 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+
+    const res = await createGateway(makeHooks(), { fetchImpl }).messages({
+      authorization: 'Bearer good',
+      rawBody: JSON.stringify({
+        model: 'anthropic/claude-sonnet-4-6',
+        system: 'be nice',
+        max_tokens: 32,
+        messages: [{ role: 'user', content: 'hello' }],
+      }),
+    });
+
+    // Pipeline dispatched an OpenAI chat.completions body upstream, not an
+    // Anthropic-shaped one — the translation happens only at the edges.
+    expect(seenBody.messages).toEqual([
+      { role: 'system', content: 'be nice' },
+      { role: 'user', content: 'hello' },
+    ]);
+
+    expect(res.status).toBe(200);
+    // KRTX-3369: the Anthropic envelope keeps the chat answer's model names.
+    expect(res.headers.get('x-kortix-model')).toBe('anthropic/claude-sonnet-4-6');
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      type: 'message',
+      role: 'assistant',
+      model: 'anthropic/claude-sonnet-4-6',
+      content: [{ type: 'text', text: 'hi there' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 10, output_tokens: 2 },
+    });
+  });
+
+  test('streaming: relays an Anthropic SSE event stream translated live from the upstream OpenAI chunks', async () => {
+    const sseBody =
+      `data: ${JSON.stringify({ id: 'c1', model: 'x', choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] })}\n\n` +
+      `data: ${JSON.stringify({ id: 'c1', model: 'x', choices: [{ index: 0, delta: { content: 'yo' }, finish_reason: null }] })}\n\n` +
+      `data: ${JSON.stringify({ id: 'c1', model: 'x', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n` +
+      'data: [DONE]\n\n';
+    const fetchImpl: FetchImpl = async () =>
+      new Response(sseBody, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+
+    const res = await createGateway(makeHooks(), { fetchImpl }).messages({
+      authorization: 'Bearer good',
+      rawBody: JSON.stringify({
+        model: 'x',
+        max_tokens: 8,
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/event-stream');
+    const text = await new Response(res.body).text();
+    const events = text
+      .split('\n\n')
+      .filter(Boolean)
+      .map((block) => block.split('\n')[0].replace('event: ', ''));
+    expect(events).toEqual([
+      'message_start',
+      'content_block_start',
+      'content_block_delta',
+      'content_block_stop',
+      'message_delta',
+      'message_stop',
+    ]);
+  });
+});
+
+describe('gateway.messages — upstream error reasons reach the client', () => {
+  // The provider's own rejection ("Unsupported parameter: …") used to collapse
+  // into "Upstream request failed", so Claude Code users saw no cause.
+  for (const stream of [false, true]) {
+    test(`stream:${stream} carries the provider's error message`, async () => {
+      const fetchImpl: FetchImpl = async () =>
+        new Response(
+          JSON.stringify({ error: { message: 'Unsupported parameter: metadata', type: 'invalid_request_error' } }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        );
+      const res = await createGateway(makeHooks(), { fetchImpl }).messages({
+        authorization: 'Bearer good',
+        rawBody: JSON.stringify({ model: 'm', max_tokens: 5, stream, messages: [{ role: 'user', content: 'hi' }] }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { type: string; error: { type: string; message: string } };
+      expect(body.type).toBe('error');
+      expect(body.error.type).toBe('invalid_request_error');
+      expect(body.error.message).toContain('Unsupported parameter: metadata');
+    });
+  }
+});
+
+// Piece: `gateway.responses` (the OpenAI Responses API ingress Codex CLI
+// >=0.157 requires, since it only supports `wire_api = "responses"`) must
+// run through the SAME auth/routing/dispatch/settlement pipeline as
+// `gateway.chatCompletions` and `gateway.messages` — driven end to end here
+// (translate in -> pipeline -> translate out), mirroring the Anthropic
+// Messages integration tests above.
+describe('gateway.responses (OpenAI Responses API ingress)', () => {
+  test('401 on a missing/invalid token, before any upstream call', async () => {
+    const gateway = createGateway(makeHooks());
+    expect((await gateway.responses({ authorization: undefined, rawBody: '{}' })).status).toBe(401);
+    expect((await gateway.responses({ authorization: 'Bearer bad', rawBody: '{}' })).status).toBe(401);
+  });
+
+  test('400 on invalid JSON, in the Responses API error envelope (no top-level "type")', async () => {
+    const res = await createGateway(makeHooks()).responses({
+      authorization: 'Bearer good',
+      rawBody: 'not json',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { type?: unknown; error: { type: string } };
+    expect(body.type).toBeUndefined();
+    expect(body.error.type).toBe('invalid_request_error');
+  });
+
+  test('non-streaming: translates a Responses request through the SAME pipeline as chatCompletions, settles usage, and translates the response back', async () => {
+    let seenBody: Record<string, unknown> = {};
+    let usageRecorded: unknown = null;
+    const fetchImpl: FetchImpl = async (_url, init) => {
+      seenBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-1',
+          model: 'codex/gpt-6-sol',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'pong' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 2 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+
+    const res = await createGateway(
+      makeHooks({ recordUsage: async (usage) => { usageRecorded = usage; } }),
+      { fetchImpl },
+    ).responses({
+      authorization: 'Bearer good',
+      rawBody: JSON.stringify({ model: 'codex/gpt-6-sol', instructions: 'be terse', input: 'ping', store: false }),
+    });
+
+    // Pipeline dispatched an OpenAI chat.completions body upstream, not a
+    // Responses-shaped one — translation happens only at the edges, and
+    // model resolution (including codex/* pooled-credential selection) runs
+    // exactly as it does for chatCompletions/messages since it only ever
+    // sees this chat.completions-shaped body and the model string.
+    expect(seenBody.messages).toEqual([
+      { role: 'system', content: 'be terse' },
+      { role: 'user', content: 'ping' },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-kortix-requested-model')).toBe('codex/gpt-6-sol');
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      object: 'response',
+      status: 'completed',
+      model: 'codex/gpt-6-sol',
+      output_text: 'pong',
+      usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+    });
+    // Usage settlement (metering) ran identically to every other ingress.
+    expect(usageRecorded).not.toBeNull();
+  });
+
+  test('streaming: relays a Responses SSE event stream translated live from the upstream OpenAI chunks, including a tool call', async () => {
+    const sseBody =
+      `data: ${JSON.stringify({ id: 'c1', model: 'codex/gpt-6-sol', choices: [{ index: 0, delta: { content: 'ok, ' }, finish_reason: null }] })}\n\n` +
+      `data: ${JSON.stringify({ id: 'c1', model: 'codex/gpt-6-sol', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'shell', arguments: '' } }] }, finish_reason: null }] })}\n\n` +
+      `data: ${JSON.stringify({ id: 'c1', model: 'codex/gpt-6-sol', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"cmd":"ls"}' } }] }, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 20, completion_tokens: 4 } })}\n\n` +
+      'data: [DONE]\n\n';
+    const fetchImpl: FetchImpl = async () =>
+      new Response(sseBody, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+
+    const res = await createGateway(makeHooks(), { fetchImpl }).responses({
+      authorization: 'Bearer good',
+      rawBody: JSON.stringify({ model: 'codex/gpt-6-sol', input: 'list files', stream: true, store: false }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/event-stream');
+    const text = await new Response(res.body).text();
+    const events = text
+      .split('\n\n')
+      .filter(Boolean)
+      .map((block) => block.split('\n')[0].replace('event: ', ''));
+    expect(events[0]).toBe('response.created');
+    expect(events).toContain('response.output_text.delta');
+    expect(events).toContain('response.output_item.added');
+    expect(events).toContain('response.function_call_arguments.delta');
+    expect(events[events.length - 1]).toBe('response.completed');
+  });
+
+  test('upstream error reasons reach the client in the Responses API envelope', async () => {
+    const fetchImpl: FetchImpl = async () =>
+      new Response(
+        JSON.stringify({ error: { message: 'Connect Codex to use this model.', type: 'invalid_request_error' } }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      );
+    const res = await createGateway(makeHooks(), { fetchImpl }).responses({
+      authorization: 'Bearer good',
+      rawBody: JSON.stringify({ model: 'codex/gpt-6-sol', input: 'hi' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { type?: unknown; error: { message: string } };
+    expect(body.type).toBeUndefined();
+    expect(body.error.message).toContain('Connect Codex to use this model.');
+  });
+
+  // `resolveUpstream` (whatever credential it returns — pooled, personal, or
+  // project-shared; see apps/api/src/llm-gateway/resolution/resolve-candidates.ts
+  // and its exhaustive priority-order unit tests, unmodified by this ingress)
+  // is invoked with the same principal/model regardless of which ingress
+  // handled the request. This proves `gateway.responses` never substitutes
+  // its own resolution path — it reaches the pipeline's `resolveUpstream`
+  // hook exactly like chatCompletions/messages do.
+  test('model resolution (pooled/personal/project-shared codex credentials) is the same hook chatCompletions uses, unmodified by this ingress', async () => {
+    const seenModels: string[] = [];
+    const codexUpstream: UpstreamDescriptor = {
+      provider: 'openai-codex',
+      kind: 'openai-responses',
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      apiKey: 'pooled-access-token',
+      billingMode: 'credits',
+      markup: 1,
+    };
+    const fetchImpl: FetchImpl = async (url) => {
+      expect(String(url)).toContain('chatgpt.com/backend-api/codex');
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-1',
+          model: 'codex/gpt-6-sol',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+    const gateway = createGateway(
+      makeHooks({
+        resolveUpstream: async (_principal, model) => {
+          seenModels.push(model);
+          return [codexUpstream];
+        },
+      }),
+      { fetchImpl },
+    );
+    const res = await gateway.responses({
+      authorization: 'Bearer good',
+      rawBody: JSON.stringify({ model: 'codex/gpt-6-sol', input: 'hi', store: false }),
+    });
+    expect(res.status).toBe(200);
+    expect(seenModels).toEqual(['codex/gpt-6-sol']);
+  });
+});
+
+describe('gateway.listModels — scope plumbing', () => {
+  function gatewayWithSpy() {
+    const seen: Array<{ managedOnly?: boolean } | undefined> = [];
+    const gateway = createGateway(
+      makeHooks({
+        listModels: async (_principal, opts): Promise<ModelCatalog> => {
+          seen.push(opts);
+          return opts?.managedOnly ? { 'grok-4.6': { name: 'Grok 4.6' } } : { 'a/b': { name: 'B' } };
+        },
+      }),
+    );
+    return { seen, gateway };
+  }
+
+  test.each([
+    [{ managedOnly: true }, { 'grok-4.6': { name: 'Grok 4.6' } }],
+    [undefined, { 'a/b': { name: 'B' } }],
+  ])('passes the options %p straight to the catalog hook', async (opts, models) => {
+    const { seen, gateway } = gatewayWithSpy();
+    const res = await gateway.listModels('Bearer good', opts);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ models });
+    expect(seen).toEqual([opts]);
+  });
+
+  test('the scope never bypasses auth', async () => {
+    const { gateway } = gatewayWithSpy();
+    expect((await gateway.listModels(undefined, { managedOnly: true })).status).toBe(401);
+    expect((await gateway.listModels('Bearer bad', { managedOnly: true })).status).toBe(401);
+  });
+});

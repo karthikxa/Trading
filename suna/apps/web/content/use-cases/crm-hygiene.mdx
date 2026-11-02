@@ -1,0 +1,226 @@
+---
+title: "How we keep our CRM clean"
+description: A nightly agent that dedupes contacts in HubSpot, fills missing fields from enrichment data, flags stale deals, and posts a data-quality summary — with bulk updates held for approval.
+date: "2026-02-18"
+author: team
+tags:
+  - Sales
+  - Case Study
+  - RevOps
+template: crm-hygiene
+---
+
+A CRM decays on its own. Duplicate contacts pile up from form fills and imports,
+records come in with missing fields, and deals sit untouched long after they've
+gone cold. Left alone, the pipeline reports drift away from reality and the sales
+team stops trusting the numbers.
+
+We keep our HubSpot clean with an agent that runs every night on Kortix. It
+dedupes contacts, fills missing fields from enrichment data, flags stale deals,
+and posts a short data-quality summary. Bulk field updates over a threshold wait
+for a person to approve.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="CRM">HubSpot</Fact>
+  <Fact label="Connected systems">HubSpot · Enrichment data · Slack</Fact>
+  <Fact label="Mode">Nightly cron · human-gated</Fact>
+</KeyFacts>
+
+## The problem
+
+CRM hygiene is the work nobody schedules. Duplicate contacts split a company's
+history across two records, so the account owner sees half the story. Missing
+job titles, industries, and company sizes make segmentation unreliable. Deals
+that haven't moved in weeks still count toward the forecast.
+
+The usual fixes don't hold. A one-time cleanup helps until the next import
+undoes it. A paid dedupe add-on handles duplicates but not enrichment or stale
+deals. Asking reps to keep their own records tidy competes with selling and
+loses. The maintenance needs to run on its own, every night, without a person
+babysitting it.
+
+## What we built
+
+A cron trigger runs an agent against HubSpot every night. Each run spawns its own
+isolated session with scoped access to HubSpot and our enrichment provider. It
+finds and merges duplicate contacts, fills missing fields from enrichment,
+flags deals that have gone stale, and posts a summary of what it changed. Any
+bulk field update above a set threshold stops for a person before it writes.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the hygiene skill and the nightly trigger, and
+opens a change request for you to review. Prefer clicks? Choose **Use this
+template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a nightly CRM hygiene agent in this project.
+
+1. Create the agent agents/crm-hygiene.md. Its job is to keep HubSpot clean. It may use the HubSpot, Clearbit and Slack connectors.
+
+2. Create the skill skills/hubspot-hygiene/SKILL.md with these rules:
+   - Two contacts are duplicates when they share an email address, or have the same full name at the same company. Merge each pair into the older record.
+   - Required fields are job title, industry and company size. Fill gaps from Clearbit. Never overwrite a field that already has a value.
+   - A deal is stale after 30 days with no activity. Flag it. Never close it.
+   - A field update that changes more than 50 records needs my approval in Slack before it writes.
+   - End every run with one summary in #revops: duplicates merged, fields filled, deals flagged, and anything waiting for approval.
+
+3. Add a cron trigger nightly-crm-hygiene to kortix.yaml. It runs the crm-hygiene agent every night at 02:00 with the prompt "Load the hubspot-hygiene skill and run one complete CRM hygiene pass."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Open **Connectors** in your project and connect your CRM, an enrichment
+provider and Slack. Credentials are brokered server-side and never enter the
+agent's machine.
+
+<ToolList>
+  <ToolNeed name="HubSpot" domain="hubspot.com" tag="Required" alternatives={[['Salesforce', 'salesforce.com'], ['Pipedrive', 'pipedrive.com'], ['Attio', 'attio.com']]}>
+    Reads contacts and deals, merges duplicates, updates fields.
+  </ToolNeed>
+  <ToolNeed name="Clearbit" domain="clearbit.com" tag="Optional" alternatives={[['Apollo', 'apollo.io']]}>
+    Fills missing job titles, industries and company sizes.
+  </ToolNeed>
+  <ToolNeed name="Slack" domain="slack.com" tag="Required" alternatives={[['Microsoft Teams', 'teams.microsoft.com'], ['Gmail', 'gmail.com']]}>
+    Posts the nightly summary and the approval requests.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **crm-hygiene** agent
+and send this prompt. Check what it merged and filled before you let the
+schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one CRM hygiene pass on HubSpot.
+
+1. Find duplicate contacts (same email, or same name at the same company) and merge each pair into the older record.
+2. Fill missing job title, industry and company size from enrichment data. Never overwrite a field that already has a value.
+3. Flag every open deal with no activity in the last 30 days as stale.
+4. If one field update would change more than 50 records, stop and ask me before you write it.
+5. Post a summary to #revops: duplicates merged, fields filled, deals flagged, and anything waiting for approval.`}
+/>
+
+</Step>
+<Step title="Let the nightly schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every night at 02:00, each run in a new session on its own cloud computer.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: nightly-crm-hygiene
+    name: Nightly CRM hygiene
+    on:
+      cron: "0 0 2 * * *"
+    run:
+      agent: crm-hygiene
+      prompt: Load the hubspot-hygiene skill and run one complete CRM hygiene pass.`}
+/>
+
+</Step>
+<Step title="Hold bulk updates for approval">
+
+Merges and single-field fills run on their own. A field update over the
+threshold posts an approval request to Slack and waits. An automated session
+waits at most 30 minutes for a person, then stops without writing, and the
+next night's run asks again.
+
+</Step>
+<Step title="Read the summary">
+
+Each run ends with one message in the channel. This is what a run looks like
+in the session:
+
+<ExampleRun
+  title="Nightly CRM hygiene · 02:00"
+  message="Load the hubspot-hygiene skill and run one complete CRM hygiene pass."
+  worked="Worked for 3m 12s"
+  tools={[
+    'hubspot · search contacts',
+    'hubspot · merge contacts × 14',
+    'clearbit · enrich company × 38',
+    'hubspot · update contact × 38',
+    'hubspot · search deals',
+    'slack · post message → #revops',
+  ]}
+  note="Illustrative example. Your counts depend on your CRM."
+>
+  Merged **14** duplicate contacts and filled **38** missing fields. Flagged
+  **6** deals with no activity in 30 days. One update is waiting for
+  approval: setting **Lifecycle stage = Customer** on 212 contacts.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  Run the cleanup on a **cron trigger**, give the agent scoped **connectors** into
+  HubSpot and enrichment, encode the hygiene rules as **skills** and **memory**,
+  and gate bulk changes behind a human. Each night's run then cleans and reports on
+  its own.
+</Callout>
+
+## Make it do more
+
+Once the nightly run works, paste any of these into the same session.
+
+<CopyBlock
+  title="Route stale deals to their owners"
+  code="For each deal you flag as stale, send its owner a Slack DM with the deal name, the last activity date and one suggested next step."
+/>
+
+<CopyBlock
+  title="Weekly data-quality trend"
+  code="Every Monday, post a chart of duplicates merged, fields filled and deals flagged over the last 8 weeks to #revops."
+/>
+
+<CopyBlock
+  title="Catch bad imports early"
+  code="After any import of more than 100 contacts, run the dedupe and enrichment steps on the new records only, and tell me what changed."
+/>
+
+## Guardrails
+
+Giving an agent write access to the CRM is a data-integrity question. The controls
+on Kortix:
+
+- **Isolation.** Each run executes in its own isolated sandbox, and only the
+  HubSpot and enrichment changes it's explicitly allowed to make are written back out.
+- **Scoped secrets.** The HubSpot and enrichment credentials are encrypted in the
+  secrets manager and injected into the sandbox at runtime, scoped to the agents you grant them to.
+- **Human approval gates.** Bulk field updates over the threshold require a person
+  to approve before they write.
+- **Everything is code.** The dedupe rules, required fields, and stale-deal
+  definition are files in the repo — versioned and changed through a reviewed
+  **change request** rather than a dashboard setting.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Nightly" label="Cleanup runs without anyone scheduling it" />
+  <Stat value="3 passes" label="Dedupe, enrichment, and stale-deal flags in one run" />
+  <Stat value="Threshold-gated" label="Large bulk changes reviewed before they write" />
+</StatGrid>
+
+The pipeline reports stay closer to reality because the records behind them are
+maintained every night instead of in occasional cleanups. When a change is large
+enough to matter, a person sees it first, and the RevOps channel has a running
+record of what changed and when.

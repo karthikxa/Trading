@@ -1,0 +1,613 @@
+/**
+ * IAM approval control-plane: project access-requests, the connector
+ * approval inbox/resolve routes, per-agent secret/connector scoping, the
+ * operator-only Enterprise access, and self-serve SSO metadata import. Maps to spec §5 (IAM-27..IAM-34).
+ *
+ * These live under /v1/projects/:id/* and /v1/accounts/:id/iam/* but are
+ * grouped here as the "approval control plane" — the human-in-the-loop
+ * surface an agent's write/destructive tool calls gate on, plus its adjacent
+ * per-agent scoping and the Enterprise access gate. Per PR #4117 (a prior 402
+ * regression on the per-session audit poll): the project-level approval
+ * reads below (GET /approvals, /approvals/needs-input, POST /approvals/:id)
+ * gate on plain IAM capability (project.members.manage / project.read),
+ * NEVER a billing tier — they must not start 402ing.
+ */
+import { flow } from '../core/flow';
+import { deepStrictEqual } from 'node:assert/strict';
+import { enableEnterpriseDemo } from '../fixtures/enterprise-access';
+
+const UNKNOWN_UUID = '00000000-0000-4000-a000-000000000000';
+
+// ─── Access requests: request → review → approve/reject ────────────────────
+
+flow(
+  'IAM-27',
+  {
+    domain: 'iam',
+    routes: [
+      'POST /v1/projects/:projectId/access-requests',
+      'GET /v1/projects/:projectId/access-requests',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const project = await team.project();
+
+    await ctx.step(
+      'an outsider (no account membership) requests access → 201 created',
+      async () => {
+        const r = await ctx.client
+          .as(ctx.P.NONMEMBER)
+          .post(
+            '/v1/projects/:projectId/access-requests',
+            { message: 'please add me' },
+            { params: { projectId: project.id } },
+          );
+        r.status(201).body().has('$.status', 'created').exists('$.request.request_id');
+      },
+    );
+
+    await ctx.step('re-requesting while pending is idempotent → 200 pending', async () => {
+      const r = await ctx.client
+        .as(ctx.P.NONMEMBER)
+        .post('/v1/projects/:projectId/access-requests', {}, { params: { projectId: project.id } });
+      r.status(200).body().has('$.status', 'pending');
+    });
+
+    await ctx.step('one requester is capped at 10 new requests an hour → 429 on the 11th', async () => {
+      // The cap is replica-local, like every limiter in middleware/rate-limit.ts:
+      // a fleet of N API replicas allows 10 × N. Only the single-replica local
+      // profile can assert the 11th; a deployed target asserts the first 10.
+      const exact = ctx.env.target === 'local';
+      const spammer = await ctx.fixtures.user({ label: 'IAM-27-SPAM' });
+      for (let i = 0; i < 11; i++) {
+        const p = await team.project();
+        const r = await ctx.client
+          .as(spammer)
+          .post('/v1/projects/:projectId/access-requests', {}, { params: { projectId: p.id } });
+        if (i < 10) r.status(201);
+        else if (exact) r.status(429);
+        else r.status([201, 429]);
+      }
+    });
+
+    await ctx.step('a project manager lists pending access requests → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .get('/v1/projects/:projectId/access-requests', { params: { projectId: project.id } });
+      r.status(200).body().exists('$.requests').exists('$.requests[0].request_id');
+    });
+
+    await ctx.step(
+      'a plain member with no project grant cannot review requests → 403',
+      async () => {
+        const bare = await team.addMember('member');
+        const r = await ctx.client
+          .as(bare)
+          .get('/v1/projects/:projectId/access-requests', { params: { projectId: project.id } });
+        r.status(403);
+      },
+    );
+
+    await ctx.step('POST to an unknown project → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access-requests',
+          {},
+          { params: { projectId: UNKNOWN_UUID } },
+        );
+      r.status(404);
+    });
+  },
+);
+
+flow(
+  'IAM-28',
+  {
+    domain: 'iam',
+    routes: [
+      'POST /v1/projects/:projectId/access-requests/:requestId/approve',
+      'POST /v1/projects/:projectId/access-requests/:requestId/reject',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const project = await team.project();
+    const requesterA = await team.addMember('member');
+    const requesterB = await team.addMember('member');
+    let approveRequestId = '';
+    let rejectRequestId = '';
+
+    await ctx.step('seed two pending access requests', async () => {
+      const a = await ctx.client
+        .as(requesterA)
+        .post('/v1/projects/:projectId/access-requests', {}, { params: { projectId: project.id } });
+      a.status(201);
+      approveRequestId = a.json<any>().request.request_id;
+
+      const b = await ctx.client
+        .as(requesterB)
+        .post('/v1/projects/:projectId/access-requests', {}, { params: { projectId: project.id } });
+      b.status(201);
+      rejectRequestId = b.json<any>().request.request_id;
+    });
+
+    await ctx.step(
+      'OWNER approves with an explicit role → 200, grants the project role',
+      async () => {
+        const r = await ctx.client
+          .as(ctx.P.OWNER)
+          .post(
+            '/v1/projects/:projectId/access-requests/:requestId/approve',
+            { role: 'manager' },
+            { params: { projectId: project.id, requestId: approveRequestId } },
+          );
+        r.status(200)
+          .body()
+          .has('$.request.status', 'approved')
+          .has('$.member.project_role', 'manager');
+      },
+    );
+
+    await ctx.step('approving the same request again → 409 already reviewed', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access-requests/:requestId/approve',
+          {},
+          { params: { projectId: project.id, requestId: approveRequestId } },
+        );
+      r.status(409);
+    });
+
+    await ctx.step('invalid role → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access-requests/:requestId/approve',
+          { role: 'wizard' },
+          { params: { projectId: project.id, requestId: rejectRequestId } },
+        );
+      r.status(400);
+    });
+
+    await ctx.step('OWNER rejects the second request → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access-requests/:requestId/reject',
+          {},
+          { params: { projectId: project.id, requestId: rejectRequestId } },
+        );
+      r.status(200).body().has('$.request.status', 'rejected');
+    });
+
+    await ctx.step('rejecting an already-resolved request → 409', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access-requests/:requestId/reject',
+          {},
+          { params: { projectId: project.id, requestId: rejectRequestId } },
+        );
+      r.status(409);
+    });
+
+    await ctx.step('unknown request id → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/access-requests/:requestId/approve',
+          {},
+          { params: { projectId: project.id, requestId: UNKNOWN_UUID } },
+        );
+      r.status(404);
+    });
+
+    await ctx.step(
+      'a floor project member (no members.manage) cannot approve → 403',
+      async () => {
+        const editorOnly = await team.addMember('member');
+        await team.grantProjectRole(project.id, editorOnly.userId!, 'member');
+        const requesterC = await team.addMember('member');
+        const seeded = await ctx.client
+          .as(requesterC)
+          .post(
+            '/v1/projects/:projectId/access-requests',
+            {},
+            { params: { projectId: project.id } },
+          );
+        seeded.status(201);
+
+        const r = await ctx.client
+          .as(editorOnly)
+          .post(
+            '/v1/projects/:projectId/access-requests/:requestId/approve',
+            {},
+            { params: { projectId: project.id, requestId: seeded.json<any>().request.request_id } },
+          );
+        r.status(403);
+      },
+    );
+  },
+);
+
+// ─── Approval inbox (project-manager oversight) + per-session indicator ────
+
+flow(
+  'IAM-29',
+  {
+    domain: 'iam',
+    routes: [
+      'GET /v1/projects/:projectId/approvals',
+      'GET /v1/projects/:projectId/approvals/needs-input',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const project = await team.project();
+    const viewer = await team.addMember('member');
+    await team.grantProjectRole(project.id, viewer.userId!, 'user');
+
+    await ctx.step('a project manager reads the (empty) approval inbox → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .get('/v1/projects/:projectId/approvals', { params: { projectId: project.id } });
+      r.status(200).body().has('$.count', 0).exists('$.approvals');
+    });
+
+    await ctx.step('out-of-range limit → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .get('/v1/projects/:projectId/approvals?limit=0', { params: { projectId: project.id } });
+      r.status(400);
+    });
+
+    await ctx.step(
+      'a plain member with no project grant cannot read the manager-only inbox → 403',
+      async () => {
+        const bare = await team.addMember('member');
+        const r = await ctx.client
+          .as(bare)
+          .get('/v1/projects/:projectId/approvals', { params: { projectId: project.id } });
+        r.status(403);
+        deepStrictEqual(r.json(), {
+          error: true,
+          message: 'You do not have access to this project',
+          status: 403,
+          code: 'no_project_membership',
+          action: 'project.read',
+        });
+      },
+    );
+
+    await ctx.step('an unknown project returns the project-param 404 envelope', async () => {
+      const r = await ctx.client.as(ctx.P.OWNER).get('/v1/projects/:projectId/approvals', {
+        params: { projectId: UNKNOWN_UUID },
+      });
+      r.status(404);
+      deepStrictEqual(r.json(), { error: 'Not found' });
+    });
+
+    await ctx.step(
+      'a granted (non-manager) project member sees their own needs-input → 200',
+      async () => {
+        const r = await ctx.client.as(viewer).get('/v1/projects/:projectId/approvals/needs-input', {
+          params: { projectId: project.id },
+        });
+        r.status(200);
+        deepStrictEqual(r.json(), { total: 0, sessions: {} });
+      },
+    );
+
+    await ctx.step('a project manager sees needs-input project-wide → 200', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .get('/v1/projects/:projectId/approvals/needs-input', {
+          params: { projectId: project.id },
+        });
+      r.status(200).body().has('$.total', 0);
+    });
+
+    await ctx.step('a non-project-member has no visibility into needs-input → 403', async () => {
+      const r = await ctx.client
+        .as(ctx.P.NONMEMBER)
+        .get('/v1/projects/:projectId/approvals/needs-input', {
+          params: { projectId: project.id },
+        });
+      r.status(403);
+    });
+  },
+);
+
+flow(
+  'IAM-30',
+  {
+    domain: 'iam',
+    routes: ['POST /v1/projects/:projectId/approvals/:executionId'],
+  },
+  async (ctx) => {
+    // The happy-path resolve (approve/deny a REAL pending_approval execution)
+    // needs a live governed connector call from an agent session — not
+    // reproducible black-box here (same constraint as SESS-11's session
+    // sub-routes). This flow pins the validation + authz boundary, which is
+    // exactly what a policy or gate regression breaks first.
+    const team = await ctx.fixtures.team();
+    const project = await team.project();
+
+    await ctx.step('malformed execution id → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/approvals/:executionId',
+          { decision: 'approve' },
+          { params: { projectId: project.id, executionId: 'not-a-uuid' } },
+        );
+      r.status(400);
+    });
+
+    await ctx.step('invalid decision → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/approvals/:executionId',
+          { decision: 'maybe' },
+          { params: { projectId: project.id, executionId: UNKNOWN_UUID } },
+        );
+      r.status(400);
+    });
+
+    await ctx.step('unknown (well-formed) execution id → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/projects/:projectId/approvals/:executionId',
+          { decision: 'approve' },
+          { params: { projectId: project.id, executionId: UNKNOWN_UUID } },
+        );
+      r.status(404);
+    });
+
+    await ctx.step(
+      'a non-project-member cannot resolve anything on this project → 403',
+      async () => {
+        const r = await ctx.client
+          .as(ctx.P.NONMEMBER)
+          .post(
+            '/v1/projects/:projectId/approvals/:executionId',
+            { decision: 'approve' },
+            { params: { projectId: project.id, executionId: UNKNOWN_UUID } },
+          );
+        r.status(403);
+      },
+    );
+  },
+);
+
+// ─── Per-agent secret/connector scope (inheritance-pyramid first step) ─────
+
+flow(
+  'IAM-31',
+  {
+    domain: 'iam',
+    routes: ['PUT /v1/projects/:projectId/agents/:agentName/scope'],
+  },
+  async (ctx) => {
+    // The happy path (scoping a REAL declared agents: entry) needs a
+    // project whose kortix.yaml already declares an agent — out of reach for
+    // a bare provisioned repo here. This flow pins the manifest-edit
+    // validation + manager-only gate, which is what regresses first.
+    const team = await ctx.fixtures.team();
+    const project = await team.project();
+
+    await ctx.step('empty body (neither env nor connectors) → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .put(
+          '/v1/projects/:projectId/agents/:agentName/scope',
+          {},
+          { params: { projectId: project.id, agentName: 'nope' } },
+        );
+      r.status(400);
+    });
+
+    await ctx.step('malformed grant set → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .put(
+          '/v1/projects/:projectId/agents/:agentName/scope',
+          { env: 123 },
+          { params: { projectId: project.id, agentName: 'nope' } },
+        );
+      r.status(400);
+    });
+
+    await ctx.step('unknown agent name → 404', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .put(
+          '/v1/projects/:projectId/agents/:agentName/scope',
+          { env: [] },
+          { params: { projectId: project.id, agentName: 'does-not-exist' } },
+        );
+      r.status(404);
+    });
+
+    await ctx.step('a member with no project grant cannot scope agents → 403', async () => {
+      const bare = await team.addMember('member');
+      const r = await ctx.client
+        .as(bare)
+        .put(
+          '/v1/projects/:projectId/agents/:agentName/scope',
+          { env: [] },
+          { params: { projectId: project.id, agentName: 'does-not-exist' } },
+        );
+      r.status(403);
+    });
+  },
+);
+
+// ─── Enterprise access: a feature layer ──────────────────────────────────────
+// Enterprise features come from a license contract or the Enterprise demo,
+// which an owner or admin turns on itself (2026-10-15, plans-and-access.md).
+
+flow(
+  'IAM-32',
+  {
+    domain: 'iam',
+    routes: [
+      'GET /v1/accounts/:accountId/iam/enterprise-demo',
+      'PUT /v1/accounts/:accountId/iam/enterprise-demo',
+      'POST /v1/accounts/:accountId/iam/sso/provider/from-metadata',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const member = await team.addMember('member');
+    const sso = () =>
+      ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/accounts/:accountId/iam/sso/provider/from-metadata',
+          { name: 'Acme', primary_domain: 'acme-e2e-iam32.com', metadata_xml: '<x/>' },
+          { params: { accountId: team.id } },
+        );
+
+    await ctx.step('a fresh account reads Enterprise off, and an SSO write is a clean 402 upsell', async () => {
+      const g = await ctx.client.as(ctx.P.OWNER).get('/v1/accounts/:accountId/iam/enterprise-demo', { params: { accountId: team.id } });
+      g.status(200).body().has('$.enabled', false).has('$.state', 'off');
+      (await sso()).status(402).body().has('$.code', 'entitlement_required').has('$.entitlement', 'sso');
+    });
+
+    await ctx.step('a member without billing.write cannot turn the Enterprise demo on → 403', async () => {
+      const r = await ctx.client
+        .as(member)
+        .put('/v1/accounts/:accountId/iam/enterprise-demo', { enabled: true }, { params: { accountId: team.id } });
+      r.status(403);
+    });
+
+    await ctx.step('the OWNER turns the Enterprise demo on itself → state demo, and the same SSO write is no longer a 402', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .put('/v1/accounts/:accountId/iam/enterprise-demo', { enabled: true }, { params: { accountId: team.id } });
+      r.status(200).body().has('$.enabled', true).has('$.state', 'demo');
+      const after = await sso();
+      if (after.statusCode === 402) throw new Error(`still gated after the Enterprise demo: ${after.text()}`);
+    });
+
+    await ctx.step('turning it off gates SSO again', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .put('/v1/accounts/:accountId/iam/enterprise-demo', { enabled: false }, { params: { accountId: team.id } });
+      r.status(200).body().has('$.enabled', false).has('$.state', 'off');
+      (await sso()).status(402);
+    });
+  },
+);
+
+// ─── Self-serve SSO metadata import ─────────────────────────────────────────
+
+flow(
+  'IAM-33',
+  {
+    domain: 'iam',
+    routes: ['POST /v1/accounts/:accountId/iam/sso/provider/from-metadata'],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+
+    await ctx.step(
+      'a non-Enterprise account is denied with a clean 402 upsell, not a 500',
+      async () => {
+        const r = await ctx.client
+          .as(ctx.P.OWNER)
+          .post(
+            '/v1/accounts/:accountId/iam/sso/provider/from-metadata',
+            { name: 'Acme', primary_domain: 'acme-e2e-iam33.com', metadata_xml: '<x/>' },
+            { params: { accountId: team.id } },
+          );
+        r.status(402).body().has('$.code', 'entitlement_required').has('$.entitlement', 'sso');
+      },
+    );
+
+    await ctx.step(
+      'the Enterprise demo is turned on, which unlocks the surface',
+      async () => {
+        await enableEnterpriseDemo(ctx, team.id);
+      },
+    );
+
+    await ctx.step('missing name → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/accounts/:accountId/iam/sso/provider/from-metadata',
+          { primary_domain: 'acme-e2e-iam33.com', metadata_xml: '<x/>' },
+          { params: { accountId: team.id } },
+        );
+      r.status(400);
+    });
+
+    await ctx.step('invalid domain → 400', async () => {
+      const r = await ctx.client
+        .as(ctx.P.OWNER)
+        .post(
+          '/v1/accounts/:accountId/iam/sso/provider/from-metadata',
+          { name: 'Acme', primary_domain: 'not a domain', metadata_xml: '<x/>' },
+          { params: { accountId: team.id } },
+        );
+      r.status(400);
+    });
+
+    await ctx.step(
+      "neither metadata_xml nor metadata_url → 400 (or 501 when SSO isn't configured)",
+      async () => {
+        const r = await ctx.client
+          .as(ctx.P.OWNER)
+          .post(
+            '/v1/accounts/:accountId/iam/sso/provider/from-metadata',
+            { name: 'Acme', primary_domain: 'acme-e2e-iam33.com' },
+            { params: { accountId: team.id } },
+          );
+        // 400 = Supabase auth admin API reachable, "provide exactly one" body
+        // validation; 501 = this deployment has no SUPABASE_SERVICE_ROLE_KEY.
+        r.status([400, 501]);
+      },
+    );
+
+    await ctx.step('NONMEMBER → 403', async () => {
+      const r = await ctx.client
+        .as(ctx.P.NONMEMBER)
+        .post(
+          '/v1/accounts/:accountId/iam/sso/provider/from-metadata',
+          { name: 'Acme', primary_domain: 'acme-e2e-iam33.com', metadata_xml: '<x/>' },
+          { params: { accountId: team.id } },
+        );
+      r.status(403);
+    });
+  },
+);
+
+flow(
+  'IAM-34',
+  {
+    domain: 'iam',
+    routes: ['GET /v1/approval-links/:token'],
+  },
+  async (ctx) => {
+    await ctx.step('ANON cannot inspect an approval link → 401', async () => {
+      const r = await ctx.client.as(ctx.P.ANON).get('/v1/approval-links/:token', {
+        params: { token: 'invalid' },
+      });
+      r.status(401);
+    });
+
+    await ctx.step('an authenticated invalid token reveals no resource → 404', async () => {
+      const r = await ctx.client.as(ctx.P.OWNER).get('/v1/approval-links/:token', {
+        params: { token: 'invalid' },
+      });
+      r.status(404).body().has('$.error', 'Invalid or unknown link');
+    });
+  },
+);

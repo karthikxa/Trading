@@ -1,0 +1,485 @@
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const root = resolve(import.meta.dirname, '../..');
+
+function read(relativePath: string): string {
+  return readFileSync(resolve(root, relativePath), 'utf8');
+}
+
+describe('web ECS migration', () => {
+  it('maps --service web to the dedicated cluster, container, and secret', () => {
+    const output = execFileSync(
+      'bash',
+      [
+        '-c',
+        'source infra/scripts/ecs-deploy.sh; SERVICE_PREFIX=kortix-dev; SECRET_NAME=kortix-dev-env; configure_service_coordinates web; printf "%s|%s|%s|%s|%s" "$CLUSTER" "$SERVICE" "$CONTAINER" "$SECRET_NAME" "$VERSION_ENV_NAME"',
+      ],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, KORTIX_ECS_DEPLOY_LIB: '1' },
+      },
+    );
+
+    expect(output).toBe(
+      'kortix-dev-web|kortix-dev-web|web|kortix-dev-web-env|KORTIX_PUBLIC_VERSION',
+    );
+  });
+
+  it('deploys the immutable frontend image and encrypted Dev profile to ECS', () => {
+    const workflow = read('.github/workflows/deploy-dev.yml');
+    const webDeployStart = workflow.indexOf('  deploy-web-ecs:');
+    const webVerifyStart = workflow.indexOf('  verify-web-dev:');
+    const webDeploy = workflow.slice(webDeployStart, webVerifyStart);
+
+    expect(webDeployStart).toBeGreaterThan(-1);
+    expect(webVerifyStart).toBeGreaterThan(webDeployStart);
+    expect(workflow).toContain('NEXT_PUBLIC_KORTIX_COMMIT: ${{ github.sha }}');
+    expect(webDeploy).toContain('WEB_DOTENV_PRIVATE_KEY_DEV');
+    expect(webDeploy).toContain('bash infra/scripts/sync-web-env.sh dev');
+    expect(webDeploy).toContain('--service web');
+    expect(webDeploy).toContain('${{ needs.build-frontend.outputs.image }}');
+    expect(workflow).toContain('base=https://dev.kortix.com');
+    expect(workflow).toContain('  publish-web-ecs-dns:');
+    const webDnsStart = workflow.indexOf('  publish-web-ecs-dns:');
+    const webDns = workflow.slice(webDnsStart, webVerifyStart);
+    expect(webDns).toContain('if: ${{ always()');
+    expect(webDns).toContain("needs.deploy-web-ecs.result == 'success'");
+    const webVerify = workflow.slice(
+      webVerifyStart,
+      workflow.indexOf('  promote-dev-channel-frontend:'),
+    );
+    expect(webVerify).toContain('if: ${{ always()');
+    expect(webVerify).toContain("needs.publish-web-ecs-dns.result == 'success'");
+    expect(workflow).toContain('environment: dev');
+    expect(workflow).toContain('alb-name: kortix-dev-use2-web-alb');
+    expect(workflow).toContain('./.aws-env/.github/actions/publish-web-dns');
+    expect(workflow).not.toContain('detach-web-dev-vercel-domain');
+    expect(workflow).not.toContain('detach-vercel-web-domain.mjs');
+    expect(workflow).toContain('consecutive_matches=0');
+    expect(workflow).toContain('/^x-vercel-/');
+    expect(workflow).toContain('kortix:${WEB_PROTECTION_PASSWORD}x');
+    expect(workflow).toContain('cookie_only=');
+    expect(workflow).toContain('[ "$vercel_headers" = 0 ]');
+    expect(workflow).not.toContain('dev-fe-ecs.kortix.com');
+    expect(workflow).toContain('gateway: ${{ steps.outputs.outputs.gateway }}');
+    expect(workflow).toContain('cli: ${{ steps.outputs.outputs.cli }}');
+    expect(workflow).toContain('gateway=false');
+    expect(workflow).toContain('cli=false');
+    expect(workflow).toContain('Vercel is disabled for dev');
+  });
+
+  it('defines the Dev web service and its origin record', () => {
+    const terraform = read('infra/terraform/environments/dev-web-us-east-2/main.tf');
+
+    expect(terraform).toContain('data "aws_secretsmanager_secret" "web_env"');
+    expect(terraform).toContain('name = "kortix-dev-use2-web-env"');
+    expect(terraform).toContain('module "web"');
+    expect(terraform).toContain('container_name         = "web"');
+    expect(terraform).toContain('health_check_path      = "/api/health"');
+    expect(terraform).toContain('enable_postgres_egress = false');
+    expect(terraform).toContain('name    = "dev-use2"');
+    // Deploy Dev's publish-web-ecs-dns job owns dev.kortix.com, not Terraform.
+    expect(terraform).not.toContain('name    = "dev"');
+    expect(terraform).not.toContain('dev-fe-ecs');
+  });
+
+  it('defines isolated staging and production services with environment-specific capacity', () => {
+    const staging = read('infra/terraform/environments/staging-web-eu-west-2/main.tf');
+    const prod = read('infra/terraform/environments/prod-web/main.tf');
+    const prodVariables = read('infra/terraform/environments/prod-web/variables.tf');
+
+    expect(staging).toContain('name = "kortix-staging-euw2-web"');
+    expect(staging).toContain('name = "kortix-staging-euw2-web-env"');
+    expect(staging).toContain('domain_name               = "staging-fe-ecs.kortix.com"');
+    expect(staging).toContain('min_capacity     = 2');
+    expect(staging).toContain('max_capacity     = 12');
+    // Deploy Staging owns staging-fe-ecs.kortix.com; Vercel owns staging.kortix.com.
+    expect(staging).toContain('name    = "staging-fe-ecs-euw2"');
+    expect(staging).not.toMatch(/name\s*=\s*"staging(-fe-ecs)?"/);
+
+    expect(prod).toContain('name = "kortix-prod-web"');
+    expect(prod).toContain('name = "kortix-prod-web-env"');
+    expect(prod).toContain('prod-fe-ecs');
+    expect(prod).toContain('min_capacity     = 2');
+    expect(prod).toContain('max_capacity     = 12');
+    expect(prod).toContain('use_fargate_spot = false');
+    expect(prodVariables).toContain('never manages kortix.com');
+  });
+
+  it('runs staging on the same capacity type and egress topology as prod', () => {
+    // Spot reclaims killed in-flight requests and agent turns during the
+    // v0.13.57 release gate. Staging is the release candidate: no Spot.
+    const api = read('infra/terraform/environments/staging-eu-west-2/main.tf');
+    const prodApi = read('infra/terraform/environments/prod/main.tf');
+    for (const root of [api, prodApi]) {
+      expect(root).not.toMatch(/use_fargate_spot\s*=\s*true/);
+      expect(root).toMatch(/single_nat_gateway\s*=\s*false/);
+    }
+    expect(api.match(/use_fargate_spot\s*=\s*false/g)).toHaveLength(2); // API + gateway
+    const web = read('infra/terraform/environments/staging-web-eu-west-2/main.tf');
+    expect(web).toContain('task_cpu         = 1024');
+    expect(web).toContain('min_capacity     = 2');
+    expect(web).not.toMatch(/use_fargate_spot\s*=\s*true/);
+  });
+
+  it('deploys staging and production ECS frontends without replacing canonical Vercel hosts', () => {
+    const staging = read('.github/workflows/deploy-staging.yml');
+    const prod = read('.github/workflows/deploy-prod.yml');
+    const rollback = read('.github/workflows/rollback-prod.yml');
+
+    expect(staging).toContain('  deploy-web-ecs:');
+    expect(staging).toContain('bash infra/scripts/sync-web-env.sh staging');
+    expect(staging).toContain('kortix/kortix-frontend:staging-${SHA8}');
+    expect(staging).toContain('./.aws-env/.github/actions/publish-web-dns');
+    expect(staging).toContain('environment: staging');
+    expect(staging).toContain('https://${ECS_WEB_HOST}');
+    expect(staging).toContain('Deploy staging web to Vercel');
+
+    expect(prod).toContain('  deploy-web-ecs:');
+    expect(prod).toContain('bash infra/scripts/sync-web-env.sh prod');
+    expect(prod).toContain('./.aws-env/.github/actions/publish-web-dns');
+    expect(prod).toContain('environment: prod');
+    // The three jobs share one action; it owns the sync call.
+    expect(read('.github/actions/publish-web-dns/action.yml')).toContain('node infra/scripts/sync-web-dns.mjs "$TARGET_ENV" "$alb"');
+    expect(prod).toContain('https://prod-fe-ecs.kortix.com');
+    expect(prod).toContain('https://kortix.com/api/runtime-config');
+    expect(rollback).toContain('kortix/kortix-frontend:${TARGET}');
+    expect(rollback).toContain('--service web');
+    expect(rollback).toContain('kortix/kortix-api:${TARGET}');
+    expect(rollback).toContain('kortix/kortix-gateway:${TARGET}');
+    expect(rollback).toContain('--service gateway');
+    expect(rollback).not.toContain('infra/k8s');
+    expect(rollback).not.toContain('Argo CD');
+  });
+
+  it('contains no active Kubernetes deployment paths', () => {
+    for (const file of [
+      '.github/workflows/deploy-dev.yml',
+      '.github/workflows/deploy-staging.yml',
+      '.github/workflows/deploy-prod.yml',
+      '.github/workflows/deploy-preview.yml',
+      '.github/workflows/promote.yml',
+      '.github/workflows/rollback-prod.yml',
+    ]) {
+      const workflow = read(file);
+      expect(workflow).not.toContain('infra/k8s');
+      expect(workflow).not.toContain('Argo CD');
+      expect(workflow).not.toContain('ops.kortix.com');
+    }
+  });
+
+  it('builds preview images without credentials and deploys one full self-host sandbox', () => {
+    const workflow = read('.github/workflows/deploy-preview.yml');
+    const buildJobs = workflow.slice(
+      workflow.indexOf('  build-api:'),
+      workflow.indexOf('  deploy:'),
+    );
+
+    expect(buildJobs.match(/persist-credentials: false/g)).toHaveLength(3);
+    expect(buildJobs.match(/push: false/g)).toHaveLength(3);
+    expect(buildJobs.match(/platforms: linux\/amd64/g)).toHaveLength(3);
+    expect(workflow).toContain("github.event.action == 'labeled'");
+    // A push never deploys: adding the label is the one explicit trigger.
+    expect(workflow).not.toContain('synchronize');
+    // The label used to be STRIPPED on every push; a labelled preview now stays
+    // online until the label is removed or the pull request closes, so nothing
+    // in this workflow may delete it any more.
+    expect(workflow).not.toContain('labels/preview');
+    expect(workflow).toContain('PREVIEW_BRANCH_ENV');
+    // Previews run on Platinum only, so every run owns the branch's persistent identity.
+    expect(workflow).toContain('persistent_branch="$branch"');
+    expect(workflow).toContain('case "$provider" in auto|platinum) ;; *)');
+    expect(workflow).not.toMatch(/-\s+daytona\n/);
+    expect(workflow).toContain(
+      'PREVIEW_BRANCH_ENV: ${{ needs.authorize.outputs.persistent_branch }}',
+    );
+    expect(workflow).toContain('bun tests/bin/sandbox-preview.ts deploy');
+    expect(workflow).toContain('bun tests/bin/sandbox-preview.ts teardown');
+    expect(workflow).toContain('bun tests/bin/sandbox-preview.ts reconcile');
+    // deploy, teardown, teardown-branch, reconcile.
+    expect(workflow.match(/uses: oven-sh\/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2\.2\.0/g)).toHaveLength(4);
+    expect(workflow).toContain('pnpm test -- --target-full');
+    expect(workflow).toContain('PREVIEW_LOCKFILE_SHA256');
+    expect(read('scripts/ci/preview-sticky-comment.sh')).toContain('Test report:');
+    expect(workflow).toContain('deployments: write');
+    expect(workflow).toContain('type: choice');
+    expect(workflow).toContain('- platinum');
+    // Previews run on Platinum only: Daytona is not a dispatch option, and no
+    // preview job reads a Daytona credential.
+    expect(workflow).not.toContain('- daytona');
+    expect(workflow).not.toContain('DAYTONA_');
+    expect(workflow).not.toContain('infra/scripts/ecs-preview.sh');
+    expect(workflow).not.toContain('configure-aws-credentials');
+    expect(workflow).not.toMatch(/vercel/i);
+    expect(workflow).not.toContain('KORTIX_PREVIEW_APPROVED_SHA');
+    expect(read('scripts/ci/preview-sticky-comment.sh')).toContain('**Preview:**');
+    expect(workflow).toContain('bun tests/bin/sandbox-preview.ts suite');
+  });
+
+  /**
+   * A preview environment lives until its BRANCH is deleted.
+   *
+   * It used to die when the pull request closed, which is the wrong event:
+   * closing one is routine — superseded, reopened later, split in two — and it
+   * took the environment's Postgres volume with it. The branch is what the
+   * environment is named after and redeployed against, so the branch is what it
+   * belongs to. Two switches turn it off: removing the `preview` label, and
+   * deleting the branch. Nothing else may.
+   */
+  /**
+   * A sandbox EXISTING is not its stack SERVING.
+   *
+   * 2026-08-29: `kortix-migrate` exited 1, so nothing bound port 8080 — and the
+   * stable hostname was re-pointed at that box anyway, because the step only
+   * checked that a sandbox origin came back. pi.kortix.com served Cloudflare's
+   * 502 until someone noticed. A failing SUITE still deserves a live
+   * environment to debug in; a failing STACK has nothing to point at, and the
+   * previous sandbox is still serving.
+   */
+  it('only points the stable hostname at a sandbox that answers /v1/health', () => {
+    const workflow = read('.github/workflows/deploy-preview.yml');
+    const step = workflow.slice(workflow.indexOf('Point the stable hostname at this sandbox'));
+    const body = step.slice(0, step.indexOf('\n      - name:'));
+
+    // The probe goes at the sandbox's OWN origin, which is what the public name
+    // is about to be pointed at — not at the public name, which still answers
+    // from the previous sandbox and would pass while this one is dead.
+    expect(body).toContain('"${target%/}/v1/health"');
+    expect(body).toContain(`jq -e '.status == "ok"'`);
+    // A dead stack must FAIL the step, leaving TARGET_ORIGIN where it was.
+    expect(body).toMatch(/is not serving \/v1\/health/);
+    expect(body).toMatch(/exit 1/);
+    // And the re-point must still come after the probe, never before it.
+    expect(body.indexOf('/v1/health')).toBeLessThan(body.indexOf('wrangler@4 deploy'));
+  });
+
+  it('keeps a preview environment alive until its branch is deleted', () => {
+    const workflow = read('.github/workflows/deploy-preview.yml');
+    const jobs = (name: string) => {
+      const body = workflow.slice(workflow.indexOf(`\n  ${name}:\n`) + name.length + 5);
+      const next = body.search(/\n {2}[a-z][a-z0-9-]*:\n/);
+      return next === -1 ? body : body.slice(0, next);
+    };
+
+    // `closed` reaches neither the trigger nor any job condition.
+    expect(workflow).toContain('types: [labeled, unlabeled]');
+    expect(workflow).not.toContain("github.event.action == 'closed'");
+
+    // Removing the label is still the explicit off switch.
+    expect(jobs('teardown')).toContain(
+      "github.event.action == 'unlabeled' && github.event.label.name == 'preview'",
+    );
+
+    // Deleting the branch is the other one, and the only event that retires a
+    // branch environment — whose sandbox has no provider expiry behind it.
+    expect(workflow).toContain('\n  delete:\n');
+    const branchTeardown = jobs('teardown-branch');
+    // Tag deletions arrive on the same event and name no branch.
+    expect(branchTeardown).toContain(
+      "github.event_name == 'delete' && github.event.ref_type == 'branch'",
+    );
+    expect(branchTeardown).toContain('bun tests/bin/sandbox-preview.ts teardown');
+    // The branch alone identifies the sandbox; a delete event has no number.
+    expect(branchTeardown).toContain('PREVIEW_BRANCH_ENV: ${{ github.event.ref }}');
+    expect(branchTeardown).not.toContain('\n      PREVIEW_PR_NUMBER:');
+    // Default-branch code, never a pull request head — the same rule the
+    // pull_request_target jobs follow.
+    expect(branchTeardown).toContain('ref: ${{ github.event.repository.default_branch }}');
+    expect(branchTeardown).toContain('persist-credentials: false');
+    // No pull request exists to patch, so the job asks for no write scope and
+    // calls no GitHub API.
+    expect(branchTeardown).toContain('permissions:\n      contents: read\n');
+    expect(branchTeardown).not.toContain('pull-requests: write');
+    expect(branchTeardown).not.toContain('deployments: write');
+    expect(branchTeardown).not.toContain('gh api');
+  });
+
+  it('disables Vercel auto-deploys everywhere except staging', () => {
+    const config = read('apps/web/vercel.json');
+    const ignore = read('apps/web/scripts/vercel-ignore.sh');
+
+    expect(config).toContain('"main": false');
+    expect(config).toContain('"staging": true');
+    // prod must NOT auto-deploy on push: during the 2026-08-10 v0.12.7 rollout
+    // the auto-deployed new frontend called routes the still-old API lacked
+    // and every project load failed. kortix.com deploys only from
+    // deploy-prod.yml's deploy-web-vercel job, after verify-live-version.
+    expect(config).toContain('"prod": false');
+    expect(ignore).toContain('prod deploys only via deploy-prod.yml');
+    expect(ignore).not.toContain('KORTIX_PREVIEW_APPROVED_SHA');
+    expect(ignore).not.toContain('*:main');
+    expect(ignore).toContain('dev deploys on ECS; PR previews deploy in sandboxes');
+  });
+
+  it('deploys the prod Vercel frontend only after the API serves the release', () => {
+    const workflow = read('.github/workflows/deploy-prod.yml');
+    expect(workflow).toContain('deploy-web-vercel:');
+    expect(workflow).toMatch(
+      /deploy-web-vercel:\s*\n\s*name:[^\n]*\n\s*needs: \[version, verify-live-version\]/,
+    );
+    expect(workflow).toContain('prj_SoUUSNJPvOTDneE0E7faWHFuWMAY');
+    expect(workflow).toContain(
+      '--env "KORTIX_PUBLIC_VERSION=${{ needs.version.outputs.version }}"',
+    );
+    expect(workflow).not.toContain('env add NEXT_PUBLIC_KORTIX_VERSION production');
+    expect(workflow).not.toContain('env rm NEXT_PUBLIC_KORTIX_VERSION production');
+    expect(workflow).toMatch(
+      /frontend-auth-proof:\s*\n\s*name:[^\n]*\n\s*needs: \[[^\]]*deploy-web-vercel\]/,
+    );
+  });
+
+  it('refuses to publish a release through a tag that points at another commit', () => {
+    const workflow = read('.github/workflows/deploy-prod.yml');
+    expect(workflow).toContain('refs/tags/v$V^{commit}');
+    expect(workflow).toContain('[ "$EXISTING" != "$GITHUB_SHA" ]');
+    expect(workflow).toContain('Refusing to reuse or move an immutable release tag.');
+    expect(workflow).toContain('target_commitish: ${{ github.sha }}');
+  });
+
+  it('carries both Basic auth credentials and the Vercel SSO bypass in QA', () => {
+    const config = read('tests/playwright.config.ts');
+    expect(config).toContain('WEB_PROTECTION_PASSWORD');
+    expect(config).toContain("username: 'kortix'");
+    // Two different protections guard two different deployed targets, so the
+    // config carries both. Basic auth covers password-protected environments.
+    // Staging/preview use Vercel SSO protection instead, which httpCredentials
+    // cannot satisfy — only the bypass secret gets past it.
+    expect(config).toContain('deploymentBypassSecret()');
+    expect(config).toContain('storageState: vercelBypass ? DEPLOYMENT_BYPASS_STATE_PATH');
+    expect(existsSync(resolve(root, 'tests/visual/playwright.config.ts'))).toBe(false);
+    expect(existsSync(resolve(root, 'tests/accessibility/playwright.config.ts'))).toBe(false);
+    expect(existsSync(resolve(root, 'tests/e2e/examples/playwright.config.ts'))).toBe(false);
+  });
+
+  it('the deployment-bypass storage state is never written under an uploaded artifact path', () => {
+    // tests/test-results/** is uploaded verbatim on a public repo; the state
+    // file holds the live _vercel_jwt cookie. Both guards must hold: the file
+    // lives outside test-results, AND every upload of test-results excludes
+    // it by name (belt and braces — see deployment-bypass.ts).
+    const helper = read('tests/e2e/helpers/deployment-bypass.ts');
+    expect(helper).not.toMatch(/'test-results',\s*\n\s*'deployment-bypass-state\.json'/);
+    expect(helper).toContain("'.state',");
+    expect(read('tests/.gitignore')).toContain('.state/');
+    for (const wf of [
+      '.github/workflows/tests-release.yml',
+      '.github/workflows/tests.yml',
+      '.github/workflows/deploy-preview.yml',
+    ]) {
+      const uploads = read(wf).split('upload-artifact@').slice(1);
+      let seen = 0;
+      for (const block of uploads) {
+        const head = block.slice(0, 600);
+        if (!head.includes('tests/test-results/**')) continue;
+        seen += 1;
+        expect(head, wf).toContain('!tests/test-results/deployment-bypass-state.json');
+      }
+      expect(seen, wf).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * The bypass secret must never ride on `use.extraHTTPHeaders`.
+   *
+   * Chromium applies those headers to EVERY request the context makes, so the
+   * release gate sent `x-vercel-protection-bypass` to 16 hosts — including
+   * googletagmanager.com, connect.facebook.net and doubleclick.net — and, worse
+   * for the gate, attached it to cross-origin XHR against staging-api. That put
+   * the two header names into `Access-Control-Request-Headers`, which the API's
+   * fixed `Access-Control-Allow-Headers` list (apps/api/src/middleware/cors.ts)
+   * does not contain, so Chromium killed every browser API call with
+   * `net::ERR_FAILED`. Nine of the eleven specs red in release runs
+   * 32306385663 and 32310893789 died that way. The bypass is a cookie now.
+   */
+  it('never broadcasts the Vercel bypass secret as a blanket request header', () => {
+    const config = read('tests/playwright.config.ts');
+    expect(config).not.toContain('extraHTTPHeaders:');
+    expect(config).not.toContain("'x-vercel-protection-bypass':");
+    const helper = read('tests/e2e/helpers/deployment-bypass.ts');
+    // The header is sent exactly once, to the origin that issues the cookie.
+    expect(helper).toContain("'x-vercel-protection-bypass': secret");
+    expect(helper).toContain('_vercel_jwt');
+    // A plain clearCookies() drops the bypass cookie and 302s the next
+    // navigation to vercel.com/sso-api, so the app-session resets go through
+    // the preserving helper instead.
+    expect(read('tests/e2e/helpers/session-auth.ts')).toContain('clearCookiesPreservingBypass');
+    expect(read('tests/e2e/specs/01-account-auth.spec.ts')).toContain(
+      'clearCookiesPreservingBypass',
+    );
+  });
+
+  /**
+   * The release gate hard-fails when the staging frontend's `/api/health`
+   * reports a commit other than RELEASE_SOURCE_SHA, so the staging Vercel build
+   * MUST receive that SHA. It previously arrived only through
+   * `apps/web/next.config.ts`'s VERCEL_GIT_COMMIT_SHA fallback, which depends on
+   * Vercel inferring git metadata from a `--archive=tgz` CLI deploy. Measured
+   * 2026-09-18, that inference worked (`staging.kortix.com/api/health` returned a
+   * real 40-char SHA, not 'unknown') — but it is not a documented contract, and
+   * a gate that blocks production must not rest on one.
+   */
+  it('passes the source SHA into the staging Vercel frontend build', () => {
+    const workflow = read('.github/workflows/deploy-staging.yml');
+    const start = workflow.indexOf('  deploy-web-vercel:');
+    const end = workflow.indexOf('  verify:', start);
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const vercelJob = workflow.slice(start, end);
+
+    // `-b` is a BUILD env var: next.config.ts reads the commit at build time and
+    // inlines it, so `-e` (runtime) would not reach the health route's bundle.
+    expect(vercelJob).toContain('-b NEXT_PUBLIC_KORTIX_COMMIT="$SOURCE_SHA"');
+    expect(vercelJob).toContain('SOURCE_SHA: ${{ needs.preflight.outputs.sha }}');
+    // The same job aliases the host the browser shards drive, so the SHA it
+    // stamps is the SHA the gate reads back.
+    expect(vercelJob).toContain('vercel alias set "$url" "$WEB_HOST"');
+  });
+
+  /**
+   * The gate asserts THREE surfaces, not two. `tests/src/core/target-smoke.ts`
+   * read only the API and the gateway until 2026-09-18, so a staging frontend
+   * whose Vercel deployment had not finished (or whose alias still pointed at
+   * the previous release) passed preflight and then failed browser shards for a
+   * reason unrelated to the code under test.
+   */
+  it('asserts the frontend SHA in the deployed-target preflight', () => {
+    const smoke = read('tests/src/core/target-smoke.ts');
+
+    expect(smoke).toContain('frontendHealthJson');
+    expect(smoke).toContain(`${'$'}{config.webUrl}/api/health`);
+    // All three actual values in one message, so a human sees which is stale.
+    expect(smoke).toContain('frontend=${frontend.commit ?? \'missing\'}');
+    // An unstamped build must not be reported as a stale deploy.
+    expect(smoke).toContain('did not stamp a commit');
+    // The bypass secret comes from the one canonical helper, never a second
+    // hand-rolled header. See deployment-bypass.ts for the incident.
+    expect(smoke).toContain('deploymentBypassRequestHeaders');
+    expect(smoke).toContain('deploymentBypassSecret');
+    expect(smoke).not.toContain("'x-vercel-protection-bypass'");
+  });
+
+  /**
+   * Vercel refuses a deploy of more than 15,000 files. The v0.14.9 tree had
+   * 15,077, and the prod Vercel job, the only one without `--archive=tgz`,
+   * failed after the API was live (Deploy Prod 40868757807). kortix.com stayed
+   * on the previous release, and the GitHub Release, the installers and the
+   * VERSION syncs never ran.
+   */
+  it('uploads every Vercel deploy as one archive', () => {
+    for (const file of ['deploy-prod.yml', 'deploy-staging.yml']) {
+      const deploys = read(`.github/workflows/${file}`)
+        .split('\n')
+        .filter((line) => /vercel(@[\w.]+)? deploy /.test(line));
+      expect(deploys.length).toBeGreaterThan(0);
+      for (const line of deploys) expect(line).toContain('--archive=tgz');
+    }
+    // An archive deploy does not promise git metadata, so prod stamps the commit.
+    expect(read('.github/workflows/deploy-prod.yml')).toContain(
+      '--build-env "NEXT_PUBLIC_KORTIX_COMMIT=${{ github.sha }}"',
+    );
+  });
+});

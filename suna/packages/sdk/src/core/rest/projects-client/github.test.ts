@@ -1,0 +1,362 @@
+import { beforeEach, expect, mock, test } from 'bun:test';
+
+import { configureKortix } from '../../http/config';
+import {
+  type GitHubRepositoriesResponse,
+  type GitHubRepositoryBranchesResponse,
+  type LinkableGitHubInstallationsResponse,
+  linkGitHubInstallation,
+  linkRepository,
+  replaceProjectRepository,
+  listGitHubRepositories,
+  listGitHubRepositoryBranches,
+  listLinkableGitHubInstallations,
+  saveGitHubInstallation,
+  storeGitHubUserToken,
+} from './github';
+
+test('replaces one project repository with a credential and an expected old URL', async () => {
+  let url = '';
+  let method = '';
+  let body: unknown;
+  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+    url = String(input instanceof Request ? input.url : input);
+    method = init?.method ?? '';
+    body = JSON.parse(String(init?.body));
+    return Response.json({ project: { project_id: 'proj-1', repo_url: 'https://github.com/acme/new.git' }, git_connection: null });
+  }) as unknown as typeof fetch;
+
+  const result = await replaceProjectRepository({
+    project_id: 'proj-1',
+    repo_url: 'https://github.com/acme/new.git',
+    expected_repo_url: 'https://github.com/acme/old.git',
+    github_token: 'repo-scoped-token',
+  });
+
+  expect(url).toEndWith('/projects/proj-1/git/repository');
+  expect(method).toBe('PUT');
+  expect(body).toEqual({
+    repo_url: 'https://github.com/acme/new.git',
+    expected_repo_url: 'https://github.com/acme/old.git',
+    github_token: 'repo-scoped-token',
+  });
+  expect(result.project.repo_url).toBe('https://github.com/acme/new.git');
+});
+
+test('sends a repository-scoped App grant and shared secret copy without a stored PAT', async () => {
+  let body: any;
+  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+    body = JSON.parse(String(init?.body));
+    return Response.json({ project: { project_id: 'proj-1' }, git_connection: null });
+  }) as unknown as typeof fetch;
+  await replaceProjectRepository({
+    project_id: 'proj-1', repo_url: 'https://github.com/acme/new.git',
+    expected_repo_url: 'https://github.com/acme/old.git',
+    installation_id: '123', github_user_token: 'temporary-user-token',
+    copy_shared_secrets_from_project_id: 'source-1',
+    copy_shared_secret_identifiers: ['TS_AUTHKEY'],
+  });
+  expect(body).toMatchObject({
+    installation_id: '123', github_user_token: 'temporary-user-token',
+    copy_shared_secrets_from_project_id: 'source-1',
+    copy_shared_secret_identifiers: ['TS_AUTHKEY'],
+  });
+  expect(body.github_token).toBeUndefined();
+});
+
+let calls: string[] = [];
+
+beforeEach(() => {
+  calls = [];
+  globalThis.fetch = mock(async (input: string | URL | Request) => {
+    calls.push(String(input instanceof Request ? input.url : input));
+    return Response.json({
+      account_id: 'account 1',
+      installation_id: '84',
+      owner_login: 'acme',
+      repo_full_name: 'acme/portal',
+      default_branch: 'trunk',
+      branches: [
+        { name: 'trunk', protected: true },
+        { name: 'release/next', protected: false },
+      ],
+    } satisfies GitHubRepositoryBranchesResponse);
+  }) as unknown as typeof fetch;
+});
+
+test('sends the GitHub user proof when saving an installation', async () => {
+  let requestBody: unknown;
+  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+    requestBody = JSON.parse(String(init?.body));
+    return Response.json({
+      account_id: 'account 1',
+      installation_row_id: 'row-1',
+      installed: true,
+      configured: true,
+      requires_installation: false,
+      install_url: null,
+      installation_id: '84',
+      owner_login: 'acme',
+      owner_type: 'Organization',
+      repository_selection: 'all',
+      permissions: {},
+      installation_url: null,
+      updated_at: null,
+    });
+  }) as unknown as typeof fetch;
+
+  await saveGitHubInstallation({
+    state: 'signed-state',
+    installation_id: '84',
+    github_user_token: 'github-user-token',
+  });
+
+  expect(requestBody).toEqual({
+    state: 'signed-state',
+    installation_id: '84',
+    github_user_token: 'github-user-token',
+  });
+});
+
+test('sends the icon in the request body when linking a repository', async () => {
+  let requestBody: unknown;
+  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+    requestBody = JSON.parse(String(init?.body));
+    return Response.json({
+      project: { project_id: 'proj-1', name: 'Iconic', icon: '🚀' },
+      git_connection: null,
+    });
+  }) as unknown as typeof fetch;
+
+  await linkRepository({
+    account_id: 'acc-1',
+    repo_url: 'https://github.com/acme/repo',
+    icon: '🚀',
+  });
+
+  expect(requestBody).toEqual({
+    account_id: 'acc-1',
+    repo_url: 'https://github.com/acme/repo',
+    icon: '🚀',
+  });
+});
+
+test('sends the icon_glyph in the request body when linking a repository', async () => {
+  let requestBody: unknown;
+  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+    requestBody = JSON.parse(String(init?.body));
+    return Response.json({
+      project: {
+        project_id: 'proj-1',
+        name: 'Glyphic',
+        icon_glyph: { name: 'Rocket', color: 'blue' },
+      },
+      git_connection: null,
+    });
+  }) as unknown as typeof fetch;
+
+  await linkRepository({
+    account_id: 'acc-1',
+    repo_url: 'https://github.com/acme/repo',
+    icon_glyph: { name: 'Rocket', color: 'blue' },
+  });
+
+  expect(requestBody).toEqual({
+    account_id: 'acc-1',
+    repo_url: 'https://github.com/acme/repo',
+    icon_glyph: { name: 'Rocket', color: 'blue' },
+  });
+});
+
+test('lists only linkable GitHub App installations through the authenticated API', async () => {
+  let requestBody: unknown;
+  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+    requestBody = JSON.parse(String(init?.body));
+    return Response.json({
+      account_id: 'account 1',
+      github_login: 'markokraemer',
+      configured: true,
+      install_url: 'https://github.com/apps/kortix/installations/new?state=signed',
+      installations: [
+        {
+          installation_id: '84',
+          owner_login: 'markokraemer',
+          owner_type: 'User',
+          repository_selection: 'selected',
+          permissions: { contents: 'write' },
+          installation_url: 'https://github.com/settings/installations/84',
+          linked: false,
+          linked_to_other_accounts: 2,
+        },
+      ],
+    } satisfies LinkableGitHubInstallationsResponse);
+  }) as unknown as typeof fetch;
+
+  const result = await listLinkableGitHubInstallations({
+    account_id: 'account 1',
+    github_user_token: 'github-user-token',
+  });
+
+  expect(requestBody).toEqual({
+    account_id: 'account 1',
+    github_user_token: 'github-user-token',
+  });
+  expect(result.github_login).toBe('markokraemer');
+  expect(result.installations[0]?.owner_login).toBe('markokraemer');
+  // How many OTHER accounts already hold this installation — a count only, so a
+  // tenant name can never leak through the picker.
+  expect(result.installations[0]?.linked_to_other_accounts).toBe(2);
+});
+
+test('links a selected verified GitHub App installation without callback state', async () => {
+  let requestBody: unknown;
+  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+    requestBody = JSON.parse(String(init?.body));
+    return Response.json({
+      account_id: 'account 1',
+      installation_row_id: 'row-1',
+      installed: true,
+      configured: true,
+      requires_installation: false,
+      install_url: null,
+      installation_id: '84',
+      owner_login: 'markokraemer',
+      owner_type: 'User',
+      repository_selection: 'selected',
+      permissions: { contents: 'write' },
+      installation_url: 'https://github.com/settings/installations/84',
+      updated_at: null,
+    });
+  }) as unknown as typeof fetch;
+
+  await linkGitHubInstallation({
+    account_id: 'account 1',
+    installation_id: '84',
+    github_user_token: 'github-user-token',
+  });
+
+  expect(requestBody).toEqual({
+    account_id: 'account 1',
+    installation_id: '84',
+    github_user_token: 'github-user-token',
+  });
+});
+
+configureKortix({
+  backendUrl: 'http://test.local/v1',
+  getToken: async () => 'token',
+});
+
+test('lists repository branches through the typed account-scoped GitHub surface', async () => {
+  const result = await listGitHubRepositoryBranches('account 1', '84', 'acme/portal');
+
+  expect(calls).toEqual([
+    'http://test.local/v1/projects/github/repository-branches?' +
+      'account_id=account+1&installation_id=84&repo_full_name=acme%2Fportal',
+  ]);
+  expect(result.default_branch).toBe('trunk');
+  expect(result.branches).toEqual([
+    { name: 'trunk', protected: true },
+    { name: 'release/next', protected: false },
+  ]);
+});
+
+test('passes bounded repository search options through the typed GitHub surface', async () => {
+  globalThis.fetch = mock(async (input: string | URL | Request) => {
+    calls.push(String(input instanceof Request ? input.url : input));
+    return Response.json({
+      account_id: 'account 1',
+      installation_id: '84',
+      owner_login: 'acme',
+      repositories: [],
+    } satisfies GitHubRepositoriesResponse);
+  }) as unknown as typeof fetch;
+
+  await listGitHubRepositories('account 1', '84', {
+    search: 'customer portal',
+    limit: 25,
+  });
+
+  expect(calls).toEqual([
+    'http://test.local/v1/projects/github/repositories?' +
+      'account_id=account+1&installation_id=84&search=customer+portal&limit=25',
+  ]);
+});
+
+test('imports through the instance git backend with source: managed, never a fake installation id', async () => {
+  let requestBody: unknown;
+  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+    requestBody = JSON.parse(String(init?.body));
+    return Response.json({
+      project: { project_id: 'project 1' },
+      git_connection: null,
+    });
+  }) as unknown as typeof fetch;
+
+  await linkRepository({
+    account_id: 'acc-1',
+    repo_full_name: 'managed-kortix/customer-portal',
+    source: 'managed',
+  });
+
+  // The instance backend used to be selected with `installation_id: 'pat'`,
+  // a string dressed as a GitHub installation id. The selector is explicit
+  // now and the body carries no installation id at all.
+  expect(requestBody).toEqual({
+    account_id: 'acc-1',
+    repo_full_name: 'managed-kortix/customer-portal',
+    source: 'managed',
+  });
+});
+
+// GitHub refuses `POST /user/repos` for an App installation token, so creating a
+// repository in a PERSONAL account needs the user's own GitHub authorization.
+// The popup already hands the browser that token; this call is how it reaches
+// the server, which verifies it, encrypts it, and never gives it back.
+test('stores a GitHub user token for one account, and returns only the login', async () => {
+  let url = '';
+  let method = '';
+  let body: unknown;
+  let showedErrors: unknown;
+  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+    url = String(input instanceof Request ? input.url : input);
+    method = init?.method ?? '';
+    body = JSON.parse(String(init?.body));
+    return Response.json({ ok: true, github_login: 'octo-person' });
+  }) as unknown as typeof fetch;
+
+  const result = await storeGitHubUserToken({
+    account_id: 'acc-1',
+    github_user_token: 'ghu_live',
+    expires_in: 28800,
+  });
+
+  expect(url).toEndWith('/projects/github/user-token');
+  expect(method).toBe('POST');
+  expect(body).toEqual({
+    account_id: 'acc-1',
+    github_user_token: 'ghu_live',
+    expires_in: 28800,
+  });
+  expect(result).toEqual({ ok: true, github_login: 'octo-person' });
+  void showedErrors;
+});
+
+// A failed authorization is handled where it is caught — the create retries or
+// explains itself. A global toast on top of that says the same thing twice.
+test('a failed store does not raise the global error toast', async () => {
+  const seen: Array<boolean | undefined> = [];
+  globalThis.fetch = mock(async () => Response.json({ error: 'nope' }, { status: 502 })) as unknown as typeof fetch;
+  configureKortix({
+    backendUrl: 'https://api.example.test/v1',
+    getToken: async () => 'token',
+    onError: () => {
+      seen.push(true);
+    },
+  });
+
+  await expect(
+    storeGitHubUserToken({ account_id: 'acc-1', github_user_token: 'ghu_live' }),
+  ).rejects.toThrow();
+  expect(seen).toEqual([]);
+});

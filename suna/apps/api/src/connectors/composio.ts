@@ -1,0 +1,1049 @@
+import {
+  Composio,
+  type ToolRouterCreateSessionConfig,
+  type ToolRouterSessionExecuteResponse,
+  type ToolkitConnectionsDetails,
+} from '@composio/core';
+import { HTTPException } from 'hono/http-exception';
+import { type ExecResult, parseRetryAfter } from './call';
+import {
+  composioHiddenToolkits,
+  NATIVE_TOOLKITS,
+  composioRestClient,
+  customAuthConfigIds,
+  searchComposioCatalog,
+  type ComposioCatalogClient,
+} from './composio-catalog-search';
+import { composioFileUpload, type ComposioFilesLike, uploadFileArgs } from './composio-files';
+import type { ComposioToolLike } from './types';
+
+// Re-exported so `db-deps` reaches it through the lazily imported adapter module.
+export { composioCatalogSections } from './composio-catalog-search';
+
+interface ComposioConnectionRequestLike {
+  id: string;
+  status?: string;
+  redirectUrl?: string | null;
+  toJSON?: () => {
+    id: string;
+    status?: string;
+    redirectUrl?: string | null;
+  };
+}
+
+export interface ComposioRuntime {
+  sessions: {
+    create(userId: string, config?: ToolRouterCreateSessionConfig): Promise<ComposioSessionLike>;
+    use(sessionId: string): Promise<ComposioSessionLike>;
+  };
+  toolkits?: {
+    get(query: { category?: string; limit?: number }): Promise<
+      Array<{
+        slug: string;
+        name: string;
+        noAuth?: boolean;
+        meta: {
+          logo?: string | null;
+          description?: string | null;
+          categories?: Array<{ slug: string; name: string }>;
+          /** `@composio/core` camel-cases the API's `triggers_count`; the raw key survives the meta spread. */
+          triggersCount?: number;
+          triggers_count?: number;
+        };
+      }>
+    >;
+  };
+  /** Uploads a file input to Composio's storage for this project. */
+  files?: ComposioFilesLike;
+  /** Read one connected account. Only the non-secret `displayName` is used. */
+  connectedAccounts?: {
+    get(id: string): Promise<{ state?: { val?: Record<string, unknown> } | null } | null | undefined>;
+  };
+  /** App-event trigger instances and their catalog (`@composio/core` `Triggers`). */
+  triggers?: {
+    listTypes(query?: { cursor?: string; limit?: number | null; toolkits?: string[] | null }): Promise<{
+      items: Array<{
+        slug: string;
+        name: string;
+        description: string;
+        type?: string;
+        toolkit: { slug: string; name: string; logo?: string };
+        payload: Record<string, unknown>;
+        config: Record<string, unknown>;
+      }>;
+      nextCursor?: string | null;
+    }>;
+    create(
+      userId: string,
+      slug: string,
+      body?: { connectedAccountId?: string; triggerConfig?: Record<string, unknown> },
+    ): Promise<{ triggerId: string }>;
+    delete(triggerId: string): Promise<{ triggerId: string }>;
+  };
+}
+
+export interface ComposioSessionLike {
+  sessionId: string;
+  tools(): Promise<ComposioToolLike[]>;
+  toolkits(options?: {
+    toolkits?: string[];
+    cursor?: string;
+    limit?: number;
+    isConnected?: boolean;
+    search?: string;
+  }): Promise<ToolkitConnectionsDetails>;
+  authorize(
+    toolkit: string,
+    options?: { callbackUrl?: string; alias?: string },
+  ): Promise<ComposioConnectionRequestLike>;
+  execute(
+    toolSlug: string,
+    args?: Record<string, unknown>,
+    options?: { account?: string },
+  ): Promise<ToolRouterSessionExecuteResponse>;
+}
+
+export interface ComposioExecuteInput {
+  projectId: string;
+  connectorSlug: string;
+  connectionId: string;
+  sessionId?: string | null;
+  toolkit: string;
+  toolSlug: string;
+  args: Record<string, unknown>;
+  connectedAccountId: string | null;
+  /** The tool's input schema. Its `file_uploadable` fields take a URL (`composio-files.ts`). */
+  inputSchema?: Record<string, unknown> | null;
+  /** The call's deadline; it stops a file download. */
+  signal?: AbortSignal;
+}
+
+export interface ComposioConnectResult {
+  connectUrl?: string;
+  sessionId: string;
+  authRequestId?: string;
+  connectedAccountId?: string;
+  connected: boolean;
+  isNoAuth: boolean;
+}
+
+export interface ComposioFinalizeResult {
+  connected: boolean;
+  connectedAccountId?: string;
+  sessionId: string;
+  authRequestId?: string;
+  isNoAuth: boolean;
+}
+
+let runtime: ComposioRuntime | null = null;
+
+export function composioConfigured(): boolean {
+  return !!process.env.COMPOSIO_API_KEY;
+}
+
+export function composioUserId(connectionId: string): string {
+  const id = connectionId.trim();
+  if (!id) throw new Error('composio connection id is required');
+  return `kortix-connection:${id}`;
+}
+
+function assertStableUserId(connectionId: string, stableUserId: string): void {
+  if (stableUserId !== composioUserId(connectionId)) {
+    throw new Error('composio stable user id must match the selected connection');
+  }
+}
+
+export function getComposioRuntime(): ComposioRuntime {
+  if (!composioConfigured()) throw new Error('Composio is not configured (set COMPOSIO_API_KEY)');
+  if (!runtime) {
+    runtime = new Composio({
+      apiKey: process.env.COMPOSIO_API_KEY,
+      allowTracking: false,
+      dangerouslyAllowAutoUploadDownloadFiles: false,
+    }) as unknown as ComposioRuntime;
+  }
+  return runtime;
+}
+
+export function setComposioRuntimeForTest(next: ComposioRuntime | null): void {
+  runtime = next;
+}
+
+const INVALID_TOOLKIT_SLUGS_MARKER = 'Invalid toolkit slugs';
+
+export function invalidToolkitSlugsFromError(error: unknown): string[] | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const marker = message.indexOf(INVALID_TOOLKIT_SLUGS_MARKER);
+  if (marker === -1) return null;
+  const [named = ''] = message
+    .slice(marker + INVALID_TOOLKIT_SLUGS_MARKER.length)
+    .replace(/^\s*:?\s*/, '')
+    .split(/[.\n"]/);
+  return named.split(',').map((slug) => slug.trim()).filter(Boolean);
+}
+
+function toolkitUnsupportedError(toolkit: string, slugs: readonly string[]): HTTPException {
+  const named = slugs.length > 0 ? slugs.join(', ') : toolkit;
+  return new HTTPException(422, {
+    message: `Composio does not recognise toolkit slug "${named}". The connector's configured app is not a valid Composio toolkit — re-add it from the catalogue.`,
+  });
+}
+
+async function createToolkitSession(
+  runtime: ComposioRuntime,
+  userId: string,
+  toolkit: string,
+  config: ToolRouterCreateSessionConfig,
+): Promise<ComposioSessionLike> {
+  try {
+    return await runtime.sessions.create(userId, config);
+  } catch (error) {
+    const slugs = invalidToolkitSlugsFromError(error);
+    if (slugs) throw toolkitUnsupportedError(toolkit, slugs);
+    throw error;
+  }
+}
+
+function directSessionConfig(toolkit: string, connectedAccountId?: string | null): ToolRouterCreateSessionConfig {
+  return {
+    sessionPreset: 'direct_tools',
+    toolkits: [toolkit],
+    manageConnections: false,
+    sandbox: { enable: false },
+    ...(connectedAccountId ? { connectedAccounts: { [toolkit]: connectedAccountId } } : {}),
+  };
+}
+
+/** Composio's 4300 refusal for a toolkit it holds no OAuth app for. */
+function isAuthConfigRequired(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /require auth configs but none exist/i.test(message);
+}
+
+function authConfigRequired(toolkit: string): HTTPException {
+  const message =
+    `Composio has no managed sign-in for "${toolkit}", and this deployment's Composio ` +
+    `project has no enabled "${toolkit}" auth config. Create one with your own OAuth app ` +
+    '(Composio dashboard → Auth Configs), then sync again.';
+  return new HTTPException(422, {
+    message,
+    res: Response.json(
+      { error: true, message, status: 422, code: 'composio_auth_config_required', toolkit },
+      { status: 422 },
+    ),
+  });
+}
+
+/**
+ * A direct-tools session for one toolkit, on Composio's managed app by default.
+ *
+ * Only when Tool Router refuses with 4300 (the toolkit has no managed app, see
+ * `requiresOwnAuthConfig`) does this pass the operator's custom auth config.
+ * Tool Router never picks that config up on its own (verified live on
+ * 2026-09-26), so without this an X connector could not sync even after an
+ * operator configured X. Every toolkit Composio accepts keeps its managed
+ * defaults, exactly as before: no auth config is listed or selected for it.
+ * The lookup is not cached, so a config created a moment ago applies.
+ */
+async function createDirectSession(input: {
+  runtime: ComposioRuntime;
+  userId: string;
+  toolkit: string;
+  connectedAccountId?: string | null;
+  catalogClient?: ComposioCatalogClient;
+}): Promise<ComposioSessionLike> {
+  const config = directSessionConfig(input.toolkit, input.connectedAccountId);
+  try {
+    return await createToolkitSession(input.runtime, input.userId, input.toolkit, config);
+  } catch (error) {
+    if (!isAuthConfigRequired(error)) throw error;
+    const configured = await customAuthConfigIds({
+      catalogClient: input.catalogClient ?? composioRestClient(),
+      toolkit: input.toolkit,
+    });
+    const authConfigId = configured.get(input.toolkit.toLowerCase());
+    if (!authConfigId) throw authConfigRequired(input.toolkit);
+    return createToolkitSession(input.runtime, input.userId, input.toolkit, {
+      ...config,
+      authConfigs: { [input.toolkit]: authConfigId },
+    });
+  }
+}
+
+async function useOrCreateSession(input: {
+  runtime: ComposioRuntime;
+  connectionId: string;
+  sessionId?: string | null;
+  toolkit: string;
+  connectedAccountId?: string | null;
+  catalogClient?: ComposioCatalogClient;
+}): Promise<ComposioSessionLike> {
+  if (input.sessionId) return input.runtime.sessions.use(input.sessionId);
+  return createDirectSession({ ...input, userId: composioUserId(input.connectionId) });
+}
+
+function toolkitState(page: ToolkitConnectionsDetails, toolkit: string) {
+  return page.items.find((item) => item.slug.toLowerCase() === toolkit.toLowerCase());
+}
+
+async function loadToolkitState(session: ComposioSessionLike, toolkit: string) {
+  const page = await session.toolkits({ toolkits: [toolkit], limit: 1 });
+  const state = toolkitState(page, toolkit);
+  if (!state) throw toolkitUnsupportedError(toolkit, [toolkit]);
+  return state;
+}
+
+function activeConnectedAccountId(
+  state: Awaited<ReturnType<typeof loadToolkitState>>,
+): string | undefined {
+  return state.connection?.isActive === true ? state.connection.connectedAccount?.id : undefined;
+}
+
+/**
+ * Description + categories for every toolkit, keyed by slug.
+ *
+ * The paged browse endpoint (`session.toolkits()`) returns only
+ * `{slug, name, logo, isNoAuth, connection}` — no description and no
+ * categories. The catalogue page grouped those items into sections by category,
+ * so every toolkit fell into the client's synthetic "Other" bucket, and opening
+ * it asked this route for `category=Other`, which is not a Composio category and
+ * answered zero. The page then said "Catalogue unavailable" over a catalogue
+ * that had just rendered.
+ *
+ * `toolkits.get()` carries both fields, so the page is enriched from it rather
+ * than served by it: that endpoint caps at 1000 toolkits while the catalogue is
+ * ~1400, and it publishes no cursor, so it cannot page.
+ *
+ * Cached per runtime because it is one 800ms request for data that changes when
+ * Composio adds an app, not per user. A failure resolves to an empty map and
+ * leaves the page unenriched — a card with no description beats no card.
+ */
+interface ToolkitMeta {
+  description: string | null;
+  categories: string[];
+}
+
+/** What the cache holds per toolkit: the enrichment, plus the catalogue logo. */
+interface CachedToolkit extends ToolkitMeta {
+  logo: string | null;
+}
+
+/**
+ * The paged browse response, plus the two fields the provider's paged endpoint
+ * omits. Declared rather than inferred so a caller that groups by `categories`
+ * cannot compile against a page that never carries them.
+ */
+export type EnrichedToolkitConnectionsPage = Omit<ToolkitConnectionsDetails, 'items'> & {
+  items: Array<ToolkitConnectionsDetails['items'][number] & ToolkitMeta>;
+};
+
+const TOOLKIT_META_TTL_MS = 6 * 60 * 60_000;
+
+const toolkitMetaCache = new WeakMap<
+  ComposioRuntime,
+  { at: number; bySlug: Promise<Map<string, CachedToolkit>>; answered: boolean; refreshing: boolean }
+>();
+
+async function loadToolkitMeta(
+  toolkits: NonNullable<ComposioRuntime['toolkits']>,
+): Promise<Map<string, CachedToolkit>> {
+  const page = await toolkits.get({ limit: 1000 });
+  const map = new Map<string, CachedToolkit>();
+  for (const toolkit of page) {
+    map.set(toolkit.slug.toLowerCase(), {
+      logo: toolkit.meta?.logo ?? null,
+      description: toolkit.meta?.description ?? null,
+      categories: (toolkit.meta?.categories ?? []).map((category) => category.slug),
+    });
+  }
+  return map;
+}
+
+/** Same stale-while-revalidate rule as `cachedCatalogCall`: past the TTL an
+ *  answered map is served at once and refreshed once in the background. */
+async function toolkitMetaBySlug(runtime: ComposioRuntime): Promise<Map<string, CachedToolkit>> {
+  const cached = toolkitMetaCache.get(runtime);
+  if (cached && Date.now() - cached.at < TOOLKIT_META_TTL_MS) return cached.bySlug;
+  if (!runtime.toolkits) return new Map();
+  const toolkits = runtime.toolkits;
+  if (cached?.answered) {
+    if (!cached.refreshing) {
+      cached.refreshing = true;
+      loadToolkitMeta(toolkits).then(
+        (map) => {
+          if (toolkitMetaCache.get(runtime) !== cached) return;
+          toolkitMetaCache.set(runtime, {
+            at: Date.now(),
+            bySlug: Promise.resolve(map),
+            answered: true,
+            refreshing: false,
+          });
+        },
+        () => {
+          cached.refreshing = false;
+        },
+      );
+    }
+    return cached.bySlug;
+  }
+
+  const entry = { at: Date.now(), bySlug: loadToolkitMeta(toolkits), answered: false, refreshing: false };
+  toolkitMetaCache.set(runtime, entry);
+  try {
+    const map = await entry.bySlug;
+    entry.answered = true;
+    return map;
+  } catch (err) {
+    // Drop the poisoned entry so the next request retries instead of serving the
+    // rejection for the whole TTL.
+    if (toolkitMetaCache.get(runtime) === entry) toolkitMetaCache.delete(runtime);
+    console.warn('[composio] toolkit metadata unavailable, serving catalogue unenriched:', err);
+    return new Map();
+  }
+}
+
+/**
+ * The logo the connectors catalogue shows for a Composio toolkit, by slug.
+ *
+ * A connector an agent adds stores no `icon_url` in its config, so without this
+ * its connect card fell back to a monogram while the catalogue showed the real
+ * logo. Served from the same 6-hour toolkit cache as the catalogue enrichment:
+ * one provider request per process, not one per card.
+ *
+ * `null` when Composio is not configured, the toolkit is past the 1000-item
+ * cache cap, or the provider fails. Never throws: a missing logo is a monogram,
+ * not an error.
+ */
+export async function composioToolkitLogo(toolkit: string): Promise<string | null> {
+  if (!composioConfigured()) return null;
+  try {
+    const bySlug = await toolkitMetaBySlug(getComposioRuntime());
+    return bySlug.get(toolkit.trim().toLowerCase())?.logo ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deployment-wide cache of the two live Composio catalogue reads: a search of
+ * three or more characters (`sessions.create` + `session.toolkits`) and a
+ * category page (`toolkits.get`). Measured on dev-api 2026-09-26, each Discover
+ * keystroke or category click cost 300–920 ms of Composio round trips, on
+ * every request, for data that is identical for every project.
+ *
+ * Ten minutes, the same order as the 6 h snapshot's freshness needs; a
+ * toolkit Composio adds appears within that window. Single-flight per key, and
+ * a failed call is dropped so the next request retries. Keyed per runtime so
+ * an injected test runtime never shares entries.
+ *
+ * Stale-while-revalidate (2026-09-27): past the ten minutes, an answered entry
+ * is served at once and refreshed once in the background. Measured on dev-api,
+ * the first Customize → Connectors open after expiry waited 450-870 ms on
+ * Composio for a page the process already held. A failed refresh keeps the
+ * last answer and is retried by the next read. Past a day the entry is not
+ * served; the read waits for Composio as on a cold process.
+ */
+const CATALOG_PAGE_TTL_MS = 10 * 60_000;
+const CATALOG_PAGE_MAX_STALE_MS = 24 * 60 * 60_000;
+const CATALOG_PAGE_CACHE_MAX = 500;
+interface CatalogPageEntry {
+  at: number;
+  value: Promise<unknown>;
+  answered: boolean;
+  refreshing: boolean;
+}
+const catalogPageCache = new WeakMap<ComposioRuntime, Map<string, CatalogPageEntry>>();
+
+function cachedCatalogCall<T>(runtime: ComposioRuntime, key: string, load: () => Promise<T>): Promise<T> {
+  let entries = catalogPageCache.get(runtime);
+  if (!entries) {
+    entries = new Map();
+    catalogPageCache.set(runtime, entries);
+  }
+  const cache = entries;
+  const now = Date.now();
+  const hit = cache.get(key);
+  if (hit && now - hit.at < CATALOG_PAGE_TTL_MS) return hit.value as Promise<T>;
+  if (hit?.answered && now - hit.at < CATALOG_PAGE_MAX_STALE_MS) {
+    if (!hit.refreshing) {
+      hit.refreshing = true;
+      load().then(
+        (answer) => {
+          if (cache.get(key) !== hit) return;
+          cache.delete(key);
+          cache.set(key, { at: Date.now(), value: Promise.resolve(answer), answered: true, refreshing: false });
+        },
+        () => {
+          hit.refreshing = false;
+        },
+      );
+    }
+    return hit.value as Promise<T>;
+  }
+  if (cache.size >= CATALOG_PAGE_CACHE_MAX) {
+    // Map iteration is insertion order: drop the oldest entry.
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  const value = load();
+  const entry: CatalogPageEntry = { at: now, value, answered: false, refreshing: false };
+  cache.delete(key);
+  cache.set(key, entry);
+  value.then(
+    () => {
+      entry.answered = true;
+    },
+    () => {
+      if (cache.get(key) === entry) cache.delete(key);
+    },
+  );
+  return value;
+}
+
+export async function composioCatalogPage(input: {
+  projectId: string;
+  q?: string;
+  category?: string;
+  cursor?: string;
+  limit?: number;
+  runtime?: ComposioRuntime;
+  catalogClient?: ComposioCatalogClient;
+}): Promise<
+  | EnrichedToolkitConnectionsPage
+  | {
+      provider: 'composio';
+      toolkits: Array<{
+        slug: string;
+        name: string;
+        logo: string | null;
+        description: string | null;
+        categories: string[];
+        isNoAuth: boolean;
+        connected: boolean;
+      }>;
+      total: number;
+      nextCursor?: string;
+      hasMore: boolean;
+    }
+  | {
+      items: Array<{
+        slug: string;
+        name: string;
+        logo: string | null;
+        description: string | null;
+        categories: string[];
+        isNoAuth: boolean;
+        connected: boolean;
+      }>;
+      cursor: string | null;
+      totalPages: number;
+    }
+> {
+  const runtime = input.runtime ?? getComposioRuntime();
+  // The hidden set is read from the REST catalogue snapshot. A caller that
+  // injects a runtime without a REST client has no snapshot, so hides only the
+  // toolkits Kortix provides natively.
+  const hiddenToolkits =
+    input.catalogClient || !input.runtime
+      ? composioHiddenToolkits(input.catalogClient ?? composioRestClient())
+      : Promise.resolve(new Set<string>(NATIVE_TOOLKITS));
+  const category = input.category?.trim();
+  if (category) {
+    if (!runtime.toolkits) throw new Error('Composio toolkit catalogue is unavailable');
+    const toolkitsApi = runtime.toolkits;
+    const [page, hidden] = await Promise.all([
+      cachedCatalogCall(runtime, `category\u0000${category}`, () =>
+        toolkitsApi.get({
+          category,
+          // The core SDK intentionally drops the provider cursor from this endpoint.
+          // Fetch the complete category so "View all" never becomes a first-page slice.
+          limit: 1000,
+        }),
+      ),
+      hiddenToolkits,
+    ]);
+    const search = input.q?.trim().toLowerCase();
+    const toolkits = page.filter(
+      (toolkit) =>
+        !hidden.has(toolkit.slug.toLowerCase()) &&
+        (!search ||
+          `${toolkit.name} ${toolkit.slug} ${toolkit.meta.description ?? ''}`
+            .toLowerCase()
+            .includes(search)),
+    );
+    return {
+      provider: 'composio',
+      toolkits: toolkits.map((toolkit) => ({
+        slug: toolkit.slug,
+        name: toolkit.name,
+        logo: toolkit.meta.logo ?? null,
+        description: toolkit.meta.description ?? null,
+        categories: (toolkit.meta.categories ?? []).map((item) => item.slug),
+        isNoAuth: toolkit.noAuth === true,
+        connected: false,
+      })),
+      total: toolkits.length,
+      hasMore: false,
+    };
+  }
+  // Every search answers from the catalogue snapshot: it matches category
+  // names as well as app names, and it has no three-character floor. The
+  // provider's session search matches names only.
+  const query = input.q?.trim();
+  if (query) {
+    const searched = await searchComposioCatalog({ ...input, q: query });
+    // Wire contract: `items` + `cursor` (+ `totalPages`), exactly like the
+    // unsearched page below — `EnrichedToolkitConnectionsPage`. Before the
+    // "no three-character floor" fix, only a 1-2 char query reached
+    // `searchComposioCatalog`; every longer query fell through to the
+    // unsearched branch and answered `items`. Reusing that snapshot's
+    // `toolkits` shape here for EVERY query broke the endpoint's own
+    // contract (CONN-24, gate run 36497729410: "body $.items exists —
+    // expected <defined>, got undefined"). Normalize here so a direct REST
+    // caller sees one shape regardless of which branch answered — the SDK
+    // (`packages/sdk/src/core/rest/projects-client/connectors.ts`
+    // `listConnectToolkits`) already treats `items` as the canonical page
+    // and `toolkits` as a legacy shape kept only for rolling deploys.
+    // `totalPages` is a PAGE count (same convention as
+    // `apps/api/src/tunnel/routes/audit.ts`: `Math.ceil(total / limit)`),
+    // never an item count — `searched.total` (the snapshot's match count) is
+    // the item count and must be converted, not passed through.
+    const limit = Math.min(Math.max(input.limit ?? 48, 1), 100);
+    return {
+      items: searched.toolkits,
+      cursor: searched.nextCursor ?? null,
+      totalPages: Math.ceil(searched.total / limit),
+    };
+  }
+  // The discovery identity never connects anything, so a page is the same for
+  // every project and is cached deployment-wide (see `cachedCatalogCall`).
+  // Only unsearched pages reach here; every query returned above.
+  const pageKey = `search\u0000\u0000${input.cursor ?? ''}\u0000${input.limit ?? ''}`;
+  const [page, meta, hidden] = await Promise.all([
+    cachedCatalogCall(runtime, pageKey, async () => {
+      const session = await runtime.sessions.create(`kortix-discovery:${input.projectId}`, {
+        manageConnections: false,
+        sandbox: { enable: false },
+      });
+      return session.toolkits({
+        ...(input.cursor ? { cursor: input.cursor } : {}),
+        ...(input.limit != null ? { limit: input.limit } : {}),
+      });
+    }),
+    toolkitMetaBySlug(runtime),
+    hiddenToolkits,
+  ]);
+  // Enriched in place so the paged shape (`items` + `cursor`) is unchanged and
+  // the SDK's existing normalization still applies. A toolkit past the 1000-item
+  // metadata cap keeps the empty values it already had.
+  return {
+    ...page,
+    items: page.items.filter((item) => !hidden.has(item.slug.toLowerCase())).map((item) => {
+      const enrichment = meta.get(item.slug.toLowerCase());
+      return {
+        ...item,
+        description: enrichment?.description ?? null,
+        categories: enrichment?.categories ?? [],
+      };
+    }),
+  };
+}
+
+/** The page size of the web's Customize → Connectors discovery grid
+ *  (`CATALOG_PAGE_SIZE` in `apps/web/.../catalog/use-catalog.ts`). */
+const DISCOVERY_DEFAULT_PAGE_LIMIT = 48;
+
+/**
+ * Fill the first discovery page and the toolkit metadata before any user asks,
+ * so the first Customize → Connectors open on a fresh replica reads memory.
+ * Called once at boot, never awaited; a failure leaves the caches empty and the
+ * first request fills them as before.
+ */
+export async function warmComposioDiscovery(): Promise<void> {
+  if (!composioConfigured()) return;
+  await composioCatalogPage({ projectId: 'boot-warmup', limit: DISCOVERY_DEFAULT_PAGE_LIMIT });
+}
+
+/** Fetch public tool schemas without creating a connection-scoped auth identity. */
+export async function composioCatalogTools(input: {
+  projectId: string;
+  connectorSlug: string;
+  toolkit: string;
+  runtime?: ComposioRuntime;
+  catalogClient?: ComposioCatalogClient;
+}): Promise<ComposioToolLike[]> {
+  const session = await createDirectSession({
+    runtime: input.runtime ?? getComposioRuntime(),
+    userId: `kortix-catalog:${input.projectId}:${input.connectorSlug}`,
+    toolkit: input.toolkit,
+    catalogClient: input.catalogClient,
+  });
+  return session.tools();
+}
+
+export async function composioSessionTools(input: {
+  connectionId: string;
+  toolkit: string;
+  sessionId?: string | null;
+  connectedAccountId?: string | null;
+  runtime?: ComposioRuntime;
+  catalogClient?: ComposioCatalogClient;
+}): Promise<ComposioToolLike[]> {
+  const session = await useOrCreateSession({
+    runtime: input.runtime ?? getComposioRuntime(),
+    connectionId: input.connectionId,
+    sessionId: input.sessionId,
+    toolkit: input.toolkit,
+    connectedAccountId: input.connectedAccountId,
+    catalogClient: input.catalogClient,
+  });
+  return session.tools();
+}
+
+export async function executeComposio(
+  input: ComposioExecuteInput & { runtime?: ComposioRuntime; catalogClient?: ComposioCatalogClient },
+): Promise<ExecResult> {
+  const runtime = input.runtime ?? getComposioRuntime();
+  const session = await useOrCreateSession({
+    runtime,
+    connectionId: input.connectionId,
+    sessionId: input.sessionId,
+    toolkit: input.toolkit,
+    connectedAccountId: input.connectedAccountId,
+    catalogClient: input.catalogClient,
+  });
+  const state = await loadToolkitState(session, input.toolkit);
+  const activeAccountId = activeConnectedAccountId(state);
+
+  if (!state.isNoAuth) {
+    if (!input.connectedAccountId || !activeAccountId) {
+      throw new Error('composio_connection_not_active');
+    }
+    if (activeAccountId !== input.connectedAccountId) {
+      throw new Error('composio_connected_account_mismatch');
+    }
+  }
+
+  // The resumed Tool Router session already owns the toolkit → connected-account
+  // binding, and the state check above proves it is the expected account. Passing
+  // `options.account` again opts into Composio's multi-account selector, which is
+  // rejected (code 4300) on ordinary single-account projects.
+  // A URL in a file field becomes a file in Composio's storage first: Composio
+  // refuses any `s3key` its own upload did not issue for this project (403).
+  let args = input.args;
+  if (runtime.files) {
+    try {
+      args = await uploadFileArgs(
+        args,
+        input.inputSchema,
+        composioFileUpload(runtime.files, input.toolkit, input.toolSlug, input.signal),
+      );
+    } catch (error) {
+      const status = (error as { status?: unknown }).status;
+      return { ok: false, status: status === 400 ? 400 : 502, data: (error as Error).message };
+    }
+  }
+  let response: Awaited<ReturnType<ComposioSessionLike['execute']>>;
+  try {
+    response = await session.execute(input.toolSlug, args);
+  } catch (error) {
+    // Composio's own rate limit (`RateLimitError`, HTTP 429) is a retry-later
+    // answer, not a fault: the gateway turns it into a 429 with Retry-After.
+    const limited = error as { status?: unknown; headers?: { get?: (name: string) => string | null } };
+    if (limited?.status !== 429) throw error;
+    const retryAfterSeconds = parseRetryAfter(limited.headers?.get?.('retry-after'));
+    return {
+      ok: false,
+      status: 429,
+      data: `composio_rate_limited: ${error instanceof Error ? error.message : String(error)}`,
+      ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+    };
+  }
+  const logId = typeof response.logId === 'string' ? response.logId.trim() : '';
+  if (!logId) throw new Error('composio execution returned no log id');
+
+  const data = {
+    provider: 'composio',
+    requestId: logId,
+    logId,
+    sessionId: session.sessionId,
+    result: response.data,
+    ...(response.error ? { error: response.error } : {}),
+  };
+  // Linear rejects malformed GraphQL from the caller, not from an unavailable provider.
+  const callerError = input.toolkit === 'linear' && input.toolSlug === 'LINEAR_RUN_QUERY_OR_MUTATION' &&
+    typeof response.error === 'string' && /\bCode: (?:GRAPHQL_VALIDATION_FAILED|INPUT_ERROR)\b/.test(response.error);
+  // A provider's rate limit arrives inside Composio's error text.
+  // ponytail: text match, no structured provider status in the execute response; read it when Composio exposes one.
+  const rateLimited = typeof response.error === 'string' && COMPOSIO_RATE_LIMIT.test(response.error);
+  return response.error
+    ? { ok: false, status: callerError ? 400 : rateLimited ? 429 : 502, data }
+    : { ok: true, status: 200, data };
+}
+
+const COMPOSIO_RATE_LIMIT = /\b429\b|rate[ _-]?limit|too many requests/i;
+
+/** Composio's `ConnectedAccount_BadRequest` for a reused alias. */
+function isAliasConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /alias .*already in use/i.test(message);
+}
+
+/**
+ * `session.authorize` with the connector slug as the connected-account alias,
+ * retried once under a fresh alias when Composio refuses the slug.
+ *
+ * Incident 2026-09-03 (local dev, GitHub): an earlier Connect attempt left a
+ * non-ACTIVE connected account aliased `github` on this entity. Nothing above
+ * treats that as connected (`activeConnectedAccountId` wants `isActive`), so
+ * the next Connect re-authorized under the same alias and Composio answered
+ * 400 "Alias \"github\" is already in use by another connection for this
+ * entity" — which the API surfaced as an opaque 500. The alias is a label on
+ * Composio's side only (finalize binds through `session.toolkits()`, never
+ * by alias), so a suffixed alias loses nothing. Any other refusal is
+ * re-thrown as a 502 carrying Composio's message, not a 500 hiding it.
+ */
+async function authorizeWithFreshAlias(
+  session: ComposioSessionLike,
+  toolkit: string,
+  slug: string,
+  callbackUrl: string | undefined,
+): Promise<ComposioConnectionRequestLike> {
+  const base = callbackUrl ? { callbackUrl } : {};
+  try {
+    return await session.authorize(toolkit, { ...base, alias: slug });
+  } catch (error) {
+    if (!isAliasConflict(error)) throw upstreamRefusal(error);
+    try {
+      return await session.authorize(toolkit, {
+        ...base,
+        alias: `${slug}-${Date.now().toString(36)}`,
+      });
+    } catch (retryError) {
+      throw upstreamRefusal(retryError);
+    }
+  }
+}
+
+function upstreamRefusal(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new HTTPException(502, {
+    message: `Composio refused the authorization: ${message.split('\n')[0]}`,
+  });
+}
+
+export async function composioConnectUrl(input: {
+  projectId: string;
+  slug: string;
+  app: string;
+  connectionId: string;
+  stableUserId: string;
+  redirects?: { success?: string; error?: string };
+  runtime?: ComposioRuntime;
+  catalogClient?: ComposioCatalogClient;
+}): Promise<ComposioConnectResult> {
+  assertStableUserId(input.connectionId, input.stableUserId);
+  // Composio's managed app is the supported zero-setup path. Custom OAuth
+  // scopes require a verified app owned by the customer and must not be
+  // smuggled into the managed client. An operator's own auth config is used
+  // only for a toolkit Composio holds no app for (see createDirectSession).
+  const session = await createDirectSession({
+    runtime: input.runtime ?? getComposioRuntime(),
+    userId: input.stableUserId,
+    toolkit: input.app,
+    catalogClient: input.catalogClient,
+  });
+  const state = await loadToolkitState(session, input.app);
+  if (state.isNoAuth) {
+    return {
+      sessionId: session.sessionId,
+      connected: true,
+      isNoAuth: true,
+    };
+  }
+
+  const existingAccountId = activeConnectedAccountId(state);
+  if (existingAccountId) {
+    return {
+      sessionId: session.sessionId,
+      connectedAccountId: existingAccountId,
+      connected: true,
+      isNoAuth: false,
+    };
+  }
+
+  const request = await authorizeWithFreshAlias(session, input.app, input.slug, input.redirects?.success);
+  const requestState = request.toJSON ? request.toJSON() : request;
+  const connectUrl = requestState.redirectUrl ?? '';
+  if (!connectUrl) throw new Error('composio authorize returned no redirect url');
+
+  // `authorize().id` identifies the authorization request. It is not trusted as
+  // the connected-account id. Only `session.toolkits()` supplies that binding.
+  const postAuthorizeState = await loadToolkitState(session, input.app);
+  const connectedAccountId = activeConnectedAccountId(postAuthorizeState);
+  return {
+    connectUrl,
+    sessionId: session.sessionId,
+    authRequestId: requestState.id,
+    ...(connectedAccountId ? { connectedAccountId } : {}),
+    connected: !!connectedAccountId,
+    isNoAuth: false,
+  };
+}
+
+export async function finalizeComposioConnection(input: {
+  projectId: string;
+  slug: string;
+  app: string;
+  connectionId: string;
+  stableUserId: string;
+  sessionId: string;
+  authRequestId?: string;
+  expectedConnectedAccountId?: string;
+  runtime?: ComposioRuntime;
+}): Promise<ComposioFinalizeResult> {
+  assertStableUserId(input.connectionId, input.stableUserId);
+  const session = await (input.runtime ?? getComposioRuntime()).sessions.use(input.sessionId);
+  const state = await loadToolkitState(session, input.app);
+  if (state.isNoAuth) {
+    return {
+      connected: true,
+      sessionId: session.sessionId,
+      ...(input.authRequestId ? { authRequestId: input.authRequestId } : {}),
+      isNoAuth: true,
+    };
+  }
+
+  const connectedAccountId = activeConnectedAccountId(state);
+  if (
+    connectedAccountId &&
+    input.expectedConnectedAccountId &&
+    connectedAccountId !== input.expectedConnectedAccountId
+  ) {
+    throw new Error('composio_connected_account_mismatch');
+  }
+  return {
+    connected: !!connectedAccountId,
+    ...(connectedAccountId ? { connectedAccountId } : {}),
+    sessionId: session.sessionId,
+    ...(input.authRequestId ? { authRequestId: input.authRequestId } : {}),
+    isNoAuth: false,
+  };
+}
+
+/**
+ * The one tool per toolkit that answers "who is this account?". Used only when
+ * Composio stores no `displayName` on the connected account. Every slug below
+ * was checked against Composio's live tool catalog on 2026-09-23. Google Docs
+ * and Google Sheets expose no such tool, so they have no entry.
+ */
+const IDENTITY_TOOLS: Record<string, { slug: string; args: Record<string, unknown> }> = {
+  gmail: { slug: 'GMAIL_GET_PROFILE', args: {} },
+  googlecalendar: { slug: 'GOOGLECALENDAR_GET_CALENDAR', args: { calendar_id: 'primary' } },
+  googledrive: { slug: 'GOOGLEDRIVE_GET_ABOUT', args: { fields: 'user' } },
+  linear: { slug: 'LINEAR_GET_CURRENT_USER', args: {} },
+  github: { slug: 'GITHUB_GET_THE_AUTHENTICATED_USER', args: {} },
+  slack: { slug: 'SLACK_TEST_AUTH', args: {} },
+  notion: { slug: 'NOTION_GET_ABOUT_ME', args: {} },
+  outlook: { slug: 'OUTLOOK_GET_PROFILE', args: {} },
+  microsoft_teams: { slug: 'MICROSOFT_TEAMS_GET_MY_PROFILE', args: {} },
+  hubspot: { slug: 'HUBSPOT_GET_ACCOUNT_INFO', args: {} },
+  jira: { slug: 'JIRA_GET_CURRENT_USER', args: {} },
+  asana: { slug: 'ASANA_GET_CURRENT_USER', args: {} },
+  figma: { slug: 'FIGMA_GET_CURRENT_USER', args: {} },
+  airtable: { slug: 'AIRTABLE_GET_USER_INFO', args: {} },
+  salesforce: { slug: 'SALESFORCE_GET_USER_INFO', args: {} },
+  trello: { slug: 'TRELLO_GET_MEMBERS_ME', args: {} },
+  dropbox: { slug: 'DROPBOX_GET_ABOUT_ME', args: {} },
+  calendly: { slug: 'CALENDLY_GET_CURRENT_USER', args: {} },
+};
+
+const IDENTITY_PROBE_TIMEOUT_MS = 5_000;
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const LOGIN_KEYS = ['login', 'username', 'user_name', 'user', 'handle'];
+const NAME_KEYS = ['displayname', 'display_name', 'name'];
+
+/** An email is lower-cased so one person never reads as two accounts. */
+function normalizeIdentity(value: string): string | null {
+  const trimmed = value.trim().slice(0, 255);
+  if (!trimmed) return null;
+  return EMAIL.test(trimmed) ? trimmed.toLowerCase() : trimmed;
+}
+
+/**
+ * The best identity string in a whoami response: any email first, then a
+ * login, then a display name. Walks at most four levels, because every
+ * catalogued response nests the user one or two levels down (`data.user`,
+ * `data.viewer`).
+ */
+export function identityFromWhoami(data: unknown): string | null {
+  const found: { email?: string; login?: string; name?: string } = {};
+  const visit = (value: unknown, depth: number) => {
+    if (!value || typeof value !== 'object' || depth > 4) return;
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof raw === 'string' && raw.trim()) {
+        const lower = key.toLowerCase();
+        const text = raw.trim();
+        // Any email-shaped value counts, whatever its key: Google Calendar's
+        // primary calendar carries the account email as its `id`.
+        if (!found.email && EMAIL.test(text)) {
+          found.email = text;
+        } else if (!found.login && LOGIN_KEYS.includes(lower)) {
+          found.login = text;
+        } else if (!found.name && NAME_KEYS.includes(lower)) {
+          found.name = text;
+        }
+      } else if (raw && typeof raw === 'object') {
+        visit(raw, depth + 1);
+      }
+    }
+  };
+  visit(data, 0);
+  const best = found.email ?? found.login ?? found.name;
+  return best ? normalizeIdentity(best) : null;
+}
+
+function withTimeout<T>(work: Promise<T>): Promise<T | null> {
+  return Promise.race([
+    work,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), IDENTITY_PROBE_TIMEOUT_MS)),
+  ]);
+}
+
+/**
+ * WHO the connected account is: an email when the provider has one, else a
+ * login or display name. It is shown as "Connected as …" and becomes the
+ * default label, so an account authorized with the wrong login is visible
+ * the moment it lands instead of months later.
+ *
+ * Best effort by contract: any failure returns `null` and never throws.
+ * Finalize must not fail because a label could not be derived.
+ */
+export async function probeComposioIdentity(input: {
+  app: string;
+  sessionId: string;
+  connectedAccountId: string;
+  runtime?: ComposioRuntime;
+}): Promise<string | null> {
+  try {
+    const runtime = input.runtime ?? getComposioRuntime();
+    const account = await withTimeout(
+      runtime.connectedAccounts?.get(input.connectedAccountId) ?? Promise.resolve(null),
+    ).catch(() => null);
+    const displayName = account?.state?.val?.displayName;
+    if (typeof displayName === 'string') {
+      const identity = normalizeIdentity(displayName);
+      if (identity) return identity;
+    }
+
+    const tool = IDENTITY_TOOLS[input.app.toLowerCase()];
+    if (!tool) return null;
+    const response = await withTimeout(
+      runtime.sessions.use(input.sessionId).then((session) => session.execute(tool.slug, tool.args)),
+    );
+    if (!response || response.error) return null;
+    return identityFromWhoami(response.data);
+  } catch {
+    return null;
+  }
+}

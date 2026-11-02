@@ -1,0 +1,118 @@
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import {
+  type Ports,
+  computePorts,
+  hasKortixSchema,
+  repoRoot,
+  runMigrate,
+  sh,
+} from '../../scripts/worktree/lib';
+
+// Heavy integration test for the worktree's OWN migrate wrapper. The lightweight
+// scripts/worktree/__tests__ prove runMigrate references real things (the
+// @kortix/db script, psql, test-prereqs.sql); this proves the wrapper actually
+// builds the schema end-to-end by running the REAL runMigrate() + hasKortixSchema()
+// against a throwaway Postgres — with the postgres:postgres@/postgres creds the
+// worktree always uses (a fresh Supabase-local), which the kortix_test container
+// in docker-compose.test.yml does not match, so this manages its own container.
+//
+//   bun test tests/migration/worktree-migrate.test.ts   (needs docker)
+
+const dockerOk = sh(['docker', 'info']).ok;
+const CONTAINER = 'kortix-wt-migrate-test';
+// Host port for the throwaway container. MUST stay BELOW 32768: Linux's default
+// ephemeral range is 32768-60999 (`/proc/sys/net/ipv4/ip_local_port_range`), and
+// an outbound socket from the suite can transiently own a port in it — Docker
+// then fails the run with `bind: address already in use`. The previous 554xx
+// defaults sat inside that range and flaked CI on two different ports in a
+// single run.
+const PORT = Number(process.env.WT_MIGRATE_TEST_PORT || 5440);
+const ROOT = repoRoot();
+const ports: Ports = { ...computePorts(0), sbDb: PORT };
+const URL = `postgresql://postgres:postgres@127.0.0.1:${PORT}/postgres`;
+
+/**
+ * Ready means: the HOST endpoint `runMigrate` uses answers a query.
+ *
+ * It used to mean `pg_isready` INSIDE the container, which answers over the
+ * unix socket. The postgres entrypoint runs initdb against a temporary
+ * socket-only server (`listen_addresses=''`), so that probe passes while
+ * nothing serves TCP yet — and `docker run -p` has already published the port,
+ * so the proxy accepts the connection and closes it at once. The suite then
+ * read `psql: server closed the connection unexpectedly` and `runMigrate` exit
+ * 2, 55 ms into a container it had been told was ready (CI run 36153691220,
+ * core lane, db-suites).
+ */
+function pgReady(): boolean {
+  return sh(['psql', URL, '-tAc', 'select 1']).ok;
+}
+
+const suite = dockerOk ? describe : describe.skip;
+
+suite('worktree runMigrate (end-to-end against throwaway Postgres)', () => {
+  beforeAll(async () => {
+    sh(['docker', 'rm', '-f', '-v', CONTAINER]);
+    const up = sh([
+      'docker',
+      'run',
+      '-d',
+      '--name',
+      CONTAINER,
+      '-e',
+      'POSTGRES_PASSWORD=postgres',
+      '-e',
+      'POSTGRES_USER=postgres',
+      '-e',
+      'POSTGRES_DB=postgres',
+      '--tmpfs',
+      '/var/lib/postgresql/data',
+      '-p',
+      `127.0.0.1:${PORT}:5432`,
+      'postgres:16-alpine',
+      '-c',
+      'fsync=off',
+      '-c',
+      'synchronous_commit=off',
+      '-c',
+      'full_page_writes=off',
+    ]);
+    if (!up.ok) throw new Error(`could not start test container: ${up.stderr}`);
+    for (let i = 0; i < 60; i++) {
+      if (pgReady()) return;
+      await Bun.sleep(1000);
+    }
+    throw new Error('test Postgres never became ready');
+  }, 120_000);
+
+  afterAll(() => {
+    sh(['docker', 'rm', '-f', '-v', CONTAINER]);
+  });
+
+  test('builds the kortix schema from scratch (prereqs + node-pg-migrate)', async () => {
+    const code = await runMigrate(ROOT, ports);
+    expect(code).toBe(0);
+
+    expect(hasKortixSchema(ports)).toBe(true);
+
+    const count = Number(
+      sh([
+        'psql',
+        URL,
+        '-tAc',
+        "select count(*) from information_schema.tables where table_schema='kortix' and table_type='BASE TABLE'",
+      ]).stdout.trim(),
+    );
+    expect(count).toBeGreaterThanOrEqual(80);
+  }, 180_000);
+
+  test('is idempotent — a second run applies nothing and still exits 0', async () => {
+    const code = await runMigrate(ROOT, ports);
+    expect(code).toBe(0);
+    expect(hasKortixSchema(ports)).toBe(true);
+  }, 120_000);
+});
+
+if (!dockerOk) {
+  // biome-ignore lint/suspicious/noSkippedTests: This integration suite requires a running Docker daemon.
+  test.skip('worktree runMigrate integration (docker unavailable — skipped)', () => {});
+}

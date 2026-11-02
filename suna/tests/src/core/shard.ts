@@ -1,0 +1,180 @@
+/**
+ * Deterministic flow sharding for deployed API runs (`--api-shard`).
+ *
+ * `.github/workflows/tests-release.yml` ran the deployed API suite as 6
+ * parallel GitHub jobs until 2026-10-16; it now runs the `deployed` set in one
+ * job, and `--tag` narrows the registry before this planner partitions it.
+ * Each sharded job re-discovers the SAME flow registry and asks this planner
+ * which flows belong to its shard, so the partition is computed from the live
+ * registry rather than from a hand-maintained list: a newly selected flow
+ * always lands in exactly one shard.
+ *
+ * Two rules, in order:
+ *
+ * 1. Every `serial` and every `global` flow goes to shard 1, and — whenever such
+ *    a flow exists and there is more than one shard — shard 1 gets NOTHING else.
+ *    `global` flows (ADM-19, BILL-13, CONN-5) mutate platform-wide state that
+ *    all shards share, so two jobs running them at once would corrupt each
+ *    other. `serial` flows mutate their own run's OWNER/platform-admin
+ *    principals. Both kinds run strictly one-at-a-time (`runner.ts` drains them
+ *    after the parallel lanes), so any parallel flow sharing their shard waits
+ *    behind a queue it cannot help drain. Giving the tail its own runner is what
+ *    lets the remaining shards be sized purely by parallel work.
+ * 2. The remaining flows are bin-packed longest-processing-time-first onto the
+ *    eligible shard with the lowest projected load, ties broken by shard index
+ *    then flow id. LPT is deterministic given the same registry, so every job
+ *    computes an identical partition without coordinating.
+ *
+ * The cost model is in worker-seconds and uses the flow's declared `timeoutMs`
+ * (default 120_000, matching `runner.ts`'s `withTimeout` fallback) as a static
+ * proxy for duration. It is a ceiling, not a measurement — good enough to keep
+ * the expensive sandbox flows from piling onto one shard, and it needs no
+ * results artifact to stay current. A serial flow occupies a whole shard while
+ * the other workers idle, so it is charged `SERIAL_WORKER_PENALTY` times its
+ * weight; a parallel flow is charged once. Read a projected load as a wall-clock
+ * ceiling of `load / KE2E_API_WORKERS`, uniformly across every shard.
+ */
+import type { RegisteredFlow } from './flow';
+
+/** `runner.ts:161` — `withTimeout(f.fn(ctx), f.meta.timeoutMs ?? 120_000, f.id)`. */
+export const DEFAULT_FLOW_WEIGHT_MS = 120_000;
+
+/**
+ * Models the per-shard API worker count: a serial flow blocks the shard for its
+ * whole duration while the other workers idle, so it costs the shard that many
+ * worker-seconds. Must equal the `KE2E_API_WORKERS` the release gate gives each
+ * API shard (`tests-release.yml`), or a projected load no longer converts to a
+ * wall-clock ceiling by the same divisor on every shard. `tests/unit/shard.test.ts`
+ * reads the gate's value and fails when the two differ.
+ *
+ * This value cannot change the partition. Rule 1 gives the serial tail its own
+ * shard, so the only load it inflates is a shard that receives no bin-packed
+ * work — it is a reporting constant, not a packing input.
+ */
+export const SERIAL_WORKER_PENALTY = 4;
+
+export interface ShardSpec {
+  current: number;
+  total: number;
+}
+
+export interface ShardPlan {
+  /** Flow ids assigned to `spec.current`, sorted for a stable command line. */
+  ids: string[];
+  /** Projected worker-second load of every shard, indexed from shard 1. */
+  loads: number[];
+}
+
+/** Parse `CURRENT/TOTAL`. Throws on anything that is not a usable shard spec. */
+/**
+ * The one CURRENT/TOTAL shard grammar. `parseShardSpec` (--shard) and the lane
+ * flags (--browser-shard/--api-shard) share the regex and the
+ * 1 <= CURRENT <= TOTAL bounds; they differ in the floor for TOTAL (1 for a
+ * run that may not be sharded, 2 for a flag that only exists when sharding)
+ * and in their error wording, which the tests pin.
+ */
+export function parseShardBounds(
+  value: string,
+  minTotal: number,
+): { current: number; total: number; matched: boolean; inBounds: boolean } {
+  const match = value.match(/^(\d+)\/(\d+)$/);
+  const current = Number(match?.[1]);
+  const total = Number(match?.[2]);
+  return {
+    current,
+    total,
+    matched: !!match && Number.isInteger(current) && Number.isInteger(total),
+    inBounds: !!match && total >= minTotal && current >= 1 && current <= total,
+  };
+}
+
+export function parseShardSpec(value: string): ShardSpec {
+  const parsed = parseShardBounds(value, 1);
+  if (!parsed.matched) {
+    throw new Error(`--shard must use CURRENT/TOTAL, received "${value}"`);
+  }
+  if (!parsed.inBounds) {
+    throw new Error(`--shard must satisfy 1 <= CURRENT <= TOTAL, received "${value}"`);
+  }
+  return { current: parsed.current, total: parsed.total };
+}
+
+export function flowWeightMs(flow: RegisteredFlow): number {
+  const declared = flow.meta.timeoutMs;
+  return typeof declared === 'number' && declared > 0 ? declared : DEFAULT_FLOW_WEIGHT_MS;
+}
+
+export function isPinnedToFirstShard(flow: RegisteredFlow): boolean {
+  return Boolean(flow.meta.serial) || Boolean(flow.meta.global);
+}
+
+/**
+ * Assign every flow to a shard and return the ids belonging to `spec.current`.
+ * Total across all shards is a partition: every input flow appears exactly once.
+ */
+/**
+ * Longest-processing-time greedy bin packing, the one load-balance algorithm
+ * both shard planners share: items arrive heaviest-first and each lands in the
+ * least-loaded bin (first-lowest wins ties, so every shard computing this
+ * agrees with no coordination). `startBin` skips reserved bins (the serial
+ * tail's shard 1); `initialLoads` carries the weight already assigned there.
+ */
+export function packLeastLoaded(
+  items: ReadonlyArray<{ id: string; weight: number }>,
+  binCount: number,
+  startBin = 0,
+  initialLoads?: number[],
+): { bins: string[][]; loads: number[] } {
+  const loads = initialLoads ? [...initialLoads] : new Array<number>(binCount).fill(0);
+  const bins: string[][] = Array.from({ length: binCount }, () => []);
+  for (const item of items) {
+    let target = startBin;
+    for (let i = startBin + 1; i < binCount; i++) {
+      if (loads[i] < loads[target]) target = i;
+    }
+    bins[target].push(item.id);
+    loads[target] += item.weight;
+  }
+  return { bins, loads };
+}
+
+export function planShard(flows: RegisteredFlow[], spec: ShardSpec): ShardPlan {
+  const assigned = new Array<string[]>(spec.total);
+  for (let i = 0; i < spec.total; i++) assigned[i] = [];
+  const loads = new Array<number>(spec.total).fill(0);
+
+  const pinned = flows.filter(isPinnedToFirstShard);
+  for (const flow of pinned) {
+    assigned[0].push(flow.id);
+    loads[0] += flowWeightMs(flow) * SERIAL_WORKER_PENALTY;
+  }
+
+  // Rule 1: the serial tail owns shard 1 alone. Two escapes, both required to
+  // keep the planner total — a shard that can receive nothing must not exist:
+  // at `--shard 1/1` shard 1 is the only shard there is, and a registry with no
+  // serial or global flow has no tail to isolate.
+  const firstShardIsReserved = pinned.length > 0 && spec.total > 1;
+  const packStart = firstShardIsReserved ? 1 : 0;
+
+  const parallel = flows
+    .filter((flow) => !isPinnedToFirstShard(flow))
+    .sort((a, b) => {
+      const delta = flowWeightMs(b) - flowWeightMs(a);
+      return delta !== 0 ? delta : a.id.localeCompare(b.id, undefined, { numeric: true });
+    });
+
+  const packed = packLeastLoaded(
+    parallel.map((flow) => ({ id: flow.id, weight: flowWeightMs(flow) })),
+    spec.total,
+    packStart,
+    loads,
+  );
+  for (let i = packStart; i < spec.total; i++) assigned[i].push(...packed.bins[i]);
+
+  return {
+    ids: assigned[spec.current - 1].sort((a, b) =>
+      a.localeCompare(b, undefined, { numeric: true }),
+    ),
+    loads: packed.loads,
+  };
+}

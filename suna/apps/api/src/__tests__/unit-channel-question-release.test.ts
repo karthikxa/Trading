@@ -1,0 +1,267 @@
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+
+import { channelOfSessionMetadata, isUnattendedSessionMetadata, questionReleaseSentinel, unattendedQuestionSentinel } from '../channels/question-release';
+
+// The agent's `question` tool BLOCKS. In a chat channel the answer arrives
+// later as a new turn, so the call must be released or the turn hangs. That
+// release lived only in the image-baked daemons, gated on SLACK_* env — a
+// Teams agent that asked a question hung after its card was posted. These pin
+// the server-side release that reaches every existing sandbox.
+
+describe('channelOfSessionMetadata', () => {
+  test('reads the source the channel wrote at creation', () => {
+    expect(channelOfSessionMetadata({ source: 'teams' })).toBe('teams');
+    expect(channelOfSessionMetadata({ source: 'slack' })).toBe('slack');
+  });
+
+  test('falls back to the per-channel block when source is absent', () => {
+    expect(channelOfSessionMetadata({ teams: { conversation_id: '19:x' } })).toBe('teams');
+    expect(channelOfSessionMetadata({ slack: { channel: 'C1' } })).toBe('slack');
+  });
+
+  test('a dashboard session is NOT a channel — its UI answers the question', () => {
+    // Releasing a dashboard question is the "every question is auto-answered
+    // even outside Slack" bug the daemon's own header describes.
+    expect(channelOfSessionMetadata({ source: 'web' })).toBeNull();
+    expect(channelOfSessionMetadata({})).toBeNull();
+    expect(channelOfSessionMetadata(null)).toBeNull();
+    expect(channelOfSessionMetadata(undefined)).toBeNull();
+    expect(channelOfSessionMetadata('teams')).toBeNull();
+  });
+
+  test('a null per-channel block is not mistaken for one', () => {
+    // `typeof null === "object"`; the guard must not treat null as a block.
+    expect(channelOfSessionMetadata({ teams: null, slack: null, telegram: null, email: null })).toBeNull();
+  });
+
+  test('Telegram and Email sessions are channels too: nobody answers their question in a UI', () => {
+    expect(channelOfSessionMetadata({ source: 'telegram', telegram: { chat_id: 1 } })).toBe('telegram');
+    expect(channelOfSessionMetadata({ source: 'email', email: { thread_id: 't' } })).toBe('email');
+  });
+});
+
+describe('questionReleaseSentinel', () => {
+  test('a posted question tells the agent to end the turn', () => {
+    const s = questionReleaseSentinel('teams', true);
+    expect(s).toContain('Posted to the Teams conversation');
+    expect(s).toContain('finish this turn now');
+    // A `teams send` after the card would be a second reply to one question.
+    expect(s).toContain('post nothing else');
+    expect(s).toContain('NEW turn');
+  });
+
+  test('names the channel it was actually in', () => {
+    expect(questionReleaseSentinel('slack', true)).toContain('the Slack thread');
+    expect(questionReleaseSentinel('teams', true)).not.toContain('Slack');
+  });
+
+  test('never tells the agent to stop using the question tool', () => {
+    // The old daemon's Slack sentinel ended "Next time, just ask with `slack
+    // send` rather than the question tool" — the opposite of the Slack prompt.
+    for (const channel of ['teams', 'slack'] as const) {
+      for (const posted of [true, false]) {
+        expect(questionReleaseSentinel(channel, posted)).not.toMatch(/rather than the question tool/);
+      }
+    }
+  });
+
+  test('the Slack and Teams copy is unchanged, word for word', () => {
+    const posted = (where: string) =>
+      `(Posted to ${where}. Questions here are async — the user answers with a tap or a reply, and that reaches you as a NEW turn with full context. Do NOT wait for an answer, and post nothing else: the question is your reply. Just finish this turn now.)`;
+    const unposted = (where: string, send: string) =>
+      `(This question could NOT be posted to ${where}, so the user has not seen it. Ask it in plain words with ${send}, then finish this turn — their reply reaches you as a NEW turn.)`;
+    expect(questionReleaseSentinel('slack', true)).toBe(posted('the Slack thread'));
+    expect(questionReleaseSentinel('teams', true)).toBe(posted('the Teams conversation'));
+    expect(questionReleaseSentinel('slack', false)).toBe(unposted('the Slack thread', '`slack send`'));
+    expect(questionReleaseSentinel('teams', false)).toBe(unposted('the Teams conversation', '`teams send`'));
+  });
+
+  test('a Telegram or Email question was never shown: ask it through the channel connector', () => {
+    const telegram = questionReleaseSentinel('telegram', false);
+    expect(telegram).toContain('could NOT be posted to the Telegram chat');
+    expect(telegram).toContain('`kortix connectors call kortix_telegram.send_message`');
+    const email = questionReleaseSentinel('email', false);
+    expect(email).toContain('could NOT be posted to the email thread');
+    expect(email).toContain('`kortix connectors call email.reply_message`');
+  });
+
+  test('an UNposted question says so, and points at the channel`s own send', () => {
+    // The user never saw it. Letting the agent believe it asked is a dead end.
+    const teams = questionReleaseSentinel('teams', false);
+    expect(teams).toContain('could NOT be posted');
+    expect(teams).toContain('`teams send`');
+    expect(questionReleaseSentinel('slack', false)).toContain('`slack send`');
+  });
+});
+
+describe('releaseRuntimeQuestion — the runtime contract', () => {
+  // OpenCode and the pi harness both serve POST /question/:id/reply:
+  // 200 `true` on the first reply, 404 once the question is answered.
+  let calls: Array<{ url: string; init: RequestInit }> = [];
+  let status = 200;
+  let resolved: { endpoint: { url: string; headers: Record<string, string> } } | null = {
+    endpoint: { url: 'http://sandbox.internal', headers: { 'X-Sandbox-Token': 't' } },
+  };
+
+  mock.module('../projects/session-lifecycle/runtime-client', () => ({
+    resolveSessionOpencodeEndpoint: async () => resolved,
+  }));
+
+  const realFetch = globalThis.fetch;
+  beforeEach(() => {
+    calls = [];
+    status = 200;
+    resolved = { endpoint: { url: 'http://sandbox.internal', headers: { 'X-Sandbox-Token': 't' } } };
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(status === 200 ? 'true' : '{}', { status });
+    }) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const load = async () => await import('../projects/session-lifecycle/release-runtime-question');
+
+  test('posts the answers to the runtime`s own reply endpoint', async () => {
+    const { releaseRuntimeQuestion } = await load();
+
+    expect(await releaseRuntimeQuestion('sess-1', 'que_abc', [['a sentinel']])).toBe('released');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://sandbox.internal/question/que_abc/reply?directory=%2Fworkspace');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ answers: [['a sentinel']] });
+    const headers = calls[0].init.headers as Record<string, string>;
+    expect(headers['X-Sandbox-Token']).toBe('t');
+    expect(headers['Content-Type']).toBe('application/json');
+  });
+
+  test('a 404 is "already answered", not a failure — a new daemon may release too', async () => {
+    status = 404;
+    const { releaseRuntimeQuestion } = await load();
+
+    expect(await releaseRuntimeQuestion('sess-1', 'que_abc', [['x']])).toBe('already_answered');
+  });
+
+  test('any other failure is reported as unreachable, never thrown', async () => {
+    status = 500;
+    const { releaseRuntimeQuestion } = await load();
+    expect(await releaseRuntimeQuestion('sess-1', 'que_abc', [['x']])).toBe('unreachable');
+
+    resolved = null;
+    expect(await releaseRuntimeQuestion('sess-1', 'que_abc', [['x']])).toBe('unreachable');
+  });
+
+  test('refuses to guess an id it was not given', async () => {
+    const { releaseRuntimeQuestion } = await load();
+
+    expect(await releaseRuntimeQuestion('sess-1', '', [['x']])).toBe('unreachable');
+    expect(calls).toEqual([]);
+  });
+
+  test('an id with reserved characters is escaped into the path', async () => {
+    const { releaseRuntimeQuestion } = await load();
+
+    await releaseRuntimeQuestion('sess-1', 'a/b?c', [['x']]);
+    expect(calls[0].url).toContain('/question/a%2Fb%3Fc/reply');
+  });
+
+  test('a box with the session-log actions is released on the native question route', async () => {
+    resolved = { endpoint: { url: 'http://sandbox.internal', headers: { 'X-Sandbox-Token': 't' } }, externalId: 'ext-actions' } as never;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      if (url.endsWith('/kortix/health')) return Response.json({ capabilities: ['runtime.turns.v1', 'runtime.actions.v1'] });
+      calls.push({ url, init });
+      return Response.json({ ok: true }, { status });
+    }) as unknown as typeof fetch;
+    const { releaseRuntimeQuestion } = await load();
+
+    expect(await releaseRuntimeQuestion('sess-1', 'que_abc', [['a sentinel']])).toBe('released');
+    expect(calls.map((c) => c.url)).toEqual(['http://sandbox.internal/kortix/runtime/questions/que_abc/reply']);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ answers: [['a sentinel']] });
+    status = 404;
+    expect(await releaseRuntimeQuestion('sess-1', 'que_abc', [['x']])).toBe('already_answered');
+  });
+});
+
+// Asserted on source: the
+// release is one branch inside a route handler with no seam to import, and
+// what matters is which inputs gate it and where it sits.
+describe('POST /turn-question releases channel questions, and only those', () => {
+  const src = Bun.file(new URL('../projects/routes/turn-questions.ts', import.meta.url).pathname);
+
+  const handler = async () => {
+    const all = await src.text();
+    const start = all.indexOf("path: '/{projectId}/turn-question'");
+    expect(start, 'turn-question route is missing').toBeGreaterThan(-1);
+    const rest = all.slice(start);
+    return rest.slice(0, rest.indexOf('\n);\n'));
+  };
+
+  test('reads the channel from the SESSION`s metadata, not the live-turn row', async () => {
+    const body = await handler();
+    expect(body).toContain('metadata: projectSessions.metadata');
+    expect(body).toContain('channelOfSessionMetadata(turnQuestionSession.metadata)');
+  });
+
+  test('releases only a channel session, and only with a real runtime id', async () => {
+    const body = await handler();
+    // The `q-<session>` fallback used for persistence names nothing the runtime
+    // can answer, so the release must key on the caller's own request_id.
+    expect(body).toContain('const runtimeRequestId = body.request_id?.trim();');
+    expect(body).toContain('if (channel && runtimeRequestId)');
+  });
+
+  test('tells the agent whether the card was actually posted', async () => {
+    const body = await handler();
+    expect(body).toContain('posted: result.ok');
+  });
+
+  test('releases BEFORE responding — the daemon is still awaiting this request', async () => {
+    // Ordering is what makes the server's sentinel win over an old daemon's.
+    const body = await handler();
+    const releaseAt = body.indexOf('await releaseChannelQuestion(');
+    const firstReturnAfterRelay = body.indexOf('return c.json', body.indexOf('relayTurnQuestion('));
+    expect(releaseAt).toBeGreaterThan(-1);
+    expect(releaseAt).toBeLessThan(firstReturnAfterRelay);
+  });
+});
+
+// A session a trigger started (cron, webhook, monitor) has nobody to answer a
+// question. Prod 2026-10-09: a keyed cron session asked one and blocked 5 days;
+// every later fire queued behind it.
+describe('unattended sessions', () => {
+  test('a trigger-started session is unattended', () => {
+    expect(isUnattendedSessionMetadata({ source: 'trigger:cron' })).toBe(true);
+    expect(isUnattendedSessionMetadata({ source: 'trigger:webhook' })).toBe(true);
+    expect(isUnattendedSessionMetadata({ source: 'trigger:monitor' })).toBe(true);
+  });
+
+  test('a session that marks itself unattended is unattended (--meta unattended=true stores a string)', () => {
+    expect(isUnattendedSessionMetadata({ source: 'web', unattended: 'true' })).toBe(true);
+    expect(isUnattendedSessionMetadata({ source: 'web', unattended: true })).toBe(true);
+    expect(isUnattendedSessionMetadata({ source: 'web', unattended: 'false' })).toBe(false);
+  });
+
+  test('a person or a channel is not unattended', () => {
+    expect(isUnattendedSessionMetadata({ source: 'web' })).toBe(false);
+    expect(isUnattendedSessionMetadata({ source: 'slack' })).toBe(false);
+    expect(isUnattendedSessionMetadata({})).toBe(false);
+    expect(isUnattendedSessionMetadata(null)).toBe(false);
+    expect(isUnattendedSessionMetadata('trigger:cron')).toBe(false);
+  });
+
+  test('the sentinel says nobody answers, and where a decision goes', () => {
+    const s = unattendedQuestionSentinel();
+    expect(s).toContain('nobody can answer');
+    expect(s).toContain('finish');
+    expect(s).not.toMatch(/wait for/i);
+  });
+
+  test('POST /turn-question releases an unattended session`s question before responding', async () => {
+    const all = await Bun.file(new URL('../projects/routes/turn-questions.ts', import.meta.url).pathname).text();
+    const body = all.slice(all.indexOf("path: '/{projectId}/turn-question'"));
+    expect(body).toContain('isUnattendedSessionMetadata(turnQuestionSession.metadata)');
+    const releaseAt = body.indexOf('await releaseRuntimeQuestion(sessionId, runtimeRequestId, answers)');
+    expect(releaseAt).toBeGreaterThan(-1);
+    expect(releaseAt).toBeLessThan(body.indexOf('return c.json', body.indexOf('relayTurnQuestion(')));
+  });
+});

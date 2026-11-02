@@ -1,0 +1,406 @@
+import { createRoute, z } from '@hono/zod-openapi';
+import { json, errors, auth } from '../../openapi';
+import { userAccountNameRows } from '../../iam/membership-read';
+import { accountRolesForUser } from '../../iam/read-models';
+import { resolveAccountId } from '../../shared/resolve-account';
+import {
+  PatPolicyError,
+  checkTokenMintExpiry,
+  createAccountToken,
+  listAccountTokens,
+  listPersonalAccountTokens,
+  getAccountTokenOwner,
+  revokeAccountToken,
+  deleteRevokedPersonalAccountToken,
+} from '../../repositories/account-tokens';
+import { ACCOUNT_ACTIONS, assertAuthorized, authorize } from '../../iam';
+import { actorOf, type Actor } from '../../iam/actor';
+import { isUuid } from '../../shared/validate';
+import { loadProjectForUser } from '../../projects/lib/access';
+import {
+  accountsRouter,
+  accountDisplayName,
+  AccountTokenSchema,
+  MeSchema,
+  autoClaimPendingInvites,
+  resolveAccountForUser,
+  resolveAccountDisplayNames,
+  lookupEmailsByUserIds,
+} from './app';
+import { readJsonObject } from '../../shared/http-body';
+import { rethrowDatabaseError } from '../../shared/database-errors';
+
+/**
+ * A query flag arrives as a string or not at all. `?mine`, `?mine=true` and
+ * `?mine=1` all mean yes; anything else — including `?mine=false` — means no,
+ * so a caller that spells the negative out gets the unnarrowed list rather
+ * than a surprising narrowing on the truthiness of the string "false".
+ */
+export function isTruthyFlag(raw: string | undefined): boolean {
+  if (raw === undefined) return false;
+  return raw === '' || raw === 'true' || raw === '1';
+}
+
+/**
+ * Whether the caller holds the person's full identity: a browser session, or an
+ * unscoped personal access token. Only such a caller may mint or revoke a
+ * personal token on the `token.personal.*` leaves. Every other credential — a
+ * project-scoped PAT, an agent session, a service account, a third-party
+ * `kortix_oat_` OAuth token, a sandbox API key — keeps needing the admin
+ * `token.create` / `token.revoke` leaves, so it can never turn itself into a
+ * wider or longer-lived bearer than the one it holds.
+ */
+export function actsAsFullIdentity(authType: string | undefined, actor: Actor): boolean {
+  const credential = actor.credential;
+  if (authType === 'supabase') return credential.kind === 'jwt';
+  if (authType === 'pat') return credential.kind === 'pat' && credential.projectId === null;
+  return false;
+}
+
+// Routes are registered via this function (called by the orchestrator AFTER
+// middleware + mounts) so the registration order stays byte-identical to the
+// original single-file router.
+export function registerTokenRoutes(): void {
+// GET /v1/accounts/me — identity probe for CLI + dashboard nav
+accountsRouter.openapi(
+  createRoute({
+    method: 'get',
+    path: '/me',
+    tags: ['accounts'],
+    summary: 'Identity probe for CLI + dashboard nav',
+    ...auth,
+    responses: {
+      200: json(MeSchema, 'The authenticated user and their account memberships'),
+      ...errors(401),
+    },
+  }),
+  async (c: any) => {
+  const userId = c.get('userId') as string;
+  const authType = (c.get('authType') as string | undefined) ?? null;
+  let userEmail = (c.get('userEmail') as string) || '';
+  // CLI PAT requests carry no email in context (the auth middleware sets it
+  // empty for PATs), so resolve it from the user record — otherwise whoami
+  // and friends only ever see the user id.
+  if (!userEmail) {
+    userEmail = (await lookupEmailsByUserIds([userId])).get(userId) || '';
+  }
+
+  const loadMemberships = async (): Promise<Array<{
+    accountId: string;
+    accountRole: string;
+    name: string;
+  }>> => {
+    try {
+      // `account_members` says WHICH accounts; `role_assignments` says at what
+      // role — the same split GET /accounts uses.
+      const [rows, rolesByAccount] = await Promise.all([
+        userAccountNameRows(userId),
+        accountRolesForUser(userId),
+      ]);
+      return rows.map((r) => ({ ...r, accountRole: rolesByAccount.get(r.accountId) ?? 'member' }));
+    } catch {
+      /* table may not exist yet */
+      return [];
+    }
+  };
+
+  // Bootstrap BEFORE claiming pending invites (R3 — see
+  // accounts/core/accounts.ts:registerAccountRoutes, GET /). Decide on the
+  // PRE-claim membership count, not the post-claim one: the old order
+  // claimed first, so an invite-first caller of THIS route also never got a
+  // personal account — whichever of /accounts or /accounts/me a client hit
+  // first silently decided the user's fate, which is exactly the coupling
+  // R3 was chosen to remove. `resolveAccountId` re-checks membership itself
+  // and bootstraps only when it is still zero, so reading it here before
+  // the claim is what makes the bootstrap actually fire.
+  let memberships = await loadMemberships();
+  if (memberships.length === 0 && authType === 'supabase') {
+    await resolveAccountId(userId);
+    memberships = await loadMemberships();
+  }
+  if (authType === 'supabase' && userEmail) {
+    await autoClaimPendingInvites(userId, userEmail);
+    memberships = await loadMemberships();
+  }
+
+  const displayNames = await resolveAccountDisplayNames(memberships, {
+    userId,
+    email: userEmail,
+  });
+
+  return c.json({
+    user_id: userId,
+    email: userEmail,
+    token_context: {
+      auth_type: authType,
+      // The account token this request authenticated with (null for a web
+      // session), so a client can tell its own credential from the rest:
+      // `kortix tokens rm` refuses to revoke it by accident (KRTX-1842).
+      token_id: (c.get('iamTokenBinding') as { tokenId?: string } | undefined)?.tokenId ?? null,
+      project_id: (c.get('tokenProjectId') as string | undefined) ?? null,
+      session_id: (c.get('sessionId') as string | undefined) ?? null,
+      agent: (c.get('agentGrant') as { agent?: string } | null | undefined)?.agent ?? null,
+      connectors: (c.get('agentGrant') as { connectors?: string[] | 'all' } | null | undefined)?.connectors ?? null,
+      kortix_permissions: (c.get('agentGrant') as { permissions?: string[] | 'all' } | null | undefined)?.permissions ?? null,
+      // Deprecated wire alias of `kortix_permissions` — CLIs released before
+      // the 2026-09-22 rename read this key.
+      kortix_cli: (c.get('agentGrant') as { permissions?: string[] | 'all' } | null | undefined)?.permissions ?? null,
+      env: (c.get('agentGrant') as { env?: string[] | 'all' } | null | undefined)?.env ?? null,
+    },
+    accounts: memberships.map((m) => ({
+      account_id: m.accountId,
+      slug: m.accountId.slice(0, 8),
+      name: displayNames.get(m.accountId) ?? accountDisplayName(m.name, userEmail),
+      role: m.accountRole,
+    })),
+  });
+  },
+);
+
+// GET /v1/accounts/tokens — list CLI PATs for the active account
+accountsRouter.openapi(
+  createRoute({
+    method: 'get',
+    path: '/tokens',
+    tags: ['accounts'],
+    summary: 'List CLI PATs for the active account',
+    ...auth,
+    request: {
+      query: z
+        .object({
+          account_id: z.string(),
+          // `mine=true` narrows the list to the CALLER'S OWN hand-minted API
+          // keys — no other member's keys, no session connector tokens, no
+          // service-account bearers. That is what a person's own settings page
+          // shows (`/settings/tokens`); the account hub's Tokens tab is the
+          // automation surface and reads service accounts instead. Without
+          // it a caller with `token.revoke` gets every live token of the
+          // account; any other caller gets only the live tokens they own.
+          mine: z.string(),
+        })
+        .partial(),
+    },
+    responses: {
+      200: json(z.array(AccountTokenSchema), 'Personal access tokens'),
+      ...errors(401, 403),
+    },
+  }),
+  async (c: any) => {
+  const userId = c.get('userId') as string;
+  const queryAccount = c.req.query('account_id') ?? undefined;
+
+  let accountId: string;
+  try {
+    accountId = await resolveAccountForUser(userId, queryAccount);
+  } catch (err) {
+    rethrowDatabaseError(err);
+    return c.json({ error: (err as Error).message }, 403);
+  }
+
+  const actor = await actorOf(c, accountId);
+  await assertAuthorized(actor, ACCOUNT_ACTIONS.TOKEN_READ);
+
+  // The account-wide list names every member's keys. Only a caller who may
+  // revoke them (token.revoke) reads it; anyone else gets the live tokens
+  // they own (their keys and their sessions' tokens).
+  const canSeeAll = (await authorize(actor, ACCOUNT_ACTIONS.TOKEN_REVOKE)).allowed;
+  const tokens = isTruthyFlag(c.req.query('mine'))
+    ? await listPersonalAccountTokens(accountId, userId)
+    : await listAccountTokens(accountId, undefined, canSeeAll ? undefined : userId);
+  return c.json(
+    tokens.map((t) => ({
+      token_id: t.tokenId,
+      name: t.name,
+      project_id: t.projectId ?? null,
+      public_key: t.publicKey,
+      status: t.status,
+      expires_at: t.expiresAt?.toISOString() ?? null,
+      last_used_at: t.lastUsedAt?.toISOString() ?? null,
+      created_at: t.createdAt.toISOString(),
+      revoked_at: t.revokedAt?.toISOString() ?? null,
+    })),
+  );
+  },
+);
+
+// POST /v1/accounts/tokens — mint a new PAT (plaintext returned ONCE)
+accountsRouter.openapi(
+  createRoute({
+    method: 'post',
+    path: '/tokens',
+    tags: ['accounts'],
+    summary: 'Mint a new PAT (plaintext returned once)',
+    ...auth,
+    request: {
+      body: {
+        content: {
+          'application/json': {
+            schema: z.object({
+              name: z.string(),
+              account_id: z.string().optional(),
+              expires_at: z.string().optional(),
+              project_id: z.string().uuid().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      201: json(AccountTokenSchema, 'The newly minted token (secret_key returned once)'),
+      ...errors(400, 401, 403),
+    },
+  }),
+  async (c: any) => {
+  const userId = c.get('userId') as string;
+  // A connected app's revocable `kortix_oat_` token must not mint a durable one.
+  if (c.get('authType') === 'oauth') {
+    return c.json({ error: 'Connected apps cannot mint personal access tokens.' }, 403);
+  }
+  const body = await readJsonObject(c);
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name) {
+    return c.json({ error: 'name is required' }, 400);
+  }
+  if (name.length > 255) {
+    return c.json({ error: 'name too long (max 255 chars)' }, 400);
+  }
+  const accountOverride =
+    typeof body.account_id === 'string' && body.account_id.trim() ? body.account_id.trim() : undefined;
+
+  let accountId: string;
+  try {
+    accountId = await resolveAccountForUser(userId, accountOverride);
+  } catch (err) {
+    rethrowDatabaseError(err);
+    return c.json({ error: (err as Error).message }, 403);
+  }
+
+  // A PAT authenticates AS the person who minted it and is authorized against
+  // that person's own roles, so minting your own is a membership right
+  // (`token.personal.create`, held by every system account role) — without it
+  // a plain member cannot run `kortix login` at all.
+  const actor = await actorOf(c, accountId);
+  await assertAuthorized(
+    actor,
+    actsAsFullIdentity(c.get('authType') as string | undefined, actor)
+      ? ACCOUNT_ACTIONS.TOKEN_PERSONAL_CREATE
+      : ACCOUNT_ACTIONS.TOKEN_CREATE,
+  );
+
+  const expiresAtRaw = typeof body.expires_at === 'string' ? body.expires_at.trim() : '';
+  const expiresAt = expiresAtRaw ? new Date(expiresAtRaw) : undefined;
+  if (expiresAt && Number.isNaN(expiresAt.getTime())) {
+    return c.json({ error: 'expires_at must be ISO-8601' }, 400);
+  }
+  const expiryRefusal = await checkTokenMintExpiry(
+    expiresAt,
+    c.get('tokenProjectId') ? (c.get('iamTokenId') as string | undefined) : undefined,
+  );
+  if (expiryRefusal) {
+    return c.json({ error: expiryRefusal.error, code: expiryRefusal.code }, expiryRefusal.status);
+  }
+
+  // Optional project scope. A project-scoped key only ever works on that one
+  // project (the auth middleware enforces the binding); it never widens access.
+  const projectId =
+    typeof body.project_id === 'string' && body.project_id.trim()
+      ? body.project_id.trim()
+      : undefined;
+
+  if (projectId) {
+    const loaded = await loadProjectForUser(c, projectId, 'credentials');
+    if (!loaded?.row || loaded.row.accountId !== accountId) {
+      return c.json({ error: 'Project not found in account' }, 403);
+    }
+  }
+
+  let created;
+  try {
+    created = await createAccountToken({ accountId, userId, name, expiresAt, projectId });
+  } catch (err) {
+    if (err instanceof PatPolicyError) {
+      return c.json({ error: err.message, code: err.code }, 400);
+    }
+    throw err;
+  }
+  return c.json(
+    {
+      token_id: created.tokenId,
+      name: created.name,
+      project_id: created.projectId ?? null,
+      public_key: created.publicKey,
+      secret_key: created.secretKey,
+      status: created.status,
+      expires_at: created.expiresAt?.toISOString() ?? null,
+      created_at: created.createdAt.toISOString(),
+    },
+    201,
+  );
+  },
+);
+
+// DELETE /v1/accounts/tokens/:tokenId — revoke a PAT
+accountsRouter.openapi(
+  createRoute({
+    method: 'delete',
+    path: '/tokens/{tokenId}',
+    tags: ['accounts'],
+    summary: 'Revoke a PAT, or explicitly delete a revoked personal key',
+    ...auth,
+    request: {
+      params: z.object({ tokenId: z.string() }),
+      query: z.object({ account_id: z.string(), delete_revoked: z.enum(['true', 'false']) }).partial(),
+    },
+    responses: {
+      200: json(z.object({ ok: z.literal(true), deleted: z.boolean().optional() }), 'Revocation or deletion result'),
+      ...errors(400, 401, 403, 404),
+    },
+  }),
+  async (c: any) => {
+  const userId = c.get('userId') as string;
+  const tokenId = c.req.param('tokenId');
+  // A non-UUID id would reach the uuid-typed `account_tokens.token_id` query
+  // and surface as a 500 `22P02` (shared/validate.ts). A client-input error is
+  // answered as one, before any account or token lookup runs.
+  if (!isUuid(tokenId)) {
+    return c.json({ error: `"${tokenId}" is not a valid token id (a token id is a UUID)` }, 400);
+  }
+  const queryAccount = c.req.query('account_id') ?? undefined;
+
+  let accountId: string;
+  try {
+    accountId = await resolveAccountForUser(userId, queryAccount);
+  } catch (err) {
+    rethrowDatabaseError(err);
+    return c.json({ error: (err as Error).message }, 403);
+  }
+
+  // Your own hand-minted token needs only `token.personal.revoke`. Anything
+  // else — another person's token, a session or service-account bearer, or an
+  // id that does not exist — needs the admin `token.revoke`, so a member learns
+  // nothing about tokens that are not theirs (403, not 404).
+  const actor = await actorOf(c, accountId);
+  const owner = await getAccountTokenOwner(tokenId, accountId);
+  const ownPersonalToken =
+    actsAsFullIdentity(c.get('authType') as string | undefined, actor) &&
+    owner?.personal === true &&
+    owner.userId === userId;
+  await assertAuthorized(
+    actor,
+    ownPersonalToken ? ACCOUNT_ACTIONS.TOKEN_PERSONAL_REVOKE : ACCOUNT_ACTIONS.TOKEN_REVOKE,
+  );
+
+  if (c.req.query('delete_revoked') === 'true') {
+    const deleted = await deleteRevokedPersonalAccountToken(tokenId, accountId);
+    if (deleted) return c.json({ ok: true, deleted: true });
+    return c.json({ error: 'revoked personal token not found' }, 404);
+  }
+
+  const ok = await revokeAccountToken(tokenId, accountId);
+  if (!ok) {
+    return c.json({ error: 'token not found or already revoked' }, 404);
+  }
+  return c.json({ ok: true });
+  },
+);
+}

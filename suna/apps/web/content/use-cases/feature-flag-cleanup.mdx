@@ -1,0 +1,234 @@
+---
+title: "How we remove stale feature flags"
+description: The flag-cleanup agent we run on Kortix — a weekly sweep that finds feature flags that are fully rolled out or long dead, deletes the flag and the dead code branch it guards, and opens a PR for a human to merge.
+date: "2026-03-05"
+author: team
+tags:
+  - Engineering
+  - Case Study
+  - Enterprise
+template: feature-flag-cleanup
+---
+
+Every feature flag we ship is supposed to be temporary. It guards a rollout, we
+watch it ramp to 100%, and then someone is supposed to go back and delete it. In
+practice that last step loses to whatever shipped after it. Flags pile up, each
+one leaving an `if` branch, a dead `else`, and a config entry that nobody reads
+anymore — until the codebase is carrying the weight of every rollout it ever did.
+
+We run a flag-cleanup agent on Kortix that sweeps our repo every week, finds the
+flags that are safe to remove, deletes them and the branches they guard, and
+opens a PR. It never merges its own work, and it never touches a flag that's
+still in the middle of a rollout — those get flagged for a human instead.
+
+<KeyFacts>
+  <Fact label="Team">Kortix</Fact>
+  <Fact label="Runs on">Weekly cron, reusable session</Fact>
+  <Fact label="Connected systems">GitHub</Fact>
+  <Fact label="Mode">Opens PRs only · human merges</Fact>
+</KeyFacts>
+
+## The problem
+
+A feature flag has a natural lifecycle: ship behind it, ramp the rollout, hit
+100%, delete it. The first three steps are urgent and have an owner. The fourth
+one isn't and doesn't — by the time a flag is fully rolled out, the team that
+shipped it has moved on, and removing a few lines of conditional logic loses
+every priority fight.
+
+The cost isn't obvious from any single flag. It's cumulative: every live flag is
+a branch some engineer has to reason about, a code path that might not even be
+tested anymore, and a source of bugs where the "off" branch silently rots. Left
+alone, the flag inventory only grows, and nobody wants to be the one who deletes
+a flag that turns out to still matter.
+
+## What we built
+
+On Kortix, a weekly cron re-prompts one **reusable session** that treats flag
+cleanup as an ongoing sweep rather than a one-off task. It clones our repo,
+inventories every feature flag, and classifies each one: fully rolled out and
+safe to remove, long dead with no live check left, still in partial rollout, or
+part of an active experiment. For the first two categories it deletes the flag
+and the dead branch it guards, proves the suite still passes, and opens a PR. For
+the rest, it does nothing but note them for a human to look at.
+
+## How it works
+
+<Steps>
+<Step title="Copy the setup prompt into a new session">
+
+Open your Kortix project, start a new session, paste this prompt and send it.
+The agent writes the agent file, the flag-cleanup skill and the
+weekly trigger, and opens a change request for you to review.
+Prefer clicks? Choose **Use this template** instead.
+
+<CopyBlock
+  title="Setup prompt"
+  code={`Set up a weekly feature-flag cleanup agent in this project.
+
+1. Create the agent agents/feature-flag-cleanup.md. Its job is to remove feature flags in owner/repo that are provably safe to delete and open a pull request. It may use the GH_TOKEN secret.
+
+2. Create the skill skills/flag-cleanup/SKILL.md with these rules:
+   - Read memory/flag-cleanup-log.md and any open cleanup pull request first. Do not repeat work already in flight.
+   - A flag is fully rolled out when it is at 100 percent or hardcoded on. It is long dead when it has no call site, or is unchanged for more than 90 days at 0 or 100 percent.
+   - Never touch a flag in partial rollout or an active experiment. Log it for human review. When the rollout state is unclear, log it too.
+   - Remove the flag check, inline the surviving branch, and delete the dead code and the declaration, one flag at a time.
+   - Open the pull request only when typecheck, lint, build, unit and integration tests all pass in the sandbox. Never push to the default branch and never merge.
+
+3. Add a cron trigger weekly-flag-cleanup to kortix.yaml. It runs the feature-flag-cleanup agent every Monday at 05:00 with the prompt "Load the flag-cleanup skill and run one complete flag-cleanup sweep on owner/repo."
+
+4. Tell me which of these connectors are not connected yet.
+
+5. Open a change request with all of it. Do not merge it.`}
+/>
+
+</Step>
+<Step title="Connect your tools">
+
+Add a GitHub token with repo access as the `GH_TOKEN` secret in your project.
+If your rollout state lives in a flag provider, connect it under
+**Connectors** so the agent can read it. Credentials are brokered server-side
+and never enter the agent's machine.
+
+<ToolList>
+  <ToolNeed name="GitHub" domain="github.com" tag="Required" alternatives={[['GitLab', 'gitlab.com'], ['Bitbucket', 'bitbucket.org']]}>
+    Reads the repo and opens the flag-removal pull request.
+  </ToolNeed>
+  <ToolNeed name="LaunchDarkly" domain="launchdarkly.com" tag="Optional" alternatives={[['Statsig', 'statsig.com']]}>
+    Reads rollout state to confirm a flag is fully rolled out.
+  </ToolNeed>
+</ToolList>
+
+</Step>
+<Step title="Run it once with this prompt">
+
+Merge the change request, then start a session with the **feature-flag-cleanup** agent
+and send this prompt. Review the pull request and the flags it left
+for review before you let the schedule take over.
+
+<CopyBlock
+  title="Prompt"
+  code={`Run one feature-flag cleanup sweep on owner/repo.
+
+1. Read memory/flag-cleanup-log.md and any open cleanup pull request.
+2. Inventory every flag and classify it as fully rolled out, long dead, partial rollout or active experiment.
+3. On a new branch, remove only the fully rolled out and long dead flags, with the code branches they guarded.
+4. Run typecheck, lint, build, unit and integration tests. Revert any removal you cannot make green.
+5. Open one pull request that lists what you removed and what you left for review. Do not merge it, and update the ledger.`}
+/>
+
+</Step>
+<Step title="Let the weekly schedule take over">
+
+The change request added this trigger to `kortix.yaml`. From now on the agent
+runs every Monday at 05:00, each run in a new session on its own cloud computer. The ledger in
+`memory/flag-cleanup-log.md` carries the state between runs.
+To change the time, edit the cron line, or open **Triggers** in the project.
+
+<CopyBlock
+  title="kortix.yaml"
+  lang="yaml"
+  code={`triggers:
+  - slug: weekly-flag-cleanup
+    name: Weekly feature-flag cleanup
+    on:
+      cron: "0 0 5 * * 1"
+    run:
+      agent: feature-flag-cleanup
+      prompt: Load the flag-cleanup skill and run one complete flag-cleanup sweep on owner/repo.`}
+/>
+
+</Step>
+<Step title="Leave partial rollouts and experiments alone">
+
+A flag in partial rollout or an active experiment is never removed, at any
+age. The agent logs it for human review with the reason. A flag whose rollout
+state the agent cannot confirm gets the same treatment. The agent opens the
+pull request and stops: a person reviews and merges it.
+
+</Step>
+<Step title="Read the cleanup pull request">
+
+Each run ends with one pull request and an updated ledger. This is what a run looks like in the session:
+
+<ExampleRun
+  title="Weekly feature-flag cleanup · Mon 05:00"
+  message="Load the flag-cleanup skill and run one complete flag-cleanup sweep on owner/repo."
+  worked="Worked for 11m 24s"
+  tools={[
+    'shell · gh pr list',
+    'shell · git clone',
+    'shell · grep flag call sites',
+    'shell · pnpm typecheck lint build test',
+    'shell · gh pr create',
+  ]}
+  note="Illustrative example. Your counts depend on your codebase."
+>
+  Found **41** flags. Removed **6**: **4** fully rolled out and **2** long
+  dead, and the full suite passed. Left **3** for review: **2** in partial
+  rollout and **1** with its state held outside the repo. Opened one pull
+  request.
+</ExampleRun>
+
+</Step>
+</Steps>
+
+<Callout title="The pattern" tone="accent">
+  A weekly **cron** re-prompts a reusable **session** that keeps a ledger of
+  every flag's age and rollout state. The classification rules live as a
+  **skill**. The agent removes only what's fully rolled out or long dead, and
+  hands anything still in partial rollout to a human.
+</Callout>
+
+## Make it do more
+
+Once it works, paste any of these into the same session.
+
+<CopyBlock
+  title="Post the PR to Slack"
+  code="When you open a cleanup pull request, post its link and the list of removed flags to #engineering."
+/>
+
+<CopyBlock
+  title="Nudge flag owners"
+  code="For each flag left in partial rollout for more than 60 days, comment on the pull request that added it and ask its author for a rollout decision."
+/>
+
+<CopyBlock
+  title="Monthly flag count"
+  code="On the first Monday of each month, add a line to the ledger with the total flag count and the count removed since last month."
+/>
+
+## Guardrails
+
+The agent deletes code, so its judgment is bounded on both sides — what it's
+allowed to remove, and what it must leave alone:
+
+- **Partial rollout is untouchable.** Any flag still ramping, or part of an
+  active experiment, is never removed. The agent logs it and moves on; a human
+  decides its fate.
+- **No direct pushes, no self-merges.** Every change lands on an isolated branch
+  and becomes a PR. The agent never pushes to the default branch and never merges
+  its own work.
+- **Verification before the PR, not after.** The full suite runs inside the
+  sandbox on the cleanup branch. A failing removal is dropped and logged, never
+  pushed for a human to untangle.
+- **Scoped, ephemeral access.** The GitHub token is encrypted in the Secrets
+  Manager and injected into the sandbox at runtime — scoped to the agents you grant them to,
+  never written to disk or logs.
+- **Everything is code.** The classification rules, the ledger, and the agent's
+  permissions are files in the repo, versioned and changed through a reviewed
+  change request.
+
+## The outcome
+
+<StatGrid>
+  <Stat value="Weekly" label="Every flag re-checked against its current rollout state" />
+  <Stat value="PR-only" label="Every removal lands as a reviewable PR, never a direct push" />
+  <Stat value="0" label="Partial-rollout flags ever touched by the agent" />
+</StatGrid>
+
+Flags that used to sit forgotten at 100% rollout now get deleted within a week of
+reaching it, with the dead branch cleaned up alongside them. The agent proposes;
+a human still owns the merge, and anything mid-rollout stays exactly where the
+team left it.

@@ -1,0 +1,717 @@
+/**
+ * The one place a Kortix query key is constructed.
+ *
+ * Before this existed, `apps/web` hand-typed roughly 176 key literals across
+ * 30 `project*` families. One entity therefore had several cache entries (the
+ * flat `project-sessions` key and the flat `project-session-inventory` key
+ * held the same server data), and one key had several freshness contracts, because
+ * `staleTime` is per-observer and seven call sites disagreed about it.
+ *
+ * The first version of `sessions(id)` repeated that exact mistake one level
+ * down: it dropped `listProjectSessions`'s `scope` argument, so a
+ * `scope: 'visible'` reader and a `scope: 'project'` reader (a DIFFERENT
+ * server request — see `sessions` below) shared one cache slot, and
+ * whichever fetch resolved last silently overwrote what the other scope's
+ * readers saw. Anything that changes the response MUST be part of the key —
+ * that is the rule this file exists to enforce, and it is not optional just
+ * because the argument is easy to forget.
+ *
+ * The SECOND version of `sessions(id, scope)` fixed that, then introduced a
+ * narrower version of the same class of bug: `sessions(id, scope)` and
+ * `session(id, sessionId)` were both `sessionsScope(id)` plus exactly one
+ * segment, so a session id equal to a scope literal (`'visible'`,
+ * `'project'`) would collide byte-for-byte with a scoped list. Nothing in
+ * THIS file prevented that — the only thing standing in the way was a UUID
+ * regex enforced server-side, in `apps/api`, a different package, with no
+ * link back here. `sessions` now inserts a literal `'list'` segment so it is
+ * structurally longer than `session(...)` for every possible session id —
+ * the collision is unrepresentable, not merely unlikely.
+ *
+ * Two rules make this work:
+ *
+ *  1. `scope(id)` is a PREFIX, never a query key. Everything belonging to one
+ *     project sits under it, so `invalidateQueries({ queryKey: scope(id) })`
+ *     provably reaches all of it.
+ *  2. Nothing derived from another query gets its own key. Skills, commands
+ *     and agents are `config.*` fields of the project detail response, not
+ *     separate fetches — they are `select` projections over `detail(id)`.
+ *
+ * Not to be confused with `kortixKeys` in `use-kortix-master.ts`, which
+ * addresses the multi-server Kortix Master surface and means something else.
+ *
+ * The root segment below is `'kx'`, not `'kortix'`. `'kortix'` is already
+ * `kortixKeys`'s root (`use-kortix-master.ts:276-279`):
+ * `kortixKeys.projects() = ['kortix', 'projects']` and
+ * `kortixKeys.project(id) = ['kortix', 'projects', id]`. If this factory also
+ * rooted at `'kortix'`, `kortixKeys.project(id)` and `qk.projects.list(id)`
+ * would be the identical array for a matching id — one cache entry standing
+ * in for two unrelated concepts — and `kortixKeys.projects()` (used as an
+ * `invalidateQueries` prefix at `use-kortix-master.ts:371,384`) would also
+ * match every key this factory produces, since TanStack matches query keys by
+ * prefix. `'kx'` makes the two factories disjoint at segment 0, so neither
+ * can ever prefix-match the other. Do not "tidy" this back to `'kortix'`.
+ */
+import type { ReviewItemsQuery } from '../core/rest/projects-client/review';
+import type { ProjectMemoryPageListOptions, ProjectMemorySearchInput } from '../core/rest/projects-client/memory';
+import type { ListProjectSessionsOptions } from '../core/rest/projects-client/sessions';
+
+type SessionListFilters = Pick<
+  ListProjectSessionsOptions,
+  'parent' | 'startedBy' | 'q' | 'labels' | 'view' | 'spaceId' | 'group' | 'createdBy' | 'agent' | 'updatedAfter'
+>;
+
+/** The filter fields that change the server response, or undefined when none is set. */
+function normalizeSessionListFilters(filters?: SessionListFilters) {
+  const q = filters?.q?.trim();
+  const labels = filters?.labels?.length ? [...filters.labels].sort() : null;
+  const view = filters?.view;
+  const spaceId = filters?.spaceId;
+  const { group, createdBy, agent, updatedAfter } = filters ?? {};
+  if (!filters?.parent && !filters?.startedBy && !q && !labels && !view && !spaceId && !group && !createdBy && !agent && !updatedAfter) {
+    return undefined;
+  }
+  return {
+    parent: filters?.parent ?? null,
+    startedBy: filters?.startedBy ?? null,
+    q: q ?? null,
+    // Only present when set, so pre-label, pre-view and pre-space keys stay byte-identical.
+    ...(labels ? { labels } : {}),
+    ...(view ? { view } : {}),
+    ...(spaceId ? { spaceId } : {}),
+    ...(group ? { group } : {}),
+    ...(createdBy ? { createdBy } : {}),
+    ...(agent ? { agent } : {}),
+    ...(updatedAfter ? { updatedAfter } : {}),
+  };
+}
+
+export const qk = {
+  /** Kortix Capture, not project-scoped: a device sign-in grant, keyed by its user code. */
+  capture: {
+    deviceGrant: (userCode: string) => ['capture', 'device-grant', userCode] as const,
+    /** Kortix Capture: the prefix of every capture key of one account (Capture's tenant). */
+    account: (accountId: string) => ['capture', 'account', accountId] as const,
+    /** `getCaptureWorkspace` — the account switch and what IAM lets you do. */
+    workspace: (accountId: string) => [...qk.capture.account(accountId), 'workspace'] as const,
+    /** `listCaptureDevices` — mine, a member's, or the account's (`scope`). */
+    devices: (accountId: string, scope: string, userId: string | null) =>
+      [...qk.capture.account(accountId), 'devices', scope, userId] as const,
+    /** Everything read off one person's timeline: days, runs, items, search, frames. */
+    timeline: (accountId: string) => [...qk.capture.account(accountId), 'timeline'] as const,
+    timelineRead: (accountId: string, kind: string, query: unknown) =>
+      [...qk.capture.timeline(accountId), kind, query] as const,
+    policy: (accountId: string) => [...qk.capture.account(accountId), 'policy'] as const,
+    /** `getCaptureStorage` — where the account keeps its recordings. */
+    storage: (accountId: string) => [...qk.capture.account(accountId), 'storage'] as const,
+    /** `listCaptureEnrollmentTokens` — the IT rollout tokens. */
+    enrollmentTokens: (accountId: string) => [...qk.capture.account(accountId), 'enrollment-tokens'] as const,
+    /** `listCaptureEnrollments` — computers that presented a token; every status filter under one prefix. */
+    enrollments: (accountId: string) => [...qk.capture.account(accountId), 'enrollments'] as const,
+  },
+  /**
+   * The account LIST — `listAccounts()`, `GET /accounts`, `KortixAccount[]`.
+   *
+   * The ONLY family here keyed by the signed-in USER rather than by an
+   * account or a project, and the only one that could not be keyed any other
+   * way: this list is the answer to "which accounts does the CALLER belong
+   * to", so the caller is the only thing that partitions it.
+   *
+   * ## Why the user segment is load-bearing, not tidiness
+   *
+   * Before this family existed, 13 `apps/web` readers and 7 writers /
+   * invalidators shared one bare `['accounts']` array literal with no user
+   * segment. One document that saw two users in its lifetime therefore held
+   * ONE cache entry for both, and nothing but an imperative
+   * `queryClient.clear()` on the sign-out path stood between user B and user
+   * A's list. `clear()` is the wrong shape for that job — it has to fire on
+   * every exit path, finish before anything refetches, and never be undone,
+   * and it leaves mounted observers attached, which immediately refetch.
+   *
+   * The failure that escaped through that gap: `/new` resolves its create
+   * target out of this list, so a leftover single-account list belonging to
+   * user A made `POST /projects/provision` go out with A's `account_id`
+   * under B's JWT — a 403 the user cannot act on.
+   *
+   * That instance could not be closed by inspecting the list CONTENTS. A
+   * legitimate invited admin — a user with no personal account who
+   * administers someone else's org — has a byte-identical input: one
+   * `KortixAccount` whose `account_id !== user.id`, whose `name` is
+   * `"<owner-email>'s Account"`, and whose `is_primary_owner` is merely
+   * `accountRole === 'owner'`. No field on the response answers "which user
+   * was this fetched FOR". Rejecting that shape would permanently lock that
+   * population out of creating any workspace. Only the KEY carries the
+   * answer — which is why it is here, and why `list` takes the user id as a
+   * REQUIRED argument (see below).
+   */
+  accounts: {
+    /**
+     * Invalidation prefix covering EVERY user's list. Never pass this as a
+     * `queryKey`.
+     *
+     * This is the correct target for every "an account changed" invalidation
+     * (rename, create, leave, branding write): those all run inside a
+     * mutation callback, which has no reliable signed-in user id in hand,
+     * and guessing the wrong one would leave the live reader stale while
+     * appearing to work. `list(userId)` nests directly under this, so one
+     * prefix call provably reaches the only slot that can be live.
+     */
+    scope: () => ['kx', 'accounts'] as const,
+
+    /**
+     * One user's account list.
+     *
+     * `userId` is REQUIRED — deliberately not optional. Omitting it is the
+     * exact bug this family exists to make unrepresentable, so it has to be
+     * a type error rather than a silently shared slot. `null`/`undefined`
+     * are still accepted, because a reader legitimately renders for one
+     * paint before `useAuth()` resolves; they route to a dedicated
+     * `'anonymous'` slot that is not, and cannot prefix-match, any signed-in
+     * user's entry. Nothing ever writes that slot: every reader is gated
+     * `enabled: !!user`, so an identity-less reader fails CLOSED (it sees
+     * `undefined`) instead of falling back to whoever was here last.
+     *
+     * `'anonymous'` matches `use-kortix-master.ts`'s existing convention for
+     * the same situation (`identity.userId ?? 'anonymous'`), so the two
+     * identity-bearing key families in this package spell it one way.
+     */
+    list: (userId: string | null | undefined) =>
+      [...qk.accounts.scope(), userId ?? 'anonymous'] as const,
+
+    /**
+     * The invites pending for one user's email (`listMyAccountInvites`).
+     * Under `scope()` on purpose: joining an invite changes the account
+     * list, and that invalidation targets `scope()`, so the joined invite
+     * drops out of this list in the same refetch.
+     */
+    myInvites: (userId: string | null | undefined) =>
+      [...qk.accounts.scope(), 'my-invites', userId ?? 'anonymous'] as const,
+  },
+
+  /**
+   * The caller's notifications (KRTX-1742): the inbox, the preference record,
+   * and whether the caller watches one session. Every member answers for the
+   * CALLER, so the user id is segment 2 — the `qk.accounts` rule: without it,
+   * an in-tab identity swap shows user B user A's inbox until the next poll.
+   * `null`/`undefined` route to the `'anonymous'` slot, which no hook writes
+   * (each is gated on a user id). The member literal is segment 3, so no user
+   * id can alias another member.
+   */
+  notifications: {
+    /** Invalidation prefix covering every member for every user. Never a `queryKey`. */
+    scope: () => ['kx', 'notifications'] as const,
+    /** `listNotifications({ limit })` — the newest page. The page size changes the response. */
+    inbox: (userId: string | null | undefined, limit: number) =>
+      [...qk.notifications.scope(), userId ?? 'anonymous', 'inbox', limit] as const,
+    /** `getNotificationPreferences()`. */
+    preferences: (userId: string | null | undefined) =>
+      [...qk.notifications.scope(), userId ?? 'anonymous', 'preferences'] as const,
+    /** `getSessionWatch(projectId, sessionId)` — the caller's watch on one session. */
+    sessionWatch: (userId: string | null | undefined, projectId: string, sessionId: string) =>
+      [...qk.notifications.scope(), userId ?? 'anonymous', 'session-watch', projectId, sessionId] as const,
+  },
+
+  projects: {
+    /** Invalidation prefix covering every account's list AND the accountless
+     *  slot. Never pass this as a `queryKey` — `list(accountId)` and
+     *  `list()` are SIBLINGS (`'<id>'` vs `'all'`), not a parent/child pair,
+     *  so `list()` alone does not prefix-match `list(accountId)`. Use this
+     *  when a mutation needs to reach every form at once. */
+    scope: () => ['kx', 'projects'] as const,
+
+    /** Every project the account can see. `undefined` means the active account. */
+    list: (accountId?: string) => [...qk.projects.scope(), accountId ?? 'all'] as const,
+
+    /** `getProjectQuota({ accountId })` — the account's project-cap state, as
+     *  the /new create form reads it before the first submit. Like `list`,
+     *  `undefined` (`'default'`) is the server-resolved default account slot,
+     *  a SIBLING of every named account — never a prefix of one. Creating a
+     *  project invalidates the `scope()` prefix, so a form remounting on the
+     *  same key refetches a fresh answer. */
+    quota: (accountId?: string) =>
+      [...qk.projects.scope(), 'quota', accountId ?? 'default'] as const,
+  },
+
+  /**
+   * Drives (`listDrives`, `listDriveFiles`, …). A drive list holds the
+   * caller's own personal drives, so it is keyed by user like
+   * `accounts.list`. Every per-drive key sits under `drive(id)`: a write or a
+   * restore invalidates that one prefix and reaches the drive's files and
+   * versions. The `'list'` / `'drive'` / `'session'` segments keep the three
+   * shapes from ever colliding.
+   */
+  drives: {
+    /** Invalidation prefix for every drive key. Never a `queryKey`. */
+    scope: () => ['kx', 'drives'] as const,
+    list: (
+      userId: string | null | undefined,
+      scope?: { projectId?: string; accountId?: string },
+    ) =>
+      [
+        ...qk.drives.scope(),
+        'list',
+        userId ?? 'anonymous',
+        scope?.projectId ? `project:${scope.projectId}` : scope?.accountId ? `account:${scope.accountId}` : 'primary',
+      ] as const,
+    /** Prefix for one drive's files and versions. */
+    drive: (driveId: string) => [...qk.drives.scope(), 'drive', driveId] as const,
+    files: (driveId: string, path: string) => [...qk.drives.drive(driveId), 'files', path] as const,
+    versions: (driveId: string) => [...qk.drives.drive(driveId), 'versions'] as const,
+    grants: (driveId: string) => [...qk.drives.drive(driveId), 'grants'] as const,
+    conflicts: (driveId: string) => [...qk.drives.drive(driveId), 'conflicts'] as const,
+    session: (projectId: string, sessionId: string) =>
+      [...qk.drives.scope(), 'session', projectId, sessionId] as const,
+  },
+
+  project: {
+    /** Invalidation prefix. Never pass this as a `queryKey`. */
+    scope: (id: string) => ['kx', 'project', id] as const,
+
+    /** `listSessionsNeedingInput` — which sessions wait on a human decision or answer. */
+    needsInput: (id: string) => [...qk.project.scope(id), 'needs-input'] as const,
+
+    /** `getReviewSummary` — the needs-you counts the always-mounted badges poll. */
+    reviewSummary: (id: string) => [...qk.project.scope(id), 'review-summary'] as const,
+    /** Invalidation prefix for every page set `useReviewItemPages` caches.
+     *  Never pass this as a `queryKey`. */
+    reviewItemsScope: (id: string) => [...qk.project.scope(id), 'review-items'] as const,
+    /** The paged inbox (`useInfiniteQuery` over `listReviewItems`): one slot
+     *  per filter, because each filter is a different server request. */
+    reviewItemPages: (id: string, query: ReviewItemsQuery = {}) =>
+      [
+        ...qk.project.reviewItemsScope(id),
+        'pages',
+        query.segment ?? 'all',
+        query.kind ?? 'all',
+        query.sessionId ?? 'all',
+        query.limit ?? 'default',
+      ] as const,
+
+    /**
+     * The bare project row — `getProject`, `GET /projects/:id`, a
+     * `KortixProject`. NOT `detail(id)` below: `getProjectDetail` hits
+     * `GET /projects/:id/detail` and returns a completely different shape,
+     * `{ project, config, file_count, files, git_connection }`. An earlier
+     * draft of this migration folded the two onto one key because both
+     * requests are "about a project" — but they are different requests with
+     * different responses, so sharing a key means whichever one resolves
+     * last silently overwrites the other's shape: a `data.account_id` reader
+     * (this one) would intermittently receive the detail wrapper instead,
+     * where the same field lives at `data.project.account_id`. Keep them
+     * apart, the same way `sessions`/`session` and `policies`/
+     * `executorPolicies` below are kept apart for the identical reason.
+     */
+    summary: (id: string) => [...qk.project.scope(id), 'summary'] as const,
+
+    detail: (id: string) => [...qk.project.scope(id), 'detail'] as const,
+    /**
+     * Prefix reserved for config-adjacent sub-resources that do NOT share
+     * `getProjectDetail`'s response shape (currently only `modelPicker`
+     * below). The project config DATA ITSELF — `ProjectConfigSummary`,
+     * i.e. `getProjectDetail(id).config` — is not keyed here: it rides the
+     * shared `detail(id)` entry via a `select` projection (see
+     * `use-project-config.ts`), because it IS that same response every
+     * other detail reader already caches. Keying it separately here would
+     * bring back the exact double-fetch this factory exists to remove —
+     * `useProjectConfig` used to do exactly that under a standalone
+     * `['project-config', id]` key.
+     */
+    config: (id: string) => [...qk.project.scope(id), 'config'] as const,
+    /**
+     * `getProjectModelPicker`, `GET /projects/:id/model-picker` — the compact,
+     * connection-aware model catalog. LIVE: `useProjectModels` (`use-project-
+     * models.ts`) `useQuery`s it directly, rendered at `gateway-view.tsx`,
+     * `gateway-routing.tsx`, `gateway-playground.tsx`, `models-tab.tsx`, and
+     * `use-session.ts`. `useModelEnablement` (`use-model-enablement.ts`) reads
+     * and optimistically writes the SAME entry so a toggle and the picker never
+     * disagree. A routing-policy save's `invalidateQueries` targets this key
+     * too (`gateway-routing.tsx`) — before the `packages/sdk/src/react`
+     * migration that call and every reader above hand-typed the same flat
+     * `project-model-picker` array literal independently; an earlier
+     * version of this comment called the key "dead" because that literal
+     * search only ever turned up the invalidation site, never the readers —
+     * they lived one file away, under `packages/sdk/src/react`, which this
+     * factory did not yet reach.
+     */
+    modelPicker: (id: string) => [...qk.project.config(id), 'models'] as const,
+
+    /** Persisted provider/model inference restrictions and the effective default. */
+    modelAccess: (projectId: string) => [...qk.project.scope(projectId), 'model-access'] as const,
+
+    /** `listCustomLlmProviders`: the project's OpenAI-compatible endpoints (`useCustomLlmProviders`). */
+    customLlmProviders: (projectId: string) =>
+      [...qk.project.scope(projectId), 'custom-llm-providers'] as const,
+
+    /**
+     * Invalidation prefix for the WHOLE sessions family: the list, in every
+     * scope, and every individual session/message beneath it. Never pass
+     * this as a `queryKey` — pass it to `invalidateQueries` at every site
+     * that means "the sessions list changed" (create/rename/delete/restart/
+     * stop/share). `sessions(id)` and `sessions(id, 'project')` are SIBLINGS,
+     * not parent and child (see `sessions` below) — invalidating one alone
+     * would leave the other silently stale, and this prefix is the only form
+     * that reaches both in one call.
+     */
+    sessionsScope: (id: string) => [...qk.project.scope(id), 'sessions'] as const,
+
+    /**
+     * The sessions list. `scope` is part of the key ON PURPOSE:
+     * `listProjectSessions(id, { scope })`
+     * (`core/rest/projects-client/sessions.ts`) is a DIFFERENT server
+     * request per scope, not a client-side filter of one response —
+     * `'visible'` (the default; matches passing no `options` at all) returns
+     * what the caller can see, while `'project'` is the manager-only lifecycle
+     * inventory that also includes accessible warm and soft-deleted rows
+     * (`apps/api/src/projects/lib/session-inventory.ts`). Neither scope returns
+     * sessions the caller cannot open.
+     * Before this, both scopes shared one scope-less key, so whichever fetch
+     * resolved last silently overwrote what the OTHER scope's readers saw —
+     * the sidebar could render the unfiltered manager inventory, or the
+     * inventory page could render the sidebar's filtered list. Use
+     * `sessionsScope(id)`, not this, for invalidation.
+     *
+     * The literal `'list'` segment exists so this can NEVER collide with
+     * `session(id, sessionId)` below. Without it, both were
+     * `sessionsScope(id)` plus exactly one segment — a session whose id
+     * happened to equal the string `'visible'` or `'project'` would produce
+     * the identical array a scoped list produces, and the two would silently
+     * overwrite each other. Session ids are `crypto.randomUUID()`
+     * client-side and rejected server-side otherwise
+     * (`apps/api/src/projects/lib/sessions.ts`), so that made the collision
+     * unreachable, not impossible — safety by an invariant enforced in a
+     * DIFFERENT package, with no link back to this file. `'list'` makes
+     * `sessions(...)` structurally longer than `session(...)` for every
+     * possible session id, which is the same standard this file already
+     * applies to the `'kx'` root (see the top doc comment): make the
+     * collision unrepresentable, don't rely on another package's validation
+     * staying strict.
+     */
+    sessions: (id: string, scope: 'visible' | 'project' = 'visible') =>
+      [...qk.project.sessionsScope(id), 'list', scope] as const,
+
+    /**
+     * The PAGED session list — `useInfiniteQuery` over
+     * `listProjectSessionsPage`. A separate slot from `sessions(...)` because
+     * the two hold different SHAPES: this one caches
+     * `{ pages: ProjectSessionPage[], pageParams }`, that one caches a bare
+     * `ProjectSession[]`. react-query does not tag a cache entry with the hook
+     * that wrote it, so sharing one key between `useQuery` and
+     * `useInfiniteQuery` hands each hook the other's shape and both render
+     * garbage.
+     *
+     * It still nests under `sessionsScope(id)`, so the existing prefix
+     * invalidation every mutation already performs
+     * (`invalidateQueries({ queryKey: qk.project.sessionsScope(id) })`)
+     * reaches the paged list too. That is the point of the shared prefix — a
+     * new slot must not need a second invalidation nobody remembers to add.
+     */
+    sessionsPaged: (
+      id: string,
+      scope: 'visible' | 'project' = 'visible',
+      filters?: SessionListFilters,
+    ) => {
+      const key = [...qk.project.sessionsScope(id), 'list-paged', scope] as const;
+      // The filter set is one extra segment, present only when a filter is
+      // set, so the unfiltered key is byte-identical to the pre-filter one.
+      const normalized = normalizeSessionListFilters(filters);
+      return normalized ? ([...key, normalized] as const) : key;
+    },
+
+    /**
+     * One session's children (`parent=<sessionId>`), infinite. Its own slot
+     * beside `sessionsPaged`; nests under `sessionsScope` for invalidation.
+     */
+    sessionChildren: (id: string, parentSessionId: string, q?: string) =>
+      [...qk.project.sessionsScope(id), 'list-children', parentSessionId, q?.trim() ?? ''] as const,
+
+    /**
+     * A session's multi-agent reads: who it can reach, its messages, its
+     * team's tasks and teammates, its workflow runs. Each nests under
+     * `session(id, sessionId)`, so a session invalidation refreshes them, and
+     * under `sessionAgents(id, sessionId)`, so one call refreshes all of them.
+     */
+    sessionAgents: (id: string, sessionId: string) =>
+      [...qk.project.session(id, sessionId), 'agents'] as const,
+    sessionReachable: (id: string, sessionId: string, scope: string) =>
+      [...qk.project.sessionAgents(id, sessionId), 'reachable', scope] as const,
+    peerMessages: (id: string, sessionId: string, direction: string) =>
+      [...qk.project.sessionAgents(id, sessionId), 'peer-messages', direction] as const,
+    teamTasks: (id: string, leadSessionId: string) =>
+      [...qk.project.sessionAgents(id, leadSessionId), 'tasks'] as const,
+    teammates: (id: string, leadSessionId: string) =>
+      [...qk.project.sessionAgents(id, leadSessionId), 'teammates'] as const,
+    sessionWorkflows: (id: string, sessionId: string) =>
+      [...qk.project.sessionAgents(id, sessionId), 'workflows'] as const,
+
+    /**
+     * One session, by id. Nests directly under the scope-LESS
+     * `sessionsScope` prefix, not under a specific `sessions(id, scope)`
+     * slot: a session is not "owned" by whichever list scope happened to
+     * discover it (the same session id is reachable via either scope), so
+     * its own cache entry does not carry a scope segment either.
+     */
+    session: (id: string, sessionId: string) =>
+      [...qk.project.sessionsScope(id), sessionId] as const,
+    messages: (id: string, sessionId: string) =>
+      [...qk.project.session(id, sessionId), 'messages'] as const,
+    /**
+     * Orphaned pre-existing behavior, migrated verbatim rather than "fixed":
+     * three `apps/web` call sites invalidate this slot after a session
+     * restart / config reload, and one reads it with `getQueryData`, but no
+     * site anywhere `useQuery`s or `setQueryData`s it — so the read always
+     * resolves `undefined` and the three invalidations are no-ops today.
+     * Nests under `session(id, sessionId)` rather than folding onto it
+     * because `session(...)` became a REAL, live query in this same
+     * migration (`getProjectSession`); sharing that slot would make these
+     * dead invalidations start firing against real session data instead of
+     * continuing to hit nothing.
+     */
+    sessionSandbox: (id: string, sessionId: string) =>
+      [...qk.project.session(id, sessionId), 'sandbox'] as const,
+    /** `getSessionParticipants` — who can open the session and who sent each prompt. */
+    sessionParticipants: (id: string, sessionId: string) =>
+      [...qk.project.session(id, sessionId), 'participants'] as const,
+    /** `listSessionPrompts` — the session's server-side prompt inbox. */
+    sessionPrompts: (id: string, sessionId: string) =>
+      [...qk.project.session(id, sessionId), 'prompts'] as const,
+    /** `getSessionTurn` — server truth about the turns running right now. */
+    sessionTurn: (id: string, sessionId: string) =>
+      [...qk.project.session(id, sessionId), 'turn'] as const,
+    /** The session stream's `kortix.control.runtime` frame: the box and the
+     *  server wake ladder. Written by the stream only; never fetched. */
+    sessionRuntimeControl: (id: string, sessionId: string) =>
+      [...qk.project.session(id, sessionId), 'runtime-control'] as const,
+    /** The session stream's `kortix.control.audit` watermark (pending count +
+     *  newest instants). A host re-reads its audit list when it moves. */
+    sessionAuditWatermark: (id: string, sessionId: string) =>
+      [...qk.project.session(id, sessionId), 'audit-watermark'] as const,
+
+    connectors: (id: string) => [...qk.project.scope(id), 'connectors'] as const,
+    /** One connector's config — `getConnectorConfig(id, slug)`. */
+    connectorConfig: (id: string, slug: string) =>
+      [...qk.project.connectors(id), slug] as const,
+    /** One connection's OAuth2 authorization discovery —
+     *  `discoverConnectionOAuth2Resource(id, connectionId)`. The result carries
+     *  the connection id it ran against, and one-click OAuth starts on that id,
+     *  so pass `connection` (the connection id, or a stable stand-in for one not
+     *  created yet): two connections of one connector must not share an entry.
+     *  Without it, the key is the per-connector prefix every entry sits under. */
+    /** One connector action's output — `useConnectorQuery`. Under
+     *  `connectorConfig(id, slug)`, so invalidating a connector (a new account
+     *  connected) refetches its calls. */
+    connectorCall: (id: string, slug: string, action: string, args: unknown, account?: string | null) =>
+      [...qk.project.connectorConfig(id, slug), 'call', action, account ?? null, args] as const,
+    connectorOAuth2Discovery: (id: string, slug: string, connection?: string) =>
+      connection === undefined
+        ? ([...qk.project.connectorConfig(id, slug), 'oauth2-discovery'] as const)
+        : ([...qk.project.connectorConfig(id, slug), 'oauth2-discovery', connection] as const),
+
+    access: (id: string) => [...qk.project.scope(id), 'access'] as const,
+    accessRequests: (id: string) => [...qk.project.access(id), 'requests'] as const,
+    pendingInvites: (id: string) => [...qk.project.access(id), 'invites'] as const,
+    /** `listProjectGroupGrants` — `GET /group-grants`, `{ grants: ProjectGroupGrant[] }`. */
+    groupGrants: (id: string) => [...qk.project.access(id), 'group-grants'] as const,
+    /** `listProjectResourceGrants` — `GET /resource-grants`, a DIFFERENT
+     *  endpoint and shape from `groupGrants` above; do not fold together. */
+    resourceGrants: (id: string) => [...qk.project.access(id), 'grants'] as const,
+
+    secrets: (id: string) => [...qk.project.scope(id), 'secrets'] as const,
+
+    /** Stable App inventory for `GET /projects/:id/apps`. */
+    apps: (id: string) => [...qk.project.scope(id), 'apps'] as const,
+    /** Access policy and short-lived browser session for one App. */
+    appAccess: (id: string, appId: string) => [...qk.project.apps(id), appId, 'access'] as const,
+    /** Short-lived browser exchange URL for one App. */
+    appAccessSession: (id: string, appId: string) =>
+      [...qk.project.appAccess(id, appId), 'session'] as const,
+    /** Immutable deployment history for one App. */
+    appDeployments: (id: string, appId: string) =>
+      [...qk.project.apps(id), appId, 'deployments'] as const,
+    /** Machines of one App (capability `machines`). */
+    appMachines: (id: string, appId: string) => [...qk.project.apps(id), appId, 'machines'] as const,
+    /** Volumes of one App (capability `volumes`). */
+    appVolumes: (id: string, appId: string) => [...qk.project.apps(id), appId, 'volumes'] as const,
+    /** Snapshots of one volume (capability `snapshots`). */
+    appVolumeSnapshots: (id: string, appId: string, volumeId: string) =>
+      [...qk.project.appVolumes(id, appId), volumeId, 'snapshots'] as const,
+    /** One deployment and its events (build log included). */
+    appDeployment: (id: string, appId: string, deploymentId: string) =>
+      [...qk.project.appDeployments(id, appId), deploymentId] as const,
+
+    /** `listProjectTriggers` — `GET /projects/:id/triggers`, the cron/webhook
+     *  listing (file-defined in the repo manifest). Shared by
+     *  `useProjectTriggers` (`use-project-triggers.ts`), the Customize
+     *  settings pause switch, and the schedule/triggers view — all three read
+     *  and write the identical entity through `listProjectTriggers(id)`, so
+     *  they must share this one key. */
+    triggers: (id: string) => [...qk.project.scope(id), 'triggers'] as const,
+
+
+    /** `listProjectTriggerEventTypes` — the app events one connector can trigger on. */
+    triggerEventTypes: (id: string, connector: string) =>
+      [...qk.project.triggers(id), 'event-types', connector] as const,
+
+    /** `listProjectTriggerEventApps` — the apps that can trigger events. */
+    triggerEventApps: (id: string) => [...qk.project.triggers(id), 'event-apps'] as const,
+
+    /** `listTriggerRuns` pages — one trigger's run history. Under `triggers`,
+     *  so a fire or replay that invalidates the listing refreshes it too. */
+    triggerRuns: (id: string, slug: string) => [...qk.project.triggers(id), 'runs', slug] as const,
+
+    /** `listProjectTriggerRuns` pages — every run of the project, one slot per status filter. */
+    projectTriggerRuns: (id: string, status?: string | null) =>
+      [...qk.project.triggers(id), 'project-runs', status ?? 'all'] as const,
+
+    /** Every conversation read of a project (flag `agent_rooms`): the prefix of
+     *  the keys below, so a post or a read refreshes the list, the unread
+     *  counts and the thread together. */
+    rooms: (id: string) => [...qk.project.scope(id), 'rooms'] as const,
+    /** `listRooms` — the named rooms. */
+    roomList: (id: string) => [...qk.project.rooms(id), 'list'] as const,
+    /** `listRooms({ mine: true })` — the caller's conversations with unread counts. */
+    roomConversations: (id: string) => [...qk.project.rooms(id), 'mine'] as const,
+    /** `findRoomByName` — the room of a space (named like its slug), or null. */
+    spaceRoom: (id: string, name: string) => [...qk.project.rooms(id), 'name', name] as const,
+    /** `getRoom` — one conversation and its members. */
+    room: (id: string, roomId: string) => [...qk.project.rooms(id), 'room', roomId] as const,
+    /** `listRoomMessages` — the newest messages of one conversation. */
+    roomMessages: (id: string, roomId: string, view: 'all' | 'top' = 'all') => [...qk.project.rooms(id), 'messages', roomId, view] as const,
+    /** `listRoomMessages(…, { thread })` — one thread. */
+    roomThread: (id: string, roomId: string, root: number) => [...qk.project.rooms(id), 'thread', roomId, root] as const,
+
+    /** `listProjectReminders` — `GET /projects/:id/reminders`. Also the prefix
+     *  of every `sessionReminders` key, so invalidating it refreshes the
+     *  project page and every session's reminder chip together. */
+    reminders: (id: string) => [...qk.project.scope(id), 'reminders'] as const,
+    /** `listUnifiedTriggers` — `GET /projects/:id/triggers/all`: kortix.yaml and runtime triggers in one list. */
+    unifiedTriggers: (id: string) => [...qk.project.scope(id), 'unified-triggers'] as const,
+    /** `listProjectSpaces` — the project's channels and the caller's DMs. */
+    spaces: (id: string) => [...qk.project.scope(id), 'spaces'] as const,
+    /** `listProjectSessionGroups` — the project's session groups, in order. */
+    sessionGroups: (id: string) => [...qk.project.scope(id), 'session-groups'] as const,
+    /** `listProjectSpaceApps` — one channel's Apps. Under `apps`, so every App mutation's invalidation refetches it. */
+    spaceApps: (id: string, spaceId: string) => [...qk.project.apps(id), 'space', spaceId] as const,
+    /** `listProjectSpaceLinks` — one channel's links. */
+    spaceLinks: (id: string, spaceId: string) => [...qk.project.spaces(id), spaceId, 'links'] as const,
+    /** `listProjectSpaceMembers` — a channel's people (the header roster, the Members tab). Under `spaces`, so a spaces refresh refreshes it. */
+    spaceMembers: (id: string, spaceId: string) => [...qk.project.spaces(id), spaceId, 'members'] as const,
+    /** `getProjectSpaceGeneralNotice` — `#general`'s turned-on-again line. Under `spaces`, so a spaces refresh refreshes it. */
+    spaceGeneralNotice: (id: string) => [...qk.project.spaces(id), 'general-notice'] as const,
+    /** `getPrivateChannelsAvailable`. Under `spaces`, so a spaces refresh refreshes it. */
+    privateChannelsAvailable: (id: string) => [...qk.project.spaces(id), 'private-available'] as const,
+    privateChannelsNotIn: (id: string) => [...qk.project.spaces(id), 'private-not-in'] as const,
+    /** `getChannelsOnboarding` — the caller's intro and "Get started" state. */
+    channelsOnboarding: (id: string) => [...qk.project.scope(id), 'onboarding', 'channels'] as const,
+    /** Every memory read of the project. Memory writes invalidate it: one change can touch two pages, even in two layers. */
+    memory: (id: string) => [...qk.project.scope(id), 'memory'] as const,
+    /** `getProjectMemoryLayer` — one layer (`company` or a space id) and its counts. */
+    memoryLayer: (id: string, layerKey: string) => [...qk.project.memory(id), 'layer', layerKey] as const,
+    /** `listProjectMemoryPages` — the layer's pages; with a filter, one type of them. */
+    memoryPages: (id: string, layerKey: string, filter?: ProjectMemoryPageListOptions) =>
+      // The filter only when set, so the live list's key stays byte-identical.
+      filter?.type
+        ? ([...qk.project.memoryLayer(id, layerKey), 'pages', filter] as const)
+        : ([...qk.project.memoryLayer(id, layerKey), 'pages'] as const),
+    /** `getProjectMemoryPage` — one page, by id: its route has no layer. */
+    memoryPage: (id: string, pageId: string) => [...qk.project.memory(id), 'page', pageId] as const,
+    /** `listProjectMemoryHistory` — one page's versions. */
+    memoryHistory: (id: string, pageId: string) => [...qk.project.memoryPage(id, pageId), 'history'] as const,
+    /** `searchProjectMemory` — one query (`q` trimmed). Under `memory`, so a write refreshes the hits. */
+    memorySearch: (id: string, input: ProjectMemorySearchInput) => [...qk.project.memory(id), 'search', input] as const,
+    /**
+     * `getSessionMemoryUsage` — one thread's "Used memory". Outside `memory` on
+     * purpose: the record is fixed at the thread's first turn, so no write refreshes it.
+     */
+    sessionMemoryUsage: (id: string, sessionId: string) => [...qk.project.scope(id), 'memory-usage', sessionId] as const,
+    /** Every artifact read of a project (flag `artifacts`): the prefix of the
+     *  keys below, so a publish refreshes the gallery and the open artifact. */
+    artifacts: (id: string) => [...qk.project.scope(id), 'artifacts'] as const,
+    /** `listArtifacts` — the gallery, per scope/type/search. */
+    artifactList: (id: string, filter: string) => [...qk.project.artifacts(id), 'list', filter] as const,
+    /** `getArtifact` — one artifact now (`current`) or at a Files commit. */
+    artifact: (id: string, artifactId: string, version: string = 'current') => [...qk.project.artifacts(id), 'one', artifactId, version] as const,
+    /** `listArtifactVersions`. */
+    artifactVersions: (id: string, artifactId: string) => [...qk.project.artifacts(id), 'versions', artifactId] as const,
+    artifactComments: (id: string, artifactId: string, status?: string, version?: string) => [...qk.project.artifacts(id), 'comments', artifactId, ...(status ? [status] : []), ...(version ? [{ version }] : [])] as const,
+    artifactCommentContext: (id: string, artifactId: string, options: { version?: string; agent?: string } = {}) => [...qk.project.artifactComments(id, artifactId), 'context', JSON.stringify(options)] as const,
+    artifactActivity: (id: string, artifactId: string, options?: { limit?: number; cursor?: string }) => [...qk.project.artifacts(id), 'activity', artifactId, ...(options ? [JSON.stringify(options)] : [])] as const,
+    artifactActivityInfinite: (id: string, artifactId: string, limit: number) => [...qk.project.artifactActivity(id, artifactId), 'infinite', limit] as const,
+    /** `readArtifactFile` of a doc's Markdown at one entry version. Immutable,
+     *  so outside the `artifacts` prefix: a write never refetches it. */
+    artifactText: (id: string, artifactId: string, entryVersion: string) => [...qk.project.scope(id), 'artifact-text', artifactId, entryVersion] as const,
+    /** `listArtifactTypes`. */
+    artifactTypes: (id: string) => [...qk.project.artifacts(id), 'types'] as const,
+    /** `listProjectGoals` — the goal folders in Files with their heartbeats. */
+    goals: (id: string) => [...qk.project.scope(id), 'goals'] as const,
+    /** `getProjectGoalFiles` — one goal folder's log, notes and verification. */
+    goalFiles: (id: string, folder: string) => [...qk.project.goals(id), 'files', folder] as const,
+    /** `listSessionReminders` — `GET /projects/:id/sessions/:sid/reminders`. */
+    sessionReminders: (id: string, sessionId: string) =>
+      [...qk.project.reminders(id), 'session', sessionId] as const,
+    /** `getSessionMessageAuthors` — `GET /projects/:id/sessions/:sid/message-authors`. */
+    sessionMessageAuthors: (id: string, sessionId: string) =>
+      [...qk.project.scope(id), 'session-message-authors', sessionId] as const,
+    /** `getSessionModelUsage` — `GET /projects/:id/sessions/:sid/model-usage`. */
+    sessionModelUsage: (id: string, sessionId: string) =>
+      [...qk.project.scope(id), 'session-model-usage', sessionId] as const,
+    /** `getSessionUsage` — `GET /projects/:id/sessions/:sid/usage`. */
+    sessionUsage: (id: string, sessionId: string) =>
+      [...qk.project.scope(id), 'session-usage', sessionId] as const,
+
+    /**
+     * `readProjectFile(id, path)` — a single-file source read, used by the
+     * Customize config-entity viewer. Unrelated to the much larger Git file
+     * browser under `features/project-files/` (its own local key factories,
+     * `commitKeys`/`branchKeys`/`changeRequestKeys`, rooted at the literal
+     * string `'project-files'` — never migrated onto `qk`, and never sharing
+     * this prefix).
+     */
+    files: (id: string) => [...qk.project.scope(id), 'files'] as const,
+    fileSource: (id: string, path: string) => [...qk.project.files(id), path] as const,
+
+    branches: (id: string) => [...qk.project.scope(id), 'branches'] as const,
+
+    /** IAM role policies — `listPolicies(accountId, { scopeId: id })`,
+     *  `{ policies: IamPolicy[] }`. NOT the same entity as
+     *  `executorPolicies` below — see that member's doc comment. */
+    policies: (id: string) => [...qk.project.scope(id), 'policies'] as const,
+    /**
+     * Executor sandbox tool-execution allow/deny rules —
+     * `listProjectPolicies(id)`, `GET /executor/projects/:id/policies`,
+     * `ProjectPoliciesResponse`. A DIFFERENT endpoint and a DIFFERENT shape
+     * from `policies` above (account IAM role policies) — both used to read
+     * the identical literal `['project-policies', id]`, so whichever one's
+     * fetch resolved last silently overwrote the other's cache entry with an
+     * incompatible shape. Sibling of `policies`, not nested under it: they
+     * are unrelated domains that happen to share a name, not a parent/child
+     * pair, so invalidating one must never reach the other.
+     */
+    executorPolicies: (id: string) => [...qk.project.scope(id), 'executor-policies'] as const,
+
+    sandboxes: (id: string) => [...qk.project.scope(id), 'sandboxes'] as const,
+    sandboxTemplates: (id: string) => [...qk.project.sandboxes(id), 'templates'] as const,
+    snapshots: (id: string) => [...qk.project.scope(id), 'snapshots'] as const,
+
+    /** Prefix for the gateway family — keys, budgets, series, logs, overview. */
+    gateway: (id: string) => [...qk.project.scope(id), 'gateway'] as const,
+    gatewayOverview: (id: string, days: number) =>
+      [...qk.project.gateway(id), 'overview', days] as const,
+    gatewaySeries: (id: string, days: number) =>
+      [...qk.project.gateway(id), 'series', days] as const,
+    gatewayBreakdown: (id: string, days: number) =>
+      [...qk.project.gateway(id), 'breakdown', days] as const,
+    gatewaySessions: (id: string, days: number) =>
+      [...qk.project.gateway(id), 'sessions', days] as const,
+    gatewayErrors: (id: string, days: number) =>
+      [...qk.project.gateway(id), 'errors', days] as const,
+    /** `ok` mirrors `listGatewayLogs`'s optional pass/fail filter — `null` = unfiltered. */
+    gatewayLogs: (id: string, ok: boolean | null) =>
+      [...qk.project.gateway(id), 'logs', ok] as const,
+    gatewayLog: (id: string, logId: string | null) =>
+      [...qk.project.gateway(id), 'log', logId] as const,
+    gatewayBudgets: (id: string) => [...qk.project.gateway(id), 'budgets'] as const,
+    gatewayKeys: (id: string) => [...qk.project.gateway(id), 'keys'] as const,
+  },
+} as const;
+
+export type ProjectScopeKey = ReturnType<typeof qk.project.scope>;
+export type ProjectsListKey = ReturnType<typeof qk.projects.list>;

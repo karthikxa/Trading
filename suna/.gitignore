@@ -1,0 +1,201 @@
+# Dependencies
+node_modules/
+**/node_modules/
+# A node_modules symlink is a file, which the patterns above miss.
+**/node_modules
+.pnpm-store/
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# pnpm worktree — per-worktree marker (state lives in ~/.kortix, outside the repo)
+.kortix-worktree.json
+
+# Environment variables
+.env
+.env.local
+.env*.local
+.env.production
+.env.prod
+.env.development
+.env.scripts
+.env.docker
+*.env.docker
+
+# dotenvx private decryption keys — NEVER commit (use Dotenv Armor to sync them).
+.env.keys
+*.env.keys
+
+# Every other .env* file stays out of git.
+.env*
+
+# Exception: the apps/api and apps/web dotenvx profiles are ENCRYPTED (values
+# are AES ciphertext + a public key) so they are safe to commit and are the
+# team's source of truth — one file per profile (.env=local, .env.dev,
+# .env.staging, .env.prod), each with its own keypair in .env.keys. These
+# negations must stay BELOW `.env*`: the last matching rule wins. The plaintext
+# runtime override apps/api/.env.local stays ignored.
+!apps/api/.env
+!apps/api/.env.dev
+!apps/api/.env.staging
+!apps/api/.env.prod
+!apps/web/.env
+!apps/web/.env.dev
+!apps/web/.env.staging
+!apps/web/.env.prod
+
+# The API unit-test env: PLAINTEXT ON PURPOSE, fake values only (see its
+# header). It stays tracked; listing it here is what lets `dotenvx ext
+# precommit` accept a commit that changes it, including a merge of main.
+apps/api/scripts/test.env
+
+# Secrets & keys (defense-in-depth with secret-scanning push protection + gitleaks)
+# The committed root .npmrc is config-only (no secrets); ignore token-bearing variants
+# like .npmrc.release. *.key does not match Android's debug.keystore.
+.npmrc.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+**/.DS_Store
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+coverage/
+.nyc_output/
+test-results/
+strix_runs/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+example-project/
+
+# Next.js
+.vercel/
+
+# Supabase
+supabase/.temp/
+supabase/.branches/
+
+# Misc
+state.json
+.release-state.json
+*.db
+dump.rdb
+.aider*
+.setup_progress
+.setup_env.json
+**/.prompts/
+.cwc/
+test/
+
+# The root .kortix/ dogfood project moved to the company operator repo; keep
+# any local per-clone leftovers out. Other vendored .kortix dirs stay ignored
+# further down.
+.kortix/
+apps/api/.kortix-data/
+apps/api/.sandbox-auth-token.json
+**/.buildx-cache/
+
+.nx/
+.pulumi
+.pulumi/
+.vercel
+
+
+/kortix
+/kortix-darwin-arm64
+/kortix-darwin-x64
+/kortix-linux-x64
+/kortix-linux-arm64
+# Root-anchored so we don't ignore apps/mobile/ios/Kortix on case-insensitive FS.
+# The references/kortix doc dirs were previously un-ignored with ! rules; they
+# were never matched by /kortix anyway, but keep the exceptions for clarity.
+!**/references/kortix/
+!**/references/kortix/**
+
+# Terraform — never commit local state, provider binaries, lockfile, or tfvars
+infra/terraform/**/.terraform/
+infra/terraform/**/.terraform.lock.hcl
+infra/terraform/**/*.tfplan
+infra/terraform/**/*.tfstate
+infra/terraform/**/*.tfstate.*
+infra/terraform/**/*.tfvars
+self-host/terraform/**/.terraform/
+self-host/terraform/**/.terraform.lock.hcl
+self-host/terraform/**/*.tfstate
+self-host/terraform/**/*.tfstate.*
+self-host/terraform/**/*.tfvars
+infra/deployments/**/.terraform/
+infra/deployments/**/.terraform.lock.hcl
+infra/deployments/**/*.tfstate
+infra/deployments/**/*.tfstate.*
+infra/deployments/**/*.tfvars
+.cursor
+
+apps/mobile/.env.example
+.cursorignore
+
+# local Headlamp login token (ephemeral, do not commit)
+headlamp-token.txt
+grafana-creds.txt
+botkube-communication.secret.yaml
+botkube-comm-real.yaml
+.cutover-state/
+
+# Playwright MCP session artifacts (console logs, page snapshots)
+.playwright-mcp/
+
+# Private legacy migration inventories and raw source records
+.legacy-transfer/
+
+# Local agent evidence (screenshots, logs). May hold customer data — never commit.
+/output/
+.e2e/artifacts/
+.e2e/cache/
+.e2e/sessions/
+.e2e/report.json
+.e2e/ai-trace.json
+.e2e/junit.xml
+.e2e/summary.md
+.e2e/failures/
+.e2e/logs/
+.e2e/videos/
+
+# Crash dumps carry the whole process environment. Never commit one.
+# Not bare `core`: packages/sdk/src/core is source.
+/core
+core.[0-9]*
+*.core
+
+# Kortix Capture (apps/capture): Cargo build output
+apps/capture/target/
+
+# Local planning notes at the repo root: never committed (specs go in a skill reference or the PR body)
+/plan.md
+/memory-plan.md
+
+# Python bytecode (starter skill scripts write it during tests)
+__pycache__/
+*.pyc

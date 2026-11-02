@@ -1,0 +1,334 @@
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { join, resolve } from 'node:path';
+
+/**
+ * A denied connector call must reach the agent WITH its remedy.
+ *
+ * The gateway answers 403 with `reason`, `requested_account`,
+ * `available_accounts`, `hint` and — when nothing is connected — `connect_url`.
+ * Both faces used to collapse that to the SDK error's `message`, so an agent
+ * read `connector_not_connected` and had no way to continue: the CLI printed
+ * `{"ok":false,"error":"connector_not_connected","code":"CONNECTOR_ERROR"}`
+ * and the MCP server turned the thrown ApiError into a bare JSON-RPC error.
+ *
+ * Driven black-box through the real CLI process and the real stdio MCP server
+ * against a stub API, because the thing worth pinning is what lands on stdout.
+ */
+
+const CLI_ROOT = resolve(import.meta.dir, '..', '..');
+const CLI_ENTRY = join(CLI_ROOT, 'src', 'index.ts');
+const PROJECT_ID = 'proj-test-1234';
+
+/** The exact denial the gateway returns for an account name that matches nothing. */
+const UNKNOWN_ACCOUNT_DENIAL = {
+  ok: false,
+  status: 'denied',
+  reason: 'connector_not_connected',
+  connector: 'crm',
+  action: 'whoami',
+  requested_account: 'nope',
+  available_accounts: ['Work', 'Personal'],
+  hint: 'Connector "crm" has no account named "nope". Available: "Work", "Personal". Retry with one of those, or omit `account` for the default.',
+};
+
+/** The denial for a connector with no account at all — it carries the link. */
+const NOTHING_CONNECTED_DENIAL = {
+  ok: false,
+  status: 'denied',
+  reason: 'connector_not_connected',
+  connector: 'crm',
+  action: 'whoami',
+  available_accounts: [],
+  connect_url: 'https://app.kortix.test/connect/tok_123',
+  hint: 'Nothing is connected to "crm" yet. Open the connect link.',
+};
+
+let server: ReturnType<typeof Bun.serve>;
+let captured: Array<{ path: string; body: Record<string, unknown> }> = [];
+/** Set per test to control what the stub gateway answers. */
+let respondWith: () => Response;
+
+beforeAll(() => {
+  server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      captured.push({
+        path: url.pathname,
+        body: (await req.json().catch(() => ({}))) as Record<string, unknown>,
+      });
+      return respondWith();
+    },
+  });
+});
+
+afterAll(() => server.stop(true));
+
+function cliEnv(): Record<string, string> {
+  return {
+    ...(process.env as Record<string, string>),
+    KORTIX_TOKEN: 'session-agent-token',
+    KORTIX_API_URL: `http://127.0.0.1:${server.port}/v1`,
+    KORTIX_PROJECT_ID: PROJECT_ID,
+    KORTIX_NO_UPDATE_CHECK: '1',
+    KORTIX_DISABLE_SANDBOX_ENV_FILE: '1',
+    NO_COLOR: '1',
+    FORCE_COLOR: '0',
+  };
+}
+
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+async function runCli(args: string[]) {
+  captured = [];
+  const proc = Bun.spawn({
+    cmd: [process.execPath, CLI_ENTRY, ...args],
+    cwd: CLI_ROOT,
+    env: cliEnv(),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const [code, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  return { code, stdout, stderr, payload: JSON.parse(stdout) as Record<string, unknown> };
+}
+
+describe('a denied connector call carries its remedy', () => {
+  test('CLI: the 403 body passes through field for field', async () => {
+    respondWith = () => jsonResponse(UNKNOWN_ACCOUNT_DENIAL, 403);
+
+    const result = await runCli([
+      'connectors',
+      'call',
+      'crm',
+      'whoami',
+      '--account',
+      'nope',
+      '--project',
+      PROJECT_ID,
+    ]);
+
+    expect(captured[0]?.path).toBe(`/v1/connectors/projects/${PROJECT_ID}/call`);
+    expect(captured[0]?.body).toMatchObject({
+      connector: 'crm',
+      action: 'whoami',
+      account: 'nope',
+    });
+    expect(result.code).toBe(1);
+    expect(result.payload).toEqual({
+      ...UNKNOWN_ACCOUNT_DENIAL,
+      ok: false,
+      error: 'connector_not_connected',
+    });
+    // No second `code`: `reason` is the machine-readable field here.
+    expect(result.payload.code).toBeUndefined();
+  });
+
+  test('CLI: nothing connected hands back the connect link itself', async () => {
+    respondWith = () => jsonResponse(NOTHING_CONNECTED_DENIAL, 403);
+
+    const result = await runCli(['connectors', 'call', 'crm.whoami', '--project', PROJECT_ID]);
+
+    expect(result.code).toBe(1);
+    expect(result.payload.connect_url).toBe('https://app.kortix.test/connect/tok_123');
+    expect(result.payload.available_accounts).toEqual([]);
+  });
+
+  test('CLI: an error with no JSON body still reports the CLI code', async () => {
+    respondWith = () => new Response('gateway down', { status: 502 });
+
+    const result = await runCli(['connectors', 'call', 'crm.whoami', '--project', PROJECT_ID]);
+
+    expect(result.code).toBe(1);
+    expect(result.payload.ok).toBe(false);
+    expect(result.payload.code).toBe('CONNECTOR_ERROR');
+    expect(typeof result.payload.error).toBe('string');
+  });
+
+  test('CLI: a successful call echoes the account it ran as, untouched', async () => {
+    respondWith = () =>
+      jsonResponse({
+        ok: true,
+        status: 'ok',
+        data: { email: 'sales@example.test' },
+        account: {
+          connection_id: '11111111-1111-4111-8111-111111111111',
+          label: 'Work',
+          owner_type: 'project',
+        },
+      });
+
+    const result = await runCli(['connectors', 'call', 'crm.whoami', '--project', PROJECT_ID]);
+
+    expect(result.code).toBe(0);
+    expect(result.payload.account).toEqual({
+      connection_id: '11111111-1111-4111-8111-111111111111',
+      label: 'Work',
+      owner_type: 'project',
+    });
+  });
+
+  test('CLI: a gated call prints token-free decision commands', async () => {
+    const approvalUrl = `https://app.kortix.test/approve/${'synthetic-token'.repeat(40)}`;
+    respondWith = () =>
+      jsonResponse(
+        {
+          ok: false,
+          status: 'pending_approval',
+          execution_id: 'exec-pending',
+          retryable: false,
+          approval_url: approvalUrl,
+          approval_summary: 'one synthetic write',
+          approval_instructions: 'Share approval_url with a human.',
+        },
+        202,
+      );
+
+    const result = await runCli(['connectors', 'call', 'crm.write', '--project', PROJECT_ID]);
+
+    expect(result.code).toBe(0);
+    expect(result.payload.status).toBe('pending_approval');
+    expect(result.payload.execution_id).toBe('exec-pending');
+    expect(result.payload.approval_summary).toBe('one synthetic write');
+    expect(result.payload.approval_instructions).toContain(
+      `kortix review act call:exec-pending approve --project ${PROJECT_ID}`,
+    );
+    expect(result.payload.approval_instructions).toContain(
+      `kortix review act call:exec-pending reject --project ${PROJECT_ID}`,
+    );
+    expect(result.stdout).not.toContain(approvalUrl);
+    expect(result.stdout).not.toContain('synthetic-token');
+    expect(result.payload).not.toHaveProperty('approval_url');
+    expect(captured).toHaveLength(1);
+  });
+
+  test('CLI: a gate that holds the input says Kortix runs it and not to repeat it', async () => {
+    respondWith = () =>
+      jsonResponse(
+        {
+          ok: false,
+          status: 'pending_approval',
+          execution_id: 'exec-held',
+          retryable: false,
+          approval_url: 'https://app.kortix.test/approve/synthetic-token',
+          approval_instructions: 'Share approval_url with a human.',
+          runs_on_approval: true,
+        },
+        202,
+      );
+    const result = await runCli(['connectors', 'call', 'crm.write', '--project', PROJECT_ID]);
+    expect(result.code).toBe(0);
+    const text = result.payload.approval_instructions as string;
+    expect(text).toContain('Kortix runs this exact call once a human approves. Do not repeat the call.');
+    expect(text).toContain(`kortix review show call:exec-held --project ${PROJECT_ID}`);
+    expect(text).not.toContain('Approval alone does not run the call');
+  });
+
+  test('CLI: a gate without a held input keeps the repeat rule', async () => {
+    respondWith = () =>
+      jsonResponse({ ok: false, status: 'pending_approval', execution_id: 'exec-old', retryable: false }, 202);
+    const result = await runCli(['connectors', 'call', 'crm.write', '--project', PROJECT_ID]);
+    expect(result.payload.approval_instructions).toContain('Approval alone does not run the call');
+  });
+
+  test('CLI: an older gated response without an execution id has no broken command', async () => {
+    respondWith = () =>
+      jsonResponse(
+        {
+          ok: false,
+          status: 'pending_approval',
+          approval_url: 'https://app.kortix.test/approve/synthetic-token',
+        },
+        202,
+      );
+    const result = await runCli(['connectors', 'call', 'crm.write', '--project', PROJECT_ID]);
+    expect(result.code).toBe(0);
+    expect(result.payload.approval_instructions).toContain('Review Center');
+    expect(result.stdout).not.toContain('synthetic-token');
+    expect(result.stdout).not.toContain('call:undefined');
+  });
+
+  test('CLI: a valueless --account/--reason is a flag typo, never sent as a name', async () => {
+    respondWith = () =>
+      jsonResponse({ ok: true, status: 'ok', data: {}, account: { label: 'Work' } });
+
+    const result = await runCli([
+      'connectors',
+      'call',
+      'crm',
+      'whoami',
+      '--account',
+      '--reason',
+      '--project',
+      PROJECT_ID,
+    ]);
+
+    expect(result.code).toBe(0);
+    // Neither key reaches the wire — the call runs as the default account.
+    expect(captured[0]?.body).toEqual({ connector: 'crm', action: 'whoami', args: {} });
+  });
+
+  test('the removed `connectors mcp` subcommand exits 2 and names the replacements', async () => {
+    const result = await runCli(['connectors', 'mcp']);
+
+    expect(result.code).toBe(2);
+    expect(result.payload.ok).toBe(false);
+    expect(String(result.payload.error)).toContain('`kortix connectors mcp` was removed');
+    expect(String(result.payload.error)).toContain('/v1/mcp');
+    // `kortix mcp` itself was removed in #7881; never point people at it.
+    expect(String(result.payload.error)).not.toContain('`kortix mcp`');
+    expect(captured).toEqual([]);
+  });
+});
+
+describe('a call that did not do its job exits 1', () => {
+  test('CLI: a tool_error prints the tool error and exits 1', async () => {
+    respondWith = () =>
+      jsonResponse({ ok: false, status: 'tool_error', error: 'issue LIN-9 not found', result: { isError: true } });
+
+    const result = await runCli(['connectors', 'call', 'crm', 'get_issue', '{"id":"LIN-9"}', '--project', PROJECT_ID]);
+
+    expect(result.code).toBe(1);
+    expect(result.payload).toMatchObject({ ok: false, status: 'tool_error', error: 'issue LIN-9 not found' });
+  });
+
+  test('CLI: an upstream error inside a 2xx (older API) also exits 1', async () => {
+    respondWith = () => jsonResponse({ ok: true, status: 'ok', data: {}, upstream_error: 'GraphQL errors' });
+
+    const result = await runCli(['connectors', 'call', 'crm', 'query', '--project', PROJECT_ID]);
+
+    expect(result.code).toBe(1);
+    expect(result.payload).toMatchObject({ ok: false, status: 'tool_error', error: 'GraphQL errors' });
+  });
+
+  test('CLI: a rejected token says so in a sentence; --json keeps the payload', async () => {
+    respondWith = () => jsonResponse({ error: 'session token expired' }, 401);
+    const proc = Bun.spawn({
+      cmd: [process.execPath, CLI_ENTRY, 'connectors', 'call', 'crm', 'whoami', '--project', PROJECT_ID],
+      cwd: CLI_ROOT,
+      env: cliEnv(),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [code, stdout, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    expect(code).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('Token rejected — session token expired. Run `kortix login`');
+
+    const json = await runCli(['connectors', 'call', 'crm', 'whoami', '--json', '--project', PROJECT_ID]);
+    expect(json.code).toBe(1);
+    expect(json.payload).toMatchObject({ ok: false, code: 'unauthorized' });
+  });
+});

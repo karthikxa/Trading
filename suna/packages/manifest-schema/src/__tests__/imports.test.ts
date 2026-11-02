@@ -1,0 +1,381 @@
+import { describe, expect, test } from 'bun:test';
+import {
+  type ManifestImportReader,
+  IMPORT_PATH_PATTERN,
+  KORTIX_TOOL_NAMES,
+  ManifestImportError,
+  manifestJsonSchema,
+  normalizeImportPath,
+  resolveManifestImports,
+  selectedKortixTools,
+  splitManifestByOrigin,
+  validateManifest,
+} from '../index.ts';
+import { parseManifestText, serializeManifestObject } from '../format.ts';
+
+/** In-memory repo: path → YAML text. Mirrors what `git ls-tree -r` + `git show` give the API. */
+function repo(files: Record<string, string>): ManifestImportReader {
+  return {
+    async list(path) {
+      const dir = path.replace(/\/+$/, '');
+      return Object.keys(files)
+        .filter((p) => p === dir || p.startsWith(`${dir}/`))
+        .map((p) => ({ path: p, revision: `sha-${p}` }));
+    },
+    async read(path) {
+      const text = files[path];
+      if (text === undefined) throw new Error(`missing ${path}`);
+      return text;
+    },
+  };
+}
+
+const ROOT = `
+default_agent: kortix
+imports:
+  - .kortix/triggers/
+  - .kortix/agents.yaml
+agents:
+  kortix:
+    connectors: all
+triggers:
+  - slug: root-trigger
+    type: cron
+    cron: "0 9 * * *"
+    prompt: from root
+`;
+
+const FILES = {
+  'kortix.yaml': ROOT,
+  '.kortix/agents.yaml': `
+agents:
+  galileo:
+    connectors: [outlook]
+`,
+  '.kortix/triggers/reports/weekly.yaml': `
+triggers:
+  - slug: weekly-report
+    type: cron
+    cron: "0 15 * * 0"
+    agent: galileo
+    prompt: build the weekly report
+`,
+  '.kortix/triggers/dockets.yml': `
+triggers:
+  - slug: docket-monitor
+    type: cron
+    cron: "0 9 * * 1-5"
+    prompt: check the docket
+`,
+  '.kortix/triggers/README.md': 'not yaml, must be skipped',
+};
+
+async function resolve(files: Record<string, string>, rootPath = 'kortix.yaml') {
+  return resolveManifestImports(
+    { path: rootPath, raw: parseManifestText(files[rootPath] ?? ''), revision: 'sha-root' },
+    repo(files),
+  );
+}
+
+describe('resolveManifestImports', () => {
+  test('a manifest without `imports` resolves to itself and never touches the reader', async () => {
+    const raw = parseManifestText('default_agent: a\nagents: {a: {}}\n');
+    const reader: ManifestImportReader = {
+      list: async () => {
+        throw new Error('list must not be called');
+      },
+      read: async () => {
+        throw new Error('read must not be called');
+      },
+    };
+    const resolved = await resolveManifestImports({ path: 'kortix.yaml', raw, revision: 'r' }, reader);
+    expect(resolved.raw).toEqual(raw);
+    expect(resolved.files.map((f) => f.path)).toEqual(['kortix.yaml']);
+  });
+
+  test('merges a directory import recursively (sorted, .yaml + .yml only) and a file import', async () => {
+    const resolved = await resolve(FILES);
+    const slugs = (resolved.raw.triggers as Array<{ slug: string }>).map((t) => t.slug);
+    // root entries first, then imports in declared order; a directory expands sorted by path
+    expect(slugs).toEqual(['root-trigger', 'docket-monitor', 'weekly-report']);
+    expect(Object.keys(resolved.raw.agents as object)).toEqual(['kortix', 'galileo']);
+    expect(resolved.files.map((f) => f.path)).toEqual([
+      'kortix.yaml',
+      '.kortix/triggers/dockets.yml',
+      '.kortix/triggers/reports/weekly.yaml',
+      '.kortix/agents.yaml',
+    ]);
+    expect(resolved.origins.triggers).toEqual({
+      'root-trigger': 'kortix.yaml',
+      'docket-monitor': '.kortix/triggers/dockets.yml',
+      'weekly-report': '.kortix/triggers/reports/weekly.yaml',
+    });
+    expect(resolved.origins.agents.galileo).toBe('.kortix/agents.yaml');
+    expect(resolved.files[1]?.revision).toBe('sha-.kortix/triggers/dockets.yml');
+  });
+
+  test('an imported file declares project tools; the root agent may name them', async () => {
+    const resolved = await resolve({
+      'kortix.yaml': 'default_agent: a\nimports: [engineering/kortix.yaml]\ntools:\n  ping: tools/ping.ts\nagents:\n  a:\n    tools: [ping, review_gate]\n',
+      'engineering/kortix.yaml': 'tools:\n  review_gate: engineering/tools/review_gate.ts\n  web_search: engineering/tools/web_search.ts\n',
+    });
+    expect(resolved.raw.tools).toEqual({ ping: 'tools/ping.ts', review_gate: 'engineering/tools/review_gate.ts', web_search: 'engineering/tools/web_search.ts' });
+    expect(resolved.origins.tools).toEqual({ ping: 'kortix.yaml', review_gate: 'engineering/kortix.yaml', web_search: 'engineering/kortix.yaml' });
+    const result = validateManifest(resolved.raw);
+    expect(result.issues).toEqual([]);
+  });
+
+  test('a tools key in any file selects the Kortix tools; with none in any file, all of them load', async () => {
+    const root = 'default_agent: a\nimports: [extra.yaml]\nagents:\n  a: { tools: all }\n';
+    const none = await resolve({ 'kortix.yaml': root, 'extra.yaml': 'agents:\n  b: {}\n' });
+    expect(none.raw.tools).toBeUndefined();
+    expect(selectedKortixTools(none.raw.tools)).toEqual([...KORTIX_TOOL_NAMES]);
+    const listed = await resolve({ 'kortix.yaml': root, 'extra.yaml': 'tools:\n  show: kortix:show\n' });
+    expect(selectedKortixTools(listed.raw.tools)).toEqual(['image_gen', 'show']);
+    // An empty `tools` in an imported file still counts: it lists no Kortix tool; the default-on ones load.
+    for (const empty of ['tools: {}\n', 'tools:\n']) {
+      const merged = await resolve({ 'kortix.yaml': root, 'extra.yaml': empty });
+      expect(merged.raw.tools).toEqual({});
+      expect(selectedKortixTools(merged.raw.tools)).toEqual(['image_gen']);
+    }
+  });
+
+  test('the merged document passes the ordinary validator, including cross-file agent refs', async () => {
+    const resolved = await resolve(FILES);
+    const result = validateManifest(resolved.raw);
+    expect(result.issues.filter((i) => i.severity === 'error')).toEqual([]);
+  });
+
+  test('an imported file may import further files (nesting)', async () => {
+    const resolved = await resolve({
+      'kortix.yaml': 'imports: [a.yaml]\n',
+      'a.yaml': 'imports: [nested/b.yaml]\ntriggers:\n  - {slug: a, type: cron, cron: "* * * * *", prompt: a}\n',
+      'nested/b.yaml': 'triggers:\n  - {slug: b, type: cron, cron: "* * * * *", prompt: b}\n',
+    });
+    expect((resolved.raw.triggers as Array<{ slug: string }>).map((t) => t.slug)).toEqual(['a', 'b']);
+  });
+
+  test('a file reachable twice is merged once', async () => {
+    const resolved = await resolve({
+      'kortix.yaml': 'imports: [dir/, dir/a.yaml]\n',
+      'dir/a.yaml': 'triggers:\n  - {slug: a, type: cron, cron: "* * * * *", prompt: a}\n',
+    });
+    expect((resolved.raw.triggers as unknown[]).length).toBe(1);
+  });
+
+  const failures: Array<[string, Record<string, string>, RegExp]> = [
+    [
+      'a missing import',
+      { 'kortix.yaml': 'imports: [nope.yaml]\n' },
+      /kortix\.yaml: import "nope\.yaml" matches no \.yaml or \.yml file/,
+    ],
+    [
+      'an import cycle',
+      {
+        'kortix.yaml': 'imports: [a.yaml]\n',
+        'a.yaml': 'imports: [b.yaml]\n',
+        'b.yaml': 'imports: [a.yaml]\n',
+      },
+      /import cycle: a\.yaml → b\.yaml → a\.yaml/,
+    ],
+    [
+      'a duplicate trigger slug across files',
+      {
+        'kortix.yaml':
+          'imports: [a.yaml]\ntriggers:\n  - {slug: dup, type: cron, cron: "* * * * *", prompt: x}\n',
+        'a.yaml': 'triggers:\n  - {slug: dup, type: cron, cron: "* * * * *", prompt: y}\n',
+      },
+      /triggers "dup" is declared in both kortix\.yaml and a\.yaml/,
+    ],
+    [
+      'a duplicate agent across files',
+      {
+        'kortix.yaml': 'imports: [a.yaml]\nagents: {kortix: {}}\n',
+        'a.yaml': 'agents: {kortix: {secrets: all}}\n',
+      },
+      /agents "kortix" is declared in both kortix\.yaml and a\.yaml/,
+    ],
+    [
+      'a root-only key in an imported file',
+      {
+        'kortix.yaml': 'imports: [a.yaml]\n',
+        'a.yaml': 'default_agent: evil\n',
+      },
+      /a\.yaml: "default_agent" cannot be in an imported file/,
+    ],
+    [
+      'a path that escapes the repository',
+      { 'kortix.yaml': 'imports: ["../outside.yaml"]\n' },
+      /kortix\.yaml: import "\.\.\/outside\.yaml" must be a repository-relative path/,
+    ],
+    [
+      'an absolute path',
+      { 'kortix.yaml': 'imports: [/etc/passwd.yaml]\n' },
+      /must be a repository-relative path/,
+    ],
+    [
+      'a non-list `imports`',
+      { 'kortix.yaml': 'imports: a.yaml\n' },
+      /kortix\.yaml: `imports` must be a list of paths/,
+    ],
+    [
+      'a wrong collection type in an imported file',
+      {
+        'kortix.yaml': 'imports: [a.yaml]\n',
+        'a.yaml': 'triggers: {slug: a}\n',
+      },
+      /a\.yaml: `triggers` must be a list/,
+    ],
+    [
+      'invalid YAML in an imported file',
+      {
+        'kortix.yaml': 'imports: [a.yaml]\n',
+        'a.yaml': 'triggers: [\n',
+      },
+      /^a\.yaml: /,
+    ],
+  ];
+  for (const [name, files, pattern] of failures) {
+    test(`rejects ${name}`, async () => {
+      const error = await resolve(files).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(ManifestImportError);
+      expect((error as Error).message).toMatch(pattern);
+    });
+  }
+});
+
+describe('feature-folder imports', () => {
+  const FEATURE_ROOT = 'default_agent: lead\nimports: [support/]\nagents:\n  lead:\n    mode: primary\n    skills: [triage]\n    commands: [weekly]\n    extensions: [audit]\n    subagents: [researcher]\n';
+  const SUPPORT = [
+    'skills:',
+    '  triage: support/skills/triage',
+    'commands:',
+    '  weekly:',
+    '    prompt_file: support/commands/weekly.md',
+    'extensions:',
+    '  audit:',
+    '    pi: support/extensions/audit.ts',
+    'agents:',
+    '  researcher:',
+    '    mode: subagent',
+    '    prompt: Research.',
+    '',
+  ].join('\n');
+
+  test('a feature folder registers skills, commands, extensions and agents', async () => {
+    const resolved = await resolveManifestImports(
+      { path: 'kortix.yaml', raw: parseManifestText(FEATURE_ROOT) },
+      repo({ 'support/support.yaml': SUPPORT }),
+    );
+    expect(resolved.raw.skills).toEqual({ triage: 'support/skills/triage' });
+    expect(Object.keys(resolved.raw.commands as object)).toEqual(['weekly']);
+    expect(Object.keys(resolved.raw.extensions as object)).toEqual(['audit']);
+    expect(resolved.origins.commands.weekly).toBe('support/support.yaml');
+    expect(validateManifest(resolved.raw).issues.filter((issue) => issue.severity === 'error')).toEqual([]);
+  });
+
+  test('an imported file with a key it cannot hold is an error, not a silent drop', async () => {
+    const promise = resolveManifestImports(
+      { path: 'kortix.yaml', raw: parseManifestText(FEATURE_ROOT) },
+      repo({ 'support/support.yaml': `${SUPPORT}harnesses:\n  pi:\n    codemode: off\n` }),
+    );
+    await expect(promise).rejects.toThrow('"harnesses" cannot be in an imported file');
+  });
+});
+
+describe('splitManifestByOrigin', () => {
+  test('an unchanged merged document splits back to exactly the files it came from', async () => {
+    const resolved = await resolve(FILES);
+    const split = splitManifestByOrigin(resolved, resolved.raw);
+    for (const file of split) {
+      const original = parseManifestText(FILES[file.path as keyof typeof FILES]);
+      expect(file.raw).toEqual(original);
+      expect(file.changed).toBe(false);
+    }
+    expect(split.map((f) => f.path)).toEqual(resolved.files.map((f) => f.path));
+  });
+
+  test('an edit to an imported trigger changes only the file that declares it', async () => {
+    const resolved = await resolve(FILES);
+    const triggers = (resolved.raw.triggers as Array<Record<string, unknown>>).map((t) =>
+      t.slug === 'weekly-report' ? { ...t, enabled: false } : t,
+    );
+    const split = splitManifestByOrigin(resolved, { ...resolved.raw, triggers });
+    expect(split.filter((f) => f.changed).map((f) => f.path)).toEqual([
+      '.kortix/triggers/reports/weekly.yaml',
+    ]);
+    const weekly = split.find((f) => f.path === '.kortix/triggers/reports/weekly.yaml');
+    expect((weekly?.raw.triggers as Array<Record<string, unknown>>)[0]?.enabled).toBe(false);
+  });
+
+  test('a new entry lands in the root file; a removed entry leaves its own file', async () => {
+    const resolved = await resolve(FILES);
+    const triggers = [
+      ...(resolved.raw.triggers as Array<Record<string, unknown>>).filter(
+        (t) => t.slug !== 'docket-monitor',
+      ),
+      { slug: 'brand-new', type: 'cron', cron: '* * * * *', prompt: 'new' },
+    ];
+    const split = splitManifestByOrigin(resolved, { ...resolved.raw, triggers });
+    expect(split.filter((f) => f.changed).map((f) => f.path).sort()).toEqual([
+      '.kortix/triggers/dockets.yml',
+      'kortix.yaml',
+    ]);
+    const root = split[0];
+    expect((root?.raw.triggers as Array<{ slug: string }>).map((t) => t.slug)).toEqual([
+      'root-trigger',
+      'brand-new',
+    ]);
+    expect(root?.raw.imports).toEqual(['.kortix/triggers/', '.kortix/agents.yaml']);
+    const dockets = split.find((f) => f.path === '.kortix/triggers/dockets.yml');
+    // The emptied file keeps its key instead of collapsing to `{}`.
+    expect(dockets?.raw).toEqual({ triggers: [] });
+  });
+
+  test('the root never absorbs imported entries when serialized', async () => {
+    const resolved = await resolve(FILES);
+    const split = splitManifestByOrigin(resolved, resolved.raw);
+    const rootText = serializeManifestObject(split[0]?.raw ?? {});
+    expect(rootText).not.toContain('weekly-report');
+    expect(rootText).not.toContain('galileo');
+  });
+});
+
+describe('imports path rule — validator and JSON schema agree', () => {
+  const cases: Array<[string, boolean]> = [
+    ['.kortix/triggers/', true],
+    ['.kortix/agents.yaml', true],
+    ['triggers', true],
+    ['a/b/c.yml', true],
+    ['', false],
+    [' a.yaml', false],
+    ['a.yaml ', false],
+    ['/abs.yaml', false],
+    ['../up.yaml', false],
+    ['a/../b.yaml', false],
+    ['./a.yaml', false],
+    ['a//b.yaml', false],
+    ['a//', false],
+    ['a\\b.yaml', false],
+    ['dir/*.yaml', false],
+    ['dir/{a,b}.yaml', false],
+  ];
+  for (const [path, ok] of cases) {
+    test(`${JSON.stringify(path)} is ${ok ? 'accepted' : 'rejected'}`, () => {
+      expect(normalizeImportPath(path) !== null).toBe(ok);
+      expect(new RegExp(IMPORT_PATH_PATTERN).test(path)).toBe(ok);
+      const result = validateManifest({ default_agent: 'a', agents: { a: {} }, imports: [path] });
+      expect(result.issues.some((i) => i.path === 'imports[0]')).toBe(!ok);
+    });
+  }
+
+  test('the published JSON schema declares `imports` with the same pattern', () => {
+    const schema = manifestJsonSchema() as {
+      properties: { imports: { items: { pattern: string } } };
+    };
+    expect(schema.properties.imports.items.pattern).toBe(IMPORT_PATH_PATTERN);
+  });
+});

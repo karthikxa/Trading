@@ -1,0 +1,117 @@
+export { createGateway } from './create-gateway';
+export { createClaudeCodePassthrough } from './claude-code/passthrough';
+export type { ClaudeCodeCredential, ClaudeCodeCredentials, ClaudeCodeHooks, ClaudeCodeRequest } from './claude-code/passthrough';
+export { DEFAULT_MAX_REQUEST_BYTES } from './domain/config';
+export {
+  gatewayOverloadedResponse,
+  readAdmittedBody,
+  releaseWhenResponseEnds,
+  requestTooLargeResponse,
+} from './pipeline/read-bounded-body';
+export {
+  DEFAULT_BODY_AMPLIFICATION,
+  InflightBudget,
+} from './pipeline/inflight-budget';
+export type {
+  InflightBudgetOptions,
+  InflightLease,
+  InflightResizeResult,
+} from './pipeline/inflight-budget';
+export type { AdmittedBodyResult } from './pipeline/read-bounded-body';
+export { DEFAULT_IMAGE_WINDOW, applyImageWindow } from './pipeline/image-window';
+export { MAX_HOLD_SECONDS, SETUP_HOLD_SECONDS } from './pipeline/route-memory';
+export { CircuitBreakers, upstreamBreakers } from './pipeline/circuit-breaker';
+export type { ImageWindowOptions, ImageWindowResult } from './pipeline/image-window';
+export type { ChatCompletionRequest, GatewayDeps } from './pipeline';
+export {
+  MAX_RELAYED_RETRY_AFTER_SECONDS,
+  clampRetryAfterSeconds,
+  gatewayErrorBody,
+  gatewayErrorResponse,
+} from './pipeline/error-response';
+export type { GatewayErrorContext } from './pipeline/error-response';
+export {
+  publicPayload,
+  publicUpstreamError,
+  shownModel,
+  shownProvider,
+} from './pipeline/public-identity';
+export type { PublicUpstreamError } from './pipeline/public-identity';
+
+export { callUpstream } from './http';
+export type { CallUpstreamOptions, FetchImpl } from './http';
+
+export { withRetry } from './resilience';
+export type { RetryOptions } from './resilience';
+
+export {
+  GatewayResolutionError,
+  NetworkError,
+  TimeoutError,
+  UpstreamHttpError,
+  looksLikeTerminalAuthFailure,
+} from './errors';
+export type { NoUpstreamReasonCode, UpstreamErrorKind } from './errors';
+
+export { calculateCost } from './usage';
+export type { CostBreakdown, TokenUsage } from './usage';
+
+export { extractUsageFromJson } from './usage';
+export type { ExtractedUsage } from './usage';
+
+export {
+  anthropicMessagesToChat,
+  chatJsonToAnthropicMessage,
+  chatSseToAnthropicSse,
+} from './ingress/anthropic-messages';
+export type {
+  AnthropicContentBlock,
+  AnthropicMessage,
+  AnthropicMessagesRequest,
+  AnthropicTool,
+} from './ingress/anthropic-messages';
+
+export {
+  chatJsonToResponsesObject,
+  chatSseToResponsesSse,
+  responsesToChat,
+} from './ingress/openai-responses';
+export type {
+  ResponsesContentPart,
+  ResponsesInputItem,
+  ResponsesRequest,
+} from './ingress/openai-responses';
+
+export { createModelFallbackPolicyEngine } from './routing';
+export type { ModelFallbackPolicyEngine } from './routing';
+
+export { providerKindForNpm } from './catalog';
+
+export type {
+  AdmitResult,
+  AuthedPrincipal,
+  AuthorizeResult,
+  BillingMode,
+  GatewayHooks,
+  GatewayLogger,
+  GatewayTrace,
+  GatewayAttemptFailure,
+  GatewayAttemptFailureStage,
+  ListModelsOptions,
+  ModelFallbackCondition,
+  ModelFallbackPolicy,
+  ModelFallbackPolicyMatch,
+  ModelGenerationDefaults,
+  ModelRouteInput,
+  ModelRoutePlan,
+  ModelCatalog,
+  ModelInfo,
+  ModelReasoningOption,
+  ModelCost,
+  ModelCostTier,
+  ModelModalities,
+  ProviderKind,
+  TokenCounts,
+  UpstreamDescriptor,
+  UsageEvent,
+} from './domain';

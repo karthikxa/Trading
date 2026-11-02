@@ -1,0 +1,678 @@
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import type { Message } from '../../core/runtime/runtime-types';
+import { SandboxNotReadyError } from '../../core/http/runtime-errors';
+import { useSyncStore } from '../stores/sync-store';
+import { setCurrentRuntime } from '../../core/session/current-runtime';
+import { configureKortix, platformConfig } from '../../core/http/config';
+import {
+  loadSessionRuntimeStatus,
+  ACTIVE_SESSION_PREFETCH_SOURCE,
+  clearActiveSessionPrefetches,
+  getSessionSyncController,
+  noteSessionSyncEvent,
+  prefetchSessionSyncOnce,
+  readSessionMessagePage,
+  reportTelemetry,
+  resetSessionSyncControllers,
+  resetSessionSyncControllersForSession,
+  retainSessionSyncController,
+} from './session-sync-registry';
+
+beforeEach(() => {
+  resetSessionSyncControllers();
+  useSyncStore.getState().reset();
+  setCurrentRuntime(null);
+});
+
+/**
+ * OpenCode's OWN v1 page handling, taken over.
+ *
+ * `packages/app/src/context/server-session.ts:566-583` is their v1 branch — the
+ * same `client.session.messages({sessionID, limit, before})` call we make, the
+ * same `x-next-cursor` header — and it does three things to the response that
+ * we did not:
+ *
+ *   const items = (response.data ?? []).filter((item) => !!item?.info?.id)
+ *   session: items.map((item) => cleanMessage(item.info)).sort(compareMessages)
+ *   part:    items.map((item) => ({ id: item.info.id,
+ *              part: item.parts.filter((part) => !!part?.id).sort((a,b) => cmp(a.id,b.id)) }))
+ *
+ * with `compareMessages` ordering on `time.created + id`
+ * (`packages/app/src/utils/session-message.ts:15-21`).
+ *
+ * We passed `result.data ?? []` straight through: no filter, no sort. A single
+ * malformed row reached the renderer, which is the shape behind
+ * "TypeError: t is not iterable", and message order was whatever the wire said.
+ */
+describe('readSessionMessagePage — OpenCode v1 normalization', () => {
+  function entry(id: string, created: number, parts: unknown[] = []) {
+    return { info: { id, sessionID: 'session-1', role: 'user', time: { created } }, parts };
+  }
+
+  function clientReturning(data: unknown[]) {
+    return {
+      session: {
+        messages: async () => ({ data, response: { headers: { get: () => null } } }),
+      },
+    } as never;
+  }
+
+  test('drops a row with no message id instead of handing it to the renderer', async () => {
+    const client = clientReturning([
+      entry('m1', 1),
+      { parts: [] },
+      { info: {}, parts: [] },
+      null,
+      entry('m2', 2),
+    ]);
+
+    const result = await readSessionMessagePage(client, 'session-1', { limit: 50 });
+
+    expect(result.messages.map((m) => m.info.id)).toEqual(['m1', 'm2']);
+  });
+
+  test('drops a part with no id', async () => {
+    const client = clientReturning([
+      entry('m1', 1, [{ id: 'p2' }, { id: null }, {}, { id: 'p1' }]),
+    ]);
+
+    const result = await readSessionMessagePage(client, 'session-1', { limit: 50 });
+
+    expect(result.messages[0]!.parts.map((p) => p.id)).toEqual(['p1', 'p2']);
+  });
+
+  test('orders messages by creation time then id, not by wire order', async () => {
+    const client = clientReturning([entry('m9', 200), entry('m1', 100), entry('m5', 150)]);
+
+    const result = await readSessionMessagePage(client, 'session-1', { limit: 50 });
+
+    expect(result.messages.map((m) => m.info.id)).toEqual(['m1', 'm5', 'm9']);
+  });
+
+  test('id breaks a tie when two messages share a creation time', async () => {
+    const client = clientReturning([entry('m_b', 100), entry('m_a', 100)]);
+
+    const result = await readSessionMessagePage(client, 'session-1', { limit: 50 });
+
+    expect(result.messages.map((m) => m.info.id)).toEqual(['m_a', 'm_b']);
+  });
+
+  test('a message with no parts array survives as an empty one', async () => {
+    const client = clientReturning([{ info: { id: 'm1', time: { created: 1 } } }]);
+
+    const result = await readSessionMessagePage(client, 'session-1', { limit: 50 });
+
+    expect(result.messages[0]!.parts).toEqual([]);
+  });
+
+  test('a message with no time still sorts deterministically by id', async () => {
+    const client = clientReturning([
+      { info: { id: 'm2' }, parts: [] },
+      { info: { id: 'm1' }, parts: [] },
+    ]);
+
+    const result = await readSessionMessagePage(client, 'session-1', { limit: 50 });
+
+    expect(result.messages.map((m) => m.info.id)).toEqual(['m1', 'm2']);
+  });
+});
+
+describe('readSessionMessagePage', () => {
+  test('preserves MessageWithParts and reads the legacy older-page cursor', async () => {
+    const requests: unknown[] = [];
+    const client = {
+      session: {
+        messages: async (request: unknown) => {
+          requests.push(request);
+          return {
+            data: [
+              {
+                info: {
+                  id: 'message-1',
+                  sessionID: 'session-1',
+                  role: 'user',
+                } as Message,
+                parts: [],
+              },
+            ],
+            response: new Response(null, {
+              headers: { 'X-Next-Cursor': 'message-older' },
+            }),
+          };
+        },
+      },
+    };
+
+    const result = await readSessionMessagePage(client, 'session-1', {
+      limit: 10,
+      before: 'message-newer',
+    });
+
+    expect(requests).toEqual([
+      {
+        sessionID: 'session-1',
+        limit: 10,
+        before: 'message-newer',
+      },
+    ]);
+    expect(result.messages[0]?.info.id).toBe('message-1');
+    expect(result.nextCursor).toBe('message-older');
+  });
+});
+
+describe('prefetchSessionSyncOnce', () => {
+  test('keeps message reads on their original runtime after the active session changes', async () => {
+    const previousConfig = platformConfig();
+    const requests: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      fetch(request) {
+        requests.push(new URL(request.url).pathname);
+        return Response.json([]);
+      },
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+    configureKortix({ backendUrl: base, getToken: async () => 'test-token' }, { global: true });
+    try {
+      setCurrentRuntime(`${base}/runtime-a`, 'runtime-a');
+      const original = getSessionSyncController('session-a');
+      const release = retainSessionSyncController('session-a');
+      await original.reconcile('initial');
+      release();
+      setCurrentRuntime(`${base}/runtime-b`, 'runtime-b');
+      await getSessionSyncController('session-b').reconcile('initial');
+      // Looking up a retained controller must not erase its bound client.
+      await getSessionSyncController('session-a', undefined, 'runtime-a').reconcile('manual');
+      expect(requests).toEqual([
+        '/runtime-a/session/session-a/message',
+        '/runtime-b/session/session-b/message',
+        '/runtime-a/session/session-a/message',
+      ]);
+    } finally {
+      resetSessionSyncControllers();
+      setCurrentRuntime(null);
+      configureKortix(previousConfig, { global: true });
+      server.stop(true);
+    }
+  });
+
+  test('retaining a prefetched controller preserves its explicit runtime client', async () => {
+    let reads = 0;
+    const client = { session: { messages: async () => { reads += 1; return { data: [] }; } } };
+    await prefetchSessionSyncOnce('session-a', 'runtime-a', client);
+    const release = retainSessionSyncController('session-a', 'runtime-a');
+    try {
+      await getSessionSyncController('session-a', undefined, 'runtime-a').reconcile('manual');
+      expect(reads).toBe(2);
+    } finally {
+      release();
+    }
+  });
+
+  test('keeps controllers distinct when two sandboxes contain the same OpenCode id', () => {
+    const sharedId = 'session-from-snapshot';
+    const runtimeA = getSessionSyncController(sharedId, undefined, 'runtime-a');
+    const runtimeB = getSessionSyncController(sharedId, undefined, 'runtime-b');
+
+    expect(runtimeA).not.toBe(runtimeB);
+    expect(getSessionSyncController(sharedId, undefined, 'runtime-a')).toBe(runtimeA);
+    expect(getSessionSyncController(sharedId, undefined, 'runtime-b')).toBe(runtimeB);
+  });
+
+  test('retires old-sandbox controllers without deleting the current sandbox controller', () => {
+    const sharedId = 'session-from-snapshot';
+    const runtimeA = getSessionSyncController(sharedId, undefined, 'runtime-a');
+    const runtimeB = getSessionSyncController(sharedId, undefined, 'runtime-b');
+
+    resetSessionSyncControllersForSession(sharedId, 'runtime-b');
+
+    expect(getSessionSyncController(sharedId, undefined, 'runtime-a')).not.toBe(runtimeA);
+    expect(getSessionSyncController(sharedId, undefined, 'runtime-b')).toBe(runtimeB);
+  });
+
+  test('deduplicates one runtime source and revalidates after the runtime changes', async () => {
+    const requests: string[] = [];
+    const client = (runtime: string) => ({
+      session: {
+        messages: async () => {
+          requests.push(runtime);
+          return { data: [] };
+        },
+      },
+    });
+
+    await prefetchSessionSyncOnce('session-1', 'runtime-a', client('runtime-a'));
+    await prefetchSessionSyncOnce('session-1', 'runtime-a', client('runtime-a'));
+    await prefetchSessionSyncOnce('session-1', 'runtime-b', client('runtime-b'));
+
+    expect(requests).toEqual(['runtime-a', 'runtime-b']);
+  });
+
+  test('clears active-runtime markers without clearing explicit runtime markers', async () => {
+    let activeRequests = 0;
+    let backgroundRequests = 0;
+    const activeClient = {
+      session: {
+        messages: async () => {
+          activeRequests += 1;
+          return { data: [] };
+        },
+      },
+    };
+    const backgroundClient = {
+      session: {
+        messages: async () => {
+          backgroundRequests += 1;
+          return { data: [] };
+        },
+      },
+    };
+
+    await prefetchSessionSyncOnce('active-session', ACTIVE_SESSION_PREFETCH_SOURCE, activeClient);
+    await prefetchSessionSyncOnce('background-session', 'runtime-a', backgroundClient);
+    clearActiveSessionPrefetches();
+    await prefetchSessionSyncOnce('active-session', ACTIVE_SESSION_PREFETCH_SOURCE, activeClient);
+    await prefetchSessionSyncOnce('background-session', 'runtime-a', backgroundClient);
+
+    expect(activeRequests).toBe(2);
+    expect(backgroundRequests).toBe(1);
+  });
+});
+
+describe('session sync controller eviction', () => {
+  test('keeps every retained controller and evicts released overflow', () => {
+    const retained: Array<{
+      controller: ReturnType<typeof getSessionSyncController>;
+      release: () => void;
+    }> = [];
+
+    for (let index = 0; index < 21; index += 1) {
+      const sessionId = `session-${index}`;
+      const controller = getSessionSyncController(sessionId);
+      retained.push({
+        controller,
+        release: retainSessionSyncController(sessionId),
+      });
+      expect(getSessionSyncController(sessionId)).toBe(controller);
+    }
+
+    // Released overflow is evicted once it has been idle past the hold, not in the release's
+    // own tick: a remounting effect (StrictMode) retains it again right after.
+    retained[0]?.release();
+    expect(getSessionSyncController('session-0')).toBe(retained[0]!.controller);
+    const realNow = Date.now;
+    try {
+      Date.now = () => realNow() + 60_000;
+      retainSessionSyncController('session-1')();
+      expect(getSessionSyncController('session-0')).not.toBe(retained[0]?.controller);
+    } finally {
+      Date.now = realNow;
+    }
+    for (const entry of retained.slice(1)) entry.release();
+  });
+
+  // React renders every sibling (each `useSessionSync` gets its controller) before it runs any
+  // effect (each retains it). A sub-agent list that mounts 25 rows at once ("Load all") had
+  // the first rows' retains evict the later rows' controllers, so their initial read went to a
+  // destroyed controller and never left the browser.
+  test("a controller a render handed out survives its siblings' retains until its own", () => {
+    const ids = Array.from({ length: 25 }, (_, index) => `sub-agent-${index}`);
+    const rendered = ids.map((id) => getSessionSyncController(id));
+    const releases = ids.map((id) => retainSessionSyncController(id));
+
+    ids.forEach((id, index) => expect(getSessionSyncController(id)).toBe(rendered[index]!));
+    for (const release of releases) release();
+  });
+
+  // Eviction ran only inside get/retain/release, so with nothing else calling the registry a
+  // released overflow controller lived on, and one whose read failed kept retrying.
+  test('a released overflow controller is evicted by its own timer once idle past the hold', () => {
+    const realNow = Date.now;
+    const realSetTimeout = globalThis.setTimeout;
+    const timers: Array<{ run: () => void; ms: number }> = [];
+    globalThis.setTimeout = ((run: () => void, ms: number) => {
+      timers.push({ run, ms });
+      return { unref() {} } as never;
+    }) as unknown as typeof setTimeout;
+    try {
+      const releases = Array.from({ length: 22 }, (_, index) => {
+        getSessionSyncController(`idle-${index}`);
+        return retainSessionSyncController(`idle-${index}`);
+      });
+      const first = getSessionSyncController('idle-0');
+      for (const release of releases) release();
+      const evict = timers.filter((timer) => timer.ms > 30_000);
+      expect(evict).toHaveLength(1);
+      Date.now = () => realNow() + 60_000;
+      evict[0]!.run();
+      Date.now = realNow;
+      expect(getSessionSyncController('idle-0')).not.toBe(first);
+    } finally {
+      Date.now = realNow;
+      globalThis.setTimeout = realSetTimeout;
+    }
+  });
+
+  test('the eviction pass re-arms for a controller released later in the burst', () => {
+    const realNow = Date.now;
+    const realSetTimeout = globalThis.setTimeout;
+    const timers: Array<{ run: () => void; ms: number }> = [];
+    globalThis.setTimeout = ((run: () => void, ms: number) => {
+      timers.push({ run, ms });
+      return { unref() {} } as never;
+    }) as unknown as typeof setTimeout;
+    const at = (offset: number) => (Date.now = () => realNow() + offset);
+    const evictionPasses = () => timers.filter((timer) => timer.ms > 1_000);
+    try {
+      at(0);
+      // 20 stay retained; `early` is released at 0 and `late` at 10 s.
+      const releases = Array.from({ length: 22 }, (_, index) => {
+        getSessionSyncController(`burst-${index}`);
+        return retainSessionSyncController(`burst-${index}`);
+      });
+      const late = getSessionSyncController('burst-21');
+      releases[20]!();
+      at(10_000);
+      releases[21]!();
+      expect(evictionPasses()).toHaveLength(1);
+      // The pass armed at 0 evicts `early`; `late` is still inside the hold ...
+      at(30_001);
+      evictionPasses()[0]!.run();
+      // Read without touching it: a registry call would count as a use.
+      const destroyed = () => (late as unknown as { destroyed: boolean }).destroyed;
+      expect(destroyed()).toBe(false);
+      // ... so it re-arms for the moment `late` leaves the hold, and that pass evicts it.
+      expect(evictionPasses()).toHaveLength(2);
+      const rearmed = evictionPasses()[1]!;
+      expect(rearmed.ms).toBeGreaterThan(9_000);
+      expect(rearmed.ms).toBeLessThanOrEqual(10_001);
+      at(40_002);
+      rearmed.run();
+      expect(destroyed()).toBe(true);
+      for (const release of releases.slice(0, 20)) release();
+    } finally {
+      Date.now = realNow;
+      globalThis.setTimeout = realSetTimeout;
+    }
+  });
+
+  test('a controller a render handed out and nothing retained is evicted after the hold', () => {
+    const realNow = Date.now;
+    try {
+      const orphan = getSessionSyncController('orphan');
+      Date.now = () => realNow() + 60_000;
+      for (let index = 0; index < 21; index += 1) getSessionSyncController(`later-${index}`);
+      expect(getSessionSyncController('orphan')).not.toBe(orphan);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+});
+
+/**
+ * What is left of the event hook: a frame is proof this session's transcript
+ * moved. It used to also drive a prompt-observation phase machine that decided
+ * "working" from WHICH frame arrived when — an inference that latched, and is
+ * now the server's answer via `projectWorking`.
+ */
+describe('session sync events', () => {
+  test('renews the sole scoped controller while the current runtime is temporarily unbound', () => {
+    const sessionId = 'session-rest-prompt';
+    const controller = getSessionSyncController(sessionId, undefined, 'runtime-a');
+    expect(controller.getSnapshot().freshness).toBe('idle');
+
+    noteSessionSyncEvent({
+      type: 'message.updated',
+      properties: { info: { id: 'assistant-1', sessionID: sessionId, role: 'assistant' } },
+    });
+
+    expect(controller.getSnapshot().freshness).toBe('fresh');
+  });
+
+  /**
+   * The starvation bug. `checkLiveness` skips whenever the last activity is
+   * newer than the poll interval, so ANY frame carrying this session's id used
+   * to postpone the repair — including frames that carry no transcript at all.
+   * A stream that keeps emitting status while dropping message parts could
+   * therefore keep the browser's transcript arbitrarily stale, forever, and
+   * the poll built to catch exactly that never ran.
+   *
+   * Only a frame that MOVES the transcript is evidence the transcript moved.
+   */
+  test('a status frame is not evidence that the transcript moved', () => {
+    const sessionId = 'session-status-only';
+    const controller = getSessionSyncController(sessionId, undefined, 'runtime-a');
+
+    for (const type of ['session.status', 'session.idle', 'permission.updated']) {
+      noteSessionSyncEvent({ type, properties: { sessionID: sessionId } });
+      expect(controller.getSnapshot().freshness).toBe('idle');
+    }
+  });
+
+  test('every frame that carries transcript content renews freshness', () => {
+    const sessionId = 'session-content';
+    for (const event of [
+      { type: 'message.updated', properties: { info: { id: 'm1', sessionID: sessionId } } },
+      { type: 'message.part.updated', properties: { part: { sessionID: sessionId } } },
+      { type: 'message.removed', properties: { sessionID: sessionId, messageID: 'm1' } },
+    ]) {
+      resetSessionSyncControllers();
+      const controller = getSessionSyncController(sessionId, undefined, 'runtime-a');
+      noteSessionSyncEvent(event);
+      expect(controller.getSnapshot().freshness).toBe('fresh');
+    }
+  });
+
+  test('a frame for another session never touches this one', () => {
+    const controller = getSessionSyncController('session-a', undefined, 'runtime-a');
+
+    noteSessionSyncEvent({
+      type: 'session.idle',
+      properties: { sessionID: 'session-b' },
+    });
+
+    expect(controller.getSnapshot().freshness).toBe('idle');
+  });
+
+  test('ignores global events that do not contain session properties', () => {
+    expect(() =>
+      noteSessionSyncEvent({
+        type: 'server.connected',
+        properties: undefined,
+      }),
+    ).not.toThrow();
+  });
+
+  test('ignores an event with no properties instead of throwing', () => {
+    expect(() =>
+      noteSessionSyncEvent({ type: 'sync' } as unknown as { type?: string; properties: unknown }),
+    ).not.toThrow();
+  });
+});
+
+describe('loadSessionRuntimeStatus', () => {
+  test('returns the authoritative runtime status for one session', async () => {
+    const client = {
+      session: {
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: { 'ses-1': { type: 'busy' } } }),
+      },
+    } as never;
+    expect(await loadSessionRuntimeStatus('ses-1', client)).toEqual({ type: 'busy' });
+  });
+
+  test('a session absent from the snapshot is authoritatively idle', async () => {
+    const client = {
+      session: {
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+    } as never;
+    expect(await loadSessionRuntimeStatus('ses-1', client)).toEqual({ type: 'idle' });
+  });
+
+  test('a runtime without a status endpoint returns null (caller decides)', async () => {
+    const client = { session: { messages: async () => ({ data: [] }) } } as never;
+    expect(await loadSessionRuntimeStatus('ses-1', client)).toBeNull();
+  });
+});
+
+describe('loadSessionRuntimeStatus binds the client method', () => {
+  test('a client whose status() reads `this` (like the real SDK) works', async () => {
+    // The real @opencode-ai/sdk SessionClient.status() dereferences
+    // `this.client`. Detaching the method (`const f = s.status; await f()`)
+    // makes `this` undefined and throws before any request goes out — which
+    // silently disabled every status reconciliation against a real client
+    // while all the plain-object test fakes kept passing.
+    class RealisticSession {
+      private answer = { data: { 'ses-1': { type: 'busy' } } };
+      async messages() {
+        return { data: [] };
+      }
+      async status() {
+        // Throws exactly like the SDK if called detached.
+        return (this as RealisticSession).answer;
+      }
+    }
+    const client = { session: new RealisticSession() } as never;
+    expect(await loadSessionRuntimeStatus('ses-1', client)).toEqual({ type: 'busy' });
+  });
+});
+
+describe('loadSessionRuntimeStatus refuses to launder failures into idle', () => {
+  test('an SDK-style resolved error response throws instead of reporting idle', async () => {
+    // The generated client RESOLVES with { error } on HTTP failure. Mapping
+    // that to "idle" told every caller a failing runtime was authoritatively
+    // done — which defeats retry budgets built on thrown errors.
+    const client = {
+      session: {
+        messages: async () => ({ data: [] }),
+        status: async () => ({ error: { message: 'ECONNREFUSED' } }),
+      },
+    } as never;
+    await expect(loadSessionRuntimeStatus('ses-1', client)).rejects.toThrow();
+  });
+});
+
+/**
+ * The 503-swallowed-to-empty-page bug (FINDINGS-B root cause #1).
+ *
+ * The generated OpenCode client RESOLVES with `{ data: undefined, error,
+ * response.status }` on a non-2xx response — it does not throw. Reading
+ * `result.data ?? []` therefore turned a cold-boot 503 into a success-looking
+ * empty page: the transcript rendered blank and "complete", with no retry and
+ * no error. `readSessionMessagePage` must CLASSIFY the result instead.
+ */
+describe('readSessionMessagePage — error classification', () => {
+  test('preserves a missing conversation status for the retry policy', async () => {
+    const client = { session: { messages: async () => ({
+      error: { message: 'Conversation not found' },
+      response: new Response(null, { status: 404 }),
+    }) } };
+    await expect(readSessionMessagePage(client, 'missing-session', { limit: 50 }))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
+  function failingClient(payload: {
+    data?: unknown;
+    error?: unknown;
+    status?: number;
+  }) {
+    return {
+      session: {
+        messages: async () => ({
+          data: payload.data,
+          error: payload.error,
+          response: payload.status
+            ? new Response(null, { status: payload.status })
+            : undefined,
+        }),
+      },
+    } as never;
+  }
+
+  test('a 503 throws a retryable SandboxNotReadyError, never an empty page', async () => {
+    const client = failingClient({
+      error: { data: { message: 'sandbox not ready (status: starting)' } },
+      status: 503,
+    });
+    const promise = readSessionMessagePage(client, 'session-1', { limit: 50 });
+    await expect(promise).rejects.toBeInstanceOf(SandboxNotReadyError);
+    await expect(promise).rejects.toThrow(/sandbox not ready/i);
+  });
+
+  test('a not-ready body classifies as SandboxNotReadyError even without a 503 status', async () => {
+    const client = failingClient({ error: { message: 'opencode session is not ready' } });
+    await expect(
+      readSessionMessagePage(client, 'session-1', { limit: 50 }),
+    ).rejects.toBeInstanceOf(SandboxNotReadyError);
+  });
+
+  test('a 500 throws a real error, not a not-ready error', async () => {
+    const client = failingClient({ error: { message: 'internal error' }, status: 500 });
+    const promise = readSessionMessagePage(client, 'session-1', { limit: 50 });
+    await expect(promise).rejects.toThrow('internal error');
+    await expect(promise).rejects.not.toBeInstanceOf(SandboxNotReadyError);
+  });
+
+  test('a 2xx payload is still normalized and returned', async () => {
+    const client = {
+      session: {
+        messages: async () => ({
+          data: [{ info: { id: 'm1', time: { created: 1 } }, parts: [] }],
+          response: new Response(null, { status: 200 }),
+        }),
+      },
+    } as never;
+    const result = await readSessionMessagePage(client, 'session-1', { limit: 50 });
+    expect(result.messages.map((m) => m.info.id)).toEqual(['m1']);
+  });
+
+  test('threads the AbortSignal into client.session.messages', async () => {
+    let seen: AbortSignal | undefined;
+    const client = {
+      session: {
+        messages: async (_request: unknown, options?: { signal?: AbortSignal }) => {
+          seen = options?.signal;
+          return { data: [], response: new Response(null, { status: 200 }) };
+        },
+      },
+    } as never;
+    const controller = new AbortController();
+    await readSessionMessagePage(client, 'session-1', { limit: 50 }, controller.signal);
+    expect(seen).toBe(controller.signal);
+  });
+});
+
+describe('session sync telemetry', () => {
+  const debug = console.debug;
+  const storage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const lines: unknown[][] = [];
+  const setStorage = (value: Record<string, string>) =>
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: { getItem: (key: string) => value[key] ?? null },
+    });
+  beforeEach(() => {
+    lines.length = 0;
+    console.debug = (...args: unknown[]) => void lines.push(args);
+  });
+  afterEach(() => {
+    console.debug = debug;
+    if (storage) Object.defineProperty(globalThis, 'localStorage', storage);
+    else delete (globalThis as { localStorage?: unknown }).localStorage;
+  });
+
+  test('is silent by default', () => {
+    setStorage({});
+    reportTelemetry('s1', { type: 'sync' } as never);
+    expect(lines).toEqual([]);
+  });
+
+  test("logs when localStorage 'kortix:debug' is set", () => {
+    setStorage({ 'kortix:debug': '1' });
+    reportTelemetry('s1', { type: 'sync' } as never);
+    expect(lines).toEqual([['[session-sync]', { sessionId: 's1', type: 'sync' }]]);
+  });
+});

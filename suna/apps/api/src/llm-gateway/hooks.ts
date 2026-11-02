@@ -1,0 +1,709 @@
+import { settleAndCheckAutoTopup } from '../billing/services/wallet-debits';
+import type {
+  AuthedPrincipal,
+  AuthorizeResult,
+  GatewayTrace,
+  UsageEvent,
+} from '@kortix/llm-gateway';
+import { BillingGateError, assertBillingActive } from '../billing/services/billing-gate';
+import { accountMayUseManagedModels, getCachedAccountTier } from '../billing/services/entitlements';
+import { resolveAccountBilling } from '../billing/services/billing-cache';
+import { byokFeeUsd, byokMonthToDateUsd, noteByokUsage } from '../billing/services/byok-fee';
+import { llmPriceMarkup } from '../billing/services/tiers';
+import { attributeYoloToken } from '../billing/services/yolo-tokens';
+import { wallet } from '../billing/wallet';
+import { config } from '../config';
+import { logger } from '../lib/logger';
+import { emitOtelSpan, isOtelTraceExporterConfigured } from '../lib/otel';
+import {
+  createExtendThrottle,
+  extendSandboxDeadline,
+  llmActivityGrantMs,
+} from '../projects/sandbox-deadline';
+import { validateAccountToken } from '../repositories/account-tokens';
+import { tokenRefusalReason } from '../shared/session-lease-refusal';
+import { isGatewayKey } from '../shared/crypto';
+import { recordGatewayTrace } from '../shared/gateway-logs';
+import { recordUsageEvent } from '../shared/usage-events';
+import { isPureHoldRefund, reconcileBillingHold } from './billing-hold-reconciliation';
+import { type BudgetCrossing, checkBudget, releaseBudgetReservation } from './budgets';
+import { validateGatewayKey } from './gateway-keys';
+import { resolveDefaultModelForPrincipal } from './resolution/default-model';
+import { fallbackSwitchOf, switchSessionToFallback } from './resolution/session-model-fallback';
+import { resolveSessionPersonalOwner } from '../projects/lib/personal-resources';
+
+// ─── Canonical gateway control plane ────────────────────────────────────────
+//
+// The API owns gateway control-plane operations. internal-routes.ts exposes
+// these functions to the standalone gateway over authenticated HTTP.
+
+/**
+ * Resolve a caller token to a principal. Precedence:
+ *   gateway API key (kgw_…)  →  legacy per-member YOLO token  →  account PAT.
+ * Returns null for an unknown/expired/revoked token.
+ */
+export async function authenticatePrincipal(token: string): Promise<AuthedPrincipal | null> {
+  const { principal } = await resolvePrincipalWithReason(token);
+  return principal ? withResolvedTier(principal) : null;
+}
+
+
+async function resolvePrincipalWithReason(
+  token: string,
+): Promise<{
+  principal: AuthedPrincipal | null;
+  reason: string | null;
+  /** Set when the presented secret hash-matches a stored credential that is
+   *  refused (revoked/expired/dead/lease-closed). The gateway refusal stays
+   *  401 but now carries its real identity so the trace lands on the owning
+   *  account (KRTX-1749). Absent when no row matches: garbage stays
+   *  unattributed. */
+  refusedPrincipal?: AuthedPrincipal;
+}> {
+  if (isGatewayKey(token)) {
+    const gw = await validateGatewayKey(token);
+    if (!gw) return { principal: null, reason: null };
+    if (gw.refused) {
+      return {
+        principal: null,
+        reason: null,
+        refusedPrincipal: {
+          userId: gw.userId,
+          accountId: gw.accountId,
+          projectId: gw.projectId,
+          keyId: gw.keyId,
+        },
+      };
+    }
+    return { principal: gw, reason: null };
+  }
+  const yolo = await attributeYoloToken(token);
+  if (yolo) return { principal: yolo, reason: null };
+  const account = await validateAccountToken(token);
+  if (account.isValid && account.userId && account.accountId) {
+    // projectId/sessionId attribute usage to the calling session (the sandbox
+    // connector token is minted per-session with session_id = sandbox_id) — the
+    // reaper's activity signal + precise per-session billing.
+    // Personal provider keys follow the session's on-behalf-of human in a
+    // private session under the agent-principal model (spec 2026-09-22 §2.3).
+    // Flag OFF returns `userId`, and the field stays absent (legacy).
+    const personalUserId =
+      account.projectId && account.sessionId
+        ? await resolveSessionPersonalOwner({
+            projectId: account.projectId,
+            sessionId: account.sessionId,
+            accountId: account.accountId,
+            legacyUserId: account.userId,
+          })
+        : account.userId;
+    return {
+      principal: {
+        userId: account.userId,
+        accountId: account.accountId,
+        projectId: account.projectId ?? undefined,
+        sessionId: account.sessionId ?? undefined,
+        agentGrant: account.agentGrant ?? null,
+        ...(personalUserId !== account.userId ? { personalUserId } : {}),
+      },
+      reason: null,
+    };
+  }
+  // The token refused but hash-matched a real row (revoked, expired, dead,
+  // lease closed): keep refusing, but attribute the refusal (KRTX-1749).
+  const refused = account.refusedIdentity;
+  const refusedPrincipal =
+    refused && refused.accountId && refused.userId
+      ? {
+          userId: refused.userId,
+          accountId: refused.accountId,
+          ...(refused.projectId ? { projectId: refused.projectId } : {}),
+          ...(refused.sessionId ? { sessionId: refused.sessionId } : {}),
+        }
+      : undefined;
+  return {
+    principal: null,
+    reason: tokenRefusalReason(account.error),
+    ...(refusedPrincipal ? { refusedPrincipal } : {}),
+  };
+}
+
+/**
+ * Attach the resolved billing tier + `freeModelsOnly` flag to a principal once,
+ * at authentication, so they travel with it everywhere — including across the
+ * RPC boundary to the out-of-process gateway pod — and decide whether managed
+ * Kortix models are visible without a second tier lookup. When internal billing
+ * is off (self-host) every account sees the full lineup.
+ */
+async function withResolvedTier(
+  principal: AuthedPrincipal,
+  timing?: Record<string, number>,
+  options: { skipDefault?: boolean } = {},
+): Promise<AuthedPrincipal> {
+  const t0 = performance.now();
+  const tiered: AuthedPrincipal = config.KORTIX_BILLING_INTERNAL_ENABLED
+    ? await (async () => {
+        // Both reads share the entitlements tier-snapshot cache: one DB read,
+        // one wall-clock instant, no tier-vs-managed skew. `freeModelsOnly`
+        // is the managed-models entitlement (trial overlay + operator
+        // override included), not a literal tier=='free' check.
+        const [tier, managedModels] = await Promise.all([
+          getCachedAccountTier(principal.accountId),
+          accountMayUseManagedModels(principal.accountId),
+        ]);
+        return { ...principal, tier, freeModelsOnly: !managedModels };
+      })()
+    : { ...principal, freeModelsOnly: false };
+  if (timing) timing.tier_billing = Math.round(performance.now() - t0);
+  // Admission resolves the default only when the route needs it (resolve-route.ts).
+  if (options.skipDefault) return tiered;
+  // Resolve the account/project/agent-configured concrete default once, here,
+  // so it travels with the principal across the standalone-gateway RPC boundary.
+  // Never let a resolution error break authentication for every LLM call.
+  let defaultModel: string | undefined;
+  try {
+    const t1 = performance.now();
+    defaultModel = await resolveDefaultModelForPrincipal(tiered);
+    if (timing) timing.tier_default = Math.round(performance.now() - t1);
+  } catch {
+    defaultModel = undefined;
+  }
+  return defaultModel ? { ...tiered, defaultModel } : tiered;
+}
+
+/**
+ * A 'warn' gateway budget is a soft cap: it never blocks a request. Each
+ * exhausted one becomes a structured, alertable log line once the request's
+ * trace row is written (`persistGatewayTrace`).
+ */
+function logGatewayBudgetWarnings(
+  principal: Pick<AuthedPrincipal, 'accountId' | 'projectId' | 'userId'>,
+  warnings: string[] | undefined,
+): void {
+  if (!warnings?.length) return;
+  for (const message of warnings) {
+    logger.warn(`[gateway] budget warn threshold reached: ${message}`, {
+      accountId: principal.accountId,
+      projectId: principal.projectId,
+      userId: principal.userId,
+    });
+  }
+}
+
+/**
+ * Email the budget's managers at 80% and 100% (KRTX-1718). Fire-and-forget,
+ * and lazy: no request waits on it, and the alert module (IAM, email) stays
+ * out of the request path's import graph.
+ */
+function alertBudgetCrossings(principal: Pick<AuthedPrincipal, 'projectId'>, crossings: BudgetCrossing[] | undefined): void {
+  const projectId = principal.projectId;
+  if (!crossings?.length || !projectId) return;
+  void import('./budget-alerts')
+    .then((alerts) => alerts.alertBudgetCrossings(projectId, crossings))
+    .catch((err: unknown) =>
+      logger.warn('[gateway] budget alert failed', { projectId, error: err instanceof Error ? err.message : String(err) }),
+    );
+}
+
+/**
+ * Evaluate the 'warn' budgets after the request's trace row is written. That
+ * row is the first place its cost is visible to the spend query, so the
+ * request that crosses 80% / 100% is the one that reports it. A warn budget
+ * never denies, so admission does not wait on this query. A row that adds no
+ * spend cannot cross a threshold and is skipped. Errors are logged, never thrown.
+ */
+async function settleWarnBudgets(trace: GatewayTrace): Promise<void> {
+  if (!trace.projectId || !(trace.finalCost || trace.upstreamCost)) return;
+  const principal = { accountId: trace.accountId, projectId: trace.projectId, userId: trace.actorUserId };
+  try {
+    const { warnings, crossings } = await checkBudget(principal, 'warn');
+    logGatewayBudgetWarnings(principal, warnings);
+    if (crossings?.length) {
+      await (await import('./budget-alerts')).alertBudgetCrossings(trace.projectId, crossings);
+    }
+  } catch (err) {
+    logger.warn('[gateway] warn budget check failed', {
+      projectId: trace.projectId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/** Throw with the budget message when a project/member gateway budget is exhausted. */
+export class GatewayBudgetExceededError extends Error {}
+
+export async function assertGatewayBudget(principal: AuthedPrincipal): Promise<void> {
+  const { exceeded, message, crossings } = await checkBudget(principal);
+  alertBudgetCrossings(principal, crossings);
+  if (exceeded) throw new GatewayBudgetExceededError(message ?? 'Budget exceeded');
+}
+
+/**
+ * Authenticate and check budgets before model resolution. New gateways defer
+ * billing until resolution identifies who owns the provider credential.
+ */
+export async function authorizeRequest(
+  token: string,
+  options: {
+    deferBilling?: boolean;
+    timing?: Record<string, number>;
+    /** Called as soon as the credential resolves, so a caller can start its own reads. */
+    onPrincipal?: (principal: AuthedPrincipal) => void;
+    /** Leave `defaultModel` unresolved; the route resolves it when it matters. */
+    skipDefault?: boolean;
+  } = {},
+): Promise<AuthorizeResult> {
+  const t0 = performance.now();
+  const resolved = await resolvePrincipalWithReason(token);
+  if (options.timing) options.timing.principal = Math.round(performance.now() - t0);
+  if (resolved.principal) options.onPrincipal?.(resolved.principal);
+  // The budget read needs only the credential's ids, not its tier: a new
+  // gateway (deferBilling) reads it while the tier resolves. The decisions
+  // below still apply in their order (401, 403, 402 budget).
+  const t2 = performance.now();
+  const earlyBudget = options.deferBilling && resolved.principal?.projectId
+    ? checkBudget(resolved.principal).then((result) => {
+      if (options.timing) options.timing.budget = Math.round(performance.now() - t2);
+      return result;
+    })
+    : null;
+  earlyBudget?.catch(() => {});
+  const t1 = performance.now();
+  let principal = resolved.principal
+    ? await withResolvedTier(resolved.principal, options.timing, { skipDefault: options.skipDefault })
+    : null;
+  if (options.timing) options.timing.tier = Math.round(performance.now() - t1);
+  if (!principal) {
+    // Name the SANDBOX refusal when that is what happened. "Invalid token" for
+    // a valid, unexpired token whose session was parked is a wrong answer, and
+    // it costs whoever reads it a search through the wrong system.
+    //
+    // A refusal whose secret still hash-matches a stored credential (revoked
+    // key, dead PAT, parked session) carries that credential's identity: the
+    // gateway pipeline emits one attributed trace for it, so the refusal is
+    // visible in usage and logs (KRTX-1749). A token matching no row has no
+    // identity — the denial stays principal-less and unrecorded, so garbage
+    // traffic cannot flood the log store.
+    return {
+      ok: false,
+      status: 401,
+      errorCode: resolved.reason ? 'session_not_running' : 'invalid_token',
+      message: resolved.reason ?? 'Invalid token',
+      ...(resolved.refusedPrincipal ? { principal: resolved.refusedPrincipal } : {}),
+    };
+  }
+  // A full-account PAT resolves with no projectId. Budgets are project-scoped
+  // (gateway_budgets.projectId NOT NULL — checkBudget would return
+  // { exceeded: false }) and metered usage is attributed to a project, so a
+  // project-less principal would bypass every budget gate and settle usage
+  // with projectId NULL (KRTX-2295). Refuse inference for it, before the
+  // billing gate so no admission hold is taken for a request we deny.
+  // /v1/llm/models still authenticates account PATs (authenticatePrincipal —
+  // listModels uses authenticate directly, never this gate).
+  if (!principal.projectId) {
+    return {
+      ok: false,
+      status: 403,
+      errorCode: 'project_required',
+      message:
+        'LLM inference requires a project context. Create a project gateway key (POST /v1/projects/{projectId}/gateway/keys) or use a project-scoped token.',
+    };
+  }
+  // Old gateway processes omit deferBilling and still expect this RPC to take
+  // the managed admission hold. New gateways defer it until model resolution.
+  if (!options.deferBilling) {
+    try {
+      const billing = await assertLlmBillingActive(principal.accountId);
+      if (billing?.holdUsd) principal = { ...principal, billingHold: { amountUsd: billing.holdUsd } };
+    } catch (err) {
+      return {
+        ok: false,
+        status: 402,
+        errorCode: err instanceof BillingGateError ? err.reason : 'subscription_required',
+        message: err instanceof Error ? err.message : 'Billing inactive',
+        principal,
+      };
+    }
+  }
+  const t3 = performance.now();
+  const { exceeded, message, crossings } = await (earlyBudget ?? checkBudget(principal));
+  if (options.timing) options.timing.budget_wait = Math.round(performance.now() - t3);
+  alertBudgetCrossings(principal, crossings);
+  if (exceeded) {
+    // A legacy gateway can have a hold here. It refunds the hold when it sees
+    // this denial's principal.
+    return {
+      ok: false,
+      status: 402,
+      errorCode: 'budget_exceeded',
+      message: message ?? 'Budget exceeded',
+      principal,
+    };
+  }
+  return { ok: true, principal };
+}
+
+/**
+ * Apply the LLM wallet gate to every request that can spend wallet credits on
+ * Kortix-managed models.
+ *
+ * An account without the managed-models entitlement (BYOK-only, whether by
+ * tier, trial, or operator override) settles its own keys and ChatGPT
+ * subscription at billingMode 'none' — nothing for this gate to fund — so the
+ * legacy non-deferred auth call (no model resolved yet) skips it. The deferred
+ * gateway path calls this only for a Kortix-billed request it already resolved
+ * (`creditsRequest`), so the floor applies there for every account.
+ */
+export async function assertLlmBillingActive(
+  accountId: string,
+  opts?: { creditsRequest?: boolean },
+): Promise<{ holdUsd?: number } | void> {
+  if (config.KORTIX_BILLING_INTERNAL_ENABLED && !(await accountMayUseManagedModels(accountId))) {
+    // The second managed-models gate, independent of model resolution: a
+    // Kortix-billed request (only managed models bill credits) from an
+    // account without the entitlement is refused here even if resolution let
+    // it through.
+    if (opts?.creditsRequest) {
+      throw new BillingGateError('plan_upgrade_required', 0, 'Kortix-managed models require a paid plan.', accountId);
+    }
+    return;
+  }
+  return assertBillingActive(accountId);
+}
+
+/**
+ * Record a usage event (always, for observability, unless it's a pure hold
+ * refund with nothing to observe) and settle the wallet.
+ *
+ * When `event.billingHoldUsd` is set, an atomic admission hold was already
+ * taken at the pre-dispatch billing gate (see billing-gate.ts checkBillingActive)
+ * — this reconciles it to what the request owes (finalCost, or the BYOK fee
+ * when billingMode is 'none') instead of a flat deduct: tops up the remainder
+ * if that exceeds the hold, refunds the unused portion otherwise (always the
+ * case for a pure hold-refund, which owes 0). Without a hold it debits what is
+ * owed. Either way the wallet moves by the amount the usage row records.
+ */
+/**
+ * One deadline write per minute per session for LLM activity. A single turn can
+ * make dozens of gateway calls; the extend is monotone, so the ones inside a
+ * window would land on the value the first already produced.
+ */
+const llmActivityThrottle = createExtendThrottle(60_000);
+
+/**
+ * THE MID-TURN EXTENSION, and the reason a long turn no longer gets killed.
+ *
+ * A turn is granted 4 hours when it STARTS, and nothing else used to re-extend
+ * it — so the measured tail (MAX ~8.4h, roughly 7-18 turns per 30 days over 4h)
+ * was work the reaper would stop mid-flight. `usage_events` closes that: it is
+ * written by the gateway after a real upstream completion, never by the sandbox,
+ * so it satisfies the invariant — the box cannot mint one without spending real
+ * money through our own control plane, and the row IS the billing record.
+ *
+ * `event.sessionId` is safe as the target for exactly the reason `originRef` is:
+ * the gateway principal's session id comes from the connector token, minted
+ * server-side with sessionId = sandboxId = the project session id, so a caller
+ * cannot name someone else's session. Fire-and-forget — a deadline write must
+ * never fail a billing settlement.
+ */
+function extendDeadlineForLlmActivity(sessionId: string | null | undefined): void {
+  if (!sessionId) return;
+  if (!llmActivityThrottle.take(sessionId)) return;
+  void extendSandboxDeadline({ sessionId }, llmActivityGrantMs()).catch((err) =>
+    logger.warn('[deadline] llm-activity extend failed', {
+      sessionId,
+      err: err instanceof Error ? err.message : String(err),
+    }),
+  );
+}
+
+/**
+ * The BYOK platform fee this request owes (billing/services/byok-fee.ts), or 0.
+ * A failed lookup charges nothing: it must never fail the settlement.
+ */
+async function byokFeeFor(event: UsageEvent): Promise<number> {
+  if (event.billingMode !== 'none' || !config.KORTIX_BILLING_INTERNAL_ENABLED) return 0;
+  const cost = event.upstreamCost ?? 0;
+  if (cost <= 0) return 0;
+  try {
+    const [monthToDateUsd, billing] = await Promise.all([
+      byokMonthToDateUsd(event.accountId),
+      resolveAccountBilling(event.accountId),
+    ]);
+    const fee = byokFeeUsd({
+      provider: event.provider,
+      upstreamCostUsd: cost,
+      monthToDateUsd,
+      // An entitlement, on by default: Enterprise turns it off, and an
+      // operator override turns it off (or on) for one account.
+      feeApplies: billing.entitlements.byokFee,
+    });
+    noteByokUsage(event.accountId, event.provider, cost);
+    return fee;
+  } catch (err) {
+    logger.warn('[byok-fee] lookup failed; no fee charged', {
+      accountId: event.accountId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return 0;
+  }
+}
+
+/** The public route of each image operation; any other event is a chat completion. */
+const IMAGE_ROUTES = new Map<unknown, string>([
+  ['images.generations', '/v1/llm/images/generations'],
+  ['images.edits', '/v1/llm/images/edits'],
+]);
+
+const routeOf = (event: UsageEvent) => IMAGE_ROUTES.get(event.operation) ?? '/v1/llm/chat/completions';
+
+export async function recordGatewayUsage(event: UsageEvent): Promise<void> {
+  // The request is over: its cost is in the logged spend (or it cost nothing),
+  // so its in-flight budget reservation must stop counting.
+  releaseBudgetReservation(event.projectId, event.actorUserId);
+  const pureHoldRefund = isPureHoldRefund(event);
+  // A pure hold refund observed nothing — no upstream call happened.
+  if (!pureHoldRefund) extendDeadlineForLlmActivity(event.sessionId);
+  // On a customer's own key the only Kortix charge is the BYOK fee.
+  const byokFee = pureHoldRefund ? 0 : await byokFeeFor(event);
+
+  const usageEventId = pureHoldRefund
+    ? null
+    : await recordUsageEvent({
+        accountId: event.accountId,
+        actorUserId: event.actorUserId,
+        projectId: event.projectId ?? null,
+        sessionId: event.sessionId ?? null,
+        provider: event.provider,
+        model: event.model,
+        route: routeOf(event),
+        inputTokens: event.promptTokens,
+        outputTokens: event.completionTokens,
+        cachedTokens: event.cachedTokens,
+        cacheWriteTokens: event.cacheWriteTokens,
+        costUsd: byokFee > 0 ? byokFee : event.finalCost,
+        streaming: event.streaming,
+        // One row per gateway request: a retried settlement finds this row,
+        // and the debit keyed on its id (`llm:<event id>`) runs once.
+        requestId: event.requestId,
+        metadata: {
+          upstreamCostUsd: event.upstreamCost,
+          markup: llmPriceMarkup(),
+          requestId: event.requestId,
+          billingMode: event.billingMode,
+          ...(byokFee > 0 ? { byokFeeUsd: byokFee } : {}),
+          // The stream ended before the provider reported usage; the token
+          // counts are the gateway's estimate (see usage/estimate.ts).
+          ...(event.usageEstimated ? { usageEstimated: true } : {}),
+          // Staff-only: the upstream behind a Kortix-managed model. Customer
+          // surfaces read `provider`/`model`, which name Kortix.
+          ...(event.upstream
+            ? { upstreamProvider: event.upstream.provider, upstreamModel: event.upstream.model }
+            : {}),
+        },
+      });
+
+  if (!config.KORTIX_BILLING_INTERNAL_ENABLED) return;
+
+  // What this request owes Kortix: the BYOK fee on the customer's own key,
+  // the real cost otherwise. A hold taken at admission can end on an own key
+  // (a held route-memory fallback, a dispatch fallback), so the hold
+  // reconciles against what is owed, never against finalCost alone.
+  const ownKey = event.billingMode === 'none';
+  const owed = ownKey ? byokFee : event.finalCost;
+  const label = ownKey ? 'BYOK fee' : 'LLM';
+
+  if (event.billingHoldUsd != null) {
+    const { toDeduct, toRefund } = reconcileBillingHold(owed, event.billingHoldUsd);
+    if (toDeduct > 0) {
+      // What is owed exceeded the (small, fixed) admission hold — collect
+      // the difference as a settlement of work already done.
+      await settleLlmUsage(event, toDeduct, usageEventId, label);
+    } else if (toRefund > 0) {
+      await wallet.grant({
+        accountId: event.accountId,
+        amount: toRefund,
+        kind: 'llm_reservation_refund',
+        description: `LLM gateway admission-hold refund${event.model && event.model !== 'unknown' ? ` · ${event.model}` : ''}`,
+        expiring: false,
+        // A retried settlement of the same request refunds once.
+        key: event.requestId ? { request: `llm-hold-refund:${event.requestId}` } : null,
+      });
+    }
+    return;
+  }
+
+  await settleLlmUsage(event, owed, usageEventId, label);
+}
+
+/**
+ * Record LLM spend. SETTLEMENT, not admission: the tokens are already generated
+ * and already paid for upstream. An admission debit would refuse this on a
+ * drained wallet and the spend would disappear from the ledger — which is
+ * exactly what happened for a full billing period.
+ */
+async function settleLlmUsage(
+  event: UsageEvent,
+  costUsd: number,
+  usageEventId: string | null,
+  label = 'LLM',
+): Promise<void> {
+  if (costUsd <= 0) return;
+  const markup = llmPriceMarkup();
+  const hasAudit = Boolean(usageEventId) || event.upstreamCost != null;
+  await settleAndCheckAutoTopup({
+    accountId: event.accountId,
+    amount: costUsd,
+    description: `${label} · ${event.provider ? `${event.provider}/` : ''}${event.model}`,
+    kind: 'llm_debit',
+    key: usageEventId ? { request: `llm:${usageEventId}` } : null,
+    audit: hasAudit
+      ? {
+          ...(usageEventId ? { usageEventId } : {}),
+          ...(event.upstreamCost != null ? { upstreamCostUsd: event.upstreamCost } : {}),
+          ...(markup != null ? { markup } : {}),
+          ...(event.actorUserId ? { actorUserId: event.actorUserId } : {}),
+          route: routeOf(event),
+        }
+      : undefined,
+  });
+}
+
+/**
+ * Build + fire a standard OTel `gen_ai.*` span for one gateway call.
+ *
+ * Best-effort telemetry only: gated on isOtelTraceExporterConfigured() so we
+ * skip building the attributes object entirely when no OTLP endpoint is
+ * configured (the common self-host case), fire-and-forget (never awaited by
+ * the caller), and guarded so a span-emission failure can never throw into —
+ * or block — trace persistence or billing.
+ */
+export function emitGatewayGenAiSpan(trace: GatewayTrace): void {
+  const timing = trace.metadata?.timing as Record<string, unknown> | undefined;
+  if (!isOtelTraceExporterConfigured()) return;
+  try {
+    const attemptFailures = trace.attemptFailures ?? [];
+    const failureCodes = attemptFailures.map((failure) => String(failure.code));
+    const endTimeMs = Date.now();
+    const startTimeMs = endTimeMs - Math.max(0, trace.latencyMs || 0);
+    const resolvedModel = trace.resolvedModel || trace.requestedModel;
+    void emitOtelSpan({
+      name: `chat ${resolvedModel}`,
+      kind: 'INTERNAL',
+      startTimeMs,
+      endTimeMs,
+      attributes: {
+        'gen_ai.system': trace.provider,
+        'gen_ai.operation.name': 'chat',
+        'gen_ai.request.model': trace.requestedModel,
+        'gen_ai.response.model': resolvedModel,
+        'gen_ai.usage.input_tokens': trace.usage.promptTokens,
+        'gen_ai.usage.output_tokens': trace.usage.completionTokens,
+        'kortix.cost_usd': trace.finalCost,
+        'kortix.upstream_cost_usd': trace.upstreamCost,
+        'kortix.provider': trace.provider,
+        ...(trace.upstream
+          ? { 'kortix.upstream_provider': trace.upstream.provider, 'kortix.upstream_model': trace.upstream.model }
+          : {}),
+        'kortix.cached_tokens': trace.usage.cachedTokens,
+        'kortix.cache_write_tokens': trace.usage.cacheWriteTokens,
+        'kortix.streaming': trace.streaming,
+        'kortix.billing_mode': trace.billingMode,
+        'kortix.request_id': trace.requestId,
+        'kortix.attempts': trace.attempts,
+        'kortix.gateway_status': trace.status,
+        'kortix.ok': trace.ok,
+        'kortix.failure_count': attemptFailures.length,
+        'kortix.failure_codes': failureCodes.join(','),
+        'kortix.context_rejected': failureCodes.includes('context_length_exceeded'),
+        // `kortix.probe_timeout` removed: the gateway's first-byte deadline
+        // commits the stream instead of failing it, so `stream_probe_timeout`
+        // can no longer reach a failure chain and the attribute was pinned to
+        // false on every span.
+        'kortix.fallback_recovered': trace.ok && attemptFailures.length > 0,
+        ...(trace.errorCode ? { 'kortix.error_code': trace.errorCode } : {}),
+        // Latency split (packages/llm-gateway pipeline/trace.ts): prep_ms and
+        // its admit/route/resolve/billing segments, then upstream_response_ms.
+        ...Object.fromEntries(
+          Object.entries(timing ?? {})
+            .filter((entry): entry is [string, number] => typeof entry[1] === 'number')
+            .map(([key, value]) => [`kortix.${key}`, value]),
+        ),
+      },
+    }).catch((error) => {
+      console.warn(
+        '[otel] gen_ai span emit failed:',
+        error instanceof Error ? error.message : error,
+      );
+    });
+  } catch (error) {
+    console.warn(
+      '[otel] gen_ai span build failed:',
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
+/** Persist a request trace to gateway_request_logs (skips unauthenticated traces), then evaluate warn budgets. */
+export async function persistGatewayTrace(trace: GatewayTrace): Promise<void> {
+  // Unknown credentials carry no accountId — nothing useful to attribute.
+  if (!trace.accountId) return;
+  // KRTX-2631: account-only refusals intentionally remain DB-forensics-only.
+  // Persist their real accountId with projectId = null; do not infer a project.
+  // Product list/detail readers stay project-scoped. An account-scoped reader
+  // needs a separate account-membership authorization contract.
+  await recordGatewayTrace({
+    requestId: trace.requestId,
+    accountId: trace.accountId,
+    projectId: trace.projectId,
+    sessionId: trace.sessionId,
+    actorUserId: trace.actorUserId,
+    keyId: trace.keyId,
+    requestedModel: trace.requestedModel,
+    resolvedModel: trace.resolvedModel || trace.requestedModel,
+    provider: trace.provider,
+    status: trace.status,
+    ok: trace.ok,
+    errorCode: trace.errorCode,
+    errorMessage: trace.errorMessage,
+    latencyMs: trace.latencyMs,
+    attempts: trace.attempts,
+    candidatesTried: trace.candidatesTried,
+    promptTokens: trace.usage.promptTokens,
+    completionTokens: trace.usage.completionTokens,
+    cachedTokens: trace.usage.cachedTokens,
+    cacheWriteTokens: trace.usage.cacheWriteTokens,
+    upstreamCost: trace.upstreamCost,
+    finalCost: trace.finalCost,
+    streaming: trace.streaming,
+    billingMode: trace.billingMode,
+    request: trace.request,
+    response: trace.response,
+    metadata: {
+      ...trace.metadata,
+      ...(trace.attemptFailures?.length ? { attemptFailures: trace.attemptFailures } : {}),
+      // Read by `sessionModelUsage`: the session screen names the model each
+      // request ended up on, and the model it stood in for.
+      ...(trace.servedModel ? { servedModel: trace.servedModel } : {}),
+      ...(trace.fallbackFrom ? { fallbackFrom: trace.fallbackFrom } : {}),
+    },
+  });
+  // Off the latency path: a session whose model could not serve moves to the
+  // fallback that answered, so its next prompt names the working model.
+  const fallback = fallbackSwitchOf(trace);
+  if (fallback) void switchSessionToFallback(fallback);
+  // Non-blocking: never let telemetry delay the caller or affect the trace write.
+  emitGatewayGenAiSpan(trace);
+  const timing = trace.metadata?.timing as Record<string, unknown> | undefined;
+  if (trace.ok && typeof timing?.upstream_response_ms === 'number') {
+    // Charted in Better Stack: the gateway and model share of time to first token.
+    logger.info(`[gateway-timing] ${trace.provider}/${trace.resolvedModel || trace.requestedModel}`, {
+      provider: trace.provider,
+      model: trace.resolvedModel || trace.requestedModel,
+      streaming: trace.streaming,
+      prep_ms: timing.prep_ms,
+      upstream_response_ms: timing.upstream_response_ms,
+      latency_ms: trace.latencyMs,
+    });
+  }
+  await settleWarnBudgets(trace);
+}

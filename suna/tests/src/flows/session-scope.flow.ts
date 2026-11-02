@@ -1,0 +1,1173 @@
+/**
+ * Session scope — every session-scoped route resolves the session inside the
+ * authorized project, for a caller who may see it, through one guard
+ * (`apps/api/src/projects/lib/http-session-access.ts`). Maps to spec SCOPE-*.
+ *
+ * All flows run on the local profile: sessions are database rows, and no flow
+ * provisions a sandbox.
+ */
+import { randomUUID } from 'node:crypto';
+import { deepStrictEqual } from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { flow } from '../core/flow';
+import { waitFor } from '../core/poll';
+import type { FlowContext } from '../core/types';
+import { createDatabaseSession } from '../fixtures/database-project';
+import { setFeatureAsOperator } from '../fixtures/feature-flags';
+
+const UNKNOWN_SESSION_ID = '00000000-0000-4000-a000-000000000000';
+
+flow(
+  'SCOPE-7',
+  {
+    domain: 'sessions',
+    routes: [
+      'GET /v1/projects/:projectId/sessions/:sessionId/scope',
+    ],
+  },
+  async (ctx) => {
+    const team = await ctx.fixtures.team();
+    const project = await team.project();
+    const owner = ctx.client.as(ctx.P.OWNER);
+    const route = '/v1/projects/:projectId/sessions/:sessionId/scope';
+
+    await ctx.step('a malformed session id returns the uuid-wall 400 envelope', async () => {
+      const r = await owner.get(route, { params: { projectId: project.id, sessionId: 'not-a-uuid' } });
+      r.status(400);
+      deepStrictEqual(r.json(), { error: 'Invalid session id' });
+    });
+
+    await ctx.step('an unknown session returns the session-wall 404 envelope', async () => {
+      const r = await owner.get(route, { params: { projectId: project.id, sessionId: UNKNOWN_SESSION_ID } });
+      r.status(404);
+      deepStrictEqual(r.json(), { error: 'Not found' });
+    });
+
+  },
+);
+
+type SessionBranch = {
+  name: string;
+  session?: { title: string | null; agent_name: string | null; archived: boolean; deleted: boolean };
+};
+
+type Db = {
+  query<T = Record<string, unknown>>(text: string, values?: unknown[]): Promise<{ rows: T[] }>;
+  end(): Promise<void>;
+};
+
+async function openDb(ctx: FlowContext): Promise<Db> {
+  const { Client } = await import('pg');
+  const databaseUrl = ctx.env.databaseUrl as string;
+  const local = databaseUrl.includes('localhost') || databaseUrl.includes('127.0.0.1');
+  const db = new Client({ connectionString: databaseUrl, ssl: local ? false : { rejectUnauthorized: false } });
+  await db.connect();
+  return db as unknown as Db;
+}
+
+/**
+ * A running session with a live sandbox row and a session-bound credential,
+ * the shape a sandbox's own KORTIX_TOKEN has. The token is minted as a plain
+ * PAT and bound in the database, so it carries no agent grant — the shape of a
+ * session in a project that declares no agents.
+ */
+async function seedBoundSession(
+  ctx: FlowContext,
+  db: Db,
+  project: { id: string; accountId?: string },
+  label: string,
+  branchName = 'main',
+): Promise<{ sessionId: string; tokenId: string; token: string }> {
+  const ownerUserId = ctx.P.OWNER.userId!;
+  const accountId = project.accountId ?? ctx.P.OWNER.accountId!;
+  const sessionId = randomUUID();
+  const minted = await ctx.client.as(ctx.P.OWNER).post('/v1/accounts/tokens', { name: `${label} ${sessionId.slice(0, 8)}` });
+  minted.status(201);
+  const credential = minted.json<{ token_id: string; secret_key: string }>();
+  await db.query(
+    `INSERT INTO kortix.project_sessions
+       (session_id, account_id, project_id, branch_name, agent_name, status, created_by, visibility)
+     VALUES ($1, $2, $3, $5, 'kortix', 'running', $4, 'private')`,
+    [sessionId, accountId, project.id, ownerUserId, branchName],
+  );
+  await db.query(
+    `INSERT INTO kortix.session_sandboxes (sandbox_id, session_id, account_id, project_id, status)
+     VALUES ($1::uuid, $1, $2, $3, 'active')`,
+    [sessionId, accountId, project.id],
+  );
+  await db.query(
+    `UPDATE kortix.account_tokens
+        SET account_id = $2, user_id = $3, project_id = $4, session_id = $5
+      WHERE token_id = $1`,
+    [credential.token_id, accountId, ownerUserId, project.id, sessionId],
+  );
+  return { sessionId, tokenId: credential.token_id, token: credential.secret_key };
+}
+
+async function dropBoundSession(db: Db, seeded: { sessionId: string; tokenId: string } | null) {
+  if (!seeded) return;
+  await db.query('DELETE FROM kortix.account_tokens WHERE token_id = $1', [seeded.tokenId]).catch(() => {});
+  await db.query('DELETE FROM kortix.session_sandboxes WHERE sandbox_id = $1::uuid', [seeded.sessionId]).catch(() => {});
+  await db.query('DELETE FROM kortix.project_sessions WHERE session_id = $1', [seeded.sessionId]).catch(() => {});
+}
+
+flow(
+  'SCOPE-2',
+  {
+    domain: 'sessions',
+    requires: ['database'],
+    routes: [
+      'GET /v1/projects/:projectId/sessions/:sessionId/public-shares',
+      'POST /v1/projects/:projectId/sessions/:sessionId/public-shares',
+      'DELETE /v1/projects/:projectId/sessions/:sessionId/public-shares/:shareId',
+    ],
+  },
+  async (ctx) => {
+    const db = await openDb(ctx);
+    const project = await ctx.fixtures.project();
+    const accountId = ctx.P.OWNER.accountId!;
+    const owner = ctx.client.as(ctx.P.OWNER);
+    const backendSessionId = randomUUID();
+    const machineSessionId = randomUUID();
+    let bound: Awaited<ReturnType<typeof seedBoundSession>> | null = null;
+    try {
+      await ctx.step('seed a backend-origin session owned by the signed-in owner', async () => {
+        await db.query(
+          `INSERT INTO kortix.project_sessions
+             (session_id, account_id, project_id, branch_name, created_by, visibility, origin)
+           VALUES ($1, $2::uuid, $3::uuid, 'session/' || $1, $4::uuid, 'private', 'backend')`,
+          [backendSessionId, accountId, project.id, ctx.P.OWNER.userId],
+        );
+      });
+
+      let backendShareId = '';
+      await ctx.step('the signed-in owner lists, mints, and revokes public shares on a backend-origin session', async () => {
+        (
+          await owner.get('/v1/projects/:projectId/sessions/:sessionId/public-shares', {
+            params: { projectId: project.id, sessionId: backendSessionId },
+          })
+        )
+          .status(200)
+          .body()
+          .has('$.shares', []);
+        const minted = await owner.post(
+          '/v1/projects/:projectId/sessions/:sessionId/public-shares',
+          { preview: { port: 3000 } },
+          { params: { projectId: project.id, sessionId: backendSessionId } },
+        );
+        minted.status(201);
+        backendShareId = minted.json<{ share: { share_id: string } }>().share.share_id;
+        (
+          await owner.del('/v1/projects/:projectId/sessions/:sessionId/public-shares/:shareId', {
+            params: { projectId: project.id, sessionId: backendSessionId, shareId: backendShareId },
+          })
+        )
+          .status(200)
+          .body()
+          .exists('$.share.revoked_at');
+      });
+
+      await ctx.step('seed a session-bound credential and a machine-owned sibling trigger session', async () => {
+        bound = await seedBoundSession(ctx, db, project, 'SCOPE-2');
+        await db.query(
+          `INSERT INTO kortix.project_sessions
+             (session_id, account_id, project_id, branch_name, created_by, visibility, origin, metadata)
+           VALUES ($1, $2::uuid, $3::uuid, 'session/' || $1, NULL, 'private', 'trigger',
+                   '{"trigger_kind":"git","trigger_slug":"nightly"}'::jsonb)`,
+          [machineSessionId, accountId, project.id],
+        );
+      });
+
+      await ctx.step(
+        "a session-bound credential of the account owner cannot mint a public link to a sibling machine-owned session → 403",
+        async () => {
+          (
+            await ctx.client
+              .withBearer(bound!.token, 'SESSION_TOKEN')
+              .post(
+                '/v1/projects/:projectId/sessions/:sessionId/public-shares',
+                { preview: { port: 3000 } },
+                { params: { projectId: project.id, sessionId: machineSessionId } },
+              )
+          ).status(403);
+          const count = (
+            await db.query<{ n: number }>(
+              'SELECT count(*)::int AS n FROM kortix.project_session_public_shares WHERE session_id = $1',
+              [machineSessionId],
+            )
+          ).rows[0]?.n;
+          if (count !== 0) throw new Error(`expected no public share on the sibling session, found ${count}`);
+        },
+      );
+
+      await ctx.step('the same credential cannot list the sibling session public shares → 403', async () => {
+        (
+          await ctx.client.withBearer(bound!.token, 'SESSION_TOKEN').get(
+            '/v1/projects/:projectId/sessions/:sessionId/public-shares',
+            { params: { projectId: project.id, sessionId: machineSessionId } },
+          )
+        ).status(403);
+      });
+
+      await ctx.step('the same credential mints a public link to its OWN session → 201', async () => {
+        (
+          await ctx.client
+            .withBearer(bound!.token, 'SESSION_TOKEN')
+            .post(
+              '/v1/projects/:projectId/sessions/:sessionId/public-shares',
+              { preview: { port: 3000 } },
+              { params: { projectId: project.id, sessionId: bound!.sessionId } },
+            )
+        ).status(201);
+      });
+
+      await ctx.step('the signed-in account owner still mints on the machine-owned session → 201', async () => {
+        (
+          await owner.post(
+            '/v1/projects/:projectId/sessions/:sessionId/public-shares',
+            { preview: { port: 3000 } },
+            { params: { projectId: project.id, sessionId: machineSessionId } },
+          )
+        ).status(201);
+      });
+    } finally {
+      await db
+        .query('DELETE FROM kortix.project_session_public_shares WHERE session_id = ANY($1::text[])', [
+          [backendSessionId, machineSessionId, (bound as { sessionId: string } | null)?.sessionId ?? ''],
+        ])
+        .catch(() => {});
+      await db
+        .query('DELETE FROM kortix.project_sessions WHERE session_id = ANY($1::text[])', [[backendSessionId, machineSessionId]])
+        .catch(() => {});
+      await dropBoundSession(db, bound);
+      await db.end();
+    }
+  },
+);
+
+flow(
+  'SCOPE-3',
+  {
+    domain: 'sessions',
+    requires: ['database'],
+    routes: [
+      'POST /v1/projects/:projectId/sessions',
+      'PATCH /v1/projects/:projectId/sessions/:sessionId',
+      'GET /v1/projects/:projectId/sessions/:sessionId',
+      'GET /v1/projects/:projectId/sessions',
+    ],
+  },
+  async (ctx) => {
+    const project = await ctx.fixtures.project();
+    const session = await ctx.fixtures.session(project);
+    const owner = ctx.client.as(ctx.P.OWNER);
+    const params = { projectId: project.id, sessionId: session.id };
+    const otherProjectId = randomUUID();
+
+    for (const key of [
+      'legacy_migration',
+      'slack',
+      'email',
+      'telegram',
+      'teams',
+      'warm',
+      'trigger_session_key',
+      'deletedAt',
+      'deletedBy',
+      // Owned by the title generator. A rename writes `name` → `custom_name`.
+      'name',
+      'title_source',
+      'source',
+      'trigger_kind',
+      'trigger_slug',
+      'workspace_mode',
+      'repository_access',
+      'sandbox_slug',
+      'warmSandboxLocation',
+      // The gateway fallback record. The turn-end revert writes `_from` into
+      // the model pin, so a client value would pick the session's model.
+      'opencode_model_fallback_from',
+      'opencode_model_fallback_from_source',
+      'opencode_model_fallback_reason',
+      'opencode_model_fallback_at',
+      'opencode_model_fallback_until',
+      'opencode_model_picked_at',
+      'opencode_model_restored',
+      // Telegram write confinement follows a reminder successor to the
+      // session it replaces: a client value would add or drop a chat.
+      'reminder_successor_of',
+    ]) {
+      await ctx.step(`PATCH metadata.${key} → 400 (server-managed)`, async () => {
+        (
+          await owner.patch(
+            '/v1/projects/:projectId/sessions/:sessionId',
+            { metadata: { [key]: { source_sandbox_id: otherProjectId, channel: 'C0' } } },
+            { params },
+          )
+        )
+          .status(400)
+          .body()
+          .has('$.error', `metadata key is server-managed: ${key}`);
+      });
+    }
+
+    await ctx.step('PATCH metadata.repository_generation → 400 (server-managed)', async () => {
+      (
+        await owner.patch(
+          '/v1/projects/:projectId/sessions/:sessionId',
+          { metadata: { repository_generation: 'generation-other' } },
+          { params },
+        )
+      ).status(400);
+    });
+
+    for (const field of ['status', 'sandbox_url', 'sandboxUrl', 'error']) {
+      await ctx.step(`PATCH ${field} → 400 (server-managed field)`, async () => {
+        (await owner.patch('/v1/projects/:projectId/sessions/:sessionId', { [field]: 'client-value' }, { params }))
+          .status(400)
+          .body()
+          .has('$.error', `field is server-managed: ${field}`);
+      });
+    }
+
+    await ctx.step('PATCH an unknown field → 400 (not user-editable)', async () => {
+      (await owner.patch('/v1/projects/:projectId/sessions/:sessionId', { random: 'field' }, { params }))
+        .status(400)
+        .body()
+        .has('$.error', 'field is not user-editable: random');
+    });
+
+    // A forged trigger identity would authorize the session as that trigger.
+    for (const [key, value] of [
+      ['source', 'trigger:scheduler'],
+      ['trigger_kind', 'git'],
+      ['trigger_slug', 'forged-trigger'],
+      ['warmSandboxLocation', 'us-east'],
+    ] as const) {
+      await ctx.step(`POST /sessions with metadata.${key} → 400 (server-managed)`, async () => {
+        (
+          await owner.post(
+            '/v1/projects/:projectId/sessions',
+            { metadata: { [key]: value } },
+            { params: { projectId: project.id } },
+          )
+        )
+          .status(400)
+          .body()
+          .has('$.error', `metadata key is server-managed: ${key}`);
+      });
+    }
+
+    await ctx.step('POST /sessions with metadata.legacy_migration → 400 before any session is created', async () => {
+      (
+        await owner.post(
+          '/v1/projects/:projectId/sessions',
+          { metadata: { legacy_migration: { source_sandbox_id: otherProjectId } } },
+          { params: { projectId: project.id } },
+        )
+      )
+        .status(400)
+        .body()
+        .has('$.error', 'metadata key is server-managed: legacy_migration');
+    });
+
+    await ctx.step('PATCH a client key → 200, and the session reads it back without any refused key', async () => {
+      (
+        await owner.patch(
+          '/v1/projects/:projectId/sessions/:sessionId',
+          { metadata: { kind: 'scope-probe' } },
+          { params },
+        )
+      ).status(200);
+      const read = await owner.get('/v1/projects/:projectId/sessions/:sessionId', { params });
+      read.status(200).body().has('$.metadata.kind', 'scope-probe');
+      const metadata = read.json<{ metadata: Record<string, unknown> }>().metadata;
+      for (const key of ['legacy_migration', 'slack', 'email', 'warm']) {
+        if (key in metadata) throw new Error(`metadata.${key} must not be stored, got ${JSON.stringify(metadata[key])}`);
+      }
+    });
+
+    for (const [label, body] of [
+      ['the unknown field arbitrary_env', { initial_prompt: 'noop', arbitrary_env: 'nope' }],
+      ['the unknown field end_user_ref', { base_ref: 'main', end_user_ref: 'legacy-reference' }],
+      ['the unknown field origin_ref', { base_ref: 'main', origin_ref: 'legacy-reference' }],
+      ['an unknown provider', { provider: 'justavps' }],
+    ] as const) {
+      await ctx.step(`POST /sessions with ${label} → 400 at the HTTP boundary`, async () => {
+        (await owner.post('/v1/projects/:projectId/sessions', body, { params: { projectId: project.id } })).status(400);
+      });
+    }
+
+    await ctx.step('no refused create wrote a session: the list holds only the fixture session', async () => {
+      const r = await owner.get('/v1/projects/:projectId/sessions', { params: { projectId: project.id } });
+      r.status(200);
+      deepStrictEqual(r.json<Array<{ session_id: string }>>().map((row) => row.session_id), [session.id]);
+    });
+  },
+);
+
+flow(
+  'SCOPE-8',
+  {
+    domain: 'sessions',
+    requires: ['database'],
+    routes: ['PATCH /v1/projects/:projectId/features', 'POST /v1/projects/:projectId/sessions'],
+  },
+  async (ctx) => {
+    const db = await openDb(ctx);
+    const project = await ctx.fixtures.project({ seed: true });
+    const owner = ctx.client.as(ctx.P.OWNER);
+    const params = { projectId: project.id };
+    let meta: Awaited<ReturnType<typeof seedBoundSession>> | null = null;
+    let worker: Awaited<ReturnType<typeof seedBoundSession>> | null = null;
+    const sessionCount = async () =>
+      (await db.query<{ n: number }>('SELECT count(*)::int AS n FROM kortix.project_sessions WHERE project_id = $1::uuid', [project.id])).rows[0]?.n ?? 0;
+    try {
+      await ctx.step('the project opts into meta_agent; a meta coordinator and a worker each hold a session-bound credential', async () => {
+        // `meta_agent` is operator-only (catalogHidden): kortix.yaml `builtin_agents` is the project switch.
+        await setFeatureAsOperator(ctx, project.id, 'meta_agent', true);
+        meta = await seedBoundSession(ctx, db, project, 'SCOPE-8 meta');
+        await db.query(`UPDATE kortix.project_sessions SET agent_name = 'mykortix' WHERE session_id = $1`, [meta.sessionId]);
+        worker = await seedBoundSession(ctx, db, project, 'SCOPE-8 worker', 'scope-8-worker');
+      });
+
+      await ctx.step('the meta coordinator asking for another meta coordinator → 400 META_AGENT_RECURSION, no session row', async () => {
+        const before = await sessionCount();
+        (await ctx.client.withBearer(meta!.token, 'SESSION_TOKEN').post('/v1/projects/:projectId/sessions', { agent_name: 'mykortix' }, { params }))
+          .status(400)
+          .body()
+          .has('$.code', 'META_AGENT_RECURSION');
+        const after = await sessionCount();
+        if (after !== before) throw new Error(`a refused meta spawn wrote ${after - before} session row(s)`);
+      });
+
+      await ctx.step('a non-meta session asking for My Kortix by its old slug `meta` passes the recursion check and gets `mykortix`', async () => {
+        const r = await ctx.client.withBearer(worker!.token, 'SESSION_TOKEN').post('/v1/projects/:projectId/sessions', { agent_name: 'meta' }, { params });
+        // Local: every create check passed and the loopback callback check answers.
+        if (ctx.env.target === 'local') {
+          r.status(503).body().has('$.code', 'KORTIX_URL_UNREACHABLE');
+        } else {
+          r.status(201).body().has('$.agent_name', 'mykortix');
+          ctx.track('session', r.json<{ session_id: string }>().session_id, { projectId: project.id });
+        }
+      });
+    } finally {
+      await dropBoundSession(db, meta);
+      await dropBoundSession(db, worker);
+      await db.end();
+    }
+  },
+);
+
+flow(
+  'SCOPE-9',
+  {
+    domain: 'sessions',
+    requires: ['database'],
+    routes: [
+      'GET /v1/projects/:projectId',
+      'GET /v1/projects/:projectId/change-requests/:crId/diff',
+      'GET /v1/projects/:projectId/change-requests/:crId/merge-preview',
+    ],
+  },
+  async (ctx) => {
+    const db = await openDb(ctx);
+    const project = await ctx.fixtures.project();
+    const crId = randomUUID();
+    const DENIED = 'session workspace does not allow repository access';
+    let restricted: Awaited<ReturnType<typeof seedBoundSession>> | null = null;
+    let unrestricted: Awaited<ReturnType<typeof seedBoundSession>> | null = null;
+    try {
+      await ctx.step('seed a runtime-workspace session (repository_access false) and a branch-workspace session, each with a bound credential', async () => {
+        restricted = await seedBoundSession(ctx, db, project, 'SCOPE-9 runtime');
+        await db.query(
+          `UPDATE kortix.project_sessions SET metadata = '{"repository_access":false,"workspace_mode":"runtime"}'::jsonb WHERE session_id = $1`,
+          [restricted.sessionId],
+        );
+        unrestricted = await seedBoundSession(ctx, db, project, 'SCOPE-9 branch', 'scope-9-branch');
+      });
+
+      await ctx.step('the runtime-workspace credential reads the project record → 200 with its flags, every repository field empty', async () => {
+        (await ctx.client.withBearer(restricted!.token, 'SESSION_TOKEN').get('/v1/projects/:projectId', { params: { projectId: project.id } }))
+          .status(200)
+          .body()
+          .has('$.project_id', project.id)
+          .has('$.repo_url', '')
+          .has('$.git_origin_url', '')
+          .has('$.default_branch', '')
+          .has('$.manifest_path', '');
+      });
+
+      await ctx.step('the branch-workspace credential reads the full project record → 200 with repo_url and git_origin_url', async () => {
+        const r = await ctx.client.withBearer(unrestricted!.token, 'SESSION_TOKEN').get('/v1/projects/:projectId', { params: { projectId: project.id } });
+        r.status(200);
+        const body = r.json<{ repo_url: string; git_origin_url: string }>();
+        if (!body.repo_url || !body.git_origin_url) throw new Error(`expected repo_url and git_origin_url, got ${JSON.stringify(body)}`);
+      });
+
+      for (const suffix of ['diff', 'merge-preview'] as const) {
+        await ctx.step(`the runtime-workspace credential reads a change request ${suffix} → 403 before the change request lookup`, async () => {
+          (await ctx.client.withBearer(restricted!.token, 'SESSION_TOKEN').get(`/v1/projects/:projectId/change-requests/:crId/${suffix}`, { params: { projectId: project.id, crId } }))
+            .status(403)
+            .body()
+            .has('$.message', DENIED)
+            .has('$.code', 'session_repository_access_denied');
+        });
+        await ctx.step(`the branch-workspace credential reaches the change request lookup for ${suffix} → 404`, async () => {
+          (await ctx.client.withBearer(unrestricted!.token, 'SESSION_TOKEN').get(`/v1/projects/:projectId/change-requests/:crId/${suffix}`, { params: { projectId: project.id, crId } }))
+            .status(404)
+            .body()
+            .has('$.error', 'Change request not found');
+        });
+      }
+
+      await ctx.step('the removed clone-credential route answers 404 to a session credential', async () => {
+        (await ctx.client.withBearer(unrestricted!.token, 'SESSION_TOKEN').get('/v1/projects/:projectId/git/clone-credential', { params: { projectId: project.id } }))
+          .status(404);
+      });
+    } finally {
+      await dropBoundSession(db, restricted);
+      await dropBoundSession(db, unrestricted);
+      await db.end();
+    }
+  },
+);
+
+flow(
+  'SCOPE-4',
+  {
+    domain: 'sessions',
+    requires: ['database'],
+    routes: [
+      'POST /v1/projects/:projectId/sessions/:sessionId/public-shares',
+      'GET /v1/p/public-share/:token',
+    ],
+  },
+  async (ctx) => {
+    const project = await ctx.fixtures.project();
+    const session = await ctx.fixtures.session(project);
+    const owner = ctx.client.as(ctx.P.OWNER);
+    const anon = ctx.client.as(ctx.P.ANON);
+    let shareId = '';
+    await ctx.step('the owner mints a preview share → 201', async () => {
+      const r = await owner.post(
+        '/v1/projects/:projectId/sessions/:sessionId/public-shares',
+        { preview: { port: 3000 } },
+        { params: { projectId: project.id, sessionId: session.id } },
+      );
+      r.status(201);
+      shareId = r.json<{ share: { share_id: string } }>().share.share_id;
+    });
+    await ctx.step('the removed anonymous viewing routes answer 404 — the conversation has no public reader at all (KRTX-2358)', async () => {
+      (await anon.get('/v1/public/session-shares/:shareId', { params: { shareId } })).status(404);
+      (await anon.get('/v1/public/session-shares/:shareId/messages', { params: { shareId } })).status(404);
+    });
+    await ctx.step('the token edge resolves the share — 200 (sandbox ready) or 503 (not yet) — never an auth error', async () => {
+      const r = await owner.get('/v1/projects/:projectId/sessions/:sessionId/public-shares', {
+        params: { projectId: project.id, sessionId: session.id },
+      });
+      const token = r.json<{ shares: Array<{ share_id: string; public_token: string }> }>().shares
+        .find((s) => s.share_id === shareId)!.public_token;
+      (await anon.get('/v1/p/public-share/:token', { params: { token } })).status([200, 503]);
+    });
+  },
+);
+
+flow(
+  'SCOPE-5',
+  {
+    domain: 'sessions',
+    requires: ['database'],
+    routes: [
+      'POST /v1/projects/:projectId/cli-token',
+      'DELETE /v1/projects/:projectId/cli-token/:tokenId',
+      'POST /v1/projects/:projectId/gateway/keys',
+      'DELETE /v1/projects/:projectId/gateway/keys/:keyId',
+    ],
+  },
+  async (ctx) => {
+    const db = await openDb(ctx);
+    const project = await ctx.fixtures.project();
+    const team = await ctx.fixtures.team();
+    const policyProject = await team.project();
+    const owner = ctx.client.as(ctx.P.OWNER);
+    let bound: Awaited<ReturnType<typeof seedBoundSession>> | null = null;
+    const minted: string[] = [];
+    try {
+      await ctx.step('seed a session-bound credential that carries no agent grant', async () => {
+        bound = await seedBoundSession(ctx, db, project, 'SCOPE-5');
+      });
+
+      let humanTokenId = '';
+      await ctx.step('the signed-in owner mints a project CLI token → 201', async () => {
+        const r = await owner.post('/v1/projects/:projectId/cli-token', { name: 'scope-5' }, { params: { projectId: project.id } });
+        r.status(201);
+        humanTokenId = r.json<{ token_id: string }>().token_id;
+        minted.push(humanTokenId);
+      });
+
+      await ctx.step('the session-bound credential cannot mint a project CLI token → 403', async () => {
+        (
+          await ctx.client
+            .withBearer(bound!.token, 'SESSION_TOKEN')
+            .post('/v1/projects/:projectId/cli-token', { name: 'from-session' }, { params: { projectId: project.id } })
+        )
+          .status(403)
+          .body()
+          .has('$.error', 'Agent-session tokens cannot mint project tokens');
+      });
+
+      await ctx.step('the session-bound credential cannot revoke a project CLI token → 403', async () => {
+        (
+          await ctx.client
+            .withBearer(bound!.token, 'SESSION_TOKEN')
+            .del('/v1/projects/:projectId/cli-token/:tokenId', {
+              params: { projectId: project.id, tokenId: humanTokenId },
+            })
+        ).status(403);
+      });
+
+      await ctx.step('the session-bound credential cannot mint or revoke a gateway key; the owner can → 403 / 200', async () => {
+        const session = ctx.client.withBearer(bound!.token, 'SESSION_TOKEN');
+        (await session.post('/v1/projects/:projectId/gateway/keys', { name: 'from-session' }, { params: { projectId: project.id } }))
+          .status(403)
+          .body()
+          .has('$.error', 'Agent-session tokens cannot manage gateway keys');
+        const made = await owner.post('/v1/projects/:projectId/gateway/keys', { name: 'scope-5' }, { params: { projectId: project.id } });
+        made.status(200).body().exists('$.secret_key');
+        const keyId = made.json<{ key_id: string }>().key_id;
+        (await session.del('/v1/projects/:projectId/gateway/keys/:keyId', { params: { projectId: project.id, keyId } })).status(403);
+        (await owner.del('/v1/projects/:projectId/gateway/keys/:keyId', { params: { projectId: project.id, keyId } }))
+          .status(200)
+          .body()
+          .has('$.ok', true);
+      });
+
+      await ctx.step('an account that requires PAT expiry refuses a project CLI token without one → 400', async () => {
+        await db.query(
+          'UPDATE kortix.accounts SET pat_require_expiry = true, pat_max_lifetime_days = 30 WHERE account_id = $1::uuid',
+          [team.id],
+        );
+        (
+          await owner.post('/v1/projects/:projectId/cli-token', { name: 'no-expiry' }, { params: { projectId: policyProject.id } })
+        )
+          .status(400)
+          .body()
+          .has('$.code', 'expiry_required');
+      });
+
+      await ctx.step('the same account refuses an expiry beyond its maximum lifetime → 400', async () => {
+        const tooFar = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+        (
+          await owner.post(
+            '/v1/projects/:projectId/cli-token',
+            { name: 'too-far', expires_at: tooFar },
+            { params: { projectId: policyProject.id } },
+          )
+        )
+          .status(400)
+          .body()
+          .has('$.code', 'expiry_too_far');
+      });
+
+      await ctx.step('the same account mints a project CLI token inside its policy → 201 with that expiry', async () => {
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+        const r = await owner.post(
+          '/v1/projects/:projectId/cli-token',
+          { name: 'in-policy', expires_at: expiresAt },
+          { params: { projectId: policyProject.id } },
+        );
+        r.status(201).body().has('$.expires_at', expiresAt);
+        minted.push(r.json<{ token_id: string }>().token_id);
+      });
+    } finally {
+      if (minted.length) {
+        await db.query('DELETE FROM kortix.account_tokens WHERE token_id = ANY($1::uuid[])', [minted]).catch(() => {});
+      }
+      await dropBoundSession(db, bound);
+      await db.end();
+    }
+  },
+);
+
+async function git(args: string[], cwd?: string, env: Record<string, string> = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', args, { cwd, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (chunk) => (out += chunk));
+    child.stderr.on('data', (chunk) => (err += chunk));
+    child.once('error', reject);
+    child.once('exit', (code) =>
+      code === 0 ? resolve(out) : reject(new Error(`git ${args.join(' ')} failed (${code}): ${err || out}`)),
+    );
+  });
+}
+
+flow(
+  'SCOPE-6',
+  {
+    domain: 'triggers',
+    requires: ['database'],
+    routes: [
+      'POST /v1/projects/:projectId/triggers',
+      'GET /v1/projects/:projectId/triggers',
+      'POST /v1/projects/:projectId/triggers/:slug/fire',
+      'POST /v1/accounts/tokens',
+      'DELETE /v1/accounts/tokens/:tokenId',
+    ],
+  },
+  async (ctx) => {
+    const db = await openDb(ctx);
+    const team = await ctx.fixtures.team();
+    const project = await team.project({ managedGit: true });
+    const manager = await team.addMember('member');
+    await team.grantProjectRole(project.id, manager.userId!, 'manager');
+    const owner = ctx.client.as(ctx.P.OWNER);
+    const ownerSession = await ctx.fixtures.session(project);
+    const otherProject = await ctx.fixtures.project();
+    const foreignSessionId = await createDatabaseSession(ctx.env, {
+      projectId: otherProject.id,
+      accountId: ctx.P.OWNER.accountId!,
+      userId: ctx.P.OWNER.userId!,
+    });
+    const trigger = (name: string, sessionId: string) => ({
+      name,
+      type: 'cron',
+      cron: '0 0 3 * * *',
+      timezone: 'UTC',
+      prompt_template: 'scope probe',
+      session_mode: 'pinned',
+      session_id: sessionId,
+    });
+    const workDir = await mkdtemp(join(tmpdir(), 'ke2e-scope-'));
+    let mintedTokenId: string | null = null;
+    try {
+      await ctx.step("a project manager cannot pin a trigger to another member's private session → 400", async () => {
+        (
+          await ctx.client
+            .as(manager)
+            .post('/v1/projects/:projectId/triggers', trigger('Manager Pin', ownerSession.id), {
+              params: { projectId: project.id },
+            })
+        ).status(400);
+      });
+
+      await ctx.step('the session owner pins a trigger to their own session → 201', async () => {
+        (
+          await owner.post('/v1/projects/:projectId/triggers', trigger('Owner Pin', ownerSession.id), {
+            params: { projectId: project.id },
+          })
+        ).status(201);
+      });
+
+      await ctx.step("a manifest commit re-pins the trigger to another project's session", async () => {
+        const [row] = (
+          await db.query<{ repo_url: string }>('SELECT repo_url FROM kortix.projects WHERE project_id = $1::uuid', [
+            project.id,
+          ])
+        ).rows;
+        if (!row?.repo_url) throw new Error('project has no repository');
+        // Local target: the bare repository on disk. Deployed target: the
+        // Kortix Git proxy with an OWNER token (the managed GitHub repository
+        // is private). The token travels in the environment, never in argv, so
+        // a failing git command cannot print it.
+        let remote = row.repo_url;
+        let gitEnv: Record<string, string> = {};
+        if (/^https?:\/\//.test(remote)) {
+          const minted = await owner.post('/v1/accounts/tokens', { name: ctx.fixtures.name('scope6-manifest-writer') });
+          minted.status(201);
+          const { token_id: tokenId, secret_key: secret } = minted.json<{ token_id: string; secret_key: string }>();
+          mintedTokenId = tokenId;
+          remote = `${ctx.env.apiUrl.replace(/\/v1$/, '')}/v1/git/${project.id}`;
+          gitEnv = {
+            GIT_CONFIG_COUNT: '1',
+            GIT_CONFIG_KEY_0: 'http.extraHeader',
+            GIT_CONFIG_VALUE_0: `Authorization: Bearer ${secret}`,
+          };
+        }
+        await git(['clone', '--quiet', remote, workDir], undefined, gitEnv);
+        await git(['config', 'user.name', 'Kortix Local E2E'], workDir);
+        await git(['config', 'user.email', 'local-e2e@kortix.test'], workDir);
+        const manifestPath = join(workDir, 'kortix.yaml');
+        const manifest = await readFile(manifestPath, 'utf8');
+        if (!manifest.includes(ownerSession.id)) throw new Error('the trigger commit did not pin the owner session');
+        await writeFile(manifestPath, manifest.split(ownerSession.id).join(foreignSessionId));
+        await git(['commit', '--quiet', '-am', 'repin trigger'], workDir);
+        await git(['push', '--quiet', 'origin', 'HEAD:main'], workDir, gitEnv);
+      });
+
+      await ctx.step('reading the triggers records no pinned session for the foreign id', async () => {
+        // The API reads the manifest through its git mirror; wait until the
+        // listing reflects the re-pin commit.
+        await waitFor(
+          async () => {
+            const listed = await owner.get('/v1/projects/:projectId/triggers', { params: { projectId: project.id } });
+            listed.status(200);
+            return listed.json<{ triggers: Array<{ slug: string; session_id: string | null }> }>().triggers;
+          },
+          {
+            until: (triggers) => triggers.some((t) => t.slug === 'owner-pin' && t.session_id === foreignSessionId),
+            timeoutMs: 90_000,
+            intervalMs: 2_000,
+            description: 'trigger listing reflects the re-pin commit',
+          },
+        );
+        const [runtime] = (
+          await db.query<{ session_id: string | null }>(
+            `SELECT session_id FROM kortix.project_trigger_runtime WHERE project_id = $1::uuid AND slug = 'owner-pin'`,
+            [project.id],
+          )
+        ).rows;
+        if (!runtime) throw new Error('trigger runtime row missing after the manifest read');
+        if (runtime.session_id !== null) {
+          throw new Error(
+            `runtime row must name no session, got ${runtime.session_id} (foreign ${foreignSessionId}, own ${ownerSession.id})`,
+          );
+        }
+      });
+
+      await ctx.step("firing the trigger never queues a prompt into the other project's session", async () => {
+        const fired = await owner.post(
+          '/v1/projects/:projectId/triggers/:slug/fire',
+          {},
+          { params: { projectId: project.id, slug: 'owner-pin' } },
+        );
+        const body = fired.json<{ session_id?: string | null }>() ?? {};
+        if (body.session_id === foreignSessionId) {
+          throw new Error(`fire queued into the foreign session: ${fired.text()}`);
+        }
+        const queued = (
+          await db.query<{ n: number }>(
+            'SELECT count(*)::int AS n FROM kortix.session_lifecycle_commands WHERE session_id = $1',
+            [foreignSessionId],
+          )
+        ).rows[0]?.n;
+        if (queued !== 0) throw new Error(`expected no command for the foreign session, found ${queued}`);
+      });
+    } finally {
+      await db
+        .query('DELETE FROM kortix.session_lifecycle_commands WHERE session_id = ANY($1::text[])', [
+          [foreignSessionId, ownerSession.id],
+        ])
+        .catch(() => {});
+      await rm(workDir, { recursive: true, force: true }).catch(() => {});
+      if (mintedTokenId) {
+        await owner.del('/v1/accounts/tokens/:tokenId', { params: { tokenId: mintedTokenId } }).catch(() => {});
+      }
+      await db.end();
+    }
+  },
+);
+
+// SCOPE-10 — a plain project member reads only their own work. Every read of
+// project work (git refs, change requests, the review inbox, gateway logs and
+// spend) filters by "who can open the session"; a project manager keeps the
+// full view (apps/api/src/projects/lib/project-read-view.ts).
+flow(
+  'SCOPE-10',
+  {
+    domain: 'sessions',
+    requires: ['database'],
+    routes: [
+      'GET /v1/projects/:projectId/branches',
+      'GET /v1/projects/:projectId/commits',
+      'GET /v1/projects/:projectId/version-diff',
+      'GET /v1/projects/:projectId/change-requests',
+      'GET /v1/projects/:projectId/change-requests/:crId',
+      'POST /v1/projects/:projectId/review/items',
+      'GET /v1/projects/:projectId/review/items',
+      'GET /v1/projects/:projectId/review/items/:reviewItemId',
+      'GET /v1/projects/:projectId/review/summary',
+      'GET /v1/projects/:projectId/gateway/logs',
+      'GET /v1/projects/:projectId/gateway/logs/:logId',
+      'GET /v1/projects/:projectId/gateway/sessions',
+      'GET /v1/projects/:projectId/gateway/budgets',
+      'PUT /v1/projects/:projectId/gateway/budgets',
+      'POST /v1/projects/:projectId/gateway/playground',
+      'POST /v1/accounts/tokens',
+      'DELETE /v1/accounts/tokens/:tokenId',
+    ],
+  },
+  async (ctx) => {
+    const db = await openDb(ctx);
+    const team = await ctx.fixtures.team();
+    const project = await team.project({ managedGit: true });
+    const alice = await team.addMember('member');
+    const bob = await team.addMember('member');
+    await team.grantProjectRole(project.id, alice.userId!, 'member');
+    await team.grantProjectRole(project.id, bob.userId!, 'member');
+    const owner = ctx.client.as(ctx.P.OWNER);
+    const asAlice = ctx.client.as(alice);
+    const asBob = ctx.client.as(bob);
+    const params = { projectId: project.id };
+    const aliceTitle = 'SCOPE-10 private store work';
+    const aliceSession = await createDatabaseSession(ctx.env, {
+      projectId: project.id,
+      accountId: team.id,
+      userId: alice.userId!,
+      metadata: { custom_name: aliceTitle },
+    });
+    const crId = randomUUID();
+    const logId = randomUUID();
+    let reviewItemId = '';
+    let mintedTokenId: string | null = null;
+    const workDir = await mkdtemp(join(tmpdir(), 'ke2e-scope10-'));
+    // Bob's read carries no id of Alice's private work.
+    const noTrace = (r: { text(): string }, what: string) => {
+      const body = r.text();
+      for (const id of [aliceSession, aliceTitle, crId, logId, alice.userId!, reviewItemId].filter(Boolean)) {
+        if (body.includes(id)) throw new Error(`${what} leaks ${id}: ${body.slice(0, 500)}`);
+      }
+    };
+    try {
+      await ctx.step("seed Alice's private session: its branch, a change request, a gateway log and a member budget", async () => {
+        const [row] = (
+          await db.query<{ repo_url: string }>('SELECT repo_url FROM kortix.projects WHERE project_id = $1::uuid', [
+            project.id,
+          ])
+        ).rows;
+        if (!row?.repo_url) throw new Error('project has no repository');
+        let remote = row.repo_url;
+        let gitEnv: Record<string, string> = {};
+        if (/^https?:\/\//.test(remote)) {
+          const minted = await owner.post('/v1/accounts/tokens', { name: ctx.fixtures.name('scope10-branch-writer') });
+          minted.status(201);
+          const { token_id: tokenId, secret_key: secret } = minted.json<{ token_id: string; secret_key: string }>();
+          mintedTokenId = tokenId;
+          remote = `${ctx.env.apiUrl.replace(/\/v1$/, '')}/v1/git/${project.id}`;
+          gitEnv = {
+            GIT_CONFIG_COUNT: '1',
+            GIT_CONFIG_KEY_0: 'http.extraHeader',
+            GIT_CONFIG_VALUE_0: `Authorization: Bearer ${secret}`,
+          };
+        }
+        await git(['clone', '--quiet', remote, workDir], undefined, gitEnv);
+        await git(['push', '--quiet', 'origin', `HEAD:refs/heads/${aliceSession}`], workDir, gitEnv);
+        await db.query(
+          `INSERT INTO kortix.change_requests
+             (cr_id, account_id, project_id, number, title, base_ref, head_ref, origin_session_id, created_by)
+           VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'SCOPE-10 private change', 'main', $4, $4, $5::uuid)`,
+          [crId, team.id, project.id, aliceSession, alice.userId],
+        );
+        await db.query(
+          `INSERT INTO kortix.gateway_request_logs
+             (log_id, request_id, account_id, project_id, actor_user_id, session_id,
+              requested_model, resolved_model, provider, status, ok)
+           VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5::uuid, $6, 'scope10-model', 'scope10-model', 'scope10', 200, true)`,
+          [logId, `req-${logId}`, team.id, project.id, alice.userId, aliceSession],
+        );
+        (
+          await owner.put(
+            '/v1/projects/:projectId/gateway/budgets',
+            { scope: 'member', subject_user_id: alice.userId, limit_usd: 5, period: 'day', action: 'block' },
+            { params },
+          )
+        ).status(200);
+      });
+
+      await ctx.step("Alice raises a review item from her own session → 201; Bob cannot raise one against it → 404", async () => {
+        const created = await asAlice.post(
+          '/v1/projects/:projectId/review/items',
+          { kind: 'output', title: 'SCOPE-10 private output', session_id: aliceSession },
+          { params },
+        );
+        created.status(201).body().has('$.origin_session_id', aliceSession);
+        reviewItemId = created.json<{ review_item_id: string }>().review_item_id;
+        (
+          await asBob.post(
+            '/v1/projects/:projectId/review/items',
+            { kind: 'output', title: 'SCOPE-10 foreign output', session_id: aliceSession },
+            { params },
+          )
+        ).status(404);
+      });
+
+      await ctx.step("Bob's git reads: no branch of Alice's session; her session ref in commits and version-diff → 404", async () => {
+        const branches = await asBob.get('/v1/projects/:projectId/branches', {
+          params,
+          query: { include_session_branches: 'true' },
+        });
+        branches.status(200);
+        noTrace(branches, 'branches');
+        (await asBob.get('/v1/projects/:projectId/commits', { params, query: { ref: aliceSession } })).status(404);
+        (
+          await asBob.get('/v1/projects/:projectId/version-diff', { params, query: { from: aliceSession, into: 'main' } })
+        ).status(404);
+      });
+
+      await ctx.step("Bob's change-request reads: the list omits Alice's change request; reading it by id → 404", async () => {
+        const list = await asBob.get('/v1/projects/:projectId/change-requests', { params, query: { status: 'all' } });
+        list.status(200);
+        noTrace(list, 'change requests');
+        (await asBob.get('/v1/projects/:projectId/change-requests/:crId', { params: { ...params, crId } })).status(404);
+      });
+
+      await ctx.step("Bob's review inbox: no item of Alice's, by list, by id, or in the summary counts", async () => {
+        const items = await asBob.get('/v1/projects/:projectId/review/items', { params });
+        items.status(200);
+        noTrace(items, 'review items');
+        for (const id of [reviewItemId, `cr:${crId}`]) {
+          (await asBob.get('/v1/projects/:projectId/review/items/:reviewItemId', { params: { ...params, reviewItemId: id } }))
+            .status(404);
+        }
+        const summary = await asBob.get('/v1/projects/:projectId/review/summary', { params });
+        summary.status(200).body().has('$.needs_you_total', 0);
+        noTrace(summary, 'review summary');
+      });
+
+      await ctx.step("Bob's gateway reads: no log, session spend, member spend row or member budget of Alice's", async () => {
+        const logs = await asBob.get('/v1/projects/:projectId/gateway/logs', { params });
+        logs.status(200);
+        noTrace(logs, 'gateway logs');
+        (await asBob.get('/v1/projects/:projectId/gateway/logs/:logId', { params: { ...params, logId } })).status(404);
+        const sessions = await asBob.get('/v1/projects/:projectId/gateway/sessions', { params });
+        sessions.status(200);
+        noTrace(sessions, 'gateway sessions');
+        const budgets = await asBob.get('/v1/projects/:projectId/gateway/budgets', { params });
+        budgets.status(200);
+        noTrace(budgets, 'gateway budgets');
+      });
+
+      await ctx.step('a plain member cannot spend credits in the gateway playground → 403', async () => {
+        // A valid body: schema validation answers 400 before the leaf check.
+        // The leaf check refuses it before any model is called.
+        const body = { prompt: 'scope-10', models: ['kortix/no-such-model'] };
+        (await asBob.post('/v1/projects/:projectId/gateway/playground', body, { params })).status(403);
+      });
+
+      await ctx.step('Alice reads her own change request, review item, log and member budget', async () => {
+        (await asAlice.get('/v1/projects/:projectId/change-requests/:crId', { params: { ...params, crId } }))
+          .status(200)
+          .body()
+          .has('$.change_request.cr_id', crId);
+        (await asAlice.get('/v1/projects/:projectId/review/items/:reviewItemId', { params: { ...params, reviewItemId } }))
+          .status(200);
+        (await asAlice.get('/v1/projects/:projectId/gateway/logs/:logId', { params: { ...params, logId } })).status(200);
+        const budgets = await asAlice.get('/v1/projects/:projectId/gateway/budgets', { params });
+        budgets.status(200);
+        const body = budgets.json<{ members: Array<{ user_id: string }>; budgets: Array<{ subject_user_id: string | null }> }>();
+        if (!body.members.every((m) => m.user_id === alice.userId) || !body.members.length) {
+          throw new Error(`Alice must read exactly her own spend row: ${budgets.text()}`);
+        }
+        if (!body.budgets.some((b) => b.subject_user_id === alice.userId)) {
+          throw new Error(`Alice must read her own member budget: ${budgets.text()}`);
+        }
+      });
+
+      await ctx.step("Alice's branch list names her session branch by her session's title", async () => {
+        const r = await asAlice.get('/v1/projects/:projectId/branches', {
+          params,
+          query: { include_session_branches: 'true' },
+        });
+        r.status(200);
+        const label = r.json<{ branches: SessionBranch[] }>().branches.find((b) => b.name === aliceSession)?.session;
+        if (label?.title !== aliceTitle || label.archived || label.deleted) {
+          throw new Error(`Alice's branch must carry her session's title: ${r.text().slice(0, 500)}`);
+        }
+      });
+
+      await ctx.step("the project owner keeps the full view: Alice's branch, change request, review item, log, spend and budget", async () => {
+        const branches = await waitFor(
+          async () => {
+            const r = await owner.get('/v1/projects/:projectId/branches', {
+              params,
+              query: { include_session_branches: 'true' },
+            });
+            r.status(200);
+            return r.json<{ branches: SessionBranch[] }>().branches;
+          },
+          {
+            until: (branches) => branches.some((b) => b.name === aliceSession),
+            timeoutMs: 60_000,
+            intervalMs: 2_000,
+            description: "the owner's branch list carries Alice's session branch",
+          },
+        );
+        // The owner may not open Alice's private session, so the session list
+        // hides its title from them, and so does the branch list.
+        const label = branches.find((b) => b.name === aliceSession)?.session;
+        if (!label || label.title !== null || label.archived || label.deleted) {
+          throw new Error(`the owner's branch list must label Alice's branch without its title: ${JSON.stringify(label)}`);
+        }
+        (await owner.get('/v1/projects/:projectId/change-requests/:crId', { params: { ...params, crId } })).status(200);
+        (await owner.get('/v1/projects/:projectId/review/items/:reviewItemId', { params: { ...params, reviewItemId } }))
+          .status(200);
+        const summary = await owner.get('/v1/projects/:projectId/review/summary', { params });
+        summary.status(200);
+        if (!summary.json<{ needs_you_by_session: Record<string, number> }>().needs_you_by_session[aliceSession]) {
+          throw new Error(`the owner's summary must count Alice's session: ${summary.text()}`);
+        }
+        (await owner.get('/v1/projects/:projectId/gateway/logs/:logId', { params: { ...params, logId } })).status(200);
+        const sessions = await owner.get('/v1/projects/:projectId/gateway/sessions', { params });
+        sessions.status(200);
+        if (!sessions.text().includes(aliceSession)) throw new Error(`the owner's session spend must list Alice's session`);
+        const budgets = await owner.get('/v1/projects/:projectId/gateway/budgets', { params });
+        budgets.status(200);
+        if (!budgets.json<{ members: Array<{ user_id: string }> }>().members.some((m) => m.user_id === alice.userId)) {
+          throw new Error(`the owner's budgets must carry Alice's spend row: ${budgets.text()}`);
+        }
+        (await owner.post('/v1/projects/:projectId/gateway/playground', {}, { params })).status(400);
+      });
+    } finally {
+      await db.query('DELETE FROM kortix.gateway_request_logs WHERE log_id = $1::uuid', [logId]).catch(() => {});
+      await db.query('DELETE FROM kortix.change_requests WHERE cr_id = $1::uuid', [crId]).catch(() => {});
+      await rm(workDir, { recursive: true, force: true }).catch(() => {});
+      if (mintedTokenId) {
+        await owner.del('/v1/accounts/tokens/:tokenId', { params: { tokenId: mintedTokenId } }).catch(() => {});
+      }
+      await db.end();
+    }
+  },
+);
+
+flow(
+  'SCOPE-11',
+  {
+    domain: 'sessions',
+    requires: ['database'],
+    routes: ['PUT /v1/projects/:projectId/sessions/:sessionId/sharing', 'PATCH /v1/projects/:projectId/sessions/:sessionId'],
+  },
+  async (ctx) => {
+    const db = await openDb(ctx);
+    // A team account: the owner plus an account admin who can see shared sessions.
+    const team = await ctx.fixtures.team();
+    const project = await team.project();
+    const admin = ctx.client.as(await team.addMember('admin'));
+    const owner = ctx.client.as(ctx.P.OWNER);
+    let seeded: Awaited<ReturnType<typeof seedBoundSession>> | null = null;
+    try {
+      seeded = await seedBoundSession(ctx, db, project, 'SCOPE-11');
+      const params = { projectId: project.id, sessionId: seeded.sessionId };
+      const patch = (as: ReturnType<typeof ctx.client.as>, metadata: Record<string, unknown>) =>
+        as.patch('/v1/projects/:projectId/sessions/:sessionId', { metadata }, { params });
+
+      await ctx.step("the owner shares the session with the project; an account admin can see and edit its free-form metadata", async () => {
+        (await owner.put('/v1/projects/:projectId/sessions/:sessionId/sharing', { mode: 'project' }, { params })).status(200);
+        (await patch(admin, { scope11_note: 'seen' })).status(200).body().has('$.metadata.scope11_note', 'seen');
+      });
+
+      await ctx.step('the admin setting metadata.unattended on a session it does not own → 403, the session stays attended', async () => {
+        (await patch(admin, { unattended: 'true' }))
+          .status(403)
+          .body()
+          .has('$.error', "metadata key unattended can be set only by the session's owner or the session itself");
+        (await owner.get('/v1/projects/:projectId/sessions/:sessionId', { params })).status(200).body().has('$.metadata.unattended', undefined);
+      });
+
+      await ctx.step("the session's own token marks itself unattended → 200; the owner clears it → 200", async () => {
+        (await patch(ctx.client.withBearer(seeded!.token, 'SESSION_TOKEN'), { unattended: 'true' }))
+          .status(200)
+          .body()
+          .has('$.metadata.unattended', 'true');
+        (await patch(owner, { unattended: null })).status(200).body().has('$.metadata.unattended', undefined);
+      });
+    } finally {
+      await dropBoundSession(db, seeded);
+      await db.end();
+    }
+  },
+);

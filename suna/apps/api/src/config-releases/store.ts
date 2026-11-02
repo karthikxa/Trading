@@ -1,0 +1,152 @@
+/**
+ * Config archive store.
+ *
+ * The store is a cache. The API can rebuild every config archive from its Git
+ * mirror, so a store failure never blocks a release.
+ *
+ * There is ONE object store in the API (`../object-store/s3.ts`). This module
+ * owns only what is specific to config archives: the content-addressed key
+ * layout, the bucket prefix, and the retention bound. It opens no connection,
+ * signs nothing, and creates no bucket — buckets are infrastructure
+ * (Terraform on AWS, a database migration on Supabase Storage).
+ *
+ * Per environment, one code path, different endpoints:
+ *   - dev / staging / prod: AWS S3, credentials from the SDK default chain
+ *     (the ECS task role). `If-None-Match: *` is enforced, so a publish is
+ *     atomically publish-once.
+ *   - local dev / preview / self-host: Supabase Storage's S3 PROTOCOL
+ *     endpoint with the S3 protocol key pair. Measured: that endpoint ignores
+ *     `If-None-Match` and overwrites, so the object store reads the key first
+ *     and never rewrites it. Keys are content-addressed (the config dir's git
+ *     tree ID), so even a lost race writes identical bytes.
+ */
+
+import { config } from '../config';
+import { ObjectStore, type PutOutcome } from '../object-store/s3';
+import { isUuid } from '../shared/validate';
+
+export interface ConfigArchiveStore {
+  putIfAbsent(key: string, body: Buffer, contentType?: string): Promise<PutOutcome>;
+  downloadUrl(key: string, ttlSeconds: number): Promise<string | null>;
+  /** A signed GET URL, without checking that the object exists. Local signing: no store call. */
+  signedUrl(key: string, ttlSeconds: number): Promise<string>;
+  exists(key: string): Promise<boolean>;
+  /**
+   * Retention: keep the `keep` newest archives of one project, delete the
+   * rest, and return the deleted keys. Safe because the store is a cache — a
+   * deleted archive is rebuilt from the mirror on the next request.
+   */
+  pruneProject(projectId: string, keep: number): Promise<string[]>;
+}
+
+export const CONFIG_ARCHIVE_URL_TTL_SECONDS = 900;
+export const CONFIG_ARCHIVE_CONTENT_TYPE = 'application/gzip';
+
+const TREE_ID = /^[0-9a-f]{40}$/;
+
+/** `projects/<project_id>/trees/` — one project's archives, nothing else. */
+export function configArchiveProjectPrefix(projectId: string): string {
+  if (!isUuid(projectId)) throw new Error(`invalid project id: ${projectId}`);
+  return `projects/${projectId.toLowerCase()}/trees/`;
+}
+
+/** Object key of a config archive. Keys never share a prefix across projects. */
+export function configArchiveKey(projectId: string, configTreeId: string): string {
+  if (!TREE_ID.test(configTreeId)) throw new Error(`invalid config tree id: ${configTreeId}`);
+  return `${configArchiveProjectPrefix(projectId)}${configTreeId}.tar.gz`;
+}
+
+/**
+ * Object key of a published release descriptor (`publish.ts`). One key per
+ * publish: the bucket lifecycle expires an object 30 days after it was
+ * written, so a republish writes a new object instead of keeping an old one.
+ */
+export function configReleaseDescriptorKey(projectId: string, commit: string, publishedAt: Date): string {
+  if (!isUuid(projectId)) throw new Error(`invalid project id: ${projectId}`);
+  if (!TREE_ID.test(commit)) throw new Error(`invalid commit: ${commit}`);
+  return `${configArchiveProjectPrefix(projectId).replace(/trees\/$/, 'releases/')}${commit}-${publishedAt.getTime()}.json`;
+}
+
+/**
+ * The config archive view of the shared object store: layout keys in, object
+ * keys (prefix applied) out. The prefix namespaces config archives inside a
+ * bucket that may also hold project snapshots.
+ */
+export class S3ConfigArchiveStore implements ConfigArchiveStore {
+  private readonly prefix: string;
+
+  constructor(
+    private readonly objects: ObjectStore,
+    prefix: string,
+  ) {
+    const trimmed = prefix.trim().replace(/^\/+/, '').replace(/\/+$/, '');
+    this.prefix = trimmed ? `${trimmed}/` : '';
+  }
+
+  private objectKey(key: string): string {
+    return `${this.prefix}${key}`;
+  }
+
+  putIfAbsent(key: string, body: Buffer, contentType = CONFIG_ARCHIVE_CONTENT_TYPE): Promise<PutOutcome> {
+    return this.objects.putIfAbsent({ key: this.objectKey(key), body, contentType });
+  }
+
+  async signedUrl(key: string, ttlSeconds: number): Promise<string> {
+    return (await this.objects.presignDownload(this.objectKey(key), ttlSeconds)).url;
+  }
+
+  async exists(key: string): Promise<boolean> {
+    return (await this.objects.head(this.objectKey(key))) !== null;
+  }
+
+  /**
+   * Presigning never checks existence, so a missing object is read first:
+   * the archive route must not redirect a sandbox at a URL that answers 404.
+   */
+  async downloadUrl(key: string, ttlSeconds: number): Promise<string | null> {
+    const objectKey = this.objectKey(key);
+    if (!(await this.objects.head(objectKey))) return null;
+    const { url } = await this.objects.presignDownload(objectKey, ttlSeconds);
+    return url;
+  }
+
+  async pruneProject(projectId: string, keep: number): Promise<string[]> {
+    if (!Number.isInteger(keep) || keep < 1) throw new Error('keep must be at least 1');
+    const archives = configArchiveProjectPrefix(projectId);
+    const deleted: string[] = [];
+    // Published descriptors (`configReleaseDescriptorKey`) are bounded the same way.
+    for (const layoutPrefix of [archives, archives.replace(/trees\/$/, 'releases/')]) {
+      const found = await this.objects.list(this.objectKey(layoutPrefix), { pageSize: 1000, maxPages: 4 });
+      if (found.length <= keep) continue;
+      const ordered = [...found].sort((a, b) => (b.lastModified?.getTime() ?? 0) - (a.lastModified?.getTime() ?? 0));
+      const stale = ordered.slice(keep);
+      await this.objects.remove(stale.map((o) => o.key));
+      deleted.push(...stale.map((o) => o.key.slice(this.prefix.length)));
+    }
+    return deleted;
+  }
+}
+
+/** The bucket, endpoint and credentials of the config archive store. */
+function configArchiveTarget() {
+  return {
+    name: 'config archive',
+    bucket: config.KORTIX_CONFIG_ARCHIVE_S3_BUCKET,
+    region: config.KORTIX_CONFIG_ARCHIVE_S3_REGION,
+    endpoint: config.KORTIX_CONFIG_ARCHIVE_S3_ENDPOINT,
+    publicEndpoint: config.KORTIX_CONFIG_ARCHIVE_PUBLIC_URL,
+    forcePathStyle: config.KORTIX_CONFIG_ARCHIVE_S3_FORCE_PATH_STYLE,
+    accessKeyId: config.KORTIX_CONFIG_ARCHIVE_S3_ACCESS_KEY_ID,
+    secretAccessKey: config.KORTIX_CONFIG_ARCHIVE_S3_SECRET_ACCESS_KEY,
+  };
+}
+
+let store: ConfigArchiveStore | null = null;
+
+/** The process store. Built lazily so an import never touches the network. */
+export function getConfigArchiveStore(): ConfigArchiveStore {
+  if (!store) {
+    store = new S3ConfigArchiveStore(new ObjectStore(configArchiveTarget), config.KORTIX_CONFIG_ARCHIVE_S3_PREFIX);
+  }
+  return store;
+}

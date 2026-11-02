@@ -1,0 +1,946 @@
+'use client';
+
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import {
+  type CreateSessionPromptInput,
+  type CreateSessionPromptResult,
+  type RemovedSessionPrompt,
+  type SessionPrompt,
+  type SessionPromptOverrides,
+  type SessionPromptPart,
+  createSessionPrompt,
+  deleteSessionPrompt,
+  holdSessionPrompts,
+  listSessionPrompts,
+  retrySessionPrompt,
+  editSessionPrompt,
+  interruptSessionPrompt, type SessionSentPrompt } from '../core/rest/projects-client/sessions';
+import { useSessionWorkingStore } from '../browser/stores/session-working-store';
+import { countLiveInboxPrompts, inboxObservationSupersedes } from '../core/session/working';
+import { claimOpenBundle, openBundleQueue } from '../core/session/open-bundle';
+import { createTickSingleFlight } from '../core/session/single-flight';
+import { openSessionControlStream } from '../core/session/control-stream';
+import { qk } from './query-keys';
+import { usePollOwner } from './use-poll-owner';
+import { mintSessionWireMessageId } from './use-opencode-sessions/messages';
+
+/**
+ * The session's SERVER-SIDE prompt inbox.
+ *
+ * The queue used to be a browser store: closing the tab, switching device, or
+ * a crash lost every pending message silently, and two tabs on one session each
+ * believed their own list. This hook reads the durable rows instead, so what
+ * the composer renders is what the server will actually deliver.
+ *
+ * Polling has TWO cadences, and the slow one is not an optimization.
+ *
+ * While prompts exist the list is the only thing that can report a state change
+ * (`waiting` → `queued` → `delivering`), so it polls fast. An empty list is the
+ * common state and does not need that — but it cannot stop either, because a
+ * prompt can ENTER the inbox with this tab doing nothing at all: the reaper
+ * redelivers one whose turn never ran, and parking a box requeues its in-flight
+ * prompt as `held`. A held row is deliberately not due; the user releases it by
+ * sending something or pressing "send now" on it, which they can only do if
+ * they can SEE it. Not polling an empty list meant only a full page load ever
+ * showed those rows — and the same gap hid a prompt queued from a second tab.
+ *
+ * Both cadences run ONLY while the session's control stream is not connected.
+ * While it is, every write of an inbox row arrives as a `kortix.control.queue`
+ * frame (a database trigger pokes the stream's reconciler on every API
+ * replica), so the poll is the fallback for a gap in that stream, not the
+ * source. See `core/session/control-stream.ts`.
+ */
+export const SESSION_PROMPTS_POLL_MS = 1_000;
+/** The floor for an EMPTY list. Slow enough to be free, fast enough that a
+ *  prompt handed back by the server appears while the user is still looking. */
+export const SESSION_PROMPTS_IDLE_POLL_MS = 15_000;
+
+/** How often a connected stream's last queue frame is re-noted: three times
+ *  inside one observation's life (`INBOX_OBSERVATION_MAX_MS`, 10 s). */
+const SESSION_PROMPTS_STREAM_RENOTE_MS = 3_000;
+
+/**
+ * The cadence for a list of `count` prompts. Pure, so the floor is testable.
+ *
+ * `believedPending` is what this TAB thinks is in flight — the row
+ * `notePromptAccepted` recorded when `POST .../prompts` returned, before any
+ * list read could see it. It counts toward the cadence because the belief is an
+ * observation with a life (`INBOX_OBSERVATION_MAX_MS`) and only a list read
+ * refreshes it: a first read that landed before the row existed answered zero,
+ * locked the cadence to the 15s idle floor, and let a 10s belief die under a
+ * prompt that was still queued. The list length alone cannot close that hole,
+ * because at that instant the list is honestly empty.
+ */
+export function sessionPromptsPollMs(
+  count: number,
+  pollMs?: number,
+  believedPending = 0,
+): number {
+  const live = Math.max(count, believedPending);
+  return live > 0 ? (pollMs ?? SESSION_PROMPTS_POLL_MS) : SESSION_PROMPTS_IDLE_POLL_MS;
+}
+
+/**
+ * Feed one reading of the list into the working projection.
+ *
+ * The inbox is not only something to render. A prompt is DURABLE long before it
+ * is a turn: the lifecycle row has to be drained, and the box may have to resume
+ * first (18.9s Daytona / 24.5s Platinum, measured). `GET .../turn` truthfully
+ * answers "no turns" for that whole window, and the composer used to believe it
+ * — swapping Stop back to Send while the user's prompt was still queued. The
+ * stamp is the instant the read was ISSUED, for the same reason `/turn`'s is.
+ */
+export function noteInboxObservation(
+  sessionId: string,
+  prompts: readonly SessionPrompt[],
+  atMs: number,
+  serverAtMs?: number,
+  drainedAtMs?: number,
+): void {
+  useSessionWorkingStore
+    .getState()
+    .noteInboxPending(sessionId, countLiveInboxPrompts(prompts), atMs, serverAtMs, drainedAtMs);
+}
+
+/**
+ * Did the SERVER take a prompt off this queue between these two readings?
+ *
+ * The count cannot answer it. A row that drains and a row the user just put on
+ * hold both take the live count to zero, and they mean opposite things: one is
+ * a turn opening, the other is the user asking for nothing to run. What tells
+ * them apart is the ROW — a held or failed prompt is still listed, a delivered
+ * one is not (`listInboxPrompts` drops it the moment the ledger confirms a turn
+ * consumed its wire id).
+ *
+ * So: a prompt this tab watched WAITING (`queued`) or already handed over
+ * (`delivering`) is simply absent now. That is the control plane saying it gave
+ * the prompt to the runtime — the one transition no other observer can report
+ * yet, and the reason `WorkingInboxInput.drainedAtMs` exists.
+ *
+ * This tab's own optimistic rows are excluded: the server lists the same
+ * submission under ITS prompt id, so an optimistic row "disappears" on every
+ * successful send. That is a rename, not a hand-off.
+ */
+export function inboxDrained(
+  previous: readonly SessionPrompt[] | undefined,
+  next: readonly SessionPrompt[],
+): boolean {
+  if (!previous || previous.length === 0) return false;
+  const listed = new Set(next.map((p) => p.prompt_id));
+  return previous.some(
+    (p) =>
+      (p.state === 'queued' || p.state === 'delivering') &&
+      !isOptimisticSessionPrompt(p) &&
+      !listed.has(p.prompt_id),
+  );
+}
+
+/**
+ * Apply one server inbox snapshot to both projections, with one freshness rule.
+ *
+ * A direct read and the session stream can settle out of order. Updating the
+ * working projection through `noteInboxObservation` already rejected an older
+ * answer, but updating the React Query cache did not. That split let an old
+ * empty control frame hide a prompt that a newer POST/read had confirmed.
+ *
+ * `atMs` is this tab's clock (age); `serverAtMs` is the server's `observed_at`
+ * (ordering). Snapshots that both carry a server stamp rank on the server clock
+ * alone — `inboxObservationSupersedes` — so a read issued before a POST can
+ * never erase the row the POST confirmed, and a client clock ±10 minutes off
+ * changes nothing.
+ */
+export function applyInboxObservation(
+  sessionId: string,
+  cached: readonly SessionPrompt[] | undefined,
+  prompts: readonly SessionPrompt[],
+  atMs: number,
+  serverAtMs?: number,
+): SessionPrompt[] {
+  const current = useSessionWorkingStore.getState().inbox[sessionId];
+  const candidate = {
+    pending: countLiveInboxPrompts(prompts),
+    atMs,
+    ...(serverAtMs != null ? { serverAtMs } : {}),
+  };
+  if (!inboxObservationSupersedes(candidate, current)) return [...(cached ?? [])];
+  // Only a reading that SUPERSEDES may report a drain: an older snapshot
+  // arriving late has not watched anything leave, it simply never saw it.
+  noteInboxObservation(
+    sessionId,
+    prompts,
+    atMs,
+    serverAtMs,
+    inboxDrained(cached, prompts) ? atMs : undefined,
+  );
+  return reconcileOptimisticPrompts(cached, prompts);
+}
+
+
+// ============================================================================
+// Resume and remove answer on the click
+// ============================================================================
+
+/**
+ * The rows as they read once a hold is released: `reason: 'held'` cleared,
+ * everything else as the server last reported it. Applied optimistically by
+ * `hold(false)`, so the paused state leaves the screen on the click instead of
+ * one GET later — a GET `applyInboxObservation` may legitimately discard.
+ */
+export function releaseHeldPrompts(prompts: readonly SessionPrompt[]): SessionPrompt[] {
+  return prompts.map((prompt) => (prompt.reason === 'held' ? { ...prompt, reason: null } : prompt));
+}
+
+/** The rows with ONE row's text replaced — `edit`'s optimistic write, so the
+ *  queue shows the new words on the click instead of after the PATCH. Both
+ *  fields: a queue draws `full_text` and falls back to `text`. */
+export function withEditedPromptText(
+  prompts: readonly SessionPrompt[],
+  promptId: string,
+  text: string,
+): SessionPrompt[] {
+  return prompts.map((prompt) =>
+    prompt.prompt_id === promptId ? { ...prompt, text, full_text: text } : prompt,
+  );
+}
+
+/** The rows with ONE row turned into Quick Queue — "Stop and send"'s
+ *  optimistic write, so the row leaves the list and paints in the transcript
+ *  on the click. */
+export function withInterruptedPrompt(
+  prompts: readonly SessionPrompt[],
+  promptId: string,
+): SessionPrompt[] {
+  return prompts.map((prompt) =>
+    prompt.prompt_id === promptId
+      ? { ...prompt, placement: 'transcript', delivery: 'interrupt' }
+      : prompt,
+  );
+}
+
+/**
+ * How long an edit this tab sent outranks the words a read lists.
+ *
+ * `edit` paints the new words on the click, then PATCHes. A read that reached
+ * the server before the PATCH lists the old words and would put them back
+ * until the read after the PATCH. The overlay is released once the save is
+ * answered (`useSessionPrompts`); the expiry only bounds a save that never
+ * settles.
+ */
+export const EDITED_PROMPT_OVERLAY_MS = 15_000;
+
+const editedPromptOverlays = new Map<string, Map<string, { text: string; expiresAtMs: number }>>();
+
+export function overlayEditedPrompt(
+  sessionId: string,
+  promptId: string,
+  text: string,
+  nowMs: number = Date.now(),
+): void {
+  let session = editedPromptOverlays.get(sessionId);
+  if (!session) {
+    session = new Map();
+    editedPromptOverlays.set(sessionId, session);
+  }
+  session.set(promptId, { text, expiresAtMs: nowMs + EDITED_PROMPT_OVERLAY_MS });
+}
+
+export function releaseEditedPromptOverlay(sessionId: string, promptId: string): void {
+  const session = editedPromptOverlays.get(sessionId);
+  if (!session) return;
+  session.delete(promptId);
+  if (session.size === 0) editedPromptOverlays.delete(sessionId);
+}
+
+/** `prompts` with the words of the edits this tab has in flight. Expired overlays are pruned. */
+export function withEditedPromptOverlays(
+  sessionId: string,
+  prompts: readonly SessionPrompt[],
+  nowMs: number = Date.now(),
+): SessionPrompt[] {
+  const session = editedPromptOverlays.get(sessionId);
+  if (!session) return [...prompts];
+  let edited = [...prompts];
+  for (const [promptId, overlay] of session) {
+    if (overlay.expiresAtMs <= nowMs) session.delete(promptId);
+    else edited = withEditedPromptText(edited, promptId, overlay.text);
+  }
+  if (session.size === 0) editedPromptOverlays.delete(sessionId);
+  return edited;
+}
+
+/**
+ * How long a removed row stays filtered out of later reads.
+ *
+ * `DELETE .../prompts/:id` returns no server stamp, so a GET issued before the
+ * delete can land after it with a NEWER `observed_at` and list the row again.
+ * The tombstone only has to outlive that one in-flight read (the poll is 1s);
+ * it is not a blocklist, so it expires.
+ */
+export const REMOVED_PROMPT_TOMBSTONE_MS = 15_000;
+
+const removedPromptTombstones = new Map<string, Map<string, number>>();
+
+export function tombstoneRemovedPrompt(
+  sessionId: string,
+  promptId: string,
+  nowMs: number = Date.now(),
+): void {
+  let session = removedPromptTombstones.get(sessionId);
+  if (!session) {
+    session = new Map();
+    removedPromptTombstones.set(sessionId, session);
+  }
+  session.set(promptId, nowMs + REMOVED_PROMPT_TOMBSTONE_MS);
+}
+
+export function releaseRemovedPromptTombstone(sessionId: string, promptId: string): void {
+  const session = removedPromptTombstones.get(sessionId);
+  if (!session) return;
+  session.delete(promptId);
+  if (session.size === 0) removedPromptTombstones.delete(sessionId);
+}
+
+/** `prompts` without the rows this tab removed. Expired tombstones are pruned. */
+export function withoutRemovedPrompts(
+  sessionId: string,
+  prompts: readonly SessionPrompt[],
+  nowMs: number = Date.now(),
+): SessionPrompt[] {
+  const session = removedPromptTombstones.get(sessionId);
+  if (!session) return [...prompts];
+  for (const [promptId, expiresAtMs] of session) {
+    if (expiresAtMs <= nowMs) session.delete(promptId);
+  }
+  if (session.size === 0) {
+    removedPromptTombstones.delete(sessionId);
+    return [...prompts];
+  }
+  return prompts.filter((prompt) => !session.has(prompt.prompt_id));
+}
+
+/**
+ * Did a failed DELETE leave the row in the inbox? Only a 404 says the row is
+ * gone. A 409 means a step is already answering it (it is still listed, as
+ * delivering), and a network failure never reached the server.
+ */
+export function removeFailureKeepsRow(error: unknown): boolean {
+  return (error as { status?: number } | null)?.status !== 404;
+}
+
+// ============================================================================
+// Optimistic queue rows — Enter paints the row in the SAME frame
+// ============================================================================
+
+export const OPTIMISTIC_PROMPT_PREFIX = 'optimistic:';
+
+/** Is this row the tab's own echo, not yet confirmed by the server? */
+export function isOptimisticSessionPrompt(prompt: Pick<SessionPrompt, 'prompt_id'>): boolean {
+  return prompt.prompt_id.startsWith(OPTIMISTIC_PROMPT_PREFIX);
+}
+
+/**
+ * The strip-shaped row for a submission that has left this tab but not yet
+ * come back from `POST .../prompts`. The queue is server-side; this is the
+ * one client-side thing a server queue cannot do — paint on the keypress.
+ * Replaced by the server's row on the response (`settleOptimisticPrompt`),
+ * or by the poll landing first (`reconcileOptimisticPrompts`), and removed
+ * on failure so a refused send never lingers.
+ */
+export function optimisticSessionPrompt(
+  input: CreateSessionPromptInput,
+  nowMs: number,
+): SessionPrompt {
+  const text = input.parts
+    .filter((part) => part.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text as string)
+    .join('\n')
+    .trim();
+  const at = new Date(nowMs).toISOString();
+  return {
+    prompt_id: `${OPTIMISTIC_PROMPT_PREFIX}${input.clientMessageId}`,
+    // The placement `createSessionPrompt` sends: `interrupt` paints in the
+    // transcript, `steer` and `queue` wait in the composer list.
+    placement:
+      input.placement ??
+      (input.delivery ? (input.delivery === 'interrupt' ? 'transcript' : 'composer') : undefined),
+    ...(input.delivery ? { delivery: input.delivery } : {}),
+    full_text: text,
+    client_message_id: input.clientMessageId,
+    message_id: input.messageId,
+    state: 'queued',
+    reason: null,
+    text,
+    attempts: 0,
+    last_error: null,
+    created_at: at,
+    available_at: at,
+  };
+}
+
+export function applyOptimisticPrompt(
+  prompts: readonly SessionPrompt[],
+  input: CreateSessionPromptInput,
+  nowMs: number,
+): SessionPrompt[] {
+  if (prompts.some((p) => p.client_message_id === input.clientMessageId)) return [...prompts];
+  return [...prompts, optimisticSessionPrompt(input, nowMs)];
+}
+
+export function settleOptimisticPrompt(
+  prompts: readonly SessionPrompt[],
+  clientMessageId: string,
+  result: CreateSessionPromptResult,
+): SessionPrompt[] {
+  return prompts.map((p) =>
+    p.client_message_id === clientMessageId && isOptimisticSessionPrompt(p)
+      ? { ...p, prompt_id: result.prompt_id, state: result.state, message_id: result.message_id }
+      : p,
+  );
+}
+
+export function removeOptimisticPrompt(
+  prompts: readonly SessionPrompt[],
+  clientMessageId: string,
+): SessionPrompt[] {
+  return prompts.filter(
+    (p) => !(p.client_message_id === clientMessageId && isOptimisticSessionPrompt(p)),
+  );
+}
+
+/**
+ * Merge a fresh server list over the cached one: the server's rows are the
+ * truth, and an optimistic row survives only while the server has not listed
+ * its submission yet (the POST is still in flight).
+ */
+export function reconcileOptimisticPrompts(
+  cached: readonly SessionPrompt[] | undefined,
+  server: readonly SessionPrompt[],
+): SessionPrompt[] {
+  const listed = new Set(server.map((p) => p.client_message_id).filter(Boolean));
+  const pending = (cached ?? []).filter(
+    (p) => isOptimisticSessionPrompt(p) && !listed.has(p.client_message_id),
+  );
+  return pending.length ? [...server, ...pending] : [...server];
+}
+
+/**
+ * One read of a session's inbox — and the refusal that keeps a project-scoped
+ * URL from ever being built for a session that has no project.
+ *
+ * Not every session has one. A sub-session (the "Agent · general: …" panel
+ * `SubSessionModal` opens over the transcript) is a local OpenCode child:
+ * `SessionChat` renders it with a `sessionId` and nothing else — no project id,
+ * no project session id — and there is no server-side inbox to read. Both ids
+ * are then genuinely `undefined`, and `listSessionPrompts` interpolates them
+ * into its path as the literal text: `GET
+ * /projects/undefined/sessions/undefined/prompts` → 400 `Invalid session id`,
+ * which the host's `onError` sink turns into a red toast beside a sub-agent
+ * that is streaming perfectly.
+ *
+ * The hook's `enabled` flag does not stop it on its own. `enabled` governs
+ * react-query's SCHEDULING; `QueryObserver.refetch()` goes straight to
+ * `query.fetch()` with no `enabled` check, and `session-chat.tsx` refetches the
+ * inbox on every new user bubble — exactly what a streaming sub-agent produces.
+ * So the refusal belongs here, on the read itself.
+ *
+ * `cached` is this tab's current rows: with no project there is nothing to
+ * reconcile against, and the optimistic rows already on screen stay on screen.
+ */
+export async function readSessionPromptsInbox(
+  projectId: string | undefined,
+  sessionId: string | undefined,
+  cached: readonly SessionPrompt[] | undefined,
+): Promise<SessionPrompt[]> {
+  if (!projectId || !sessionId) return [...(cached ?? [])];
+  // The SESSION-OPEN BUNDLE first — but ONLY for the open burst, i.e. a read
+  // issued before this tab holds any rows. Two hooks mount this list on a
+  // session route and the open path reads it before either can, so those first
+  // reads collapse onto one server answer.
+  //
+  // It used to be claimed by EVERY read inside the bundle's share window, and
+  // that is a window in which the queue changes: the drain re-mints the prompt
+  // and hands it to the runtime, the runtime echoes it under the new id, the
+  // transcript gains a bubble — and the poll, AND the repair refetch that new
+  // bubble fires, both got the pre-delivery snapshot back and drew the prompt
+  // twice for the rest of the window (measured 2026-09-08, on video: no
+  // `/prompts` request left the tab for 5s while the duplicate sat on screen).
+  // A read that already holds rows is a poll, and a poll asks the server.
+  const claimed = cached === undefined ? claimOpenBundle(projectId, sessionId) : null;
+  if (claimed) {
+    const bundle = await claimed;
+    const bundledRows = bundle ? openBundleQueue(bundle) : null;
+    const bundled = bundledRows
+      ? withEditedPromptOverlays(sessionId, withoutRemovedPrompts(sessionId, bundledRows))
+      : null;
+    if (bundled) {
+      // TWO stamps, two clocks. Age is this tab's clock at receive time — the
+      // bundle's `observed_at` is the API's clock, and ageing it against
+      // browser `nowMs` let a ±10-minute skew expire the observation on
+      // arrival (composer flipped to Send over a queued prompt) or latch it.
+      // Ordering keeps the server's own stamp, ranked only against other
+      // server stamps.
+      const observedAtMs = Date.parse(bundle!.observed_at);
+      return applyInboxObservation(
+        sessionId,
+        cached,
+        bundled,
+        Date.now(),
+        Number.isFinite(observedAtMs) ? observedAtMs : undefined,
+      );
+    }
+  }
+  // Age stamped BEFORE the request, like `/turn`'s: an answer is only as fresh
+  // as the moment it was asked.
+  //
+  // ONE request per session per tick, for the same reason as `/turn`: the
+  // status-phase invalidation fires from every mount of `useSessionWorking` in
+  // one commit (see `createTickSingleFlight`).
+  const { atMs, prompts, observed_at } = await promptReads(
+    `${projectId}/${sessionId}`,
+    async () => {
+      const issuedAtMs = Date.now();
+      const listed = await listSessionPrompts(projectId, sessionId);
+      const listedAtMs = listed.observed_at ? Date.parse(listed.observed_at) : Number.NaN;
+      noteSentPrompts(sessionId, listed.sent, Number.isFinite(listedAtMs) ? listedAtMs : undefined);
+      return { atMs: issuedAtMs, prompts: listed.prompts, observed_at: listed.observed_at };
+    },
+  );
+  const serverAtMs = observed_at ? Date.parse(observed_at) : Number.NaN;
+  // Keep this tab's not-yet-confirmed rows on screen across a poll that landed
+  // before their POST returned.
+  return applyInboxObservation(
+    sessionId,
+    cached,
+    // A row this tab removed stays removed, and a row it is editing keeps the
+    // new words, even in a read that left before the DELETE or PATCH landed —
+    // see `REMOVED_PROMPT_TOMBSTONE_MS` and `EDITED_PROMPT_OVERLAY_MS`.
+    withEditedPromptOverlays(sessionId, withoutRemovedPrompts(sessionId, prompts)),
+    atMs,
+    Number.isFinite(serverAtMs) ? serverAtMs : undefined,
+  );
+}
+
+/**
+ * `sent` per session: accepted prompts the session log does not hold yet (`GET …/prompts`
+ * `sent`, the `kortix.control.queue` frame). The newest server observation wins, as for the
+ * inbox rows; a read with no server stamp always lands. An API that omits `sent` changes
+ * nothing.
+ */
+// replica-local: one copy per client, like the query cache it sits beside.
+const sentBySession = new Map<string, { atMs: number; sent: SessionSentPrompt[] }>();
+const sentListeners = new Set<() => void>();
+const NO_SENT: SessionSentPrompt[] = [];
+
+function noteSentPrompts(sessionId: string, sent: SessionSentPrompt[] | undefined, serverAtMs: number | undefined): void {
+  if (!sent) return;
+  const prev = sentBySession.get(sessionId);
+  const atMs = serverAtMs ?? Number.POSITIVE_INFINITY;
+  if (prev && serverAtMs !== undefined && prev.atMs !== Number.POSITIVE_INFINITY && prev.atMs > serverAtMs) return;
+  sentBySession.set(sessionId, { atMs, sent });
+  for (const listener of [...sentListeners]) listener();
+}
+
+function subscribeSent(listener: () => void): () => void {
+  sentListeners.add(listener);
+  return () => sentListeners.delete(listener);
+}
+
+/** Test-only: forget every session's `sent`. */
+export function __resetSentPromptsForTests(): void {
+  sentBySession.clear();
+}
+
+const promptReads = createTickSingleFlight<{
+  atMs: number;
+  prompts: SessionPrompt[];
+  observed_at?: string;
+}>();
+
+export interface UseSessionPromptsResult {
+  prompts: SessionPrompt[];
+  /**
+   * Prompts the runtime accepted that the session log does not hold yet, and the session's
+   * `initial_prompt`, oldest first. Empty against an API that does not list them.
+   * `sessionLogThreadWithPrompts` draws them, with `prompts`, as provisional messages.
+   */
+  sent: SessionSentPrompt[];
+  isLoading: boolean;
+  /** Put one prompt in the inbox. Resolving means DURABLE, not delivered. */
+  enqueue: (input: CreateSessionPromptInput) => Promise<CreateSessionPromptResult>;
+  /** Drop a prompt that has not gone out. Throws 409 for one already on the
+   *  wire. Resolves with the removed prompt, which is what an undo re-POSTs:
+   *  the row is hard-deleted, so nothing else still holds its full body. */
+  remove: (promptId: string) => Promise<RemovedSessionPrompt>;
+  /** Run THIS prompt next — the primitive behind both retry and "send now". */
+  retry: (promptId: string) => Promise<SessionPrompt>;
+  /** Replace a waiting row's text in place. Sends nothing, keeps its place
+   *  and any hold. Throws 409 for a row already on the wire. */
+  edit: (promptId: string, text: string) => Promise<SessionPrompt>;
+  /** "Stop and send": a waiting row becomes Quick Queue. The running turn
+   *  ends after its running tool, then this row runs. Throws 409 for a row
+   *  already on the wire. */
+  interrupt: (promptId: string) => Promise<SessionPrompt>;
+  /** Hold, or release, the whole queue. The Stop button holds; any new send,
+   *  and `retry`, release. */
+  hold: (held: boolean) => Promise<{ prompts: SessionPrompt[] }>;
+  refetch: () => Promise<unknown>;
+}
+
+export function useSessionPrompts(
+  projectId: string | undefined,
+  sessionId: string | undefined,
+  options?: { pollMs?: number; enabled?: boolean },
+): UseSessionPromptsResult {
+  const queryClient = useQueryClient();
+  const enabled = options?.enabled !== false && !!projectId && !!sessionId;
+  const key = qk.project.sessionPrompts(projectId ?? '', sessionId ?? '');
+  // What this tab believes is in flight, so the cadence keeps the belief the
+  // working projection stands on alive — see `sessionPromptsPollMs`.
+  const believedPending = useSessionWorkingStore(
+    (state) => (sessionId ? (state.inbox[sessionId]?.pending ?? 0) : 0),
+  );
+
+  const pollOwner = usePollOwner(`prompts:${projectId ?? ''}/${sessionId ?? ''}`, enabled);
+  const [streamConnected, setStreamConnected] = useState(false);
+
+  // The queue's push source: one control-only stream per session, shared by
+  // every mount of this hook. Each frame goes through the same freshness rule
+  // as a list read, so a late frame cannot erase a row a newer POST confirmed.
+  useEffect(() => {
+    if (!enabled) return;
+    let hadConnection = false;
+    const stream = openSessionControlStream({
+      projectId: projectId!,
+      sessionId: sessionId!,
+      onQueue: (queue) => {
+        const serverAtMs = queue.observed_at ? Date.parse(queue.observed_at) : Number.NaN;
+        noteSentPrompts(sessionId!, queue.sent, Number.isFinite(serverAtMs) ? serverAtMs : undefined);
+        queryClient.setQueryData<SessionPrompt[]>(key, (cached) =>
+          applyInboxObservation(
+            sessionId!,
+            cached,
+            withEditedPromptOverlays(sessionId!, withoutRemovedPrompts(sessionId!, queue.prompts)),
+            Date.now(),
+            Number.isFinite(serverAtMs) ? serverAtMs : undefined,
+          ),
+        );
+      },
+      onConnectionChange: (connected) => {
+        setStreamConnected(connected);
+        // A RE-connect reads the list once: it closes the window between the
+        // last fallback poll and the stream. The first connect needs no read;
+        // the mount already made one and the server sends a snapshot on open.
+        if (connected && hadConnection) void queryClient.invalidateQueries({ queryKey: key });
+        hadConnection ||= connected;
+      },
+    });
+    setStreamConnected(stream.connected());
+    return () => {
+      stream.close();
+      setStreamConnected(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, projectId, sessionId, queryClient]);
+
+  // An inbox reading decides the composer for `INBOX_OBSERVATION_MAX_MS` (10 s)
+  // only, and an unchanged queue sends no frame. While the stream is alive the
+  // last frame IS the current queue — a change would have arrived — so the
+  // owner re-notes it. The bound is the stream's liveness watchdog (45 s,
+  // `STREAM_OBSERVATION_MAX_MS`): past it the stream counts as lost, the poll
+  // resumes, and its first read decides.
+  useEffect(() => {
+    if (!enabled || !pollOwner || !streamConnected) return;
+    const stream = openSessionControlStream({ projectId: projectId!, sessionId: sessionId! });
+    const timer = setInterval(() => {
+      const last = stream.lastQueue();
+      if (!last || !stream.connected()) return;
+      const serverAtMs = last.observed_at ? Date.parse(last.observed_at) : Number.NaN;
+      noteInboxObservation(
+        sessionId!,
+        withoutRemovedPrompts(sessionId!, last.prompts),
+        Date.now(),
+        Number.isFinite(serverAtMs) ? serverAtMs : undefined,
+      );
+    }, SESSION_PROMPTS_STREAM_RENOTE_MS);
+    return () => {
+      clearInterval(timer);
+      stream.close();
+    };
+  }, [enabled, pollOwner, streamConnected, projectId, sessionId]);
+
+  const sent = useSyncExternalStore(
+    subscribeSent,
+    () => (enabled ? (sentBySession.get(sessionId!)?.sent ?? NO_SENT) : NO_SENT),
+    () => NO_SENT,
+  );
+
+  const query = useQuery({
+    queryKey: key,
+    enabled,
+    queryFn: () =>
+      readSessionPromptsInbox(
+        projectId,
+        sessionId,
+        queryClient.getQueryData<SessionPrompt[]>(key),
+      ),
+    // Two cadences, never `false` for the OWNER — see the note above. The
+    // cadence is owned by one observer per session because `refetchInterval` is
+    // scheduled per observer, and two components mount this hook on a session
+    // route: two timers on one key polled the inbox at twice its cadence. Every
+    // observer still reads the entry the owner refreshes.
+    refetchInterval: (q) =>
+      pollOwner && !streamConnected
+        ? sessionPromptsPollMs(q.state.data?.length ?? 0, options?.pollMs, believedPending)
+        : false,
+    // Per-query, because the host disables focus refetching globally. Coming
+    // back to a tab is the moment a prompt the server handed back while it was
+    // hidden has to be on screen.
+    refetchOnWindowFocus: true,
+  });
+
+  // `enabled` governs react-query's SCHEDULING, not every path into the
+  // request: `QueryObserver.refetch()` calls `query.fetch()` with no `enabled`
+  // check at all. A session with no project must not fetch on either path, so
+  // the same gate is applied here (and again inside the read itself).
+  const queryRefetch = query.refetch;
+  const refetch = useCallback(
+    () => (enabled ? queryRefetch() : Promise.resolve(undefined)),
+    [enabled, queryRefetch],
+  );
+
+  const invalidate = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: key }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [queryClient, projectId, sessionId],
+  );
+
+  const enqueueMutation = useMutation({
+    // Enter paints the row NOW. The queue is server-side; the only client-side
+    // job left is to not make the user wait a round-trip to see their own
+    // keypress. The optimistic row is swapped for the server's on the
+    // response, removed on failure, and never outlives a poll that lists its
+    // submission (`reconcileOptimisticPrompts`). The write is SYNCHRONOUS and
+    // comes before anything awaited, so the row is on screen in the same frame
+    // as the keypress.
+    onMutate: async (input: CreateSessionPromptInput) => {
+      queryClient.setQueryData<SessionPrompt[]>(key, (prev) =>
+        applyOptimisticPrompt(prev ?? [], input, Date.now()),
+      );
+      // The receipt-side floor: a `/turn` poll landing before the POST returns
+      // must not swap Stop back to Send with the row already on screen.
+      useSessionWorkingStore.getState().notePromptAccepted(sessionId!, Date.now());
+      await queryClient.cancelQueries({ queryKey: key });
+    },
+    mutationFn: async (input: CreateSessionPromptInput) => {
+      const result = await createSessionPrompt(projectId!, sessionId!, input);
+      if (result.state !== 'failed') {
+        // The response's `observed_at` is the write's place on the SERVER
+        // clock — what bars a queue read issued before this POST from erasing
+        // the row after it settles.
+        const serverAtMs = result.observed_at ? Date.parse(result.observed_at) : Number.NaN;
+        useSessionWorkingStore
+          .getState()
+          .notePromptAccepted(
+            sessionId!,
+            Date.now(),
+            Number.isFinite(serverAtMs) ? serverAtMs : undefined,
+          );
+      }
+      return result;
+    },
+    onSuccess: (result, input) => {
+      queryClient.setQueryData<SessionPrompt[]>(key, (prev) =>
+        result.state === 'failed'
+          ? removeOptimisticPrompt(prev ?? [], input.clientMessageId)
+          : settleOptimisticPrompt(prev ?? [], input.clientMessageId, result),
+      );
+    },
+    onError: (_error, input) => {
+      queryClient.setQueryData<SessionPrompt[]>(key, (prev) =>
+        removeOptimisticPrompt(prev ?? [], input.clientMessageId),
+      );
+    },
+    onSettled: invalidate,
+  });
+  // No-op hook-level `onError`s: every caller shows its own specific toast,
+  // and without one TanStack falls back to the app-global default `onError`
+  // IN ADDITION — a second, generic "Failed to perform action: …" for every
+  // expected refusal (e.g. removing a prompt a step just started answering).
+  const removeMutation = useMutation({
+    // The row leaves the list on the click, and a read already in flight cannot
+    // put it back (`tombstoneRemovedPrompt`).
+    onMutate: async (promptId: string) => {
+      tombstoneRemovedPrompt(sessionId!, promptId);
+      queryClient.setQueryData<SessionPrompt[]>(key, (prev) =>
+        (prev ?? []).filter((prompt) => prompt.prompt_id !== promptId),
+      );
+      await queryClient.cancelQueries({ queryKey: key });
+    },
+    mutationFn: (promptId: string) => deleteSessionPrompt(projectId!, sessionId!, promptId),
+    onError: (error, promptId) => {
+      // The row is still in the inbox (a step owns it, or the request never
+      // arrived): let the next read list it again.
+      if (removeFailureKeepsRow(error)) releaseRemovedPromptTombstone(sessionId!, promptId);
+    },
+    onSettled: invalidate,
+  });
+  const retryMutation = useMutation({
+    mutationFn: (promptId: string) => retrySessionPrompt(projectId!, sessionId!, promptId),
+    onError: () => {},
+    onSettled: invalidate,
+  });
+  const editMutation = useMutation({
+    // The new words answer on the click, and a read already on its way cannot
+    // put the old ones back (`overlayEditedPrompt`).
+    onMutate: async ({ promptId, text }: { promptId: string; text: string }) => {
+      overlayEditedPrompt(sessionId!, promptId, text);
+      await queryClient.cancelQueries({ queryKey: key });
+      queryClient.setQueryData<SessionPrompt[]>(key, (prev) =>
+        withEditedPromptText(prev ?? [], promptId, text),
+      );
+    },
+    mutationFn: ({ promptId, text }: { promptId: string; text: string }) =>
+      editSessionPrompt(projectId!, sessionId!, promptId, text),
+    // A refusal leaves the old text on the server: release the overlay first,
+    // so the settle read shows it.
+    onError: (_error, { promptId }) => releaseEditedPromptOverlay(sessionId!, promptId),
+    // A saved edit keeps its overlay until the read after the save has landed.
+    onSettled: async (_data, _error, { promptId }) => {
+      await invalidate();
+      releaseEditedPromptOverlay(sessionId!, promptId);
+    },
+  });
+  const interruptMutation = useMutation({
+    // The row leaves the list and paints in the transcript on the click.
+    onMutate: async (promptId: string) => {
+      await queryClient.cancelQueries({ queryKey: key });
+      queryClient.setQueryData<SessionPrompt[]>(key, (prev) =>
+        withInterruptedPrompt(prev ?? [], promptId),
+      );
+    },
+    mutationFn: (promptId: string) => interruptSessionPrompt(projectId!, sessionId!, promptId),
+    onError: () => {},
+    onSettled: invalidate,
+  });
+  const holdMutation = useMutation({
+    // Releasing answers on the click: the paused state leaves the screen now,
+    // not one GET later (`releaseHeldPrompts`).
+    onMutate: async (held: boolean) => {
+      if (held) return;
+      await queryClient.cancelQueries({ queryKey: key });
+      queryClient.setQueryData<SessionPrompt[]>(key, (prev) => releaseHeldPrompts(prev ?? []));
+    },
+    mutationFn: (held: boolean) => holdSessionPrompts(projectId!, sessionId!, held),
+    // The response IS the queue after the change, stamped by the server — the
+    // same freshness rule as a list read, so a stale GET cannot undo it.
+    onSuccess: (result) => {
+      const serverAtMs = result.observed_at ? Date.parse(result.observed_at) : Number.NaN;
+      queryClient.setQueryData<SessionPrompt[]>(key, (prev) =>
+        applyInboxObservation(
+          sessionId!,
+          prev,
+          withEditedPromptOverlays(sessionId!, withoutRemovedPrompts(sessionId!, result.prompts)),
+          Date.now(),
+          Number.isFinite(serverAtMs) ? serverAtMs : undefined,
+        ),
+      );
+    },
+    onError: () => {},
+    onSettled: invalidate,
+  });
+
+  return {
+    prompts: query.data ?? [],
+    sent,
+    isLoading: query.isLoading,
+    enqueue: enqueueMutation.mutateAsync,
+    remove: removeMutation.mutateAsync,
+    retry: retryMutation.mutateAsync,
+    edit: (promptId: string, text: string) => editMutation.mutateAsync({ promptId, text }),
+    interrupt: interruptMutation.mutateAsync,
+    hold: holdMutation.mutateAsync,
+    refetch,
+  };
+}
+
+// ============================================================================
+// The first prompt of a brand-new session
+// ============================================================================
+
+/** Injectable seams for {@link startSessionWithPrompt}'s tests. */
+export interface StartSessionWithPromptAdapters {
+  create?: typeof createSessionPrompt;
+  nowMs?: () => number;
+}
+
+/**
+ * POST the first prompt of a session straight to the durable inbox.
+ *
+ * A plain async function, not a hook — two of its producers are plain click
+ * handlers on pages that never mount a session. The admission gate holds the
+ * row until the box answers; `session-composer-readiness.ts` states the
+ * contract: "A submit against a sleeping box is POSTed to `.../prompts` and
+ * becomes a durable row."
+ *
+ * This replaces the sessionStorage start-stash as the delivery channel (the
+ * stash still hands off the model/agent PICKS): the stash needed a mounted
+ * workbench to replay it 19-25s later (measured boot), and a closed tab in
+ * that window lost the message silently. The wire id is minted here but
+ * flagged `remintOnDelivery` — this producer runs before any transcript
+ * exists to place an id against, which is the exact criterion that flag
+ * documents.
+ *
+ * Files the same receipts `handleSend` does, so the composer's working
+ * projection covers the send from the click, and drops them on every path
+ * where nothing is coming — including a `failed` verdict, which arrives as a
+ * 200 (a dead-lettered dedupe) and is thrown here as the refusal it is.
+ */
+export async function startSessionWithPrompt(
+  projectId: string,
+  sessionId: string,
+  input: {
+    parts: SessionPromptPart[];
+    overrides?: SessionPromptOverrides;
+    /**
+     * When the user pressed Send, in milliseconds since epoch. Defaults to the
+     * POST time. A caller whose POST waited (for uploads) passes the Send time,
+     * so the server orders this prompt before messages sent after it.
+     */
+    clientSentAtMs?: number;
+  },
+  adapters?: StartSessionWithPromptAdapters,
+): Promise<CreateSessionPromptResult> {
+  const create = adapters?.create ?? createSessionPrompt;
+  const now = adapters?.nowMs ?? Date.now;
+  const clientMessageId =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? `start_${crypto.randomUUID()}`
+      : `start_${now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const store = useSessionWorkingStore.getState();
+  store.noteSendReceipt(sessionId, { messageId: clientMessageId, atMs: now() });
+  try {
+    const result = await create(projectId, sessionId, {
+      clientMessageId,
+      messageId: mintSessionWireMessageId(sessionId, clientMessageId),
+      parts: input.parts,
+      clientSentAtMs: input.clientSentAtMs ?? now(),
+      ...(input.overrides ? { overrides: input.overrides } : {}),
+      remintOnDelivery: true,
+    });
+    if (result.state === 'failed') {
+      throw new Error('This prompt was refused — its earlier delivery already failed.');
+    }
+    const acceptedAt = now();
+    const serverAtMs = result.observed_at ? Date.parse(result.observed_at) : Number.NaN;
+    useSessionWorkingStore.getState().acceptSendReceipt(sessionId, clientMessageId, acceptedAt);
+    useSessionWorkingStore
+      .getState()
+      .notePromptAccepted(sessionId, acceptedAt, Number.isFinite(serverAtMs) ? serverAtMs : undefined);
+    return result;
+  } catch (error) {
+    // Named, so a slow refusal cannot drop a receipt a later send now owns.
+    useSessionWorkingStore.getState().clearSendReceipt(sessionId, clientMessageId);
+    throw error;
+  }
+}

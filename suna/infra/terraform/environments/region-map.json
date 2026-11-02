@@ -1,0 +1,6 @@
+{
+  "$comment": "Which Terraform root under infra/terraform/environments/ is the authoritative one for each environment's API/gateway. infra/terraform/scripts/test_region_colocation.py reads this file (no AWS credentials) and checks aws_region == database_region for each root listed here.",
+  "dev": "dev-us-east-2",
+  "staging": "staging-eu-west-2",
+  "prod": "prod"
+}

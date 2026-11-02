@@ -1,0 +1,123 @@
+# dev-us-east-2 — dev's API/gateway, colocated with the dev database
+
+Dev's API and gateway on ECS Fargate (Spot) in us-east-2, the dev Supabase
+database's region. Resource names use `kortix-dev-use2`. `../dev-web-us-east-2`
+is the matching web service.
+
+| Surface | Where it runs | Managed by |
+|---|---|---|
+| `dev-api-use2.kortix.com` | Cloudflare (proxied) → ALB → ECS Fargate (us-east-2) | **this Terraform** |
+| `gateway-dev-use2.kortix.com` | Cloudflare (proxied) → ALB → ECS Fargate (us-east-2) | **this Terraform** |
+| `dev-use2.kortix.com` | Cloudflare (proxied) → ALB → ECS Fargate (us-east-2) | `../dev-web-us-east-2` |
+
+These are origin hostnames. `dev-api.kortix.com` and `gateway-dev.kortix.com`
+are the dev-api Worker (`infra/cloudflare/workers/api-router`), which routes
+to them (`ACTIVE_BACKEND = "us-east-2"`). `dev.kortix.com` is a CNAME that
+Deploy Dev's `publish-web-ecs-dns` job points at the web ALB.
+
+Deploy Dev applies this root (`terraform-dev-api`) and rolls the task
+definitions with `infra/scripts/ecs-deploy.sh dev-use2`. The env blob is
+`kortix-dev-env` in us-east-2. `TF_VAR_cloudflare_api_token` is
+`CLOUDFLARE_API_TOKEN` in `kortix-ci-env` (us-east-2).
+
+## Gateway → API inside the VPC
+
+The gateway's control-plane calls (`/internal/gateway/*`, `/health`) go to
+`http://api.kortix-dev-use2.internal:8008` (`KORTIX_API_INTERNAL_URL`, set by
+Deploy Dev's `deploy-gateway-ecs` job). The name is a Cloud Map private DNS
+record: ECS registers every running API task's private IP
+(`aws_service_discovery_private_dns_namespace.internal`, `service_discovery` on
+`module.api`). Only tasks in the `kortix-dev-use2-gateway-internal` security
+group can open port 8008 on tasks in `kortix-dev-use2-api-internal`.
+
+- Plaintext HTTP. The hop stays in the VPC. The API still checks
+  `GATEWAY_INTERNAL_TOKEN` and `KORTIX_INTERNAL_EDGE_KEY` on every call.
+- When a call to the private URL throws (refused, reset, DNS, timeout), the
+  gateway uses `KORTIX_API_URL` (Cloudflare → Worker → ALB) for 60 s.
+- A refused or reset connection costs one failed attempt. A private path that
+  hangs (a stale task IP, a dropped SYN) costs each call in flight on that
+  gateway task its full attempt budget before the switch: ~5 s on
+  authenticate/authorize/resolve (then the public URL), ~10 s on `/admit`
+  (then the separate calls). `recordUsage`/`recordTrace` do not retry a
+  timeout, so a write that hangs is dropped. The `/health` ping tries the
+  private URL for 1 s, then the public URL on a new 3 s signal.
+- The private hop skips the api-router Worker (its blocking-maintenance write
+  gate) and the ALB WAF for `/internal/*`.
+- Roll back: set `KORTIX_API_INTERNAL_URL` to `""` in `deploy-gateway-ecs`'s
+  `KORTIX_ECS_ENV_OVERRIDES` and redeploy. Do not delete the key:
+  `infra/scripts/ecs-deploy.sh` copies every variable of the running task
+  definition that the overrides do not name, so the old URL stays set.
+  `config.ts` maps `""` to unset, and every call uses `KORTIX_API_URL`.
+- Check it: `curl -s https://gateway-dev.kortix.com/health | jq .checks.api`.
+  `latency_ms` was 15 ms min / 27 ms p50 / 54 ms p90 through Cloudflare
+  (2026-10-20, 40 samples).
+
+## Why this exists
+
+Server-side `Server-Timing`, same code, same query counts:
+
+| Route | dev (us-west-2 API / us-east-2 DB) | prod (colocated) |
+| --- | --- | --- |
+| `/accounts/me` | 2084 ms (db 2027 ms) | 24 ms (db 19 ms) |
+| `/projects` | 1023 ms (db 1014 ms) | 45 ms (db 32 ms) |
+
+7-13 sequential DB round trips per request, each crossing us-west-2 ↔
+us-east-2. Moving the API to us-east-2 removes the cross-continent hop; it
+does not remove the sequential-round-trip count (a separate, larger change).
+
+## The move from us-west-2 (done)
+
+Dev ran in us-west-2 (Terraform roots `dev` and `dev-web`, now deleted)
+until the move. The move had four phases: stand this root up next to the old
+stack, switch the Worker, idle the old stack, destroy it.
+
+- 2026-10-06: the old `kortix-dev`, `kortix-dev-gateway` and `kortix-dev-web`
+  services were scaled to 0.
+- 2026-10-09: the audit archive was copied (see "Data" below).
+- 2026-10-12: the old roots were destroyed (dev 58, dev-web 2 resources) and
+  removed from the repository. The old snapshot cache
+  `kortix-dev-project-snapshots` was deleted. The us-west-2 copies of
+  `kortix-dev-env` and `kortix-dev-web-env` were scheduled for deletion
+  (30-day recovery window).
+
+What stays in us-west-2:
+
+| Resource | Why | Delete after |
+|---|---|---|
+| `kortix-dev-audit-archive` and its KMS key `82a0423e-27d6-4887-9ad6-f242d529bb50` | Deleted on 2026-10-12 with the GOVERNANCE bypass, after the copy in `kortix-dev-use2-audit-archive` was re-verified. The key is scheduled for deletion. | done |
+| Terraform state (`kortix-terraform-state`, `kortix-terraform-locks`) | Moved to `kortix-terraform-state-us-east-2-935064898258` (`backend.tf`). | done |
+
+### Phase 4 — decommission (done 2026-10-12)
+
+#### Data
+
+Before a stack moves region, classify every bucket the API reads as a cache
+(the API rebuilds it) or a record (no other copy exists). The snapshot bucket
+and the config-release archives are caches that the API rebuilds from Git
+(`apps/api/src/config-releases/store.ts`). **The audit archive is a record.**
+It is the only copy of every week that the archive job removed from
+PostgreSQL, and the account audit export reads it from `AUDIT_ARCHIVE_BUCKET`.
+
+| Old data | What happened |
+|---|---|
+| `kortix-dev-project-snapshots` | Cache. Emptied and deleted on 2026-10-12 (last write 2026-10-06). |
+| `kortix-dev-audit-archive` | Copied to `kortix-dev-use2-audit-archive` on 2026-10-09: 622 objects, and all 7 weekly manifests match `manifest_sha256` in `kortix.audit_archive_chunks`. Removed from Terraform state before the destroy. Object Lock holds the old objects until 2027-07-06. |
+| ALB log buckets, `/ecs/kortix-dev*` log groups | Deleted on 2026-10-09. |
+
+Copy an audit archive object by object, keeping its bytes, lock and checksum.
+The app writes SSE-KMS with no key id (`apps/api/src/object-store/s3.ts`), so
+the copy does the same:
+
+```bash
+aws s3api copy-object --region <new-region> --bucket <new-bucket> --key "$KEY" \
+  --copy-source "<old-bucket>/$KEY?versionId=$VERSION" --metadata-directive COPY \
+  --server-side-encryption aws:kms --checksum-algorithm SHA256 \
+  --object-lock-mode "$MODE" --object-lock-retain-until-date "$RETAIN_UNTIL"
+```
+
+Then prove it: every object's `ChecksumSHA256`, size and lock date match, and
+each week's manifest checksum equals `manifest_sha256` in the database. Skip
+`verification/lock-probe-*`; it is a manual probe, not archive data.
+
+> ⚠️ `terraform apply` here creates billable AWS resources (VPC, NAT, 2 ALBs,
+> Fargate).

@@ -1,0 +1,109 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { create } from 'zustand';
+import { Appearance } from 'react-native';
+import { colorScheme as nativewindColorScheme } from 'nativewind';
+import { log } from '@/lib/logger';
+import {
+  DEFAULT_THEME_PREFERENCE,
+  parseThemePreference,
+  type ThemePreference,
+} from './theme-preference';
+
+const THEME_PREFERENCE_KEY = '@theme_preference';
+
+export type { ThemePreference };
+export type ResolvedTheme = 'light' | 'dark';
+
+interface ThemeState {
+  /** User's preference: light, dark, or system */
+  preference: ThemePreference;
+  /** The actual resolved theme based on preference and system setting */
+  resolvedTheme: ResolvedTheme;
+  /** Whether theme has been loaded from storage */
+  isLoaded: boolean;
+  /** Initialize theme from AsyncStorage */
+  initialize: () => Promise<void>;
+  /** Set theme preference and persist */
+  setPreference: (preference: ThemePreference) => Promise<void>;
+  /** Toggle between light and dark (ignores system) */
+  toggle: () => Promise<void>;
+}
+
+function getSystemTheme(): ResolvedTheme {
+  return Appearance.getColorScheme() === 'dark' ? 'dark' : 'light';
+}
+
+function resolveTheme(preference: ThemePreference): ResolvedTheme {
+  if (preference === 'system') {
+    return getSystemTheme();
+  }
+  return preference;
+}
+
+export const useThemeStore = create<ThemeState>((set, get) => ({
+  preference: DEFAULT_THEME_PREFERENCE,
+  resolvedTheme: resolveTheme(DEFAULT_THEME_PREFERENCE),
+  isLoaded: false,
+
+  initialize: async () => {
+    try {
+      const saved = await AsyncStorage.getItem(THEME_PREFERENCE_KEY);
+      log.log('🌓 Theme store: Loading preference from storage:', saved);
+
+      const preference = parseThemePreference(saved);
+      const resolvedTheme = resolveTheme(preference);
+      
+      log.log('🌓 Theme store: Initialized with:', { preference, resolvedTheme });
+
+      set({ preference, resolvedTheme, isLoaded: true });
+      // Apply to NativeWind so every `dark:` class / useColorScheme() consumer
+      // follows the persisted preference. This is the app's only theme restore
+      // (called once from the root layout).
+      nativewindColorScheme.set(preference);
+    } catch (error) {
+      log.error('🌓 Theme store: Failed to load preference:', error);
+      set({
+        preference: DEFAULT_THEME_PREFERENCE,
+        resolvedTheme: resolveTheme(DEFAULT_THEME_PREFERENCE),
+        isLoaded: true,
+      });
+      nativewindColorScheme.set(DEFAULT_THEME_PREFERENCE);
+    }
+  },
+
+  setPreference: async (preference: ThemePreference) => {
+    const resolvedTheme = resolveTheme(preference);
+
+    log.log('🌓 Theme store: Setting preference:', { preference, resolvedTheme });
+
+    set({ preference, resolvedTheme });
+    // The whole app styles via NativeWind (`dark:` classes + useColorScheme),
+    // so applying here is what actually flips the theme live. NativeWind
+    // handles 'system' natively (it tracks OS appearance changes itself).
+    nativewindColorScheme.set(preference);
+
+    try {
+      await AsyncStorage.setItem(THEME_PREFERENCE_KEY, preference);
+      log.log('🌓 Theme store: Preference saved to storage');
+    } catch (error) {
+      log.error('🌓 Theme store: Failed to save preference:', error);
+    }
+  },
+
+  toggle: async () => {
+    const { resolvedTheme } = get();
+    const newPreference: ThemePreference = resolvedTheme === 'dark' ? 'light' : 'dark';
+    await get().setPreference(newPreference);
+  },
+}));
+
+// Listen to system theme changes
+Appearance.addChangeListener(({ colorScheme }) => {
+  const state = useThemeStore.getState();
+  if (state.preference === 'system') {
+    const resolvedTheme = colorScheme === 'dark' ? 'dark' : 'light';
+    log.log('🌓 Theme store: System theme changed to:', resolvedTheme);
+    useThemeStore.setState({ resolvedTheme });
+  }
+});
+

@@ -1,0 +1,1559 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+/* Kortix themes (generated from terminalcolors.com palettes by
+   scripts/kortix-themes; see lib/interface-themes.ts). One block per theme,
+   all 39 tokens. */
+@import './kortix-themes.generated.css';
+@plugin 'tailwind-scrollbar';
+@plugin 'tailwind-scrollbar-hide';
+
+@source "../node_modules/streamdown/dist/*.js";
+
+/* @kortix/ui component layer: dark variant, @theme keys, utilities, keyframes. */
+@import '@kortix/ui/theme.css';
+
+/*
+ * Neutral ramp — Framer design system (VoltAgent/awesome-design-md).
+ * Hierarchy comes from surface lift (canvas -> surface-1 -> surface-2), never
+ * from opacity on type. Blue is a signal only: hyperlinks, focus, selection —
+ * never a fill or a background.
+ *
+ * Dark is the doc's palette verbatim. The doc ships no light mode, so light
+ * mirrors each surface's lift distance from canvas, anchored on the doc's own
+ * inverse-canvas (#ffffff) and inverse-ink (#000000).
+ *
+ *   role           dark        light
+ *   canvas         #0b0b0b     #ffffff
+ *   base           #0c0c0c     #ffffff
+ *   surface        #141414     #fcfcfc
+ *   surface-1      #141414     #f4f4f4
+ *   surface-2      #1c1c1c     #ededed
+ *   ink            #ffffff     #1f1f1f
+ *   ink-muted      #999999     #666666
+ *   hairline       #262626     #e2e2e2
+ *   hairline-soft  #1a1a1a     #eeeeee
+ *   accent-blue    #0099ff     #0099ff
+ */
+/* @generated kortix-brand:start — edit .agents/skills/kortix-brand/references/visual/visual-system.json, then run generate-tokens.ts */
+:root {
+  --background: oklch(1 0 0); /* canvas #ffffff */
+  --pane: oklch(1 0 0); /* base #ffffff */
+  --surface: oklch(0.9911 0 0); /* surface #fcfcfc */
+  --foreground: oklch(0.2393 0 0); /* ink #1f1f1f */
+  --foreground-strong: var(--foreground);
+  --foreground-weak: var(--muted-foreground);
+  --card: oklch(0.9672 0 0); /* surface-1 #f4f4f4 */
+  --card-foreground: oklch(0.2393 0 0); /* ink #1f1f1f */
+  --popover: oklch(1 0 0); /* canvas / surface-1 #ffffff */
+  --popover-foreground: oklch(0.2393 0 0); /* ink #1f1f1f */
+  --primary: oklch(0.2393 0 0); /* ink #1f1f1f */
+  --primary-foreground: oklch(1 0 0); /* #ffffff */
+  --secondary: oklch(0.9461 0 0); /* surface-2 #ededed */
+  --secondary-foreground: oklch(0.2393 0 0); /* ink #1f1f1f */
+  --muted: oklch(0.9461 0 0); /* surface-2 #ededed */
+  --muted-foreground: oklch(0.5103 0 0); /* ink-muted #666666 */
+  --accent: oklch(0.9672 0 0); /* surface-1 #f4f4f4 */
+  --accent-foreground: oklch(0.2393 0 0); /* ink #1f1f1f */
+  --destructive: oklch(0.583 0.2387 28.4765); /* #e7000b */
+  --destructive-foreground: oklch(0.9851 0 0); /* #fafafa */
+  --border: oklch(0.9128 0 0); /* hairline #e2e2e2 */
+  --input: oklch(0.9461 0 0); /* surface-2 #ededed */
+  --ring: transparent; /* Zero blue border/ring */
+  --hover: oklch(0 0 0 / 0.045);
+  --active: oklch(0 0 0 / 0.075);
+  --focus-ring: transparent;
+  --sidebar: oklch(0.9672 0 0); /* surface-1 #f4f4f4 */
+  --sidebar-foreground: oklch(0.2393 0 0); /* ink #1f1f1f */
+  --sidebar-primary: oklch(0.2393 0 0);
+  --sidebar-primary-foreground: oklch(1 0 0); /* #ffffff */
+  --sidebar-accent: oklch(0.9461 0 0); /* surface-2 #ededed */
+  --sidebar-accent-foreground: oklch(0.2393 0 0); /* ink #1f1f1f */
+  --sidebar-row: var(--card);
+  --sidebar-row-control: var(--sidebar-accent);
+  --sidebar-border: oklch(0.9128 0 0); /* hairline / hairline-soft #e2e2e2 */
+  --sidebar-ring: transparent;
+  --kortix-base: oklch(0.2393 0 0);
+  --kortix-green: oklch(0.581 0.165 146.619); /* #199338 */
+  --kortix-red: oklch(0.648 0.202 24.745); /* #f14b4c */
+  --kortix-orange: oklch(0.691 0.142 71.784); /* #d18b19 */
+  --kortix-yellow: oklch(0.732 0.15 90.688); /* #cca300 */
+  --kortix-blue: oklch(0.652 0.177 252.624); /* #2b91f7 */
+  --kortix-purple: oklch(0.675 0.131 306.212); /* #ab80d6 */
+  --chart-1: oklch(0.8781 0.1688 91.8567); /* #ffd230 */
+  --chart-2: oklch(0.7724 0.1728 65.367); /* #fe9a00 */
+  --chart-3: oklch(0.6671 0.1685 53.3814); /* #e17100 */
+  --chart-4: oklch(0.557 0.1583 45.3594); /* #bb4d00 */
+  --chart-5: oklch(0.4747 0.1358 44.9806); /* #973c00 */
+  --terminal-surface: #0f0f0f;
+  --terminal-fg: #e5e5e5;
+  --terminal-border: rgb(255 255 255 / 0.1);
+  --terminal-accent: #0f7f80;
+  --radius: 0.625rem;
+  --tracking-normal: 0em;
+  --spacing: 0.23rem;
+  --duration-fast: 100ms;
+  --duration-normal: 150ms;
+  --duration-moderate: 200ms;
+  --duration-slow: 300ms;
+  --duration-slower: 500ms;
+  --ease-default: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: calc(1 / 0.8125);
+  --text-sm: 0.875rem;
+  --text-sm--line-height: calc(1.25 / 0.875);
+  --text-md: 0.9rem;
+  --text-md--line-height: calc(1.375 / 0.9375);
+  --text-base: 1rem;
+  --text-base--line-height: calc(1.5 / 1);
+  --text-lg: 1.125rem;
+  --text-lg--line-height: calc(1.75 / 1.125);
+  --text-xl: 1.25rem;
+  --text-xl--line-height: calc(1.75 / 1.25);
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: calc(2 / 1.5);
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: calc(2.25 / 1.875);
+  --text-4xl: 2.25rem;
+  --text-4xl--line-height: calc(2.5 / 2.25);
+  --text-5xl: 3rem;
+  --text-5xl--line-height: 1;
+  --text-6xl: 3.75rem;
+  --text-6xl--line-height: 1;
+  --text-7xl: 4.5rem;
+  --text-7xl--line-height: 1;
+  --text-8xl: 6rem;
+  --text-8xl--line-height: 1;
+  --liquid-glass-bg: color-mix(in oklch, var(--secondary) 45%, transparent);
+  --liquid-glass-bg-hover: color-mix(in oklch, var(--secondary) 62%, transparent);
+  --liquid-glass-blur: 20px;
+  --liquid-glass-saturate: 1.8;
+  --liquid-glass-shadow: 0 20px 48px -16px oklch(0 0 0 / 0.65), inset 0 1.5px 0 oklch(1 0 0 / 0.35), inset 0 -1px 0 oklch(1 0 0 / 0.08);
+  --liquid-glass-highlight: radial-gradient(circle at 30% 20%, oklch(1 0 0 / 0.28), transparent 55%);
+}
+
+.dark {
+  --background: oklch(15% 0 0); /* canvas #0b0b0b */
+  --pane: oklch(0.1543 0 0); /* base #0c0c0c */
+  --surface: oklch(0.1913 0 0); /* surface #141414 */
+  --foreground: oklch(1 0 0); /* ink #ffffff */
+  --foreground-strong: var(--foreground);
+  --foreground-weak: var(--muted-foreground);
+  --card: oklch(0.1913 0 0); /* surface-1 #141414 */
+  --card-foreground: oklch(1 0 0); /* ink #ffffff */
+  --popover: oklch(0.1913 0 0); /* canvas / surface-1 #141414 */
+  --popover-foreground: oklch(1 0 0); /* ink #ffffff */
+  --primary: oklch(1 0 0); /* ink #ffffff */
+  --primary-foreground: oklch(0.1398 0 0); /* #090909 */
+  --secondary: oklch(0.2264 0 0); /* surface-2 #1c1c1c */
+  --secondary-foreground: oklch(1 0 0); /* ink #ffffff */
+  --muted: oklch(0.2264 0 0); /* surface-2 #1c1c1c */
+  --muted-foreground: oklch(0.683 0 0); /* ink-muted #999999 */
+  --accent: oklch(0.1913 0 0); /* surface-1 #141414 */
+  --accent-foreground: oklch(1 0 0); /* ink #ffffff */
+  --destructive: oklch(0.7022 0.1892 22.2279); /* #ff6467 */
+  --border: oklch(0.2686 0 0); /* hairline #262626 */
+  --input: oklch(0.2264 0 0); /* surface-2 #1c1c1c */
+  --hover: oklch(1 0 0 / 0.06);
+  --active: oklch(1 0 0 / 0.1);
+  --focus-ring: var(--ring);
+  --sidebar: oklch(0.1913 0 0); /* surface-1 #141414 */
+  --sidebar-foreground: oklch(1 0 0); /* ink #ffffff */
+  --sidebar-primary: var(--ring);
+  --sidebar-accent: oklch(0.2264 0 0); /* surface-2 #1c1c1c */
+  --sidebar-accent-foreground: oklch(1 0 0); /* ink #ffffff */
+  --sidebar-row: var(--sidebar-accent);
+  --sidebar-row-control: oklch(0.2686 0 0); /* #262626 */
+  --sidebar-border: oklch(0.2178 0 0); /* hairline / hairline-soft #1a1a1a */
+  --sidebar-ring: var(--ring);
+  --kortix-base: var(--color-ring); /* #0099ff */
+  --terminal-accent: #2ec4c4;
+  --liquid-glass-bg: color-mix(in oklch, var(--secondary) 38%, transparent);
+  --liquid-glass-bg-hover: color-mix(in oklch, var(--secondary) 52%, transparent);
+  --liquid-glass-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.1);
+  --liquid-glass-highlight: radial-gradient(circle at 30% 20%, oklch(1 0 0 / 0.12), transparent 55%);
+}
+/* @generated kortix-brand:end */
+
+/*
+ * Interface themes — the neutral ramp of each palette in the theme picker.
+ *
+ * <html> carries `data-light-theme` / `data-dark-theme` (lib/interface-themes.ts),
+ * only on the themed product routes — /new, /projects/**, /settings — where
+ * INTERFACE_THEME_INIT_SCRIPT sets them before paint and ThemeChoiceSync keeps
+ * them in sync on navigation (see "Themed routes" in that file). Every other page (auth,
+ * marketing, pricing, SEO, checkout, invites, system pages) has no attribute,
+ * matches none of these blocks, and keeps the generated kortix-brand palette
+ * above. `next-themes` still owns the `.dark` class everywhere.
+ * `[data-theme-preview]` scopes the same palettes onto the picker's swatches.
+ *
+ * Every palette is derived from two base colours (canvas + ink) by one rule,
+ * the way Linear's theme generator derives borders and elevated boxes:
+ *   - Pure: one flat surface (sidebar == canvas), full-contrast ink.
+ *   - Light (dim): the canvas steps off white, the sidebar sits one step
+ *     recessed, and ink is softened.
+ *   - Dark is not derived: it is exactly the dark palette prod shipped before
+ *     interface themes (canvas #090909, sidebar #141414).
+ *   - Raised surfaces (popover) are lighter than the canvas in both modes;
+ *     cards and hovers step toward the ink, input wells one step further.
+ * Measured (WCAG): muted text is at least 5.0:1 on canvas, sidebar and wells.
+ * Mirrored in the Paper file "Kortix" › Appearances.
+ *
+ * Specificity: light blocks are (0,2,0) and come first; dark blocks are
+ * `:root.dark…` (0,2,0)–(0,3,0) and come later, so `.dark` always wins.
+ */
+
+:root[data-light-theme='pure-light'],
+[data-theme-preview='pure-light'] {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #000000;
+  --pane: #ffffff;
+  --surface: #ffffff;
+  --card: #f5f5f5;
+  --card-foreground: #000000;
+  --popover: #ffffff;
+  --popover-foreground: #000000;
+  --primary: #000000;
+  --primary-foreground: #ffffff;
+  --secondary: #ededed;
+  --secondary-foreground: #000000;
+  --muted: #ededed;
+  --muted-foreground: #636363;
+  --accent: #f5f5f5;
+  --accent-foreground: #000000;
+  --destructive: #e7000b;
+  --destructive-foreground: #fbfbfb;
+  --border: #e3e3e3;
+  --input: #ededed;
+  --ring: #0099ff;
+  --hover: rgba(0, 0, 0, 0.045);
+  --active: rgba(0, 0, 0, 0.075);
+  --selection: rgba(0, 0, 0, 0.08);
+  --selection-foreground: #000000;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #000000;
+  --sidebar-primary: #0099ff;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #ededed;
+  --sidebar-accent-foreground: #000000;
+  --sidebar-border: #e3e3e3;
+  --sidebar-ring: #0099ff;
+  --kortix-blue: #2b91f7;
+  --kortix-green: #199338;
+  --kortix-red: #f14b4c;
+  --kortix-yellow: #cca300;
+  --kortix-orange: #d18b19;
+  --kortix-purple: #ab80d6;
+}
+
+:root[data-light-theme='light'],
+[data-theme-preview='light'] {
+  color-scheme: light;
+  --background: #f0f0f0;
+  --foreground: #1b1b1b;
+  --pane: #f0f0f0;
+  --surface: #fafafa;
+  --card: #e6e6e6;
+  --card-foreground: #1b1b1b;
+  --popover: #fafafa;
+  --popover-foreground: #1b1b1b;
+  --primary: #1b1b1b;
+  --primary-foreground: #f0f0f0;
+  --secondary: #dedede;
+  --secondary-foreground: #1b1b1b;
+  --muted: #dedede;
+  --muted-foreground: #5c5c5c;
+  --accent: #e6e6e6;
+  --accent-foreground: #1b1b1b;
+  --destructive: #e7000b;
+  --destructive-foreground: #fbfbfb;
+  --border: #d4d4d4;
+  --input: #dedede;
+  --ring: #0099ff;
+  --hover: rgba(27, 27, 27, 0.045);
+  --active: rgba(27, 27, 27, 0.075);
+  --selection: rgba(0, 0, 0, 0.08);
+  --selection-foreground: #1b1b1b;
+  --sidebar: #e9e9e9;
+  --sidebar-foreground: #1b1b1b;
+  --sidebar-primary: #0099ff;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #dedede;
+  --sidebar-accent-foreground: #1b1b1b;
+  --sidebar-border: #d4d4d4;
+  --sidebar-ring: #0099ff;
+  --kortix-blue: #2b91f7;
+  --kortix-green: #199338;
+  --kortix-red: #f14b4c;
+  --kortix-yellow: #cca300;
+  --kortix-orange: #d18b19;
+  --kortix-purple: #ab80d6;
+}
+:root.dark[data-dark-theme='pure-dark'],
+[data-theme-preview='pure-dark'] {
+  color-scheme: dark;
+  /* Inputs and hover fills sit above every raised surface: the settings panel
+     paints on --surface, and a well that matches it makes selects vanish. */
+  --background: #0a0a0a;
+  --foreground: #ffffff;
+  --pane: #0a0a0a;
+  --surface: #141414;
+  --card: #121212;
+  --card-foreground: #ffffff;
+  --popover: #141414;
+  --popover-foreground: #ffffff;
+  --primary: #ffffff;
+  --primary-foreground: #0a0a0a;
+  --secondary: #212121;
+  --secondary-foreground: #ffffff;
+  --muted: #212121;
+  --muted-foreground: #9e9e9e;
+  --accent: #1c1c1c;
+  --accent-foreground: #ffffff;
+  --destructive: #ff6467;
+  --destructive-foreground: #fbfbfb;
+  --border: #262626;
+  --input: #212121;
+  --ring: #0099ff;
+  --hover: rgba(255, 255, 255, 0.06);
+  --active: rgba(255, 255, 255, 0.1);
+  --selection: rgba(255, 255, 255, 0.1);
+  --selection-foreground: #ffffff;
+  --sidebar: #0a0a0a;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #0099ff;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #212121;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #262626;
+  --sidebar-ring: #0099ff;
+  --kortix-blue: #2b91f7;
+  --kortix-green: #199338;
+  --kortix-red: #f14b4c;
+  --kortix-yellow: #cca300;
+  --kortix-orange: #d18b19;
+  --kortix-purple: #ab80d6;
+}
+
+:root.dark[data-dark-theme='dark'],
+[data-theme-preview='dark'] {
+  color-scheme: dark;
+  /* Exactly the dark palette live in prod before interface themes. */
+  --background: #090909;
+  --foreground: #ffffff;
+  --pane: #0c0c0c;
+  --surface: #141414;
+  --card: #141414;
+  --card-foreground: #ffffff;
+  --popover: #141414;
+  --popover-foreground: #ffffff;
+  --primary: #ffffff;
+  --primary-foreground: #090909;
+  --secondary: #1c1c1c;
+  --secondary-foreground: #ffffff;
+  --muted: #1c1c1c;
+  --muted-foreground: #999999;
+  --accent: #141414;
+  --accent-foreground: #ffffff;
+  --destructive: #ff6467;
+  --destructive-foreground: #fbfbfb;
+  --border: #262626;
+  --input: #1c1c1c;
+  --ring: #0099ff;
+  --hover: rgba(255, 255, 255, 0.06);
+  --active: rgba(255, 255, 255, 0.1);
+  --selection: rgba(255, 255, 255, 0.1);
+  --selection-foreground: #ffffff;
+  --sidebar: #141414;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #0099ff;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1c1c1c;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #1a1a1a;
+  --sidebar-ring: #0099ff;
+  --kortix-blue: #2b91f7;
+  --kortix-green: #199338;
+  --kortix-red: #f14b4c;
+  --kortix-yellow: #cca300;
+  --kortix-orange: #d18b19;
+  --kortix-purple: #ab80d6;
+}
+@layer base {
+  /* ::selection, `* { border-border outline-ring/50 }`, the pointer cursor,
+     color-scheme and the body colors live in @kortix/ui/theme.css (one base
+     for every host). Themed routes still set --selection per palette. */
+  html {
+    scroll-behavior: smooth;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings:
+      'ss10' on,
+      'ss09' on,
+      'ss03' on,
+      'ss04' on,
+      'ss14' on,
+      'palt';
+  }
+  body {
+    font-feature-settings:
+      'ss10' on,
+      'ss09' on,
+      'ss03' on,
+      'ss04' on,
+      'ss14' on,
+      'palt';
+  }
+
+  /* Add font fallbacks for CJK characters */
+  .cjk-text,
+  .markdown-content {
+    font-family:
+      var(--font-sans),
+      ui-sans-serif,
+      -apple-system,
+      'Segoe UI',
+      'Helvetica Neue',
+      'Noto Sans',
+      'Noto Sans CJK JP',
+      'Noto Sans CJK KR',
+      'Noto Sans CJK SC',
+      'Noto Sans CJK TC',
+      sans-serif;
+    line-height: 1.7;
+  }
+
+  /* Specific handling for monospace/code with CJK character support */
+  code,
+  pre,
+  .font-mono {
+    font-family:
+      var(--font-mono), ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, Consolas,
+      'Liberation Mono', 'Courier New', monospace, 'Noto Sans Mono CJK JP', 'Noto Sans Mono CJK KR',
+      'Noto Sans Mono CJK SC', 'Noto Sans Mono CJK TC';
+    font-weight: 500;
+    line-height: 1.2;
+    letter-spacing: -0.025em; /* tracking-tight — mono glyphs read cleaner when pulled in */
+  }
+}
+
+/* Page-enter motion: soft fade-up for standalone pages (/projects). `both`
+   keeps delayed elements hidden until their turn. Stagger delays are capped
+   so long lists never feel slow — everything past the sixth child enters
+   together. */
+@keyframes kx-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.kx-fade-up,
+.kx-stagger > * {
+  animation: kx-fade-up 300ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.kx-stagger > :nth-child(2) {
+  animation-delay: 40ms;
+}
+.kx-stagger > :nth-child(3) {
+  animation-delay: 80ms;
+}
+.kx-stagger > :nth-child(4) {
+  animation-delay: 120ms;
+}
+.kx-stagger > :nth-child(5) {
+  animation-delay: 160ms;
+}
+.kx-stagger > :nth-child(n + 6) {
+  animation-delay: 200ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kx-fade-up,
+  .kx-stagger > * {
+    animation-name: kx-fade;
+    animation-delay: 0ms;
+  }
+}
+
+@keyframes kx-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Hero enter — the landing fold, and nothing else.
+
+   `.kx-stagger` above is route-level motion: one curve, one duration, delays
+   keyed off DOM order. A hero band cannot use it. The eyebrow, the headline,
+   the sub, the button pair, a full-bleed product frame and the trust line are
+   six very different sizes, and on a fixed 300ms/40ms grid the small things
+   read as hurried while the big one reads as snatched. Duration has to scale
+   with the distance an element travels, so each band opts in by hand and
+   declares its own delay.
+
+   That delay arrives as a class (`[--kx-enter:150ms]`), never as an inline
+   `style`. Not a preference: an inline declaration outranks a stylesheet one,
+   so an inline `animation-delay` would survive the `prefers-reduced-motion`
+   block below — the movement would stop and the staged reveal would carry on
+   without it. Setting only the custom property leaves `animation-delay: 0ms`
+   free to win.
+
+   Blur is on text and on text only. 6px is what separates a considered fade
+   from a generic one — the words resolve rather than appear — but it is a
+   per-pixel filter, and running it across a ~1100px product frame costs real
+   frames on the exact paint where the page is already busiest hydrating. */
+@keyframes kx-hero-text {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+/* The frame travels 24px rather than 14 and settles from 0.99 rather than out
+   of blur. It is the only element on the fold big enough for scale to register
+   as approach instead of as a wobble, and the floor stays high on purpose:
+   anything under ~0.95 on a screenshot stops reading as motion and starts
+   reading as a zoom effect. */
+@keyframes kx-hero-frame {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.kx-hero-text,
+.kx-hero-frame,
+.kx-hero-veil {
+  animation-delay: var(--kx-enter, 0ms);
+  animation-fill-mode: both;
+  animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.kx-hero-text {
+  animation-name: kx-hero-text;
+  animation-duration: 620ms;
+}
+
+.kx-hero-frame {
+  animation-name: kx-hero-frame;
+  animation-duration: 820ms;
+}
+
+/* The wallpaper is ambient, so it gets no movement and the longest ramp on the
+   page. It should read as having been there all along, not as arriving. */
+.kx-hero-veil {
+  animation-name: kx-fade;
+  animation-duration: 1100ms;
+  animation-timing-function: linear;
+}
+
+/* Reduced motion removes the movement, not the animation. The fade stays,
+   because it is what tells a reader the fold finished loading; the travel, the
+   scale and the staged delays go. */
+@media (prefers-reduced-motion: reduce) {
+  .kx-hero-text,
+  .kx-hero-frame {
+    animation-name: kx-fade;
+    animation-duration: 260ms;
+    animation-delay: 0ms;
+  }
+}
+
+/* Marketing button (the Buio "dimensional" button): `kx-button`, rendered by
+   `features/marketing/kit/marketing-button.tsx` and nowhere else. The one
+   sanctioned gradient outside an art module: Jay asked for Buio's lit button
+   (2026-10-25), so it lives here as a single component class built from the
+   theme tokens with color-mix, never as utilities on a page.
+
+   - Two stops, light from the top. Hover swaps them, so the light edge moves
+     to the bottom. The stops are registered as <color> so the swap cross-fades
+     instead of snapping (an unregistered custom property cannot interpolate).
+   - The edge is the inset highlight ring plus a 1px outer ring, not a border.
+   - Light theme mirrors dark: secondary is a paper button with a hairline,
+     primary is an ink button, because grey with white ink fails contrast there.
+   - In @layer components so a utility on the same element (w-full, a size)
+     still wins. */
+@property --kx-btn-top {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: transparent;
+}
+
+@property --kx-btn-bottom {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: transparent;
+}
+
+@layer components {
+  .kx-button {
+    --kx-btn-hi: color-mix(in oklch, var(--background) 14%, transparent);
+    --kx-btn-ring: color-mix(in oklch, var(--foreground) 12%, transparent);
+    --kx-btn-shade: var(--foreground);
+    --kx-btn-top: var(--kx-btn-light);
+    --kx-btn-bottom: var(--kx-btn-deep);
+    background-image: linear-gradient(to top, var(--kx-btn-bottom), var(--kx-btn-top));
+    box-shadow:
+      inset 0 0 0.5px 1px var(--kx-btn-hi),
+      0 0 0 1px var(--kx-btn-ring),
+      0 0.5px 1px color-mix(in oklch, var(--kx-btn-shade) 6%, transparent),
+      0 1px 2px color-mix(in oklch, var(--kx-btn-shade) 5%, transparent);
+    transition-property: --kx-btn-top, --kx-btn-bottom, scale;
+    transition-duration: var(--duration-slow), var(--duration-slow), var(--duration-normal);
+    transition-timing-function: var(--ease-in-out), var(--ease-in-out), var(--ease-out);
+  }
+
+  .kx-button[data-variant='primary'] {
+    --kx-btn-deep: var(--foreground);
+    --kx-btn-light: color-mix(in oklch, var(--foreground) 80%, var(--background));
+    color: var(--background);
+  }
+
+  .kx-button[data-variant='secondary'] {
+    --kx-btn-deep: color-mix(in oklch, var(--foreground) 6%, var(--background));
+    --kx-btn-light: var(--background);
+    color: var(--foreground);
+  }
+
+  .dark .kx-button {
+    --kx-btn-hi: color-mix(in oklch, var(--foreground) 10%, transparent);
+    --kx-btn-ring: color-mix(in oklch, var(--background) 8%, transparent);
+    --kx-btn-shade: var(--background);
+  }
+
+  .dark .kx-button[data-variant='primary'] {
+    --kx-btn-deep: color-mix(in oklch, var(--foreground) 24%, var(--background));
+    --kx-btn-light: color-mix(in oklch, var(--foreground) 49%, var(--background));
+    color: var(--foreground);
+  }
+
+  .dark .kx-button[data-variant='secondary'] {
+    --kx-btn-deep: var(--background);
+    --kx-btn-light: color-mix(in oklch, var(--foreground) 8%, var(--background));
+    color: var(--foreground);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .kx-button:hover {
+      --kx-btn-top: var(--kx-btn-deep);
+      --kx-btn-bottom: var(--kx-btn-light);
+    }
+  }
+
+  .kx-button:active {
+    scale: 0.96;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .kx-button:active {
+      scale: none;
+    }
+  }
+}
+
+/* Landing band rows (`kx-rail-fade`): their top and bottom hairlines cross the
+   page past the two rails. Outside the rails the line fades out to the page
+   edge instead of stopping hard. The mask only touches the gutter outside the
+   rails, where a row has nothing but its border; --rail matches the rails'
+   inset (left-4 / lg:left-17 in the home page). */
+.kx-rail-fade {
+  --rail: calc(var(--spacing) * 4);
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    white var(--rail),
+    white calc(100% - var(--rail)),
+    transparent
+  );
+}
+
+@media (min-width: 64rem) {
+  .kx-rail-fade {
+    --rail: calc(var(--spacing) * 17);
+  }
+}
+
+/* A highlighted column behind a band's table (/pricing compare plans): its
+   fill fades out at the left and right edges, the way kx-rail-fade fades a
+   band's hairlines past the rails. */
+.kx-column-fade {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    white calc(var(--spacing) * 2),
+    white calc(100% - var(--spacing) * 2),
+    transparent
+  );
+}
+
+/* Lenis (features/marketing/kit/smooth-scroll.tsx) drives the page scroll on
+   marketing routes. The base `scroll-behavior: smooth` above would animate
+   every scrollTo it issues a second time, so it steps aside while Lenis runs. */
+html.lenis {
+  scroll-behavior: auto;
+}
+
+/* Catalogue card reveal — the cards a "View all" uncovers in a category grid.
+
+   Deliberately NOT `.kx-fade-up`. That is page-enter motion for a handful of
+   large blocks, where 300ms and 8px read as considered. This fires on 20+
+   dense cards at once, and at that count the same values read as a wave
+   crawling down the grid: half the travel and two thirds the duration land the
+   whole reveal inside the 300ms UI budget (200ms + a 90ms delay ceiling).
+
+   The delay arrives as a custom property rather than an inline
+   `animation-delay`, so the reduced-motion rule below can actually win. An
+   inline style beats a stylesheet declaration, which meant the stagger
+   survived `prefers-reduced-motion` on `.kx-fade-up` — the movement stopped
+   but the staged reveal did not. */
+
+@keyframes text-shimmer {
+  0% {
+    background-position: -200% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+/* Pulse heartbeat animation for reasoning section Kortix icon */
+@keyframes pulse-heartbeat {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.85;
+  }
+}
+
+.animate-pulse-heartbeat {
+  animation: pulse-heartbeat 1.2s ease-in-out infinite;
+}
+
+/* CookieYes consent banner (injected at runtime via Google Tag Manager) is
+   only relevant on the public marketing site. Hide every CookieYes surface by
+   default so it never appears inside the authenticated app (dashboard,
+   settings, etc.); the marketing layout adds `.consent-enabled` to <html>
+   while mounted (see ConsentGate), which re-enables CookieYes's own styles. */
+html:not(.consent-enabled) .cky-consent-container,
+html:not(.consent-enabled) .cky-consent-bar,
+html:not(.consent-enabled) .cky-overlay,
+html:not(.consent-enabled) .cky-modal,
+html:not(.consent-enabled) .cky-btn-revisit-wrapper,
+html:not(.consent-enabled) #cookieyes {
+  display: none !important;
+}
+
+/* CookieYes consent button - right side on desktop, left side on mobile */
+.cky-btn-revisit-wrapper {
+  left: auto !important;
+  right: 20px !important;
+}
+
+@media (max-width: 768px) {
+  .cky-btn-revisit-wrapper {
+    left: 20px !important;
+    right: auto !important;
+  }
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* The incoming view is NOT blurred.
+ *
+ * This ran `blur(20px) -> 6px -> 0` over 400ms across the ENTIRE page root on
+ * every view transition. A root-level filter rasterises the whole viewport on
+ * every frame of that animation, and it sits directly between the navigation
+ * and the first legible paint — so the reply you navigated to arrived blurred
+ * and stayed unreadable for 400ms while the compositor worked.
+ *
+ * The rule above already sets `animation: none` on both halves, which is the
+ * behaviour we want: the new view simply appears. Nothing here should reach for
+ * `filter` again — a full-viewport blur is the most expensive way to spend the
+ * exact moment the user is waiting to read. */
+
+@keyframes connect-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+.animate-connect-progress {
+  animation: connect-progress-slide 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes skeleton-gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+@keyframes skeleton-shimmer {
+  to {
+    transform: translateX(300%);
+  }
+}
+.skeleton-animate {
+  background-size: 200% 200%;
+  animation: skeleton-gradient 1s ease infinite;
+}
+.skeleton-shimmer-wrapper {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.skeleton-shimmer-bar {
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.3) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: skeleton-shimmer 1s infinite;
+  position: absolute;
+  top: 0;
+  transform: translateX(-300%);
+}
+
+@keyframes canvas-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.animate-canvas-shimmer {
+  animation: canvas-shimmer 1.8s ease-in-out infinite;
+}
+
+/* ─── Desktop shell chrome ───────────────────────────────────────
+   No visible chrome — the web app's UI extends to the window edge, with
+   the OS traffic lights floating over the sidebar's top-left on macOS.
+   This layer provides a 6px invisible drag strip and Win/Linux
+   controls. `[data-desktop]` is set on <html> pre-hydration. */
+html[data-desktop='true'] [data-desktop-hidden] {
+  display: none;
+}
+
+.kx-desktop-chrome {
+  display: none;
+}
+html[data-desktop='true'] .kx-desktop-chrome {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  z-index: 100;
+  display: none;
+  align-items: stretch;
+  background: transparent;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+html[data-desktop='true'] .kx-desktop-chrome > * {
+  pointer-events: auto;
+}
+html[data-desktop='true'] .kx-desktop-drag {
+  flex: 1;
+  height: 6px;
+  -webkit-app-region: drag;
+}
+/* macOS: skip the traffic-light gutter so the OS's own click handling owns
+   that area. */
+html[data-desktop-platform='macos'] .kx-desktop-drag {
+  margin-left: 80px;
+}
+/* The docked project sidebar shares the native-light band. The hover-peek card
+   keeps its normal 8px padding and must not gain a 40px blank strip. */
+html[data-desktop-titlebar='overlay'] .kx-project-sidebar-header,
+html[data-desktop-platform='macos'] .kx-project-sidebar-header {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+html[data-desktop-titlebar='overlay'] .kx-project-sidebar-header:not([data-peek]),
+html[data-desktop-platform='macos'] .kx-project-sidebar-header:not([data-peek]) {
+  padding-top: 0;
+}
+html[data-desktop-titlebar='overlay'] .kx-project-sidebar-titlebar,
+html[data-desktop-platform='macos'] .kx-project-sidebar-titlebar {
+  padding-left: var(--kx-titlebar-control-left);
+}
+html[data-desktop-titlebar='overlay'][data-desktop-fullscreen='true'] .kx-project-sidebar-titlebar,
+html[data-desktop-platform='macos'][data-desktop-fullscreen='true'] .kx-project-sidebar-titlebar {
+  padding-left: 0.5rem;
+}
+/* Right sidebar header sits in the same vertical band as the inset's
+   tab bar so the expand/collapse toggle aligns visually with the
+   back/forward/home controls. The React class is h-[38px] (web). On
+   desktop we bump to 52px to give window-control / drag-region room;
+   macOS overrides that to 40px to line up with the traffic lights. */
+html[data-desktop='true'] [data-side='right'] [data-sidebar='header'] {
+  height: 52px;
+}
+html[data-desktop-titlebar='overlay'] [data-side='right'] [data-sidebar='header'],
+html[data-desktop-platform='macos'] [data-side='right'] [data-sidebar='header'] {
+  height: var(--kx-titlebar-inset) !important;
+}
+/* Desktop has no collapsed icon rail: the project sidebar switches to
+   `collapsible="offcanvas"` in the shell (project-sidebar.tsx), so a
+   collapsed sidebar is fully hidden and reopened from the shell toggle
+   next to the window controls. Web keeps the icon rail. */
+/* Only the shell's top tab row shares the native titlebar band. Product tabs
+   keep the shared Tabs primitive's height, typography, and pointer behavior. */
+html[data-desktop='true'] .kx-titlebar-tabs {
+  height: 52px;
+}
+html[data-desktop-titlebar='overlay'] .kx-titlebar-tabs,
+html[data-desktop-platform='macos'] .kx-titlebar-tabs {
+  -webkit-app-region: drag;
+  app-region: drag;
+  height: var(--kx-titlebar-inset) !important;
+}
+html[data-desktop-titlebar='overlay'] .kx-project-sidebar-header button,
+html[data-desktop-titlebar='overlay'] .kx-project-sidebar-header a,
+html[data-desktop-titlebar='overlay'] .kx-project-sidebar-header input,
+html[data-desktop-titlebar='overlay'] .kx-project-sidebar-header [role='button'],
+html[data-desktop-titlebar='overlay'] .kx-titlebar-tabs button,
+html[data-desktop-titlebar='overlay'] .kx-titlebar-tabs a,
+html[data-desktop-titlebar='overlay'] .kx-titlebar-tabs input,
+html[data-desktop-titlebar='overlay'] .kx-titlebar-tabs [role='tab'],
+html[data-desktop-titlebar='overlay'] .kx-titlebar-tabs [role='button'],
+html[data-desktop-platform='macos'] .kx-project-sidebar-header button,
+html[data-desktop-platform='macos'] .kx-project-sidebar-header a,
+html[data-desktop-platform='macos'] .kx-project-sidebar-header input,
+html[data-desktop-platform='macos'] .kx-project-sidebar-header [role='button'],
+html[data-desktop-platform='macos'] .kx-titlebar-tabs button,
+html[data-desktop-platform='macos'] .kx-titlebar-tabs a,
+html[data-desktop-platform='macos'] .kx-titlebar-tabs input,
+html[data-desktop-platform='macos'] .kx-titlebar-tabs [role='tab'],
+html[data-desktop-platform='macos'] .kx-titlebar-tabs [role='button'] {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+/* Inset's first row (the 32px tab bar) sits at y=0 so it occupies the
+   same horizontal band as the traffic lights — tabs align cleanly with
+   the lights instead of being pushed below them. */
+/* macOS top-edge drag strip: a 6px sliver at the very top of the window
+   sits ABOVE all content with `-webkit-app-region: drag`, so the user
+   can grab the window from any horizontal position along its top edge —
+   even areas not covered by the sidebar header or tab bar. The strip is
+   thin enough not to occlude any visible UI. */
+html[data-desktop-titlebar='overlay'] .kx-desktop-chrome,
+html[data-desktop-platform='macos'] .kx-desktop-chrome {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  z-index: 9999;
+  display: block;
+  pointer-events: auto;
+  background: transparent;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+html[data-desktop-titlebar='overlay'] .kx-desktop-drag,
+html[data-desktop-platform='macos'] .kx-desktop-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+  flex: none;
+  height: 100%;
+  width: 100%;
+}
+/* A page without a titlebar owner (auth, `/projects`, `/new`, onboarding)
+   has no row in the band, so the 6px strip was its only drag area. Grow the
+   strip to the full band there. Pages with an owner keep the 6px strip: the
+   owner's rows carry the band.
+
+   Two hit tests decide a click in the band, and the strip must pass both:
+   1. Native (Electron): `DesktopChrome` renders first in the root layout, so
+      every later control (Back, Log out, Close) subtracts its own `no-drag`
+      rect from the strip's `drag` rect.
+   2. DOM (Blink): a click in a `no-drag` rect goes to the page, which picks
+      the topmost box. The strip is fixed at z-index 9999, above Back (z-50),
+      so with `pointer-events: auto` it took Back's click (#7568 regression).
+   `pointer-events: none` on the strip and its child fixes 2 and keeps 1:
+   Chromium applies app regions at the compositor level and ignores
+   `pointer-events` (see apps/desktop-electron/src/window-chrome.js). */
+html[data-desktop-titlebar='overlay'] body:not(:has([data-kx-titlebar-owner])) .kx-desktop-chrome,
+html[data-desktop-platform='macos'] body:not(:has([data-kx-titlebar-owner])) .kx-desktop-chrome {
+  height: max(6px, var(--kx-titlebar-inset));
+}
+html[data-desktop-titlebar='overlay'] body:not(:has([data-kx-titlebar-owner])) .kx-desktop-chrome,
+html[data-desktop-titlebar='overlay']
+  body:not(:has([data-kx-titlebar-owner]))
+  .kx-desktop-chrome
+  > *,
+html[data-desktop-platform='macos'] body:not(:has([data-kx-titlebar-owner])) .kx-desktop-chrome,
+html[data-desktop-platform='macos']
+  body:not(:has([data-kx-titlebar-owner]))
+  .kx-desktop-chrome
+  > * {
+  pointer-events: none;
+}
+/* Drag region: the chrome strip covers the title-bar zone. On macOS the
+   first 80px is the OS traffic-light area; rest is freely draggable. */
+
+/* ─── Desktop title-bar inset (shared) ───────────────────────────────────
+   Vertical space reserved at the very top of the window for the OS window
+   controls, so top-reaching surfaces (the AppHeader, full-screen modals)
+   never sit under them. Zero on the web; on desktop, tall enough to clear
+   the macOS traffic lights / the Win-Linux control cluster. */
+/* Win/Linux baseline. Electron keeps the OS-native frame, so the web content
+   starts below the native title bar and reserves no duplicate control area.
+
+   ─── The shell zoom, and who has to cancel it ───
+   The shell runs the page at DESKTOP_BASE_ZOOM (lib/desktop.ts) — real browser
+   zoom via webContents.setZoomFactor, which rescales the CSS pixel itself.
+
+   macOS is the exception because `titleBarStyle: hidden` places AppKit's
+   traffic lights inside the web content area. */
+html[data-desktop='true'] {
+  --kx-desktop-zoom: 0.94;
+  /* Box of a control sitting IN the band. `control-top` is derived from this
+     size, so the two must share a coordinate space or the centring drifts. */
+  --kx-titlebar-control-size: 28px;
+  --kx-titlebar-inset: 0px;
+  --kx-titlebar-controls-width: 0px;
+  /* Placement of the one control the app draws in the band, and of whatever
+     follows it. Consumed as `top-[var(…)]` / `left-[var(…)]` so the React
+     components carry no platform branch of their own. */
+  --kx-titlebar-control-top: 12px;
+  --kx-titlebar-control-left: 8px;
+  --kx-titlebar-content-left: 44px;
+}
+
+/* macOS band geometry. DERIVED — do not hand-edit: these mirror
+   MAC_TITLEBAR / macBandMetrics() in apps/desktop-electron/src/window-chrome.js,
+   which is what positions the traffic lights. The pair is asserted by
+   apps/web/src/features/workspace/project-layout/desktop-titlebar.test.ts. */
+html[data-desktop-platform='macos'] {
+  /* THE reason this block divides and the baseline does not: the traffic
+     lights are drawn by the OS in WINDOW pixels and do not zoom. A literal
+     `left: 72px` would render at 72 × 0.9 = 64.8 window px and slide back
+     toward them — the exact overlap this file exists to prevent.
+
+     Dividing cancels it: 78/0.94 CSS px × 0.94 = 78 window px, whatever the
+     user's Cmd+/Cmd- has done. Numerators stay the true window-pixel geometry
+     from window-chrome.js, so there is still one source of truth.
+     setDesktopZoom() keeps the variable current; the seed above means the
+     FIRST paint is right rather than snapping after hydration. */
+  --kx-titlebar-control-size: calc(28px / var(--kx-desktop-zoom));
+  /* Band height. The lights are centered in it, so is everything else. */
+  --kx-titlebar-inset: calc(40px / var(--kx-desktop-zoom));
+  /* Right edge of the traffic-light cluster (10 + 12 + 20 × 2). */
+  --kx-titlebar-lights-end: calc(62px / var(--kx-desktop-zoom));
+  /* Top of a 28px control centered on the lights' midline. */
+  --kx-titlebar-control-top: calc(6px / var(--kx-desktop-zoom));
+  /* Left of that control — one gutter clear of the lights. */
+  --kx-titlebar-control-left: calc(78px / var(--kx-desktop-zoom));
+  /* Where content after that control starts. */
+  --kx-titlebar-content-left: calc(114px / var(--kx-desktop-zoom));
+  /* macOS controls are on the LEFT, so the right edge is free. */
+  --kx-titlebar-controls-width: 0px;
+}
+
+/* AppKit hides the traffic lights in native full screen. Remove their gutter
+   until Electron reports that the window has left full screen. */
+html[data-desktop-platform='macos'][data-desktop-fullscreen='true'] {
+  --kx-titlebar-inset: 0px;
+  --kx-titlebar-lights-end: 0px;
+  --kx-titlebar-control-top: 6px;
+  --kx-titlebar-control-left: 8px;
+  --kx-titlebar-content-left: 44px;
+}
+
+/* Windows band geometry. DERIVED — do not hand-edit: these mirror
+   WIN_TITLEBAR / winBandMetrics() in apps/desktop-electron/src/window-chrome.js.
+   The shell sets `data-desktop-titlebar='overlay'` (preload.js) when Windows
+   draws only its caption buttons over the page: the same band as macOS, with
+   the OS controls on the RIGHT (138 window px) and the app-menu button in the
+   left slot the traffic lights take on macOS. Every rule above that puts a row
+   in the macOS band also lists this attribute. The caption buttons are drawn
+   in window pixels, so each value cancels the shell zoom like the macOS block.
+   Asserted by desktop-titlebar.test.ts. */
+html[data-desktop-titlebar='overlay'] {
+  --kx-titlebar-control-size: calc(28px / var(--kx-desktop-zoom));
+  --kx-titlebar-inset: calc(40px / var(--kx-desktop-zoom));
+  /* The app-menu button: the left slot. */
+  --kx-titlebar-menu-left: calc(8px / var(--kx-desktop-zoom));
+  --kx-titlebar-lights-end: calc(36px / var(--kx-desktop-zoom));
+  --kx-titlebar-control-top: calc(6px / var(--kx-desktop-zoom));
+  --kx-titlebar-control-left: calc(44px / var(--kx-desktop-zoom));
+  --kx-titlebar-content-left: calc(80px / var(--kx-desktop-zoom));
+  /* minimize + maximize + close. */
+  --kx-titlebar-controls-width: calc(138px / var(--kx-desktop-zoom));
+}
+/* Full screen hides the caption buttons and the menu button (Alt still opens
+   the menu). */
+html[data-desktop-titlebar='overlay'][data-desktop-fullscreen='true'] {
+  --kx-titlebar-inset: 0px;
+  --kx-titlebar-lights-end: 0px;
+  --kx-titlebar-control-top: 6px;
+  --kx-titlebar-control-left: 8px;
+  --kx-titlebar-content-left: 44px;
+  --kx-titlebar-controls-width: 0px;
+}
+/* The app-menu button (DesktopChrome). Unlayered for the same reason as
+   `.kx-desktop-back`: the Button's `inline-flex` lives in a cascade layer. */
+.kx-desktop-app-menu {
+  display: none;
+}
+html[data-desktop-titlebar='overlay'] .kx-desktop-app-menu {
+  display: flex;
+  /* Above full-window overlays (the Settings dialog is z-index 9999), like
+     the OS controls it sits beside. */
+  z-index: 10000;
+}
+html[data-desktop-titlebar='overlay'][data-desktop-fullscreen='true'] .kx-desktop-app-menu {
+  display: none;
+}
+/* Only a row that reaches the window's right edge shares it with the caption
+   buttons. Rows in a left sidebar (the project sidebar, the Settings
+   sidebar) never do; the right sidebar's header does whenever it is open. */
+html[data-desktop-titlebar='overlay'] :is([data-side='left'] .kx-titlebar-row, .kx-overlay-sidebar-titlebar) {
+  padding-right: 0.5rem;
+}
+html[data-desktop-titlebar='overlay'] [data-side='right'] [data-sidebar='header'] {
+  padding-right: var(--kx-titlebar-controls-width);
+}
+
+/* The window's one Back (root layout, `DesktopBackButton`). The desktop shell
+   has no browser toolbar, so any screen without an in-page exit is a dead end
+   there. The web keeps the browser's own Back, so the control stays hidden
+   unless the shell set data-desktop before first paint.
+
+   A shell that navigates already, and draws its own control in this corner of
+   the band, wears `data-kx-titlebar-owner`: the project shell, the admin shell,
+   the marketing navbar. Back steps aside for it. The marker is an opt-out, so a
+   new screen has an exit without doing anything.
+
+   All three rules MUST stay unlayered: the control is a Button, whose `flex`
+   utility lives in a cascade layer and would otherwise show it on the web.
+   Placement comes from the band variables on the element itself, the same as
+   the project shell's sidebar toggle. */
+.kx-desktop-back {
+  display: none;
+}
+html[data-desktop='true'] .kx-desktop-back {
+  display: flex;
+}
+html[data-desktop='true'] body:has([data-kx-titlebar-owner]) .kx-desktop-back {
+  display: none;
+}
+/* A row pinned to the top of a screen without a shell (`/new`, the landing
+   door's Log out) sits in the band on desktop: under Back and the traffic
+   lights on the left, below Back on every platform. Wear
+   `.kx-below-titlebar` and it drops below the band and clears the controls. */
+html[data-desktop='true'] .kx-below-titlebar {
+  margin-top: var(--kx-titlebar-inset);
+  margin-right: var(--kx-titlebar-controls-width);
+}
+
+/* A top row positioned on a full-screen frame with no product navigation:
+   `/new` and the `/projects/start` sign-out. The top of the window is the
+   title-bar band, where the traffic lights (macOS) and Back sit. On desktop
+   the row clears both the band and Back, with one spacing step of air.
+
+   Positioned rows only: `top` does nothing in flow. An in-flow header puts
+   `.kx-titlebar-spacer` above itself instead.
+
+   Unlayered, so it beats the row's own `top-*` utilities. */
+html[data-desktop='true'] .kx-desktop-band-row {
+  top: max(
+    calc(var(--kx-titlebar-inset) + var(--spacing) * 2),
+    calc(var(--kx-titlebar-control-top) + var(--kx-titlebar-control-size) + var(--spacing))
+  );
+}
+html[data-desktop='true'] .kx-web-only-back {
+  display: none;
+}
+/* Below `md` the auth mark pins to the top-left corner. On desktop that corner
+   is the band (traffic lights on macOS, Back on every platform), so the mark
+   moves below it. */
+html[data-desktop='true'] .kx-auth-mobile-logo {
+  top: calc(var(--kx-titlebar-inset) + 1rem);
+}
+
+/* Reusable title-bar spacer: a blank, draggable strip the height of the OS
+   window-control zone. Used by full-screen surfaces (e.g. the Customize modal)
+   whose own header has a fixed height and so can't just grow its top padding.
+   Collapses to nothing on the web. */
+.kx-titlebar-spacer {
+  display: none;
+}
+html[data-desktop='true'] .kx-titlebar-spacer {
+  display: block;
+  height: var(--kx-titlebar-inset);
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+/* (`.kx-customize-header` used to live here. The Customize overlay is a
+   two-column grid now with no header bar of its own, so the class had no
+   element to match — the rules were dead. The overlay clears the band with a
+   `.kx-titlebar-spacer` as its first child instead, which also covers the
+   narrow-window nav variant the old left-only indent never did.) */
+
+/* ─── Which controls may cut holes in a drag region ──────────────────────
+   Chromium 142 collects app regions in DOM order from each box's UNCLIPPED
+   absolute rect (LocalFrameView::CollectDraggableRegions). Electron then
+   unions `drag` rects and subtracts `no-drag` rects in that order. Stacking
+   order, overflow clipping, and scroll position are all ignored.
+
+   The shell injects `no-drag` on every control in the page
+   (apps/desktop-electron/src/window-chrome.js). A transcript link or copy
+   button scrolled up under the session header therefore still subtracts
+   its rect from the header. The drag points move as the content scrolls,
+   and the window "sometimes" drags. Reset that rule here, so the installed
+   shell is fixed as well.
+
+   Only controls a user can actually see in the band keep `no-drag`: those
+   inside a drag owner, and those inside a portalled overlay (dialogs, menus,
+   popovers, toasts), which sits above every drag owner. Controls that carry
+   their own `app-region:no-drag` utility (the shell's sidebar opener, Back)
+   keep it. Unlayered, so it beats the layered utilities and the injected
+   rule alike.
+
+   The reset MUST be `initial`. Blink maps every explicit keyword other than
+   `drag`, including `none`, to no-drag (AppRegion::ApplyValue). Only
+   `initial` keeps the element out of the region list.
+
+   The reset applies only under a titlebar owner, whose opaque rows hide the
+   content scrolled beneath them. Pages without one (auth, `/projects`,
+   `/new`) get the transparent root band below instead. Content under it is
+   visible, so the shell's rule must keep every control there clickable.
+   `:where()` keeps the specificity of the owner rule below unchanged. */
+html[data-desktop-titlebar='overlay']
+  :where(body:has([data-kx-titlebar-owner]))
+  :is(
+    button,
+    a,
+    input,
+    textarea,
+    select,
+    option,
+    label,
+    summary,
+    video,
+    audio,
+    iframe,
+    [role='button'],
+    [role='tab'],
+    [role='link'],
+    [role='menuitem'],
+    [role='textbox'],
+    [contenteditable],
+    [data-no-drag]
+  ),
+html[data-desktop-platform='macos']
+  :where(body:has([data-kx-titlebar-owner]))
+  :is(
+    button,
+    a,
+    input,
+    textarea,
+    select,
+    option,
+    label,
+    summary,
+    video,
+    audio,
+    iframe,
+    [role='button'],
+    [role='tab'],
+    [role='link'],
+    [role='menuitem'],
+    [role='textbox'],
+    [contenteditable],
+    [data-no-drag]
+  ) {
+  -webkit-app-region: initial;
+  app-region: initial;
+}
+html[data-desktop-titlebar='overlay']
+  :is(
+    .kx-titlebar-row,
+    .kx-titlebar-tabs,
+    .kx-project-sidebar-header,
+    [role='dialog'],
+    [role='alertdialog'],
+    [role='menu'],
+    [role='listbox'],
+    [data-radix-popper-content-wrapper],
+    [data-sonner-toaster]
+  )
+  :is(
+    button,
+    a,
+    input,
+    textarea,
+    select,
+    option,
+    label,
+    summary,
+    video,
+    audio,
+    iframe,
+    [role='button'],
+    [role='tab'],
+    [role='link'],
+    [role='menuitem'],
+    [role='textbox'],
+    [contenteditable],
+    [data-no-drag]
+  ),
+html[data-desktop-titlebar='overlay'] [class*='app-region:no-drag'],
+html[data-desktop-platform='macos']
+  :is(
+    .kx-titlebar-row,
+    .kx-titlebar-tabs,
+    .kx-project-sidebar-header,
+    [role='dialog'],
+    [role='alertdialog'],
+    [role='menu'],
+    [role='listbox'],
+    [data-radix-popper-content-wrapper],
+    [data-sonner-toaster]
+  )
+  :is(
+    button,
+    a,
+    input,
+    textarea,
+    select,
+    option,
+    label,
+    summary,
+    video,
+    audio,
+    iframe,
+    [role='button'],
+    [role='tab'],
+    [role='link'],
+    [role='menuitem'],
+    [role='textbox'],
+    [contenteditable],
+    [data-no-drag]
+  ),
+html[data-desktop-platform='macos'] [class*='app-region:no-drag'] {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Headerless project views (Home, the Sessions inventory, a session before
+   its header mounts) start with content, not a titlebar row. The shell gives
+   them the same drag band. Views that render a `.kx-titlebar-row` own the
+   band and its no-drag controls, so the fallback steps aside for them. */
+.kx-project-shell-drag-region {
+  display: none;
+}
+html[data-desktop-titlebar='overlay'] .kx-project-shell-drag-region,
+html[data-desktop-platform='macos'] .kx-project-shell-drag-region {
+  position: absolute;
+  z-index: 10;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: block;
+  height: var(--kx-titlebar-inset);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+html[data-desktop-titlebar='overlay']
+  [data-kx-titlebar-owner]:has(.kx-titlebar-row)
+  > .kx-project-shell-drag-region,
+html[data-desktop-platform='macos']
+  [data-kx-titlebar-owner]:has(.kx-titlebar-row)
+  > .kx-project-shell-drag-region {
+  display: none;
+}
+
+/* ─── Rows that reach the top of the window ──────────────────────────────
+   A row rendered as the first in-flow child of the project shell starts at
+   y=0, so it shares the band with the native macOS traffic lights. Win/Linux
+   keep their native frame outside web content. Wear `.kx-titlebar-row` for
+   drag and left clearance; use `.kx-titlebar-band-height` when the row must
+   center on the traffic-light band.
+
+   The standalone Files header (/projects/[id]/files) wears this too. It used
+   to carry a Files-only near-duplicate of these rules, with its own md+ and
+   per-platform split, for a header that no longer exists in that shape — see
+   `drive-header.tsx`.
+
+   `data-sidebar-collapsed` gates the left indent: an expanded sidebar covers
+   the lights (and the shell's toggle self-hides), so indenting then would
+   leave a visible hole. Set it from the same `state === 'collapsed'` the row
+   already reads. The right indent remains zero with native frames. */
+html[data-desktop='true'] .kx-titlebar-row {
+  padding-right: calc(0.5rem + var(--kx-titlebar-controls-width));
+}
+html[data-desktop='true'] .kx-titlebar-row[data-sidebar-collapsed] {
+  padding-left: var(--kx-titlebar-content-left);
+}
+/* Keep collapsed capability rows draggable. The fixed shell opener paints
+   above page headers and has its own no-drag region; disabling the entire row
+   removes the only usable drag area between its tabs. */
+html[data-desktop-titlebar='overlay'] .kx-titlebar-row,
+html[data-desktop-platform='macos'] .kx-titlebar-row {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+html[data-desktop-titlebar='overlay'] .kx-titlebar-band-height,
+html[data-desktop-platform='macos'] .kx-titlebar-band-height {
+  height: var(--kx-titlebar-inset);
+}
+html[data-desktop-titlebar='overlay'][data-desktop-fullscreen='true'] .kx-titlebar-band-height,
+html[data-desktop-platform='macos'][data-desktop-fullscreen='true'] .kx-titlebar-band-height {
+  height: auto;
+  min-height: 2.75rem;
+}
+html[data-desktop-titlebar='overlay'] .kx-titlebar-row button,
+html[data-desktop-titlebar='overlay'] .kx-titlebar-row a,
+html[data-desktop-titlebar='overlay'] .kx-titlebar-row input,
+html[data-desktop-titlebar='overlay'] .kx-titlebar-row [role='button'],
+html[data-desktop-titlebar='overlay'] .kx-titlebar-row [role='tab'],
+html[data-desktop-platform='macos'] .kx-titlebar-row button,
+html[data-desktop-platform='macos'] .kx-titlebar-row a,
+html[data-desktop-platform='macos'] .kx-titlebar-row input,
+html[data-desktop-platform='macos'] .kx-titlebar-row [role='button'],
+html[data-desktop-platform='macos'] .kx-titlebar-row [role='tab'] {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+/* Overlay sidebars share the native-light row instead of adding a blank strip.
+   Keep their controls out of AppKit's hit area at every renderer zoom. */
+html[data-desktop-titlebar='overlay'] .kx-overlay-sidebar-titlebar,
+html[data-desktop-platform='macos'] .kx-overlay-sidebar-titlebar {
+  padding-left: var(--kx-titlebar-control-left);
+  justify-content: flex-end;
+}
+/* With the account sidebar hidden, its opener occupies the first web-control
+   slot. The breadcrumb follows it, rather than starting under the lights. */
+html[data-desktop-titlebar='overlay'] .kx-account-hub-header[data-sidebar-collapsed],
+html[data-desktop-platform='macos'] .kx-account-hub-header[data-sidebar-collapsed] {
+  padding-left: var(--kx-titlebar-control-left);
+}
+html[data-desktop-titlebar='overlay'][data-desktop-fullscreen='true'] .kx-overlay-sidebar-titlebar,
+html[data-desktop-platform='macos'][data-desktop-fullscreen='true'] .kx-overlay-sidebar-titlebar {
+  padding-left: 0.5rem;
+}
+html[data-desktop-titlebar='overlay'][data-desktop-fullscreen='true']
+  .kx-account-hub-header[data-sidebar-collapsed],
+html[data-desktop-platform='macos'][data-desktop-fullscreen='true']
+  .kx-account-hub-header[data-sidebar-collapsed] {
+  padding-left: 0.5rem;
+}
+/* The mobile Settings headers (list and pane) share the native titlebar band:
+   the close control takes the band's control size. */
+html[data-desktop-titlebar='overlay'] .kx-settings-mobile-titlebar .kx-settings-mobile-close,
+html[data-desktop-platform='macos'] .kx-settings-mobile-titlebar .kx-settings-mobile-close {
+  height: var(--kx-titlebar-control-size);
+}
+html[data-desktop-titlebar='overlay'] .kx-settings-mobile-titlebar .kx-settings-mobile-close,
+html[data-desktop-platform='macos'] .kx-settings-mobile-titlebar .kx-settings-mobile-close {
+  width: var(--kx-titlebar-control-size);
+}
+/* Below the sidebar breakpoint, its docked cookie does not describe the
+   visible layout. Every top row clears the native controls and shell opener. */
+@media (max-width: 767px) {
+  html[data-desktop='true'] .kx-titlebar-row {
+    padding-left: var(--kx-titlebar-content-left);
+  }
+}
+
+/* Full-screen / top-reaching modals (e.g. the File Preview modal) start
+   below the title-bar inset on desktop so their own chrome never underlaps
+   the OS window controls. Pairs with `inset-3 sm:inset-4` for the sides. */
+.kx-fullscreen-modal {
+  top: calc(0.75rem + var(--kx-titlebar-inset, 0px));
+}
+@media (min-width: 640px) {
+  .kx-fullscreen-modal {
+    top: calc(1rem + var(--kx-titlebar-inset, 0px));
+  }
+}
+
+/* For a full-bleed (inset-0) modal whose chrome floats from the top via a
+   margin (e.g. the Files file-preview top bar): drop it past the inset too. */
+.kx-titlebar-safe-mt {
+  margin-top: calc(0.75rem + var(--kx-titlebar-inset, 0px));
+}
+
+.border-overlay {
+  outline: 1px solid rgba(0, 0, 0, 0.1);
+  outline-offset: -1px;
+}
+
+.dark .border-overlay {
+  outline-color: rgba(255, 255, 255, 0.1);
+}
+
+/* ── Disabled controls ──────────────────────────────────────────────────────
+   A disabled element never shows the pointer, whatever `cursor-*` utility a
+   component adds. `:where()` keeps specificity at zero so a more specific
+   `!important` rule (the sidebar drag state below) still wins; `!important`
+   is what beats a component's own utility class. */
+:where(:disabled, [aria-disabled='true'], [data-disabled]) {
+  cursor: default !important;
+}
+
+/* ── Sidebar rail drag ──────────────────────────────────────────────────────
+   While `SidebarRail` is being dragged the pointer must read as a resize
+   everywhere it travels — it leaves the 16px handle within the first few
+   pixels — and nothing under it may select. `<html>` carries the attribute for
+   the duration of the drag only; `!important` is what beats every element's
+   own cursor/user-select, which is the entire point of a global drag state. */
+[data-sidebar-resizing] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}

@@ -1,0 +1,87 @@
+/**
+ * Push registration state for this device (components/notifications/
+ * PushNotificationsBridge.tsx, lib/notifications/registration.ts).
+ *
+ * Persisted (device facts, kept across sign-out, lib/auth/sign-out-keys.ts):
+ * - `token`: the Expo push token last registered from this device.
+ * - `permissionAsked`: the OS permission prompt was shown once already.
+ * - `pendingRelease`: a token row a sign-out could not delete, and the backend
+ *   that holds it. `flushPendingRelease()` removes it without a credential;
+ *   it survives a deployment switch (KRTX-2242).
+ *
+ * In memory only:
+ * - `viewingSessionId`: the project session on screen, for the foreground rule.
+ * - `pendingOpen`: a tapped notification's session, or its project for an
+ *   alert without a session, until ProjectScreen opens it.
+ */
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
+
+export const PUSH_STORE_KEY = '@push_registration';
+
+export interface PendingOpen {
+  projectId: string;
+  /** The session to open; null opens the project (an automation alert). */
+  sessionId: string | null;
+  /** The bridge already moved to the project route for this request. */
+  navigated: boolean;
+}
+
+/** A token row left on `backendUrl` by a failed sign-out unregister. */
+interface PendingRelease {
+  backendUrl: string;
+  token: string;
+}
+
+interface PushState {
+  token: string | null;
+  permissionAsked: boolean;
+  pendingRelease: PendingRelease | null;
+  viewingSessionId: string | null;
+  pendingOpen: PendingOpen | null;
+  setToken: (token: string | null) => void;
+  setPendingRelease: (pendingRelease: PendingRelease | null) => void;
+  markPermissionAsked: () => void;
+  setViewingSessionId: (sessionId: string | null) => void;
+  requestOpen: (projectId: string, sessionId: string | null) => void;
+  markOpenNavigated: () => void;
+  /** Takes the pending open for `projectId`, or null when none is for it. */
+  takeOpen: (projectId: string) => PendingOpen | null;
+}
+
+export const usePushStore = create<PushState>()(
+  persist(
+    (set, get) => ({
+      token: null,
+      permissionAsked: false,
+      pendingRelease: null,
+      viewingSessionId: null,
+      pendingOpen: null,
+      setToken: (token) => set({ token }),
+      setPendingRelease: (pendingRelease) => set({ pendingRelease }),
+      markPermissionAsked: () => set({ permissionAsked: true }),
+      setViewingSessionId: (viewingSessionId) =>
+        set((state) => (state.viewingSessionId === viewingSessionId ? state : { viewingSessionId })),
+      requestOpen: (projectId, sessionId) => set({ pendingOpen: { projectId, sessionId, navigated: false } }),
+      markOpenNavigated: () =>
+        set((state) => (state.pendingOpen ? { pendingOpen: { ...state.pendingOpen, navigated: true } } : state)),
+      takeOpen: (projectId) => {
+        const pending = get().pendingOpen;
+        if (!pending || pending.projectId !== projectId) return null;
+        set({ pendingOpen: null });
+        return pending;
+      },
+    }),
+    {
+      name: PUSH_STORE_KEY,
+      storage: createJSONStorage(() => AsyncStorage),
+      partialize: (state) => ({
+        token: state.token,
+        permissionAsked: state.permissionAsked,
+        pendingRelease: state.pendingRelease,
+      }),
+    }
+  )
+);

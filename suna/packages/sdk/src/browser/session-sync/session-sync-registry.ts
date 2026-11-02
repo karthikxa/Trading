@@ -1,0 +1,561 @@
+import type { Message, Part, SessionStatus } from '../../core/runtime/runtime-types';
+import { getClient, getClientForUrl, RuntimeNotReadyError } from '../../core/runtime/client';
+import { SandboxNotReadyError, isSandboxNotReadyError } from '../../core/http/runtime-errors';
+import { ApiError } from '../../core/http/api/errors';
+import {
+  SessionSyncController,
+  type SessionSyncPage,
+  type SessionSyncReason,
+  type SessionSyncTelemetryEvent,
+  loadCompleteSessionHistory,
+} from '../../core/session-sync/session-sync-controller';
+import { getCurrentRuntimeSandboxId, getCurrentRuntimeUrl } from '../../core/session/current-runtime';
+import { useSyncStore } from '../stores/sync-store';
+import { getSessionLogPage } from '../../core/rest/projects-client/sessions';
+import { EMPTY_SESSION_LOG_STATE, applySessionLogPage, type SessionLogState } from '../../core/session-log/store';
+import { loadSessionLogPage, readSessionLogAnswer } from '../../core/session-log/source';
+import { sessionLogRowsFor, sessionLogThreadIdOf } from '../../core/session-log/v1-view';
+import { parseKortixSessionScope } from './server-transcript-mirror';
+
+interface MessagesResponse {
+  data?: Array<{ info: Message; parts: Part[] }>;
+  /**
+   * The generated OpenCode client RESOLVES with `{ error }` on a non-2xx
+   * response — it never throws unless the caller opted into `throwOnError`, and
+   * we do not. So the ONLY place a 503 or a runtime failure is visible is here.
+   * Reading `data ?? []` and ignoring this is exactly how a cold-boot 503
+   * became a success-looking empty page.
+   */
+  error?: unknown;
+  response?: Response;
+}
+
+interface SessionMessageClient {
+  session: {
+    messages: (
+      request: {
+        sessionID: string;
+        limit: number;
+        before?: string;
+      },
+      options?: { signal?: AbortSignal },
+    ) => Promise<MessagesResponse>;
+    status?: () => Promise<{ data?: Record<string, SessionStatus> }>;
+  };
+}
+
+export const ACTIVE_SESSION_PREFETCH_SOURCE = Symbol('active-session-prefetch');
+type SessionPrefetchSource = string | typeof ACTIVE_SESSION_PREFETCH_SOURCE;
+
+interface RegistryEntry {
+  sessionId: string;
+  runtimeScope: string;
+  controller: SessionSyncController;
+  consumers: number;
+  lastUsedAt: number;
+  client?: SessionMessageClient;
+  runtimeUrl?: string;
+  prefetchedSource?: SessionPrefetchSource;
+}
+
+const MAX_CONTROLLERS = 20;
+/**
+ * How long an unretained controller is safe from eviction after its last use. A hook holds
+ * its controller from render until its effect retains it, and between an effect's cleanup and
+ * its next run (StrictMode runs every effect twice). Evicting there destroyed the controller
+ * the hook then read with: a list that mounts more than `MAX_CONTROLLERS` hooks in one commit
+ * (the sub-agent rows' "Load all") lost the initial read of most rows.
+ */
+const IDLE_BEFORE_EVICT_MS = 30_000;
+const controllers = new Map<string, RegistryEntry>();
+
+function runtimeScopeKey(runtimeScope?: string): string {
+  return runtimeScope ?? getCurrentRuntimeSandboxId() ?? 'none';
+}
+
+function controllerKey(sessionId: string, runtimeScope?: string): string {
+  return `${runtimeScopeKey(runtimeScope)}\n${sessionId}`;
+}
+
+function findExistingSessionEntry(
+  sessionId: string,
+  runtimeScope?: string,
+): RegistryEntry | undefined {
+  const exact = controllers.get(controllerKey(sessionId, runtimeScope));
+  if (exact) return exact;
+
+  // During a React runtime switch, the framework-free current-runtime store can
+  // be briefly unbound while the session's sandbox-scoped controller remains
+  // mounted. Reuse that controller only when the wire id has one unambiguous
+  // owner. Never route across multiple sandboxes that contain the same id.
+  if (runtimeScopeKey(runtimeScope) !== 'none') return undefined;
+  let match: RegistryEntry | undefined;
+  for (const entry of controllers.values()) {
+    if (entry.sessionId !== sessionId) continue;
+    if (match) return undefined;
+    match = entry;
+  }
+  return match;
+}
+
+/** Lexicographic compare, as upstream's `cmp` (`server-session.ts:28`). */
+function cmp(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * A transcript's canonical order, taken from OpenCode's `compareMessages`
+ * (`packages/app/src/utils/session-message.ts:15-21`): the key is
+ * `time.created + id`, so creation time leads and the id breaks ties.
+ *
+ * Sorting on the id alone is not equivalent — two messages created a
+ * millisecond apart can carry ids that sort the other way — and taking the
+ * wire order on trust is not equivalent either, which is what we did.
+ */
+function messageKey(info: { id: string; time?: { created?: number } }): string {
+  return `${info.time?.created ?? 0}${info.id}`;
+}
+
+/**
+ * One page of a session's messages, normalized the way OpenCode's own client
+ * normalizes it.
+ *
+ * Their v1 branch (`packages/app/src/context/server-session.ts:566-583`) makes
+ * the same call we do — `client.session.messages({sessionID, limit, before})`,
+ * cursor from the `x-next-cursor` header — and then does three things we did
+ * not:
+ *
+ *   1. `.filter((item) => !!item?.info?.id)` — a row without a message id is
+ *      dropped, not rendered. We passed `result.data ?? []` straight through,
+ *      so one malformed row reached the renderer. That is the shape behind
+ *      "TypeError: t is not iterable".
+ *   2. `.sort(compareMessages)` — deterministic transcript order rather than
+ *      whatever the wire happened to say.
+ *   3. `item.parts.filter((part) => !!part?.id).sort(byId)` — same treatment
+ *      for parts.
+ *
+ * Cheap, and it means nothing downstream has to be defensive about shape again.
+ */
+/**
+ * The most specific message a failed `client.session.messages` response
+ * carries. `error` is genuinely `unknown` (its shape varies per endpoint), so
+ * this duck-types the same way `unwrap` (react/use-opencode-sessions/shared.ts)
+ * does, and falls back to the status code.
+ */
+function messagePageErrorText(result: MessagesResponse, status: number | undefined): string {
+  const err = result.error;
+  if (typeof err === 'string' && err) return err;
+  if (err && typeof err === 'object') {
+    const rec = err as Record<string, unknown>;
+    const data = rec.data && typeof rec.data === 'object' ? (rec.data as Record<string, unknown>) : undefined;
+    const message = data?.message ?? rec.message ?? rec.error;
+    if (typeof message === 'string' && message) return message;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      // fall through to the status
+    }
+  }
+  return status ? `Session message read failed: ${status}` : 'Session message read failed';
+}
+
+export async function readSessionMessagePage(
+  client: SessionMessageClient,
+  sessionId: string,
+  request: { limit: number; before?: string },
+  signal?: AbortSignal,
+): Promise<SessionSyncPage> {
+  const result = await client.session.messages(
+    {
+      sessionID: sessionId,
+      limit: request.limit,
+      ...(request.before ? { before: request.before } : {}),
+    },
+    signal ? { signal } : undefined,
+  );
+  // CLASSIFY, never swallow. The generated client resolves with `{ error }` on
+  // a non-2xx response, so a 503 arrives here as `{ data: undefined, error,
+  // response.status: 503 }`. `data ?? []` read that as a loaded, empty session
+  // — the transcript rendered blank and complete, no retry. Now:
+  //   - a sandbox-not-ready read (503, or a body matching the readiness
+  //     patterns) throws `SandboxNotReadyError` — retryable, "waking";
+  //   - any other failure throws a real error the controller marks `error`;
+  //   - only a genuine 2xx payload is normalized and returned.
+  const status = result.response?.status;
+  const failed =
+    result.error !== undefined || (typeof status === 'number' && status >= 400);
+  if (failed) {
+    const message = messagePageErrorText(result, status);
+    if (
+      status === 503 ||
+      isSandboxNotReadyError(result.error) ||
+      isSandboxNotReadyError(message)
+    ) {
+      throw new SandboxNotReadyError(message);
+    }
+    throw new ApiError(message, { status });
+  }
+  const items = (Array.isArray(result.data) ? result.data : []).filter(
+    (item): item is { info: Message; parts: Part[] } =>
+      !!item && typeof item === 'object' && !!(item as { info?: { id?: unknown } }).info?.id,
+  );
+  return {
+    messages: items
+      .map((item) => ({
+        info: item.info,
+        parts: (Array.isArray(item.parts) ? item.parts : [])
+          .filter((part) => !!part?.id)
+          .sort((a, b) => cmp(a.id, b.id)),
+      }))
+      .sort((a, b) => cmp(messageKey(a.info), messageKey(b.info))),
+    nextCursor: result.response?.headers.get('x-next-cursor') || undefined,
+  };
+}
+
+/** Silent unless a developer sets `localStorage['kortix:debug']`. */
+export function reportTelemetry(sessionId: string, event: SessionSyncTelemetryEvent): void {
+  try {
+    if (!globalThis.localStorage?.getItem('kortix:debug')) return;
+  } catch {
+    return;
+  }
+  console.debug('[session-sync]', { sessionId, ...event });
+}
+
+function resolveClient(key: string): SessionMessageClient {
+  const entry = controllers.get(key);
+  if (!entry) throw new RuntimeNotReadyError('Session synchronization controller was retired');
+  if (entry.client) return entry.client;
+  // A retained retry belongs to its original sandbox, even after navigation.
+  // Capture a late URL only while that sandbox is still the active runtime.
+  if (!entry.runtimeUrl && entry.runtimeScope === runtimeScopeKey()) {
+    entry.runtimeUrl = getCurrentRuntimeUrl() ?? undefined;
+  }
+  if (!entry.runtimeUrl) throw new RuntimeNotReadyError();
+  entry.client = getClientForUrl(entry.runtimeUrl);
+  return entry.client;
+}
+
+function createController(sessionId: string, key: string): SessionSyncController {
+  return new SessionSyncController({
+    sessionId,
+    loadPage: (request, signal) =>
+      readSessionMessagePage(resolveClient(key), sessionId, request, signal),
+    // No `loadStatus` / `setStatus`. The liveness poll reconciles the
+    // transcript tail and claims nothing about whether the session is working:
+    // `GET .../turn` answers that, and `setBusy` is already driven from that
+    // projection (`livenessBusy`). `loadSessionRuntimeStatus` stays — it is a
+    // published export of `@kortix/sdk/react` — but this controller no longer
+    // calls it.
+    hydrate: (messages) => {
+      useSyncStore.getState().hydrate(sessionId, messages);
+    },
+    markLoaded: () => {
+      const state = useSyncStore.getState();
+      if (!(sessionId in state.messages)) state.hydrate(sessionId, []);
+    },
+    onTelemetry: (event) => reportTelemetry(sessionId, event),
+  });
+}
+
+function evictInactiveControllers(protectedKey?: string): void {
+  if (controllers.size <= MAX_CONTROLLERS) return;
+  const now = Date.now();
+  const inactive = [...controllers.entries()]
+    .filter(
+      ([key, entry]) =>
+        entry.consumers === 0 &&
+        key !== protectedKey &&
+        now - entry.lastUsedAt > IDLE_BEFORE_EVICT_MS,
+    )
+    .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
+  for (const [key, entry] of inactive) {
+    entry.controller.destroy();
+    controllers.delete(key);
+    if (controllers.size <= MAX_CONTROLLERS) return;
+  }
+}
+
+let evictionTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * One pending pass that evicts what has been idle past the hold, when nothing else calls the
+ * registry. A pass that leaves overflow still inside the hold re-arms for when the oldest of it
+ * leaves the hold.
+ */
+function scheduleEviction(delayMs = IDLE_BEFORE_EVICT_MS + 1): void {
+  if (evictionTimer !== undefined) return;
+  evictionTimer = setTimeout(() => {
+    evictionTimer = undefined;
+    evictInactiveControllers();
+    if (controllers.size <= MAX_CONTROLLERS) return;
+    const idleSince = Math.min(
+      ...[...controllers.values()].filter((entry) => entry.consumers === 0).map((entry) => entry.lastUsedAt),
+    );
+    if (Number.isFinite(idleSince)) scheduleEviction(Math.max(1, idleSince + IDLE_BEFORE_EVICT_MS + 1 - Date.now()));
+  }, delayMs);
+  (evictionTimer as { unref?: () => void }).unref?.();
+}
+
+function getOrCreateRegistryEntry(
+  sessionId: string,
+  client?: SessionMessageClient,
+  initialConsumers = 0,
+  runtimeScope?: string,
+): RegistryEntry {
+  const key = controllerKey(sessionId, runtimeScope);
+  const existing = controllers.get(key);
+  if (existing) {
+    if (client) existing.client = client;
+    existing.lastUsedAt = Date.now();
+    return existing;
+  }
+  const entry: RegistryEntry = {
+    sessionId,
+    runtimeScope: runtimeScopeKey(runtimeScope),
+    controller: createController(sessionId, key),
+    client,
+    runtimeUrl: runtimeScopeKey(runtimeScope) === runtimeScopeKey()
+      ? getCurrentRuntimeUrl() ?? undefined
+      : undefined,
+    consumers: initialConsumers,
+    lastUsedAt: Date.now(),
+  };
+  controllers.set(key, entry);
+  return entry;
+}
+
+export function getSessionSyncController(
+  sessionId: string,
+  client?: SessionMessageClient,
+  runtimeScope?: string,
+): SessionSyncController {
+  const key = controllerKey(sessionId, runtimeScope);
+  const entry = getOrCreateRegistryEntry(sessionId, client, 0, runtimeScope);
+  evictInactiveControllers(key);
+  return entry.controller;
+}
+
+export async function prefetchSessionSyncOnce(
+  sessionId: string,
+  source: SessionPrefetchSource,
+  client?: SessionMessageClient,
+): Promise<boolean> {
+  const runtimeScope = source === ACTIVE_SESSION_PREFETCH_SOURCE ? runtimeScopeKey() : source;
+  const key = controllerKey(sessionId, runtimeScope);
+  const existing = controllers.get(key);
+  const entry = getOrCreateRegistryEntry(
+    sessionId,
+    existing?.consumers ? undefined : client,
+    0,
+    runtimeScope,
+  );
+  evictInactiveControllers(key);
+  if (entry.prefetchedSource === source) return true;
+  await entry.controller.reconcile('manual');
+  const succeeded = entry.controller.getSnapshot().freshness === 'fresh';
+  const current = controllers.get(key);
+  if (succeeded && current === entry) current.prefetchedSource = source;
+  return succeeded;
+}
+
+export function clearActiveSessionPrefetches(): void {
+  for (const entry of controllers.values()) {
+    if (entry.prefetchedSource === ACTIVE_SESSION_PREFETCH_SOURCE) {
+      entry.prefetchedSource = undefined;
+    }
+  }
+}
+
+export function retainSessionSyncController(sessionId: string, runtimeScope?: string): () => void {
+  const key = controllerKey(sessionId, runtimeScope);
+  let entry = controllers.get(key);
+  if (entry) {
+    entry.consumers += 1;
+    entry.lastUsedAt = Date.now();
+  } else {
+    entry = getOrCreateRegistryEntry(sessionId, undefined, 1, runtimeScope);
+  }
+  evictInactiveControllers();
+  const controller = entry.controller;
+  return () => {
+    const current = controllers.get(key);
+    if (!current || current.controller !== controller) return;
+    current.consumers = Math.max(0, current.consumers - 1);
+    current.lastUsedAt = Date.now();
+    if (current.consumers === 0) {
+      controller.setBusy(false);
+      scheduleEviction();
+    }
+    evictInactiveControllers();
+  };
+}
+
+export function reconcileSessionTail(
+  sessionId: string,
+  reason: SessionSyncReason,
+  runtimeScope?: string,
+): Promise<void> {
+  return getSessionSyncController(sessionId, undefined, runtimeScope).reconcile(reason);
+}
+
+/**
+ * One authoritative read of a session's runtime status. `null` when the
+ * runtime exposes no status endpoint — the caller decides what silence means.
+ * A session absent from the snapshot is authoritatively idle: the runtime
+ * enumerates every session it is working on.
+ */
+export async function loadSessionRuntimeStatus(
+  sessionId: string,
+  client: SessionMessageClient = getClient(),
+): Promise<SessionStatus | null> {
+  // Invoke BOUND — `client.session.status()` — never detached into a local.
+  // The real SDK's SessionClient.status() dereferences `this.client`, so a
+  // detached call throws a TypeError before any request goes out. That exact
+  // detachment silently disabled status reconciliation against real clients
+  // while every plain-object test fake kept passing.
+  if (!client.session.status) return null;
+  const result = (await client.session.status()) as {
+    data?: Record<string, SessionStatus>;
+    error?: unknown;
+  };
+  // The generated client RESOLVES with { error } on HTTP failure. Mapping
+  // that to "idle" told callers a failing runtime was authoritatively done —
+  // and starved every retry budget built on thrown errors. Fail loudly.
+  if (result.error !== undefined || result.data === undefined) {
+    throw new Error(`session status read failed: ${JSON.stringify(result.error ?? 'no data')}`);
+  }
+  return result.data[sessionId] ?? ({ type: 'idle' } as SessionStatus);
+}
+
+/** @deprecated Reads the runtime's v1 messages. Use `loadSessionExportMessages` (the session log first) or `getSessionLogPage`. Removed in the next major. */
+export function loadSessionTranscriptMessages(
+  sessionId: string,
+): Promise<SessionSyncPage['messages']> {
+  return loadCompleteSessionHistory((request) =>
+    readSessionMessagePage(getClient(), sessionId, request),
+  );
+}
+
+/** The largest page the log route serves. */
+const SESSION_LOG_EXPORT_PAGE_LIMIT = 500;
+
+/**
+ * Every message of runtime session `runtimeSessionId`'s thread of a v2 session, oldest first,
+ * as v1 rows (`toV1`): the messages `state` holds (a page, the streamed turn), then every older
+ * page of `GET …/log?thread=&before_seq=`. Read into a copy: the store's window is not widened.
+ * Throws when the log names no such thread or a page fails.
+ */
+async function loadSessionLogExportRows(
+  projectId: string,
+  sessionId: string,
+  runtimeSessionId: string,
+  state: SessionLogState,
+): Promise<SessionSyncPage['messages']> {
+  const thread = sessionLogThreadIdOf(state, runtimeSessionId);
+  if (!thread) throw new Error(`The session log has no thread ${runtimeSessionId}`);
+  while (state.older[thread] !== false) {
+    const first = state.messages[thread]?.[0]?.seq;
+    const page = await getSessionLogPage(projectId, sessionId, { thread, before_seq: first, limit: SESSION_LOG_EXPORT_PAGE_LIMIT });
+    if (page?.thread_id !== thread) throw new Error(`The session log has no page of thread ${thread}`);
+    state = applySessionLogPage(state, page, first);
+    // A page that reaches no further back ends the walk.
+    const reached = state.messages[thread]?.[0]?.seq;
+    if (reached === undefined || (first !== undefined && reached >= first)) break;
+  }
+  return sessionLogRowsFor({ [sessionId]: state }, runtimeSessionId, []);
+}
+
+/**
+ * Every message of a session for an export, oldest first. The session log first: the log the
+ * store holds for `kortixSessionScope` (v2), else the log's newest page read from the API. The
+ * export is then the log's thread of `sessionId`, every page of it, and nothing else is read.
+ * Without a page the runtime's whole history answers while the computer runs. A 404 coded
+ * `session_log_missing` (a new session) answers that history, or nothing. Any other answer
+ * without a page (an unconverted mirror, a failed read) throws when the runtime has nothing: a
+ * partial export must not pass for a whole one. No v1 saved copy is read (`GET …/transcript`,
+ * P8.3). `kortixSessionScope` (`projectId/sessionId`) names the session; without it only the
+ * runtime is read, and a runtime failure throws.
+ */
+export async function loadSessionExportMessages(
+  sessionId: string,
+  kortixSessionScope?: string,
+): Promise<SessionSyncPage['messages']> {
+  const saved = parseKortixSessionScope(kortixSessionScope);
+  let log = saved ? useSyncStore.getState().sessionLogs[saved.sessionId] : undefined;
+  // The API serves the log and the session has none yet: only the runtime can hold messages.
+  let missing = false;
+  if (saved && !log && loadSessionLogPage) {
+    const page = await readSessionLogAnswer(loadSessionLogPage, saved.projectId, saved.sessionId, { limit: SESSION_LOG_EXPORT_PAGE_LIMIT });
+    if (page === 'missing') missing = true;
+    else if (page) log = applySessionLogPage(EMPTY_SESSION_LOG_STATE, page);
+  }
+  if (saved && log) return loadSessionLogExportRows(saved.projectId, saved.sessionId, sessionId, log);
+  let live: SessionSyncPage['messages'] = [];
+  try {
+    live = await loadSessionTranscriptMessages(sessionId);
+  } catch (error) {
+    if (!saved) throw error;
+  }
+  if (live.length > 0 || !saved || missing) return live;
+  throw new Error('The session log could not be read');
+}
+
+/**
+ * The frame types that carry transcript content. Everything else the runtime
+ * emits — status, idle, permission, question, diagnostics — says something
+ * about the session but nothing about whether this tab has its messages.
+ */
+const TRANSCRIPT_EVENT_TYPES = new Set([
+  'message.updated',
+  'message.part.updated',
+  'message.removed',
+  'message.part.removed',
+]);
+
+export function noteSessionSyncEvent(event: {
+  type?: string;
+  properties?: unknown;
+}): void {
+  if (!event.properties || typeof event.properties !== 'object') return;
+  const properties = event.properties as Record<string, unknown>;
+  const info = properties.info as { sessionID?: string; role?: string } | undefined;
+  const part = properties.part as { sessionID?: string } | undefined;
+  const sessionId =
+    (typeof properties.sessionID === 'string' && properties.sessionID) ||
+    info?.sessionID ||
+    part?.sessionID;
+  if (!sessionId) return;
+  // Only a frame that MOVES the transcript renews freshness — and freshness is
+  // what postpones the liveness poll, the one repair for a stream that is
+  // dropping content.
+  //
+  // It used to be every frame carrying this session's id. That inverted the
+  // repair: a runtime emitting status while its message frames were lost kept
+  // renewing the very timer built to catch the loss, so the browser's
+  // transcript could sit arbitrarily stale and the poll would never run. The
+  // frames themselves are applied by the event handler, and "is this session
+  // working?" is answered by `projectWorking` over the server's turn authority
+  // — not by inferring a phase from which frame arrived when.
+  if (!TRANSCRIPT_EVENT_TYPES.has(event.type ?? '')) return;
+  findExistingSessionEntry(sessionId)?.controller.noteActivity();
+}
+
+export function resetSessionSyncControllers(): void {
+  for (const entry of controllers.values()) entry.controller.destroy();
+  controllers.clear();
+  clearTimeout(evictionTimer);
+  evictionTimer = undefined;
+}
+
+/** Retire controllers for one wire id after a different sandbox claims it. */
+export function resetSessionSyncControllersForSession(
+  sessionId: string,
+  keepRuntimeScope?: string,
+): void {
+  for (const [key, entry] of controllers) {
+    if (entry.sessionId !== sessionId || entry.runtimeScope === keepRuntimeScope) continue;
+    entry.controller.destroy();
+    controllers.delete(key);
+  }
+}

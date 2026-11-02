@@ -1,0 +1,690 @@
+/**
+ * Read/write helpers for one `agents.<name>` block of kortix.yaml: behavior,
+ * prompt (`prompt` or `prompt_file`) and grants. The dashboard's agent editor
+ * route (`../routes/agent-config.ts`) serves it as `block` (grants) plus
+ * `block.behavior` (behavior + prompt); this module only ever touches
+ * kortix.yaml.
+ *
+ * Distinct from `../agents.ts` (`AgentSpec` / `extractAgents`): that module
+ * resolves the platform GRANT the session token carries (a narrower view —
+ * connectors/secrets/kortix_permissions reduced to the wire `AgentGrant` shape).
+ * This module instead reads/writes the agent's declared governance block
+ * verbatim so the editor can present (and persist) the complete governance
+ * field space, not just the grant subset. Pure — no I/O; callers own
+ * load/commit (mirrors `applyAgentScope` in `../agents.ts`).
+ */
+import {
+  defaultAgentFile,
+  resolveGrantSet,
+  resolveProjectRepository,
+  SLUG_RE,
+  type ManifestIssue,
+} from '@kortix/manifest-schema';
+import { addedManifestErrors, type ParsedManifest } from '../triggers';
+
+/** One raw `agents.<name>` block, as kortix.yaml holds it. */
+export type AgentBlock = Record<string, unknown>;
+import { isDeepStrictEqual } from 'node:util';
+
+/** Slug rule for an agent name — same as every other manifest slug. Reuses
+ *  `@kortix/manifest-schema`'s exported `SLUG_RE` directly (it used to be
+ *  re-derived here as a local copy under the mistaken assumption that the
+ *  regex wasn't exported). */
+function isValidAgentName(name: string): boolean {
+  return SLUG_RE.test(name);
+}
+
+type NormalizeRequiredConnectorsResult =
+  | { ok: true; block: Record<string, unknown> }
+  | { ok: false; error: string };
+
+/** The raw `agents` map, or the one malformed-map rejection every reader and
+ *  writer shares. `map: undefined` means the manifest has no `agents:` yet. */
+function agentsMapOf(
+  manifest: ParsedManifest,
+): { ok: true; map: Record<string, unknown> | undefined } | { ok: false; error: string } {
+  const raw = manifest.raw.agents;
+  if (raw === undefined || raw === null) return { ok: true, map: undefined };
+  if (Array.isArray(raw) || typeof raw !== 'object') {
+    return { ok: false, error: '`agents` is malformed in this manifest (expected a map).' };
+  }
+  return { ok: true, map: raw as Record<string, unknown> };
+}
+
+/** One agent's raw block: null when the roster does not name it or names it
+ *  with a YAML null (the writers treat both as absent — the read path pins a
+ *  null entry as malformed, see `readAgentBlockV2`), the plain object when
+ *  not — and the one malformed-entry rejection. */
+function agentBlockOf(
+  agentName: string,
+  entry: unknown,
+): { ok: true; block: Record<string, unknown> | null } | { ok: false; error: string } {
+  if (entry === undefined || entry === null) return { ok: true, block: null };
+  if (typeof entry !== 'object' || Array.isArray(entry)) {
+    return { ok: false, error: `agents.${agentName} is malformed (expected a table/object).` };
+  }
+  return { ok: true, block: entry as Record<string, unknown> };
+}
+
+/** Canonicalize both legacy alias pairs in one pass: connectors_personal →
+ *  connectors_required, then kortix_cli → kortix_permissions. */
+function normalizeGovernanceAliases(block: Record<string, unknown>): NormalizeRequiredConnectorsResult {
+  const connectors = normalizeRequiredConnectorAliases(block);
+  if (!connectors.ok) return connectors;
+  return normalizeKortixPermissionAliases(connectors.block);
+}
+
+/** One grant-set write: `all` writes the keyword, `[]` writes deny-by-default
+ *  by omitting the key (v2 is deny-by-default), a list writes verbatim. */
+function writeGrantSet(
+  block: Record<string, unknown>,
+  key: string,
+  value: readonly string[] | 'all' | undefined,
+): void {
+  if (value === undefined) return;
+  if (value === 'all') block[key] = 'all';
+  else if (value.length === 0) delete block[key];
+  else block[key] = value;
+}
+
+function normalizeConnectorList(value: unknown, field: string): string[] | string {
+  if (!Array.isArray(value)) return `${field} must be a list of connector slugs`;
+  const normalized: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || item.trim() === '') {
+      return `${field} must contain non-empty connector slugs`;
+    }
+    const slug = item.trim();
+    if (!normalized.includes(slug)) normalized.push(slug);
+  }
+  return normalized;
+}
+
+function equalConnectorSets(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every((slug) => rightSet.has(slug));
+}
+
+export function normalizeRequiredConnectorAliases(
+  source: Record<string, unknown>,
+): NormalizeRequiredConnectorsResult {
+  const canonicalRaw = source.connectors_required;
+  const legacyRaw = source.connectors_personal;
+  const canonical =
+    canonicalRaw === undefined ? undefined : normalizeConnectorList(canonicalRaw, 'connectors_required');
+  if (typeof canonical === 'string') return { ok: false, error: canonical };
+  const legacy =
+    legacyRaw === undefined ? undefined : normalizeConnectorList(legacyRaw, 'connectors_personal');
+  if (typeof legacy === 'string') return { ok: false, error: legacy };
+
+  if (canonical && legacy && !equalConnectorSets(canonical, legacy)) {
+    return {
+      ok: false,
+      error: 'connectors_personal must match connectors_required when both fields are present',
+    };
+  }
+
+  const block = { ...source };
+  delete block.connectors_personal;
+  const required = canonical ?? legacy;
+  if (canonicalRaw !== undefined || legacyRaw !== undefined) {
+    block.connectors_required = required ?? [];
+  } else {
+    delete block.connectors_required;
+  }
+  return { ok: true, block };
+}
+
+/**
+ * Canonicalize the deprecated `kortix_cli` key to `kortix_permissions` (same
+ * value). Both present with different values is an error — the manifest
+ * validator rejects that too. Mirrors `normalizeRequiredConnectorAliases`.
+ */
+function normalizeKortixPermissionAliases(
+  source: Record<string, unknown>,
+): NormalizeRequiredConnectorsResult {
+  const legacy = source.kortix_cli;
+  if (legacy === undefined) return { ok: true, block: source };
+  const canonical = source.kortix_permissions;
+  const block = { ...source };
+  delete block.kortix_cli;
+  if (canonical === undefined || canonical === null) {
+    block.kortix_permissions = legacy;
+    return { ok: true, block };
+  }
+  const key = (v: unknown) => {
+    const r = resolveGrantSet(v, 'none');
+    return Array.isArray(r) ? JSON.stringify([...new Set(r)].sort()) : r;
+  };
+  if (key(canonical) !== key(legacy)) {
+    return {
+      ok: false,
+      error: 'kortix_cli must match kortix_permissions when both fields are present (kortix_cli is the deprecated alias)',
+    };
+  }
+  return { ok: true, block };
+}
+
+/**
+ * The agent's behavior draft from a PUT body that may name it `behavior` or,
+ * before W4, `opencode`.
+ *
+ * GET answers both names with one value, so a round-trip client sends both
+ * back and edits ONE: an older client edits `opencode`, a newer one
+ * `behavior`. When they differ, the draft is the one that differs from what
+ * GET served (`stored`). Two different edits are refused, never guessed.
+ */
+export function resolveBehaviorDraft<T extends Record<string, unknown>>(
+  names: { behavior?: T; opencode?: T },
+  stored: Record<string, unknown>,
+): { ok: true; draft: T | undefined } | { ok: false; error: string } {
+  const { behavior, opencode } = names;
+  if (behavior === undefined || opencode === undefined || isDeepStrictEqual(behavior, opencode)) {
+    return { ok: true, draft: behavior ?? opencode };
+  }
+  if (isDeepStrictEqual(behavior, stored)) return { ok: true, draft: opencode };
+  if (isDeepStrictEqual(opencode, stored)) return { ok: true, draft: behavior };
+  return {
+    ok: false,
+    error: 'behavior and opencode differ; send the agent behavior once, as behavior (opencode is its deprecated name)',
+  };
+}
+
+function pruneRequiredConnectors(block: Record<string, unknown>): void {
+  const required = block.connectors_required;
+  if (!Array.isArray(required)) return;
+  const connectors = resolveGrantSet(block.connectors, 'none');
+  if (connectors === 'all') return;
+  const granted = new Set(connectors === 'none' ? [] : connectors);
+  const kept = required.filter(
+    (value): value is string => typeof value === 'string' && granted.has(value),
+  );
+  if (kept.length > 0) block.connectors_required = kept;
+  else delete block.connectors_required;
+}
+
+type ReadAgentBlockResult =
+  | { ok: true; block: AgentBlock | null; defaultAgent: string | null }
+  | { ok: false; error: string };
+
+/**
+ * Read one agent's raw block out of an already-loaded manifest. Never throws.
+ * The block carries behavior, the prompt and grants; the route splits it with
+ * `agentConfigViewV3`. `block` is `null` when the named agent isn't declared
+ * (the GET route turns that into 404 `agent_not_found`, which names the
+ * declared agents — see `agentNotDeclaredError` in `agents/parse.ts`).
+ */
+export function readAgentBlockV2(manifest: ParsedManifest, agentName: string): ReadAgentBlockResult {
+  const defaultAgentRaw = manifest.raw.default_agent;
+  const defaultAgent =
+    typeof defaultAgentRaw === 'string' && defaultAgentRaw.trim() ? defaultAgentRaw.trim() : null;
+  const agents = agentsMapOf(manifest);
+  if (!agents.ok) return agents;
+  // A YAML null entry parses past the manifest validator: the read path pins it
+  // as malformed — the editor must show the broken shape, not a blank agent.
+  if (agents.map?.[agentName] === null) {
+    return { ok: false, error: `agents.${agentName} is malformed (expected a table/object).` };
+  }
+  const entry = agentBlockOf(agentName, agents.map?.[agentName]);
+  if (!entry.ok) return entry;
+  if (!entry.block) return { ok: true, block: null, defaultAgent };
+  const aliases = normalizeGovernanceAliases(entry.block);
+  if (!aliases.ok) return aliases;
+  const repository = normalizeRepositoryAccess(aliases.block, true);
+  if (!repository.ok) return repository;
+  return { ok: true, block: repository.block, defaultAgent };
+}
+
+/**
+ * The wire block carries `repository_access`; kortix.yaml stores
+ * `workspace: { project_repository }`. Reading maps every form to the wire key;
+ * writing maps it back to the YAML form. Both always carry the value: an
+ * omitted one is the default (`false`), so every editor save pins it. A legacy
+ * `workspace: read` with no explicit choice is written back unchanged.
+ */
+function normalizeRepositoryAccess(
+  block: Record<string, unknown>,
+  reading = false,
+): NormalizeRequiredConnectorsResult {
+  // The wire key: the YAML has only `workspace` (`resolveProjectRepository`).
+  const access = block.repository_access;
+  if (access !== undefined && typeof access !== 'boolean') return { ok: false, error: 'repository_access must be a boolean.' };
+  const repository = resolveProjectRepository(block);
+  if (!repository.ok) return { ok: false, error: `${repository.path} ${repository.message}` };
+  if (access !== undefined && block.workspace !== undefined && access !== repository.value) {
+    return { ok: false, error: 'repository_access conflicts with workspace.' };
+  }
+  if (repository.legacyRead && access === undefined && !reading) return { ok: true, block: { ...block } };
+  const value = access ?? repository.value;
+  const { repository_access: _access, workspace: _workspace, ...next } = block;
+  if (reading) next.repository_access = value;
+  else next.workspace = { project_repository: value };
+  return { ok: true, block: next };
+}
+
+export type ApplyAgentBlockResult =
+  | { ok: true; raw: Record<string, unknown> }
+  | { ok: false; error: string; issues?: ManifestIssue[] };
+
+function applyAgentMapBlock(
+  manifest: ParsedManifest,
+  agentName: string,
+  block: Record<string, unknown>,
+): ApplyAgentBlockResult {
+  if (!isValidAgentName(agentName)) {
+    return {
+      ok: false,
+      error: `"${agentName}" is not a valid agent name (lowercase letters, digits, dashes, underscores).`,
+    };
+  }
+  const agents = agentsMapOf(manifest);
+  if (!agents.ok) return agents;
+  const aliases = normalizeGovernanceAliases(block);
+  if (!aliases.ok) return aliases;
+  pruneRequiredConnectors(aliases.block);
+  const nextAgents: Record<string, unknown> = { ...agents.map };
+  const repository = normalizeRepositoryAccess(aliases.block);
+  if (!repository.ok) return repository;
+  nextAgents[agentName] = repository.block;
+  return refuseAddedErrors(manifest, { ...manifest.raw, agents: nextAgents });
+}
+
+/** `nextRaw`, unless it adds a validation error (`addedManifestErrors`). */
+function refuseAddedErrors(manifest: ParsedManifest, nextRaw: Record<string, unknown>): ApplyAgentBlockResult {
+  const errorIssues = addedManifestErrors(manifest.raw, nextRaw);
+  if (errorIssues.length > 0) {
+    return {
+      ok: false,
+      error: errorIssues.map((issue) => `${issue.path}: ${issue.message}`).join('; '),
+      issues: errorIssues,
+    };
+  }
+  return { ok: true, raw: nextRaw };
+}
+
+/**
+ * Change the project-wide default agent without touching any agent block.
+ * The manifest validator is the authority: the target must be a declared,
+ * enabled agent before the caller is allowed to commit the file.
+ */
+export function applyDefaultAgentV2(
+  manifest: ParsedManifest,
+  agentName: string,
+): ApplyAgentBlockResult {
+  if (!isValidAgentName(agentName)) {
+    return {
+      ok: false,
+      error: `"${agentName}" is not a valid agent name (lowercase letters, digits, dashes, underscores).`,
+    };
+  }
+  return refuseAddedErrors(manifest, { ...manifest.raw, default_agent: agentName });
+}
+
+/**
+ * Write one agent's full block into the manifest's raw object (full replace,
+ * upsert-by-name), and validate the RESULT before the caller commits — a
+ * malformed permission tree, unknown enum, or ungrantable `kortix_permissions`
+ * action is a clean rejection here, never a broken manifest on disk.
+ */
+export function applyAgentBlockV2(
+  manifest: ParsedManifest,
+  agentName: string,
+  block: AgentBlock,
+): ApplyAgentBlockResult {
+  return applyAgentMapBlock(manifest, agentName, block);
+}
+
+/**
+ * Apply a secrets/connectors SCOPE edit to one agent's block. Reads the
+ * agent's existing block, merges in JUST the scope grants, and reuses the
+ * upsert + validation gate (so every other field on the block is preserved
+ * verbatim). The wire `env` is the `secrets` key; grants are deny-by-default,
+ * so a none/`[]` selection is written by OMITTING the key. `notFound`
+ * distinguishes "agent not declared" (route → 404) from a validation failure
+ * (route → 400) — this path scopes an existing agent, it never creates one.
+ */
+export function applyAgentScopeV2(
+  manifest: ParsedManifest,
+  agentName: string,
+  scope: {
+    env?: string[] | 'all';
+    connectors?: string[] | 'all';
+    connectorsRequired?: string[];
+    /** Kortix App slugs, same grant-set shape as `connectors`. */
+    apps?: string[] | 'all';
+    /** Connector slug → set name; MERGES per slug. `null` or `base` removes. */
+    policySets?: Record<string, string | null>;
+  },
+): ApplyAgentBlockResult & { notFound?: boolean } {
+  const rawAgents = manifest.raw.agents;
+  const existing =
+    rawAgents && typeof rawAgents === 'object' && !Array.isArray(rawAgents)
+      ? (rawAgents as Record<string, unknown>)[agentName]
+      : undefined;
+  const entry = agentBlockOf(agentName, existing);
+  if (!entry.ok) return entry;
+  if (!entry.block) {
+    return {
+      ok: false,
+      notFound: true,
+      error: `No agent "${agentName}" declared in ${manifest.path || 'kortix.yaml'}`,
+    };
+  }
+  const normalized = normalizeRequiredConnectorAliases(entry.block);
+  if (!normalized.ok) return normalized;
+  const merged: Record<string, unknown> = normalized.block;
+  writeGrantSet(merged, 'secrets', scope.env);
+  writeGrantSet(merged, 'connectors', scope.connectors);
+  writeGrantSet(merged, 'apps', scope.apps);
+  if (scope.connectorsRequired !== undefined) {
+    const required = Array.from(new Set(scope.connectorsRequired));
+    if (required.length === 0) delete merged.connectors_required;
+    else merged.connectors_required = required;
+  }
+  if (scope.policySets !== undefined) {
+    const current = merged.policy_sets;
+    const sets: Record<string, unknown> =
+      current && typeof current === 'object' && !Array.isArray(current) ? { ...(current as Record<string, unknown>) } : {};
+    for (const [slug, name] of Object.entries(scope.policySets)) {
+      if (name === null || name === 'base') delete sets[slug];
+      else sets[slug] = name;
+    }
+    merged.policy_sets = sets;
+  }
+  dropEmptyPolicySets(merged);
+  const effectiveConnectors = merged.connectors;
+  const effectiveRequired = merged.connectors_required;
+  if (Array.isArray(effectiveRequired)) {
+    if (effectiveConnectors === undefined || effectiveConnectors === 'none') {
+      delete merged.connectors_required;
+    } else if (Array.isArray(effectiveConnectors)) {
+      const granted = new Set(effectiveConnectors as string[]);
+      const kept = (effectiveRequired as string[]).filter((slug) => granted.has(slug));
+      if (kept.length === 0) delete merged.connectors_required;
+      else merged.connectors_required = kept;
+    }
+  }
+  return applyAgentMapBlock(manifest, agentName, merged);
+}
+
+/**
+ * Drop an emptied `policy_sets` map (`{}` from an editor that cleared the last
+ * set). Entries on connectors the block no longer grants are KEPT: such an
+ * entry is inert while the connector is un-granted and applies again on
+ * re-grant. Pruning it would let a writer without project.connector.write move
+ * the agent onto the base rules by un-granting and re-granting the connector.
+ */
+export function dropEmptyPolicySets(block: Record<string, unknown>): void {
+  const map = block.policy_sets;
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return;
+  if (Object.keys(map).length === 0) delete block.policy_sets;
+}
+
+/** Grant membership. Case-insensitive, mirroring `listAdmits`
+ *  (../../secrets/strategy.ts) and `grantAdmits` (./serializers.ts) — a
+ *  hand-written `secrets:` list in kortix.yaml may use any case, and all three
+ *  answers must agree or the UI and the delivery gate disagree about whether a
+ *  secret is granted. */
+function listAdmits(list: readonly string[], identifier: string): boolean {
+  const target = identifier.toUpperCase();
+  return list.some((entry) => entry.toUpperCase() === target);
+}
+
+type GrantSecretToAgentResult =
+  | {
+      ok: true;
+      raw: Record<string, unknown>;
+      /** The list already admitted the identifier — the caller must NOT commit. */
+      alreadyGranted: boolean;
+      adoptedGovernance: boolean;
+    }
+  | { ok: false; error: string; issues?: ManifestIssue[] };
+
+/**
+ * Add ONE secret identifier to ONE agent's `secrets:` allowlist — the write
+ * behind the "No agent can receive this secret" warning
+ * (`delivery_blocked_reason: 'no_agent_grant'`, ./serializers.ts). Narrower
+ * than `applyAgentScopeV2` on purpose: that route replaces a whole grant set
+ * and refuses an undeclared agent, while this one only ever WIDENS, and
+ * upserts the agent entry when the roster does not name it yet.
+ *
+ * Three behaviours here are not obvious:
+ *
+ * 1. **`secrets: all` is expanded, not overwritten.** `resolveSecretDelivery`
+ *    withholds an `egress`/`broker` row from an `'all'` grant
+ *    (`agent_grant_unscoped`), so the grant HAS to become an explicit list for
+ *    the secret to arrive. Writing just this identifier would silently revoke
+ *    every other project secret from the agent, so `projectIdentifiers` — what
+ *    `'all'` currently resolves to — is written out alongside it. Delivery
+ *    today is unchanged; only a secret added LATER now needs its own grant.
+ * 2. **`adoptedGovernance` covers the absent manifest too.** `revision === null`
+ *    means no manifest file exists in the repo (`loadManifestForEdit`
+ *    synthesized one), so the commit publishes the project's first roster and
+ *    default-denies every agent it omits (../agents.ts) — the same hazard as
+ *    adding the first `agents:` block to an existing file.
+ * 3. **An already-admitting list is reported, never rewritten.** The caller
+ *    skips the commit, so the manifest keeps its author's ordering and casing.
+ */
+export function grantSecretToAgentV2(
+  manifest: ParsedManifest,
+  agentName: string,
+  identifier: string,
+  projectIdentifiers: readonly string[] = [],
+): GrantSecretToAgentResult {
+  const agents = agentsMapOf(manifest);
+  if (!agents.ok) return agents;
+  const adoptedGovernance =
+    (manifest.revision ?? null) === null || !agents.map || Object.keys(agents.map).length === 0;
+
+  const entry = agentBlockOf(agentName, agents.map?.[agentName]);
+  if (!entry.ok) return entry;
+  if (!entry.block) {
+    const applied = applyAgentBlockV2(manifest, agentName, { secrets: [identifier] });
+    return applied.ok ? { ...applied, alreadyGranted: false, adoptedGovernance } : applied;
+  }
+  const normalized = normalizeRequiredConnectorAliases(entry.block);
+  if (!normalized.ok) return normalized;
+  const merged = normalized.block;
+
+  const current = merged.secrets;
+  if (Array.isArray(current)) {
+    const declared = current.filter((entry): entry is string => typeof entry === 'string');
+    // No commit, so nothing is adopted either.
+    if (listAdmits(declared, identifier)) {
+      return { ok: true, raw: manifest.raw, alreadyGranted: true, adoptedGovernance: false };
+    }
+    // Append to the author's entries verbatim. A non-string entry is left in
+    // place for `validateManifest` to reject, never quietly dropped.
+    merged.secrets = [...current, identifier];
+  } else if (resolveGrantSet(current, 'none') === 'all') {
+    // Every other project identifier, then the new one last so the diff reads
+    // as an addition. Both filters use the same case-insensitive rule the
+    // delivery gate does.
+    const expanded: string[] = [];
+    for (const entry of projectIdentifiers) {
+      if (listAdmits([identifier], entry) || listAdmits(expanded, entry)) continue;
+      expanded.push(entry);
+    }
+    merged.secrets = [...expanded, identifier];
+  } else {
+    merged.secrets = [identifier];
+  }
+
+  const applied = applyAgentMapBlock(manifest, agentName, merged);
+  return applied.ok ? { ...applied, alreadyGranted: false, adoptedGovernance } : applied;
+}
+
+// ─── The editor's view of a block ──────────────────────────────────────────
+//
+// An agent is ONE block: behavior, prompt (`prompt` or `prompt_file`) and
+// grants. The editor's wire shape is `block` (governance) plus
+// `block.behavior` (behavior + `prompt`), mapped onto that block and, at most,
+// the agent's prompt file. No `.md` frontmatter is ever written.
+
+/** v3 behavior keys: the editor serves and writes them as `behavior`. */
+const BEHAVIOR_KEYS_V3: readonly string[] = [
+  'description',
+  'mode',
+  'model',
+  'variant',
+  'temperature',
+  'top_p',
+  'steps',
+  'options',
+  'color',
+  'hidden',
+  'permission',
+];
+
+/** The governance keys the editor owns: a PUT replaces them. */
+const GOVERNANCE_KEYS_V3: readonly string[] = [
+  'enabled',
+  'tools',
+  'sandbox',
+  'skills',
+  'connectors',
+  'connectors_required',
+  'connectors_personal',
+  'secrets',
+  'apps',
+  'kortix_permissions',
+  'kortix_cli',
+  'repository_access',
+  'workspace',
+];
+
+/** Grant sets. `none` is the default, so it is written by omitting the key. */
+const GRANT_KEYS_V3: readonly string[] = [
+  'skills',
+  'subagents',
+  'commands',
+  'extensions',
+  'connectors',
+  'secrets',
+  'apps',
+  'kortix_permissions',
+];
+
+/** The key order of a written v3 agent block. Keys not listed (`network_egress`) follow. */
+const BLOCK_ORDER_V3: readonly string[] = [
+  ...BEHAVIOR_KEYS_V3.filter((key) => key !== 'permission'),
+  'prompt',
+  'prompt_file',
+  'permission',
+  'enabled',
+  'tools',
+  'skills',
+  'subagents',
+  'commands',
+  'extensions',
+  'codemode',
+  'connectors',
+  'connectors_required',
+  'policy_sets',
+  'secrets',
+  'apps',
+  'kortix_permissions',
+  'workspace',
+  'sandbox',
+];
+
+function orderBlockV3(block: Record<string, unknown>): Record<string, unknown> {
+  const rank = (key: string) => {
+    const index = BLOCK_ORDER_V3.indexOf(key);
+    return index === -1 ? BLOCK_ORDER_V3.length : index;
+  };
+  return Object.fromEntries(Object.entries(block).sort(([a], [b]) => rank(a) - rank(b)));
+}
+
+/**
+ * The editor's view of a v3 agent block: `governance` is the wire `block`
+ * (grants, `file` = the `prompt_file`, `repository_access`), `behavior` the
+ * behavior keys plus `prompt` (inline, or `promptText`, the prompt file's text).
+ */
+export function agentConfigViewV3(
+  block: Record<string, unknown>,
+  promptText: string | null,
+): { governance: Record<string, unknown>; behavior: Record<string, unknown> } {
+  const behavior: Record<string, unknown> = {};
+  const governance: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(block)) {
+    if (BEHAVIOR_KEYS_V3.includes(key) || key === 'prompt') behavior[key] = value;
+    else if (key === 'prompt_file') governance.file = value;
+    else governance[key] = value;
+  }
+  if (block.prompt_file !== undefined && promptText?.trim()) behavior.prompt = promptText;
+  const repository = normalizeRepositoryAccess(governance, true);
+  return { governance: repository.ok ? repository.block : governance, behavior };
+}
+
+export type ApplyAgentConfigV3Result =
+  | { ok: true; raw: Record<string, unknown>; promptWrite: { path: string; content: string } | null }
+  | { ok: false; error: string; issues?: ManifestIssue[] };
+
+/**
+ * Write the editor's draft onto a v3 agent block. `governance` replaces the
+ * governance keys; a v3-only grant (`subagents`, `commands`, `extensions`,
+ * `codemode`) it omits is kept, so an editor that predates them never drops
+ * them, and `none` clears one. `behavior`, when sent, replaces the behavior
+ * keys and the prompt: the prompt goes to the existing `prompt_file`
+ * (`promptWrite`), else stays inline, else a new prompt becomes
+ * `agents/<name>.md`. `file` is server-owned: only the current `prompt_file`
+ * is accepted. The result is validated like every other manifest write.
+ */
+export function applyAgentConfigV3(
+  manifest: ParsedManifest,
+  agentName: string,
+  input: { governance: Record<string, unknown>; behavior?: Record<string, unknown> },
+): ApplyAgentConfigV3Result {
+  const agents = agentsMapOf(manifest);
+  if (!agents.ok) return agents;
+  const entry = agentBlockOf(agentName, agents.map?.[agentName]);
+  if (!entry.ok) return entry;
+  const current = entry.block ?? {};
+  const currentFile = typeof current.prompt_file === 'string' ? current.prompt_file : undefined;
+  const { file, ...governance } = input.governance;
+  if (file !== undefined && file !== currentFile) {
+    return {
+      ok: false,
+      error: currentFile
+        ? `agents.${agentName}.prompt_file is "${currentFile}" and cannot be changed here. Move the file in the repository and update kortix.yaml in the same commit.`
+        : `agents.${agentName} has no prompt_file; send no file.`,
+    };
+  }
+
+  const next: Record<string, unknown> = { ...current };
+  for (const key of GOVERNANCE_KEYS_V3) delete next[key];
+  for (const [key, value] of Object.entries(governance)) {
+    if (value !== undefined) next[key] = value;
+  }
+
+  let promptWrite: { path: string; content: string } | null = null;
+  if (input.behavior !== undefined) {
+    const { prompt, ...behavior } = input.behavior;
+    for (const key of BEHAVIOR_KEYS_V3) delete next[key];
+    for (const [key, value] of Object.entries(behavior)) {
+      if (value !== undefined) next[key] = value;
+    }
+    const text = typeof prompt === 'string' ? prompt : '';
+    if (currentFile) {
+      promptWrite = { path: currentFile, content: text };
+    } else if (current.prompt !== undefined || !text.trim()) {
+      if (text.trim()) next.prompt = text;
+      else delete next.prompt;
+    } else {
+      const path = defaultAgentFile(agentName);
+      next.prompt_file = path;
+      promptWrite = { path, content: text };
+    }
+  }
+  for (const key of GRANT_KEYS_V3) {
+    if (next[key] === 'none') delete next[key];
+  }
+
+  const applied = applyAgentMapBlock(manifest, agentName, orderBlockV3(next));
+  if (!applied.ok) return applied;
+  const written = applied.raw.agents as Record<string, Record<string, unknown>>;
+  written[agentName] = orderBlockV3(written[agentName]!);
+  return { ok: true, raw: applied.raw, promptWrite };
+}

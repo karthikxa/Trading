@@ -1,0 +1,206 @@
+export interface JsonRpcRequest {
+  jsonrpc: '2.0';
+  id: string;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+export interface JsonRpcSuccessResponse {
+  jsonrpc: '2.0';
+  id: string;
+  result: unknown;
+}
+
+export interface JsonRpcErrorResponse {
+  jsonrpc: '2.0';
+  id: string;
+  error: JsonRpcError;
+}
+
+export interface JsonRpcError {
+  code: number;
+  message: string;
+  data?: unknown;
+}
+
+export type JsonRpcResponse = JsonRpcSuccessResponse | JsonRpcErrorResponse;
+
+export interface JsonRpcNotification {
+  jsonrpc: '2.0';
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+export type JsonRpcMessage = JsonRpcRequest | JsonRpcResponse | JsonRpcNotification;
+
+export const TunnelErrorCode = {
+  PERMISSION_DENIED: -32000,
+  CAPABILITY_NOT_REGISTERED: -32001,
+  TIMEOUT: -32002,
+  LOCAL_ERROR: -32003,
+  NOT_CONNECTED: -32004,
+  EXPIRED: -32005,
+  RATE_LIMITED: -32006,
+  AUTH_FAILED: -32007,
+  /** The owner has not answered the access prompt on the machine (contract v2 X1). */
+  ACCESS_PENDING: -32010,
+  /** The owner denied access on the machine; fails fast until the denial lapses. */
+  ACCESS_DENIED: -32011,
+  /** The owner turned computer access off on the machine. */
+  ACCESS_OFF: -32012,
+  /** macOS has not given the agent Accessibility or Screen Recording. */
+  DESKTOP_PERMISSION_MISSING: -32013,
+  /** A wider access asked for through Kortix that nobody confirmed on the machine. */
+  ACCESS_UNCONFIRMED: -32014,
+} as const;
+
+export type TunnelErrorCodeValue = (typeof TunnelErrorCode)[keyof typeof TunnelErrorCode];
+
+export type TunnelCapability = 'filesystem' | 'shell' | 'desktop';
+
+export const TunnelMethods = {
+  'fs.read': 'filesystem',
+  'fs.write': 'filesystem',
+  'fs.list': 'filesystem',
+  'fs.stat': 'filesystem',
+  'fs.delete': 'filesystem',
+  'shell.exec': 'shell',
+  'desktop.cua.ensure': 'desktop',
+  'desktop.cua.start_daemon': 'desktop',
+  'desktop.cua.status': 'desktop',
+  'desktop.cua.version': 'desktop',
+  'desktop.cua.list_tools': 'desktop',
+  'desktop.cua.describe': 'desktop',
+  'desktop.cua.call': 'desktop',
+  'tunnel.ping': null,
+  'tunnel.pong': null,
+  'tunnel.permission.revoked': null,
+  'tunnel.permissions.sync': null,
+  'tunnel.token.rotated': null,
+  /** The owner's access change, relayed by Kortix (owner-only route). Never a capability. */
+  'tunnel.access.set': null,
+} as const;
+
+export type TunnelMethod = keyof typeof TunnelMethods;
+
+export interface PendingRPC {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+  method: string;
+  tunnelId: string;
+  startedAt: number;
+}
+
+export interface SignedJsonRpcRequest extends JsonRpcRequest {
+  _sig: string;
+  _nonce: number;
+}
+
+export interface SignedJsonRpcNotification extends JsonRpcNotification {
+  _sig: string;
+  _nonce: number;
+}
+
+export interface TunnelRpcParams {
+  capability: TunnelCapability;
+  operation: string;
+  args: Record<string, unknown>;
+  permissionId?: string;
+}
+
+export interface RelayRpcOptions {
+  timeoutMs?: number;
+}
+
+/** Public agent info — does NOT expose signing key. */
+export interface AgentInfo {
+  tunnelId: string;
+  connectedAt: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TunnelRelayEvents {
+  'agent:connect': { tunnelId: string; metadata?: Record<string, unknown> };
+  'agent:disconnect': { tunnelId: string; metadata?: Record<string, unknown> };
+  'agent:timeout': { tunnelId: string };
+  'rpc:request': { tunnelId: string; method: string; requestId: string };
+  'rpc:response': {
+    tunnelId: string;
+    method: string;
+    requestId: string;
+    durationMs: number;
+  };
+  'rpc:error': {
+    tunnelId: string;
+    method: string;
+    requestId: string;
+    error: Error;
+  };
+  'connection:replaced': { tunnelId: string };
+  'message:pong': { tunnelId: string; params?: Record<string, unknown> };
+  'message:raw': { tunnelId: string; message: unknown };
+}
+
+export interface TunnelRelayConfig {
+  rpcTimeoutMs?: number;
+  maxWsMessageSize?: number;
+}
+
+export interface HeartbeatConfig {
+  intervalMs?: number;
+  maxMissed?: number;
+}
+
+/** Auth handshake message sent by agent as first WS message. */
+export interface TunnelAuthMessage {
+  type: 'auth';
+  token: string;
+  /** RPC capability handlers registered in this exact agent process. */
+  capabilities?: TunnelCapability[];
+  agentVersion?: string;
+  /**
+   * True from agents that report their access mode (`tunnel.access.state`).
+   * Lets the API drop a mode stored by an earlier agent when an older one
+   * that enforces nothing connects with the same credential.
+   */
+  reportsAccess?: boolean;
+  /** True from agents that serve `tunnel.access.set` (the owner's change, relayed). */
+  controlsAccess?: boolean;
+}
+
+/** Result returned by onAuthenticate hook on success. */
+export interface AuthResult {
+  signingKey: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TunnelServerConfig {
+  port?: number;
+  relay?: TunnelRelayConfig;
+  heartbeat?: HeartbeatConfig;
+  /**
+   * Called when an agent sends its auth handshake.
+   * Return { signingKey, metadata } to accept, or null to reject.
+   * If not provided, all connections are rejected.
+   */
+  onAuthenticate?: (
+    tunnelId: string,
+    token: string,
+    auth: TunnelAuthMessage,
+  ) => Promise<AuthResult | null>;
+  /**
+   * Called before relaying an RPC to the agent.
+   * Return false to deny. If not provided, all RPCs are allowed.
+   */
+  onAuthorizeRPC?: (
+    tunnelId: string,
+    method: string,
+    params: Record<string, unknown>,
+  ) => Promise<boolean>;
+  /**
+   * Called before handling HTTP requests to relay routes (/connections, /rpc).
+   * Return false to deny. If not provided, every request is denied (403).
+   */
+  onAuthorizeHTTP?: (req: Request) => Promise<boolean>;
+}

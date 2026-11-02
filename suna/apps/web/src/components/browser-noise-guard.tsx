@@ -1,0 +1,41 @@
+'use client';
+
+import { shouldIgnoreBrowserRuntimeNoise } from '@kortix/ui/internal/lib/browser-error-noise';
+import { useEffect } from 'react';
+
+export function BrowserNoiseGuard() {
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      if (
+        !shouldIgnoreBrowserRuntimeNoise({
+          message: event.message,
+          filename: event.filename,
+          error: event.error,
+        })
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopImmediatePropagation?.();
+    };
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      if (!shouldIgnoreBrowserRuntimeNoise({ reason: event.reason })) {
+        return;
+      }
+
+      event.preventDefault();
+    };
+
+    window.addEventListener('error', handleError);
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+
+    return () => {
+      window.removeEventListener('error', handleError);
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+    };
+  }, []);
+
+  return null;
+}

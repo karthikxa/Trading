@@ -1,0 +1,353 @@
+import { describe, expect, test, beforeAll, afterAll } from 'bun:test';
+import { eq, sql } from 'drizzle-orm';
+import { accountMembers, accounts, projectMembers, projects } from '@kortix/db';
+import { insertIntoView } from './helpers/compat-views';
+import { createLocalGitUpstream, type LocalGitUpstream } from './helpers/local-git-upstream';
+
+const { db } = await import('../shared/db');
+const { app } = await import('../index');
+const { createAccountToken } = await import('../repositories/account-tokens');
+const { PROJECT_ACTIONS } = await import('../iam');
+
+// Every capability checkbox must be authoritative: unchecking a leaf must DENY
+// its endpoint. These endpoints previously gated on a coarse floor only (or an
+// agent-scope check that is a no-op for humans), so unchecking the leaf did
+// nothing. This suite proves each newly-added leaf gate fires, using the
+// agent-grant fold: a scoped agent token restricts the launching user to the
+// leaves in its kortix_permissions grant (project.read/project.write are exempt — see
+// AGENT_GRANT_EXEMPT_ACTIONS — so the coarse floor always passes and only the
+// specific leaf gate is under test).
+const ACCOUNT = crypto.randomUUID();
+const PROJECT = crypto.randomUUID();
+const MEMBER = crypto.randomUUID();
+const MANAGER = crypto.randomUUID();
+
+const minted: string[] = [];
+let upstream: LocalGitUpstream;
+
+beforeAll(async () => {
+  upstream = createLocalGitUpstream('write-leaf-gates');
+  await db.execute(sql`alter table kortix.account_tokens add column if not exists agent_grant jsonb`);
+  await db.execute(sql`alter table kortix.account_tokens add column if not exists session_id text`);
+  await db.execute(sql`alter table kortix.account_tokens add column if not exists service_account_id uuid`);
+
+  await db.insert(accounts).values({ accountId: ACCOUNT, name: 'write-leaf-gate-test' });
+  await db.insert(projects).values({
+    projectId: PROJECT,
+    accountId: ACCOUNT,
+    name: 'write-leaf-gate-test-project',
+    repoUrl: upstream.repoUrl,
+    // Flag-gated routes in CASES (channels/email/*, channels/teams/*) reject
+    // with 403 `feature_disabled` when off. Turn them on so this suite measures
+    // the LEAF gate, not the flag.
+    metadata: { experimental: { teams: true } },
+  });
+  await insertIntoView(db, accountMembers, [
+    { userId: MEMBER, accountId: ACCOUNT, accountRole: 'member', isSuperAdmin: false },
+    { userId: MANAGER, accountId: ACCOUNT, accountRole: 'member', isSuperAdmin: false },
+  ]);
+  await insertIntoView(db, projectMembers, [
+    { accountId: ACCOUNT, projectId: PROJECT, userId: MEMBER, projectRole: 'member' },
+    { accountId: ACCOUNT, projectId: PROJECT, userId: MANAGER, projectRole: 'manager' },
+  ]);
+});
+
+afterAll(async () => {
+  for (const tokenId of minted) {
+    await db.execute(sql`delete from kortix.account_tokens where token_id = ${tokenId}`);
+  }
+  await db.delete(projects).where(eq(projects.accountId, ACCOUNT));
+  await db.delete(accounts).where(eq(accounts.accountId, ACCOUNT));
+  upstream.remove();
+});
+
+async function mint(userId: string, permissions: string[] | null): Promise<string> {
+  const t = await createAccountToken({
+    accountId: ACCOUNT,
+    userId,
+    projectId: PROJECT,
+    name: 'write-leaf-gate-test',
+    agentGrant: (permissions ? { agent: 'scoped-bot', permissions, connectors: [] } : null) as any,
+  });
+  minted.push(t.tokenId);
+  return t.secretKey;
+}
+
+function req(method: string, path: string, secret: string, body?: unknown) {
+  return app.request(path, {
+    method,
+    headers: {
+      Authorization: `Bearer ${secret}`,
+      ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+}
+
+// An IAM denial (403) from either loadProjectForUser (floor) or
+// assertProjectCapability (leaf). Both phrase it distinctively; a non-IAM 403
+// (e.g. the "email is experimental" gate) matches none of these, so the ALLOW
+// cases can still 403 for an unrelated reason without being counted as a leaf
+// denial.
+async function iamDenied(res: Response): Promise<boolean> {
+  if (res.status !== 403) return false;
+  const text = JSON.stringify(await res.json().catch(() => ({})));
+  return /permission|do not have access|doesn't let you|is not granted/i.test(text);
+}
+
+interface WCase {
+  name: string;
+  leaf: string;
+  method: string;
+  path: () => string;
+  body?: unknown;
+  // 'member' = the floor role holds this leaf (so a plain member passes);
+  // 'manager' = manager-tier (a plain member is denied, a manager passes).
+  tier: 'member' | 'manager';
+  // kortix_permissions grants for the agent-grant fold. deny = a grant that should be
+  // rejected by the leaf gate; allow = the exact grant that should pass it.
+  denyGrant: string[];
+  allowGrant: string[];
+}
+
+const A = PROJECT_ACTIONS;
+const sid = () => crypto.randomUUID();
+
+const CASES: WCase[] = [
+  // ── Session lifecycle ────────────────────────────────────────────────────
+  {
+    name: 'session start (floor session.start)',
+    leaf: A.PROJECT_SESSION_START, method: 'POST',
+    path: () => `/v1/projects/${PROJECT}/sessions/${sid()}/start`,
+    tier: 'member', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_SESSION_START],
+  },
+  {
+    name: 'session stop (leaf session.stop)',
+    leaf: A.PROJECT_SESSION_STOP, method: 'POST',
+    path: () => `/v1/projects/${PROJECT}/sessions/${sid()}/stop`,
+    tier: 'member',
+    // floor is session.start, so the deny grant must hold start (to reach the
+    // stop assert) but not stop.
+    denyGrant: [A.PROJECT_SESSION_START], allowGrant: [A.PROJECT_SESSION_START, A.PROJECT_SESSION_STOP],
+  },
+  {
+    name: 'session model change (leaf session.stop)',
+    leaf: A.PROJECT_SESSION_STOP, method: 'PUT',
+    path: () => `/v1/projects/${PROJECT}/sessions/${sid()}/model`,
+    body: { opencode_model: 'openai/gpt-5' },
+    tier: 'member',
+    // A live model change restarts opencode, so the scoped token must hold the
+    // same destructive capability as the stop route.
+    denyGrant: [A.PROJECT_SESSION_START], allowGrant: [A.PROJECT_SESSION_START, A.PROJECT_SESSION_STOP],
+  },
+  {
+    name: 'session scope replacement (leaf session.stop)',
+    leaf: A.PROJECT_SESSION_STOP, method: 'PUT',
+    path: () => `/v1/projects/${PROJECT}/sessions/${sid()}/scope`,
+    body: { connector_bindings: {} },
+    tier: 'member',
+    denyGrant: [A.PROJECT_SESSION_START],
+    allowGrant: [A.PROJECT_SESSION_START, A.PROJECT_SESSION_STOP],
+  },
+  // ── Review ───────────────────────────────────────────────────────────────
+  {
+    name: 'CR request-changes (review.act, not gitops.push)',
+    leaf: A.PROJECT_REVIEW_ACT, method: 'POST',
+    path: () => `/v1/projects/${PROJECT}/change-requests/${sid()}/request-changes`, body: {},
+    tier: 'manager',
+    // deny with gitops.push (the OLD leaf) to prove the gate is now review.act.
+    denyGrant: [A.PROJECT_GITOPS_PUSH], allowGrant: [A.PROJECT_REVIEW_ACT],
+  },
+  {
+    name: 'review item submit (review.submit)',
+    leaf: A.PROJECT_REVIEW_SUBMIT, method: 'POST',
+    path: () => `/v1/projects/${PROJECT}/review/items`, body: {},
+    tier: 'member', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_REVIEW_SUBMIT],
+  },
+  // ── Triggers ─────────────────────────────────────────────────────────────
+  {
+    // Floor was 'manage' (project.write) — which the floor `member` role lacks
+    // though it HOLDS trigger.fire, so a plain member could never fire. Floor is
+    // now 'read', so the trigger.fire leaf is the gate and member can fire.
+    name: 'trigger fire (trigger.fire — member floor role must be able to fire)',
+    leaf: A.PROJECT_TRIGGER_FIRE, method: 'POST',
+    path: () => `/v1/projects/${PROJECT}/triggers/some-slug/fire`, body: {},
+    tier: 'member', denyGrant: [A.PROJECT_SESSION_START], allowGrant: [A.PROJECT_TRIGGER_FIRE],
+  },
+  // ── Connectors (write) ───────────────────────────────────────────────────
+  {
+    name: 'email connect (connector.write)',
+    leaf: A.PROJECT_CONNECTOR_WRITE, method: 'POST',
+    path: () => `/v1/projects/${PROJECT}/channels/email/connect`, body: {},
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_CONNECTOR_WRITE],
+  },
+  {
+    name: 'email installation PATCH (connector.write)',
+    leaf: A.PROJECT_CONNECTOR_WRITE, method: 'PATCH',
+    path: () => `/v1/projects/${PROJECT}/channels/email/installation`, body: {},
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_CONNECTOR_WRITE],
+  },
+  {
+    name: 'email installation DELETE (connector.write)',
+    leaf: A.PROJECT_CONNECTOR_WRITE, method: 'DELETE',
+    path: () => `/v1/projects/${PROJECT}/channels/email/installation`,
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_CONNECTOR_WRITE],
+  },
+  {
+    // Teams disconnect — twin of email installation DELETE; no feature-flag
+    // pre-gate, so the connector-write assert is directly exercised.
+    name: 'teams installation DELETE (connector.write)',
+    leaf: A.PROJECT_CONNECTOR_WRITE, method: 'DELETE',
+    path: () => `/v1/projects/${PROJECT}/channels/teams/installation`,
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_CONNECTOR_WRITE],
+  },
+  {
+    // Teams connect — the capability assert runs BEFORE the per-project `teams`
+    // feature check, so the 403 fires whether or not the project enabled Teams.
+    // (While the gate was an operator env var this case was untestable here.)
+    name: 'teams connect (connector.write)',
+    leaf: A.PROJECT_CONNECTOR_WRITE, method: 'POST',
+    path: () => `/v1/projects/${PROJECT}/channels/teams/connect`, body: {},
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_CONNECTOR_WRITE],
+  },
+  {
+    // Binding a Slack thread wires inbound channel→session routing — a
+    // connector-write action; empty body reaches the gate before validation.
+    name: 'slack bind-thread (connector.write)',
+    leaf: A.PROJECT_CONNECTOR_WRITE, method: 'POST',
+    path: () => `/v1/projects/${PROJECT}/channels/slack/bind-thread`, body: {},
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_CONNECTOR_WRITE],
+  },
+  {
+    name: 'channel binding PATCH (connector.write)',
+    leaf: A.PROJECT_CONNECTOR_WRITE, method: 'PATCH',
+    path: () => `/v1/projects/${PROJECT}/channels/bindings/${sid()}`, body: {},
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_CONNECTOR_WRITE],
+  },
+  {
+    name: 'connect-requests (connector.write)',
+    leaf: A.PROJECT_CONNECTOR_WRITE, method: 'POST',
+    path: () => `/v1/projects/${PROJECT}/connect-requests`, body: {},
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_CONNECTOR_WRITE],
+  },
+  // ── Connectors (read) ────────────────────────────────────────────────────
+  {
+    name: 'channel bindings list (connector.read)',
+    leaf: A.PROJECT_CONNECTOR_READ, method: 'GET',
+    path: () => `/v1/projects/${PROJECT}/channels/bindings`,
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_CONNECTOR_READ],
+  },
+  // ── Models, default agent, settings (write) ─────────────────────────────
+  {
+    // Strict body (ModelDefaultBody) is validated at the OpenAPI layer BEFORE the
+    // handler, so send a schema-valid body — otherwise a 400 pre-empts the gate.
+    name: 'model-defaults PUT (model.write)',
+    leaf: A.PROJECT_MODEL_WRITE, method: 'PUT',
+    path: () => `/v1/projects/${PROJECT}/model-defaults`, body: { scope: 'project', model: 'openai/gpt-4o' },
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_MODEL_WRITE],
+  },
+  {
+    name: 'model-defaults DELETE (model.write)',
+    leaf: A.PROJECT_MODEL_WRITE, method: 'DELETE',
+    path: () => `/v1/projects/${PROJECT}/model-defaults?scope=project`,
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_MODEL_WRITE],
+  },
+  {
+    name: 'default-agent PUT (agent.write)',
+    leaf: A.PROJECT_AGENT_WRITE, method: 'PUT',
+    path: () => `/v1/projects/${PROJECT}/default-agent`, body: { agent: 'support' },
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_AGENT_WRITE],
+  },
+  {
+    name: 'feature-flag toggle (settings.write)',
+    leaf: A.PROJECT_SETTINGS_WRITE, method: 'PATCH',
+    path: () => `/v1/projects/${PROJECT}/features`, body: {},
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_SETTINGS_WRITE],
+  },
+  {
+    // The deprecated alias published SDKs still call must gate identically.
+    name: 'feature-flag toggle via the /experimental alias (settings.write)',
+    leaf: A.PROJECT_SETTINGS_WRITE, method: 'PATCH',
+    path: () => `/v1/projects/${PROJECT}/experimental`, body: {},
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_SETTINGS_WRITE],
+  },
+  // The provider pin is a session-principal refusal, not a leaf gate — it has
+  // its own block below ("the provider pin is a person's action").
+  // ── Agent scope (agent.write) ────────────────────────────────────────────
+  {
+    name: 'agent scope PUT (agent.write)',
+    leaf: A.PROJECT_AGENT_WRITE, method: 'PUT',
+    path: () => `/v1/projects/${PROJECT}/agents/scoped-bot/scope`, body: {},
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_AGENT_WRITE],
+  },
+  // ── Secrets (write) ──────────────────────────────────────────────────────
+  {
+    name: 'secret-requests (secret.write)',
+    leaf: A.PROJECT_SECRET_WRITE, method: 'POST',
+    path: () => `/v1/projects/${PROJECT}/secret-requests`, body: {},
+    tier: 'manager', denyGrant: [A.PROJECT_TRIGGER_FIRE], allowGrant: [A.PROJECT_SECRET_WRITE],
+  },
+];
+
+describe('HTTP enforcement — project write/lifecycle leaf gates (every checkbox authoritative)', () => {
+  // The per-project sandbox-provider pin routes EVERY new session in the
+  // project, so a session principal may never flip it — whatever grant it
+  // holds (KRTX-1681: a security-audit agent pinned its whole project to
+  // daytona). Humans keep the settings.write leaf: a member PAT is denied by
+  // the leaf, a manager PAT routes the write.
+  describe('the provider pin is a person\'s action (sandbox-provider PATCH)', () => {
+    test('a session-bound agent token → refused outright (agent_session_forbidden), grant irrelevant', async () => {
+      const granted = await mint(MANAGER, [A.PROJECT_SETTINGS_WRITE]);
+      const res = await req('PATCH', `/v1/projects/${PROJECT}/sandbox-provider`, granted, {});
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'agent_session_forbidden' });
+    });
+
+    test('plain MEMBER (lacks the manager-tier settings.write leaf) → denied', async () => {
+      const secret = await mint(MEMBER, null);
+      const res = await req('PATCH', `/v1/projects/${PROJECT}/sandbox-provider`, secret, {});
+      expect(await iamDenied(res)).toBe(true);
+    });
+
+    test('plain MANAGER (holds the leaf) → NOT denied', async () => {
+      const secret = await mint(MANAGER, null);
+      const res = await req('PATCH', `/v1/projects/${PROJECT}/sandbox-provider`, secret, {});
+      expect(await iamDenied(res)).toBe(false);
+    });
+  });
+
+  for (const c of CASES) {
+    describe(c.name, () => {
+      test('scoped agent with an UNRELATED grant → denied by the leaf gate', async () => {
+        const secret = await mint(MANAGER, c.denyGrant);
+        const res = await req(c.method, c.path(), secret, c.body);
+        expect(await iamDenied(res)).toBe(true);
+      });
+
+      test('scoped agent granted the exact leaf → NOT denied by the leaf gate', async () => {
+        const secret = await mint(MANAGER, c.allowGrant);
+        const res = await req(c.method, c.path(), secret, c.body);
+        expect(await iamDenied(res)).toBe(false);
+      });
+
+      if (c.tier === 'manager') {
+        test('plain MEMBER (lacks the manager-tier leaf) → denied', async () => {
+          const secret = await mint(MEMBER, null);
+          const res = await req(c.method, c.path(), secret, c.body);
+          expect(await iamDenied(res)).toBe(true);
+        });
+        test('plain MANAGER (holds the leaf) → NOT denied', async () => {
+          const secret = await mint(MANAGER, null);
+          const res = await req(c.method, c.path(), secret, c.body);
+          expect(await iamDenied(res)).toBe(false);
+        });
+      } else {
+        test('plain MEMBER (floor role holds the leaf) → NOT denied', async () => {
+          const secret = await mint(MEMBER, null);
+          const res = await req(c.method, c.path(), secret, c.body);
+          expect(await iamDenied(res)).toBe(false);
+        });
+      }
+    });
+  }
+});

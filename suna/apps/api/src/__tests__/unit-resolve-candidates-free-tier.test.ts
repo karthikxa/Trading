@@ -1,0 +1,330 @@
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+
+// Existing fixtures have no project inference restrictions.
+mock.module('../repositories/project-model-access', () => ({
+  getProjectModelAccess: async () => ({ disabledProviders: [], disabledModels: [] }),
+  getProjectGatewayResolution: async () => ({ access: { disabledProviders: [], disabledModels: [] }, pooledEnabled: false }),
+}));
+mock.module('../feature-flags/for-project', () => ({ projectFeatureFlagEnabled: async () => false }));
+import { tierGrantsAllModels } from '../billing/services/tiers';
+
+let billingEnabled = true;
+let accountTier = 'free';
+let accountTierCalls = 0;
+// Defaults true here (cloud-shaped fixture): the real gate is covered by the
+// managed-provider-disabled test suite (llm-gateway/models/managed-provider-disabled.test.ts),
+// which imports the REAL (unmocked) descriptors.ts against the flag OFF. This
+// file mocks descriptors.ts entirely (below), so this toggle only exercises
+// resolveCandidates' OWN inline gate.
+let managedProviderEnabled = true;
+
+mock.module('../config', () => ({
+  SANDBOX_VERSION: 'test',
+  PLATFORM_FEE_MARKUP: 0.1,
+  config: new Proxy(
+    {},
+    {
+      get: (target: Record<PropertyKey, unknown>, key) => {
+        if (Object.hasOwn(target, key)) return target[key];
+        if (key === 'KORTIX_BILLING_INTERNAL_ENABLED') return billingEnabled;
+        if (key === 'KORTIX_MANAGED_PROVIDER_ENABLED') return managedProviderEnabled;
+        if (key === 'TUNNEL_ENABLED') return false;
+        if (key === 'LLM_GATEWAY_BYOK_FALLBACK_MODEL') return 'glm-5.3-flash';
+        if (key === 'LLM_GATEWAY_DEFAULT_MODEL') return 'codex/gpt-5.6-sol';
+        if (key === 'LLM_GATEWAY_VISION_MODEL') return undefined;
+        if (key === 'LLM_GATEWAY_FALLBACK_POLICIES') {
+          return [
+            {
+              id: 'test-platform-default',
+              models: ['codex/gpt-5.6-sol'],
+              fallbackModels: ['glm-5.3-flash'],
+              fallbackOn: 'any-error',
+            },
+          ];
+        }
+        return target[key];
+      },
+    },
+  ),
+  getToolCost: () => 0,
+}));
+
+mock.module('../billing/services/entitlements', () => ({
+  getAccountTier: async () => {
+    accountTierCalls += 1;
+    return accountTier;
+  },
+  // resolveCandidates now calls the SAME cached tier resolver the rest of the
+  // gateway uses (entitlements.getCachedAccountTier) instead of keeping its own
+  // duplicate cache — see unit-account-tier-cache-unified.test.ts for the
+  // caching/invalidation behavior itself. This mock intentionally does NOT
+  // cache: every call increments accountTierCalls, which is what every
+  // existing assertion below counts on.
+  getCachedAccountTier: async () => {
+    accountTierCalls += 1;
+    return accountTier;
+  },
+  // The managed-models entitlement resolver (trial + operator override aware
+  // in production; tier-derived here). Deliberately does NOT bump
+  // accountTierCalls: in production it reads the same cached tier snapshot as
+  // getCachedAccountTier — it is not a second tier resolution.
+  accountMayUseManagedModels: async () =>
+    billingEnabled ? tierGrantsAllModels(accountTier) : true,
+}));
+
+mock.module('../projects/secrets', () => ({
+  decryptProjectSecret: (_projectId: string, value: string) => value,
+  encryptProjectSecret: (_projectId: string, value: string) => value,
+  getProjectSecretValue: async () => 'user-key',
+  getProjectSecretValueForConsumer: async () => 'user-key',
+  resolveProjectSecretsForConsumer: async (input: { name: string }) => [
+    { identifier: input.name, value: 'user-key' },
+  ],
+  listProjectSecrets: async () => ({}),
+  listProjectSecretsForUser: async () => ({}),
+  listProjectSecretsSnapshot: async () => ({
+    env: {},
+    names: [],
+    revision: 'empty',
+  }),
+  listProjectSecretNamesForConsumer: async () => [],
+  listProjectSecretsSnapshotForUser: async () => ({
+    env: {},
+    names: [],
+    revision: 'empty',
+  }),
+  projectSecretsRevision: () => 'empty',
+}));
+
+mock.module('../llm-gateway/credentials/codex', () => ({
+  CodexRefreshError: class CodexRefreshError extends Error {},
+  resolveCodexCredential: async () => ({
+    access: 'codex-token',
+    accountId: 'chatgpt-account',
+  }),
+  resolveCodexAccountCredential: async () => null,
+}));
+
+// One managed transport is always reachable in this file, so the two entries
+// below are derived from the same stub — `managedTransportAvailable` is
+// `managedCandidates(...).length > 0` in the real module and the mock must not
+// be able to contradict itself.
+const mockManagedCandidates = (managed: { id: string }) => [
+  {
+    provider: 'platinum',
+    kind: 'openai-compat',
+    baseUrl: 'https://platinum.example/v1/inference',
+    apiKey: 'managed-key',
+    billingMode: 'credits',
+    markup: 1.2,
+    resolvedModel: managed.id,
+  },
+];
+
+mock.module('../llm-gateway/resolution/descriptors', () => ({
+  codexDescriptor: (_credential: unknown, model: string) => ({
+    provider: 'openai-codex',
+    kind: 'openai-responses',
+    baseUrl: 'https://chatgpt.com/backend-api/codex',
+    apiKey: 'codex-token',
+    billingMode: 'none',
+    markup: 0,
+    resolvedModel: model.replace(/^codex\//, ''),
+  }),
+  livePricing: () => undefined,
+  managedCandidates: mockManagedCandidates,
+  // `served-managed-models.ts` imports this to build the served lineup, and
+  // `catalog-models.ts` (which resolve-candidates.ts imports) imports that — so
+  // omitting it makes the whole file fail to link with
+  // `SyntaxError: Export named 'managedTransportAvailable' not found`.
+  managedTransportAvailable: (managed: { id: string }) =>
+    mockManagedCandidates(managed).length > 0,
+  // resolve-candidates.ts's Bedrock BYOK branch imports this unconditionally
+  // (only CALLS it for kind:'bedrock' candidates, which this file never
+  // exercises) — stub it so the static import binding resolves against this
+  // mock.
+  bedrockByokBaseUrl: (region: string | null | undefined) =>
+    `https://bedrock-runtime.${region?.trim() || 'us-east-1'}.amazonaws.com`,
+  normalizeBedrockInferenceProfileRegion: (model: string) => model,
+  stripBedrockInferenceProfilePrefix: (model: string) => model,
+}));
+
+const { resolveCandidates } = await import('../llm-gateway/resolution/resolve-candidates');
+const { TEST_MANAGED_LINEUP: LINEUP } = await import('./fixtures/managed-lineup');
+// The lineup Platinum Inference would list.
+(await import('../llm-gateway/models/managed-models')).__setManagedLineupForTest(LINEUP);
+
+function principal(accountId: string) {
+  return {
+    userId: `user-${accountId}`,
+    accountId,
+    projectId: `project-${accountId}`,
+  };
+}
+
+describe('resolveCandidates free-tier premium gate', () => {
+  afterAll(() => {
+    mock.restore();
+  });
+
+  beforeEach(() => {
+    billingEnabled = true;
+    accountTier = 'free';
+    accountTierCalls = 0;
+    managedProviderEnabled = true;
+  });
+
+  test('blocks every managed model for free accounts, the platform default included', async () => {
+    accountTier = 'free';
+    for (const model of ['glm-5.3-flash', 'deepseek-v4.1-flash', 'kortix/deepseek-v4.1-flash']) {
+      await expect(resolveCandidates(principal('free-managed'), model)).rejects.toMatchObject({
+        name: 'GatewayResolutionError',
+        code: 'plan_upgrade_required',
+      });
+    }
+  });
+
+  test('blocks managed premium candidates for accounts with no plan', async () => {
+    accountTier = 'none';
+    await expect(
+      resolveCandidates(principal('none-managed'), 'glm-5.3-flash'),
+    ).rejects.toMatchObject({
+      name: 'GatewayResolutionError',
+      code: 'plan_upgrade_required',
+    });
+    expect(accountTierCalls).toBe(1);
+  });
+
+  test('allows managed premium candidates for Team accounts', async () => {
+    accountTier = 'credits';
+    const candidates = await resolveCandidates(principal('team-managed'), 'glm-5.3-flash');
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.billingMode).toBe('credits');
+    // 0, not 1: the pass path answers via the managed-models entitlement
+    // resolver (shared tier snapshot) and never resolves the tier STRING —
+    // that fetch only happens on the refusal path to word the error.
+    expect(accountTierCalls).toBe(0);
+  });
+
+  test('rejects stale raw auto for paid accounts', async () => {
+    accountTier = 'credits';
+    await expect(resolveCandidates(principal('team-auto'), 'auto')).rejects.toMatchObject({
+      name: 'GatewayResolutionError',
+      code: 'model_not_found',
+    });
+    expect(accountTierCalls).toBe(0);
+  });
+
+  test('rejects stale kortix/auto for free accounts', async () => {
+    accountTier = 'free';
+    await expect(
+      resolveCandidates({ ...principal('free-auto'), freeModelsOnly: true }, 'kortix/auto'),
+    ).rejects.toMatchObject({
+      name: 'GatewayResolutionError',
+      code: 'model_not_found',
+    });
+    expect(accountTierCalls).toBe(0);
+  });
+
+  test('does not charge BYOK or add a managed fallback for free accounts', async () => {
+    accountTier = 'free';
+    const candidates = await resolveCandidates(principal('free-byok'), 'openai/gpt-4.1');
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.billingMode).toBe('none');
+    expect(candidates[0]?.markup).toBe(0);
+    expect(candidates[0]?.apiKey).toBe('user-key');
+    expect(accountTierCalls).toBe(0);
+  });
+
+  test('does not charge BYOK or add a managed fallback for Team accounts', async () => {
+    accountTier = 'credits';
+    const candidates = await resolveCandidates(principal('team-byok'), 'openai/gpt-4.1');
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.billingMode).toBe('none');
+    expect(candidates[0]?.markup).toBe(0);
+    expect(accountTierCalls).toBe(0);
+  });
+
+  test('does not tier-gate ChatGPT subscription candidates', async () => {
+    accountTier = 'free';
+    const candidates = await resolveCandidates(principal('free-codex'), 'codex/gpt-5');
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.billingMode).toBe('none');
+    expect(accountTierCalls).toBe(0);
+  });
+
+  test('keeps managed candidates available when internal billing is disabled AND the managed provider is explicitly on', async () => {
+    billingEnabled = false;
+    accountTier = 'free';
+    managedProviderEnabled = true;
+    const candidates = await resolveCandidates(principal('self-host-managed'), 'glm-5.3-flash');
+    expect(candidates).toHaveLength(1);
+    expect(accountTierCalls).toBe(0);
+  });
+
+  test('CLOUD-ONLY gate: blocks an explicitly-named managed model when KORTIX_MANAGED_PROVIDER_ENABLED is off, even for a paid tier', async () => {
+    managedProviderEnabled = false;
+    accountTier = 'credits';
+    await expect(
+      resolveCandidates(principal('self-host-flag-off'), 'glm-5.3-flash'),
+    ).rejects.toMatchObject({
+      name: 'GatewayResolutionError',
+      code: 'model_disabled_on_deployment',
+    });
+  });
+
+  test('CLOUD-ONLY gate: a self-host BYOK request gets no managed fallback candidate appended when the flag is off', async () => {
+    managedProviderEnabled = false;
+    accountTier = 'credits';
+    const candidates = await resolveCandidates(
+      principal('self-host-byok-flag-off'),
+      'openai/gpt-4.1',
+    );
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.billingMode).toBe('none');
+    expect(candidates[0]?.markup).toBe(0);
+  });
+});
+
+// Every managed id the catalog serves and retired ids sessions still carry,
+// bare and with the opencode `kortix/` prefix: a new managed model or a
+// retired id cannot open a path for Free (2026-10-19, see the learnings ledger).
+const RETIRED_SAMPLE = ['kimi-k3', 'morph-dsv41flash', 'deepseek-v4-flash-0731'];
+
+describe('no managed id or alias reaches a Free account', () => {
+  const ids = [...LINEUP.map((m) => m.id), ...RETIRED_SAMPLE];
+  const refs = ids.flatMap((id) => [id, `kortix/${id}`]);
+
+  beforeEach(() => {
+    billingEnabled = true;
+    managedProviderEnabled = true;
+  });
+
+  test.each(['free', 'none'])('the %s plan is refused every managed id and alias', async (tier) => {
+    accountTier = tier;
+    expect(refs.length).toBeGreaterThan(2);
+    for (const ref of refs) {
+      const outcome = await resolveCandidates(principal(`sweep-${tier}`), ref).then(
+        () => 'served',
+        (err: { code?: string }) => err.code,
+      );
+      // `model_not_found` is fine (an alias this deployment does not serve);
+      // `served` is the bug.
+      expect({ ref, outcome }).not.toEqual({ ref, outcome: 'served' });
+    }
+  });
+
+  test('a principal flagged freeModelsOnly is refused every managed id and alias', async () => {
+    accountTier = 'credits';
+    for (const ref of refs) {
+      await expect(resolveCandidates({ ...principal('sweep-flag'), freeModelsOnly: true }, ref)).rejects.toBeDefined();
+    }
+  });
+
+  test('control: a paid plan is served the current lineup', async () => {
+    accountTier = 'credits';
+    for (const { id } of LINEUP) {
+      expect((await resolveCandidates(principal('sweep-paid'), id)).length).toBeGreaterThan(0);
+    }
+  });
+});
