@@ -916,18 +916,18 @@ export function AgentsSidebarView({
                               <DropdownMenuContent
                                 align="end"
                                 side="right"
-                                className="w-48 p-1.5 rounded-2xl bg-[#141416] text-zinc-100 border border-zinc-800/90 shadow-2xl font-sans z-50 animate-in fade-in zoom-in-95 duration-100"
+                                className="w-48 p-1.5 rounded-2xl bg-white text-zinc-900 border border-zinc-200/90 shadow-xl font-sans z-50 animate-in fade-in zoom-in-95 duration-100"
                               >
-                                {/* Option 1: Make Admin (Yellow Shield + Text - Exact Image 1) */}
+                                {/* Option 1: Make Admin (Amber Shield + Text) */}
                                 <DropdownMenuItem
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleSetAdmin(bot.id);
                                   }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-800/80 cursor-pointer text-amber-400 transition-colors"
+                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold hover:bg-amber-50 cursor-pointer text-amber-600 transition-colors"
                                 >
-                                  <ShieldCheck className="size-4 text-amber-400 shrink-0" weight="bold" />
-                                  <span className="text-amber-400 font-medium">Make Admin</span>
+                                  <ShieldCheck className="size-4 text-amber-500 shrink-0" weight="bold" />
+                                  <span className="text-amber-600 font-medium">Make Admin</span>
                                 </DropdownMenuItem>
 
                                 {/* Option 2: Edit Identity (Pencil) */}
@@ -936,10 +936,10 @@ export function AgentsSidebarView({
                                     e.stopPropagation();
                                     handleOpenEditDrawer(bot);
                                   }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-normal hover:bg-zinc-800/80 cursor-pointer text-zinc-100 transition-colors"
+                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 cursor-pointer text-zinc-700 transition-colors"
                                 >
-                                  <PencilSimple className="size-4 text-zinc-300 shrink-0" />
-                                  <span className="text-zinc-100">Edit Identity</span>
+                                  <PencilSimple className="size-4 text-zinc-500 shrink-0" />
+                                  <span>Edit Identity</span>
                                 </DropdownMenuItem>
 
                                 {/* Option 3: Pin */}
@@ -948,33 +948,33 @@ export function AgentsSidebarView({
                                     e.stopPropagation();
                                     handleTogglePin(bot.id);
                                   }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-normal hover:bg-zinc-800/80 cursor-pointer text-zinc-100 transition-colors"
+                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 cursor-pointer text-zinc-700 transition-colors"
                                 >
-                                  <PushPin className="size-4 text-zinc-300 shrink-0" />
-                                  <span className="text-zinc-100">{bot.isPinned ? 'Unpin' : 'Pin'}</span>
+                                  <PushPin className="size-4 text-zinc-500 shrink-0" />
+                                  <span>{bot.isPinned ? 'Unpin' : 'Pin'}</span>
                                 </DropdownMenuItem>
 
                                 {/* Option 4: Archive */}
                                 <DropdownMenuItem
                                   onClick={(e) => e.stopPropagation()}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-normal hover:bg-zinc-800/80 cursor-pointer text-zinc-100 transition-colors"
+                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 cursor-pointer text-zinc-700 transition-colors"
                                 >
-                                  <Archive className="size-4 text-zinc-300 shrink-0" />
-                                  <span className="text-zinc-100">Archive</span>
+                                  <Archive className="size-4 text-zinc-500 shrink-0" />
+                                  <span>Archive</span>
                                 </DropdownMenuItem>
 
-                                <DropdownMenuSeparator className="my-1 bg-zinc-800/80" />
+                                <DropdownMenuSeparator className="my-1 bg-zinc-100" />
 
-                                {/* Option 5: Delete (Red - Exact Image 1) */}
+                                {/* Option 5: Delete (Red) */}
                                 <DropdownMenuItem
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleDeleteAgent(bot.id);
                                   }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-red-950/40 text-red-400 cursor-pointer transition-colors"
+                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-red-50 text-red-600 cursor-pointer transition-colors"
                                 >
-                                  <Trash className="size-4 text-red-400 shrink-0" />
-                                  <span className="text-red-400 font-medium">Delete</span>
+                                  <Trash className="size-4 text-red-500 shrink-0" />
+                                  <span className="text-red-600 font-medium">Delete</span>
                                 </DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
