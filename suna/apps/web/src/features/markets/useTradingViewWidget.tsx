@@ -2,34 +2,94 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-// Global queue to stagger widget script loading to prevent TradingView CDN connection resets
-let scriptLoadQueue: (() => void)[] = [];
-let isQueueRunning = false;
+// Preload scripts into browser cache for sub-millisecond execution
+const PRELOAD_SCRIPTS = [
+  'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js',
+  'https://s3.tradingview.com/external-embedding/embed-widget-technical-analysis.js',
+  'https://s3.tradingview.com/external-embedding/embed-widget-financials.js',
+  'https://s3.tradingview.com/external-embedding/embed-widget-timeline.js',
+  'https://s3.tradingview.com/external-embedding/embed-widget-stock-heatmap.js',
+  'https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js',
+];
 
-function processQueue() {
-  if (isQueueRunning || scriptLoadQueue.length === 0) return;
-  isQueueRunning = true;
-  const task = scriptLoadQueue.shift();
-  if (task) {
-    try {
-      task();
-    } catch {
-      // ignore
-    }
-  }
-  setTimeout(() => {
-    isQueueRunning = false;
-    processQueue();
-  }, 180);
-}
-
-function queueWidgetScript(mountFn: () => void) {
-  scriptLoadQueue.push(mountFn);
-  processQueue();
-}
-
-// Suppress known transient errors from external TradingView embed scripts when React re-mounts
 if (typeof window !== 'undefined') {
+  // Preload script links in head
+  PRELOAD_SCRIPTS.forEach((url) => {
+    const existing = document.querySelector(`link[href="${url}"]`);
+    if (!existing) {
+      const link = document.createElement('link');
+      link.rel = 'preload';
+      link.as = 'script';
+      link.href = url;
+      document.head.appendChild(link);
+    }
+  });
+
+  // Inject CSS to eliminate any TradingView watermark, copyright, or redirect links
+  const styleId = 'tradingview-no-redirect-style';
+  if (!document.getElementById(styleId)) {
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `
+      .tradingview-widget-copyright,
+      .tradingview-widget-container__widget + div,
+      [class*="copyright"],
+      a[href*="tradingview.com"] {
+        display: none !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+        height: 0 !important;
+        width: 0 !important;
+        opacity: 0 !important;
+        position: absolute !important;
+        overflow: hidden !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // Intercept any external redirect to TradingView and route back into terminal tab
+  const originalOpen = window.open;
+  window.open = function (url?: string | URL, target?: string, features?: string) {
+    if (typeof url === 'string' && (url.includes('tradingview.com') || url.includes('tradingview-widget.com'))) {
+      // Extract symbol from URL e.g. https://www.tradingview.com/symbols/NASDAQ-AAPL/ or ?symbol=AAPL
+      const symbolMatch = url.match(/\/symbols\/([^/?#]+)/i) || url.match(/[?&]symbol=([^&#]+)/i);
+      if (symbolMatch && symbolMatch[1]) {
+        const extracted = decodeURIComponent(symbolMatch[1]).replace(/-/g, ':');
+        window.dispatchEvent(
+          new CustomEvent('selected-stock-symbol', {
+            detail: { symbol: extracted },
+          }),
+        );
+      }
+      return null; // Block external navigation to tradingview.com
+    }
+    return originalOpen.call(window, url, target, features);
+  };
+
+  // Intercept any click on TradingView anchor tags
+  document.addEventListener(
+    'click',
+    (e) => {
+      const target = (e.target as HTMLElement)?.closest('a');
+      if (target && target.href && (target.href.includes('tradingview.com') || target.href.includes('tradingview-widget.com'))) {
+        e.preventDefault();
+        e.stopPropagation();
+        const symbolMatch = target.href.match(/\/symbols\/([^/?#]+)/i) || target.href.match(/[?&]symbol=([^&#]+)/i);
+        if (symbolMatch && symbolMatch[1]) {
+          const extracted = decodeURIComponent(symbolMatch[1]).replace(/-/g, ':');
+          window.dispatchEvent(
+            new CustomEvent('selected-stock-symbol', {
+              detail: { symbol: extracted },
+            }),
+          );
+        }
+      }
+    },
+    true,
+  );
+
+  // Suppress known transient errors from external TradingView embed scripts
   const suppressTvError = (msg: string) => {
     return (
       msg.includes('querySelector') ||
@@ -59,87 +119,73 @@ if (typeof window !== 'undefined') {
         event.stopImmediatePropagation();
       }
     },
-    true, // capture phase
+    true,
   );
+}
+
+// Global queue to stagger initial script insertions to prevent CDN burst
+let scriptLoadQueue: (() => void)[] = [];
+let isQueueRunning = false;
+
+function processQueue() {
+  if (isQueueRunning || scriptLoadQueue.length === 0) return;
+  isQueueRunning = true;
+  const task = scriptLoadQueue.shift();
+  if (task) {
+    try {
+      task();
+    } catch {
+      // ignore
+    }
+  }
+  setTimeout(() => {
+    isQueueRunning = false;
+    processQueue();
+  }, 50);
+}
+
+function queueWidgetScript(mountFn: () => void) {
+  scriptLoadQueue.push(mountFn);
+  processQueue();
 }
 
 const useTradingViewWidget = (
   scriptUrl: string,
   config: Record<string, unknown>,
-  lazy: boolean = true,
+  _lazy: boolean = false,
 ) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [isVisible, setIsVisible] = useState(!lazy);
   const serializedConfig = JSON.stringify(config);
 
-  // Intersection observer for lazy loading widgets only when approaching viewport
   useEffect(() => {
-    if (!lazy) {
-      setIsVisible(true);
-      return;
-    }
-
-    const el = containerRef.current;
-    if (!el) return;
-
-    if (typeof IntersectionObserver === 'undefined') {
-      setIsVisible(true);
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            setIsVisible(true);
-            observer.disconnect();
-          }
-        });
-      },
-      { rootMargin: '300px' }, // Pre-load 300px before scrolling into view
-    );
-
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [lazy]);
-
-  useEffect(() => {
-    if (!isVisible) return;
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || typeof window === 'undefined') return;
 
     // Check if identical widget is already mounted
     const existingScript = container.querySelector('script');
     if (
       existingScript &&
       existingScript.src === scriptUrl &&
-      existingScript.textContent === serializedConfig
+      (existingScript.textContent === serializedConfig || existingScript.innerHTML === serializedConfig)
     ) {
       return;
     }
 
-    // Queue script insertion to prevent concurrent connection bursts
-    queueWidgetScript(() => {
-      if (!containerRef.current) return;
-      const targetContainer = containerRef.current;
+    container.innerHTML = '';
 
-      // Clear previous widget
-      targetContainer.innerHTML = '';
+    const widgetDiv = document.createElement('div');
+    widgetDiv.className = 'tradingview-widget-container__widget';
+    widgetDiv.style.width = '100%';
+    widgetDiv.style.height = '100%';
+    container.appendChild(widgetDiv);
 
-      const widgetDiv = document.createElement('div');
-      widgetDiv.className = 'tradingview-widget-container__widget';
-      widgetDiv.style.width = '100%';
-      widgetDiv.style.height = '100%';
-      targetContainer.appendChild(widgetDiv);
-
-      const script = document.createElement('script');
-      script.src = scriptUrl;
-      script.async = true;
-      script.type = 'text/javascript';
-      script.innerHTML = serializedConfig;
-      targetContainer.appendChild(script);
-    });
-  }, [isVisible, scriptUrl, serializedConfig]);
+    const script = document.createElement('script');
+    script.src = scriptUrl;
+    script.async = true;
+    script.type = 'text/javascript';
+    script.text = serializedConfig;
+    container.appendChild(script);
+  }, [scriptUrl, serializedConfig]);
 
   return containerRef;
 };

@@ -44,6 +44,7 @@ import {
   NavigationArrowIcon,
   ChartLineUp,
   PushPin,
+  Eye,
   ChatCircleDots,
   Sliders,
   HardDrives,
@@ -129,6 +130,13 @@ export function ProjectSidebar({
     if (isMobile) setOpenMobile(false);
     onOpenSearch?.();
   }, [isMobile, setOpenMobile, onOpenSearch]);
+
+  const handleOpenStockSearch = useCallback(() => {
+    if (isMobile) setOpenMobile(false);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('kortix:open-stock-search'));
+    }
+  }, [isMobile, setOpenMobile]);
 
   useEffect(() => {
     if (channels) return;
@@ -236,7 +244,7 @@ export function ProjectSidebar({
                     {/* Dedicated Search stocks menu item above New session */}
                     <SidebarMenuItem>
                       <SidebarMenuButton
-                        onClick={handleOpenSearch}
+                        onClick={handleOpenStockSearch}
                         className="group/menu-button text-sidebar-foreground relative cursor-pointer"
                       >
                         <span className="shrink-0">
@@ -272,7 +280,7 @@ export function ProjectSidebar({
                     <SidebarMenuItem>
                       <SidebarMenuButton
                         asChild
-                        className="group/menu-button text-sidebar-foreground relative"
+                        className="group/menu-button text-sidebar-foreground relative cursor-pointer"
                       >
                         <Link href={`/projects/${projectId}?tab=overview`}>
                           <span className="shrink-0">
@@ -286,13 +294,27 @@ export function ProjectSidebar({
                     <SidebarMenuItem>
                       <SidebarMenuButton
                         asChild
-                        className="group/menu-button text-sidebar-foreground relative"
+                        className="group/menu-button text-sidebar-foreground relative cursor-pointer"
                       >
                         <Link href={`/projects/${projectId}?tab=watchlist`}>
                           <span className="shrink-0">
                             <PushPin className="size-4" />
                           </span>
                           <span>Watchlist</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        asChild
+                        className="group/menu-button text-sidebar-foreground relative cursor-pointer"
+                      >
+                        <Link href={`/projects/${projectId}?tab=spec`}>
+                          <span className="shrink-0">
+                            <Eye className="size-4" />
+                          </span>
+                          <span>Spec</span>
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>

@@ -505,6 +505,16 @@ const nextConfig = (): NextConfig => ({
         destination: '/projects',
         permanent: false,
       },
+      {
+        source: '/markets',
+        destination: '/projects',
+        permanent: false,
+      },
+      {
+        source: '/:locale/markets',
+        destination: '/:locale/projects',
+        permanent: false,
+      },
       // The paths people type to sign in or up (KRTX-3154). /auth asks for the
       // email first and picks sign-in or sign-up itself.
       {

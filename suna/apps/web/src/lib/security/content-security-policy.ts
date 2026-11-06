@@ -89,7 +89,7 @@ export function enforcedContentSecurityPolicy(): string {
     [
       scriptSourceDirective(),
       frameAncestorsDirective(),
-      "frame-src 'self' https://s3.tradingview.com https://*.tradingview.com https://*.tradingview-widget.com https://tradingview-widget.com https://*.stripe.com blob:",
+      "frame-src 'self' http://localhost:3005 http://127.0.0.1:3005 https://godseyeview.ai https://s3.tradingview.com https://*.tradingview.com https://*.tradingview-widget.com https://tradingview-widget.com https://*.stripe.com blob:",
       "object-src 'none'",
       "base-uri 'self'",
       `report-uri ${CSP_REPORT_PATH}`,
@@ -113,7 +113,7 @@ export function reportOnlyContentSecurityPolicy(): string {
     [
       scriptSourceDirective(),
       frameAncestorsDirective(),
-      "frame-src 'self' https://s3.tradingview.com https://*.tradingview.com https://*.tradingview-widget.com https://tradingview-widget.com https://*.stripe.com blob:",
+      "frame-src 'self' http://localhost:3005 http://127.0.0.1:3005 https://godseyeview.ai https://s3.tradingview.com https://*.tradingview.com https://*.tradingview-widget.com https://tradingview-widget.com https://*.stripe.com blob:",
       "object-src 'none'",
       "base-uri 'self'",
       `report-uri ${CSP_REPORT_PATH}`,

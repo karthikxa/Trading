@@ -19,6 +19,8 @@ __pycache__/
 .agents/
 scratch/
 scripts/push_to_github.py
+.gev-cache/
+.gev-logs/
 
 data/
 *.sqlite

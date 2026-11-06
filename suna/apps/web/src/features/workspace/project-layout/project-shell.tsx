@@ -23,6 +23,7 @@ import { parseSidebarStateCookie } from '@kortix/ui/workspace/layout/sidebar-coo
 import { useDesktopShell } from '@kortix/ui/internal/layout/sidebar-opener';
 import { openCommandPalette } from '@kortix/ui/internal/layout/open-command-palette';
 import { ProjectSidebar } from '@kortix/ui/workspace';
+import { StockTradingModal } from '@/features/trading/StockTradingModal';
 import { WorkspaceSwitcher } from '@/features/workspace/project-sidebar/workspace-switcher';
 import { SettingsPanel } from '@/features/workspace/settings/settings-panel';
 import {
@@ -279,6 +280,8 @@ export function ProjectShell({ projectId, initialSidebarOpen, children }: Projec
           <CommandPaletteBoundary>
             <CommandPalette />
           </CommandPaletteBoundary>
+
+          <StockTradingModal />
 
           <ProjectSheelLayout>{children}</ProjectSheelLayout>
         </div>

@@ -22,48 +22,38 @@ import {
   Menu,
   Bot,
   Network,
-  Flame,
-  SlidersHorizontal,
-  TrendingUp,
-  Newspaper,
 } from 'lucide-react';
 import TickerTape from './TickerTape';
-import MarketSwitcher from './MarketSwitcher';
 import TradingViewWidget from './TradingViewWidget';
-import TvScreener from './TvScreener';
-import TvEconomicCalendar from './TvEconomicCalendar';
-import TvEconomicMap from './TvEconomicMap';
 import WatchlistTable from './WatchlistTable';
 import AgentView from './AgentView';
 import SwarmPanel from './SwarmPanel';
 import SearchCommand, { openSearch } from './SearchCommand';
 import StockSymbolIcon from './StockSymbolIcon';
 import { resolveTradingViewSymbol } from './symbol-resolver';
-import { MARKETS } from './markets';
 import { getStoredWatchlist, type WatchlistEntry } from './watchlist.store';
-import type { MarketId } from './types';
 import { cn } from '@kortix/ui';
 import './terminal.css';
 
 interface TabItem {
-  id: string; // 'overview' | 'watchlist' | 'agent' | 'profile' | 'swarm' | 'stock:AAPL'
-  type: 'overview' | 'watchlist' | 'agent' | 'profile' | 'swarm' | 'stock';
+  id: string; // 'watchlist' | 'agent' | 'profile' | 'swarm' | 'stock:AAPL'
+  type: 'watchlist' | 'agent' | 'profile' | 'swarm' | 'stock';
   symbol?: string;
   name?: string;
 }
 
 const DEFAULT_TABS: TabItem[] = [
-  { id: 'overview', type: 'overview', name: 'Overview' },
+  { id: 'stock:NSE:NIFTY', type: 'stock', symbol: 'NSE:NIFTY', name: 'NIFTY 50' },
+  { id: 'stock:NASDAQ:AAPL', type: 'stock', symbol: 'NASDAQ:AAPL', name: 'Apple' },
+  { id: 'stock:BINANCE:BTCUSDT', type: 'stock', symbol: 'BINANCE:BTCUSDT', name: 'BTC/USDT' },
+  { id: 'stock:TVC:GOLD', type: 'stock', symbol: 'TVC:GOLD', name: 'Gold' },
   { id: 'watchlist', type: 'watchlist', name: 'Watchlist' },
   { id: 'swarm', type: 'swarm', name: 'Swarm' },
-  { id: 'stock:NASDAQ:AAPL', type: 'stock', symbol: 'NASDAQ:AAPL', name: 'Apple' },
 ];
 
 export default function MarketsHub() {
   const [tabs, setTabs] = useState<TabItem[]>(DEFAULT_TABS);
-  const [activeTabId, setActiveTabId] = useState<string>('overview');
-  const [activeMarket, setActiveMarket] = useState<MarketId>('us');
-  const [overviewTool, setOverviewTool] = useState<'chart' | 'heatmap' | 'screener' | 'leaders' | 'news'>('chart');
+  const [activeTabId, setActiveTabId] = useState<string>('stock:NSE:NIFTY');
   const [watchlistItems, setWatchlistItems] = useState<WatchlistEntry[]>([]);
   const [selectedWatchlistStock, setSelectedWatchlistStock] = useState<string>('AAPL');
   const [navOpen, setNavOpen] = useState(false);
@@ -115,48 +105,21 @@ export default function MarketsHub() {
 
   const closeTab = (tabId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (tabId === 'overview' || tabId === 'watchlist') return; // Pinned tabs
+    if (tabId === 'watchlist') return; // Pinned tab
     const index = tabs.findIndex((t) => t.id === tabId);
     const nextTabs = tabs.filter((t) => t.id !== tabId);
     setTabs(nextTabs);
     if (activeTabId === tabId) {
       const fallback = nextTabs[Math.max(0, index - 1)] || nextTabs[0];
-      setActiveTabId(fallback ? fallback.id : 'overview');
+      setActiveTabId(fallback ? fallback.id : 'stock:NSE:NIFTY');
     }
   };
 
-  const currentMarketObj = MARKETS.find((m) => m.id === activeMarket) || MARKETS[0];
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
   const rawActiveSymbol = activeTab.type === 'stock' ? activeTab.symbol || 'NASDAQ:AAPL' : selectedWatchlistStock;
   const resolvedActive = resolveTradingViewSymbol(rawActiveSymbol, activeTab.name);
   const activeStockSymbol = resolvedActive.cleanSymbol;
   const currentChartSymbol = resolvedActive.fullSymbol;
-
-  const getMarketBenchmark = (marketId: MarketId): { symbol: string; name: string } => {
-    switch (marketId) {
-      case 'in':
-        return { symbol: 'NSE:NIFTY', name: 'NIFTY 50' };
-      case 'commodities':
-        return { symbol: 'TVC:GOLD', name: 'Gold (Spot)' };
-      case 'futures':
-        return { symbol: 'CME_MINI:ES1!', name: 'S&P 500 E-mini Futures' };
-      case 'crypto':
-        return { symbol: 'BINANCE:BTCUSDT', name: 'Bitcoin / USDT' };
-      case 'fx':
-        return { symbol: 'FX:EURUSD', name: 'EUR / USD' };
-      case 'de':
-        return { symbol: 'XETR:DAX', name: 'DAX 40' };
-      case 'ca':
-        return { symbol: 'TSX:TSX', name: 'TSX Composite' };
-      case 'au':
-        return { symbol: 'ASX:XJO', name: 'ASX 200' };
-      case 'us':
-      default:
-        return { symbol: 'AMEX:SPY', name: 'S&P 500' };
-    }
-  };
-
-  const marketBenchmark = getMarketBenchmark(activeMarket);
 
   return (
     <div className="terminal-shell">
@@ -208,16 +171,6 @@ export default function MarketsHub() {
           >
             <Home /> <span>Home</span>
           </Link>
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTabId('overview');
-              setNavOpen(false);
-            }}
-            className={cn('terminal-side-item text-left w-full', activeTabId === 'overview' && 'is-active')}
-          >
-            <LayoutDashboard /> <span>Overview</span>
-          </button>
           <button
             type="button"
             onClick={() => {
@@ -412,369 +365,7 @@ export default function MarketsHub() {
           <main className="terminal-workspace">
             <div className="terminal-workspace-inner">
               {/* ───────────────────────────────────────────────────────────── */}
-              {/* 1. OVERVIEW VIEW */}
-              {/* ───────────────────────────────────────────────────────────── */}
-              {activeTab.type === 'overview' && (
-                <>
-                  {/* Top Ticker Tape */}
-                  <TickerTape />
-
-                  {/* Header: Markets */}
-                  <header className="terminal-page-head">
-                    <div>
-                      <h1 className="terminal-page-title">Markets</h1>
-                      <p className="terminal-page-sub">
-                        {currentMarketObj.name} · open now · realtime data
-                      </p>
-                    </div>
-                  </header>
-
-                  {/* Market Switcher without bullet points */}
-                  <MarketSwitcher
-                    active={activeMarket}
-                    onChange={(m) => setActiveMarket(m)}
-                  />
-
-                  {/* ============ INDEX PULSE HATCH SHELL (Exact OpenStock layout) ============ */}
-                  <section className="hatch">
-                    <div className="hatch-head">
-                      <div>
-                        <h2 className="hatch-title">Index pulse</h2>
-                        <p className="hatch-sub">Tracking ETFs via Finnhub</p>
-                      </div>
-                      <span className="text-xs text-zinc-400 font-medium">Delayed · refreshed hourly</span>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 p-1">
-                      {/* S&P 500 (SPY) */}
-                      <div
-                        onClick={() => openStockTab('AMEX:SPY', 'S&P 500')}
-                        className="hatch-card p-4 sm:p-5 flex flex-col justify-between gap-3 min-h-[124px] hover:border-zinc-300 transition-colors cursor-pointer"
-                      >
-                        <div className="flex items-center gap-2 text-[13px] font-semibold text-zinc-600">
-                          <span className="flex items-center justify-center size-7 rounded-full bg-zinc-100 text-zinc-900">
-                            <LineChart className="size-4" />
-                          </span>
-                          <span className="text-zinc-900 font-bold">S&P 500</span>
-                          <span className="ml-auto text-xs font-mono font-medium text-zinc-400">SPY</span>
-                        </div>
-                        <div className="text-[25px] font-bold tracking-tight text-zinc-950 font-mono">
-                          $586.42
-                        </div>
-                        <div className="flex items-center gap-2 text-xs text-zinc-500">
-                          <span className="pulse-pill pulse-pill-up">↗ 0.37%</span>
-                          <span className="text-[11.5px]">+2.15 vs prev close</span>
-                        </div>
-                      </div>
-
-                      {/* Nasdaq 100 (QQQ) */}
-                      <div
-                        onClick={() => openStockTab('NASDAQ:QQQ', 'Nasdaq 100')}
-                        className="hatch-card p-4 sm:p-5 flex flex-col justify-between gap-3 min-h-[124px] hover:border-zinc-300 transition-colors cursor-pointer"
-                      >
-                        <div className="flex items-center gap-2 text-[13px] font-semibold text-zinc-600">
-                          <span className="flex items-center justify-center size-7 rounded-full bg-zinc-100 text-zinc-900">
-                            <LineChart className="size-4" />
-                          </span>
-                          <span className="text-zinc-900 font-bold">Nasdaq 100</span>
-                          <span className="ml-auto text-xs font-mono font-medium text-zinc-400">QQQ</span>
-                        </div>
-                        <div className="text-[25px] font-bold tracking-tight text-zinc-950 font-mono">
-                          $498.75
-                        </div>
-                        <div className="flex items-center gap-2 text-xs text-zinc-500">
-                          <span className="pulse-pill pulse-pill-up">↗ 0.69%</span>
-                          <span className="text-[11.5px]">+3.40 vs prev close</span>
-                        </div>
-                      </div>
-
-                      {/* Dow 30 (DIA) */}
-                      <div
-                        onClick={() => openStockTab('AMEX:DIA', 'Dow 30')}
-                        className="hatch-card p-4 sm:p-5 flex flex-col justify-between gap-3 min-h-[124px] hover:border-zinc-300 transition-colors cursor-pointer"
-                      >
-                        <div className="flex items-center gap-2 text-[13px] font-semibold text-zinc-600">
-                          <span className="flex items-center justify-center size-7 rounded-full bg-zinc-100 text-zinc-900">
-                            <LineChart className="size-4" />
-                          </span>
-                          <span className="text-zinc-900 font-bold">Dow 30</span>
-                          <span className="ml-auto text-xs font-mono font-medium text-zinc-400">DIA</span>
-                        </div>
-                        <div className="text-[25px] font-bold tracking-tight text-zinc-950 font-mono">
-                          $422.30
-                        </div>
-                        <div className="flex items-center gap-2 text-xs text-zinc-500">
-                          <span className="pulse-pill pulse-pill-down">↘ 0.20%</span>
-                          <span className="text-[11.5px]">-0.85 vs prev close</span>
-                        </div>
-                      </div>
-
-                      {/* Russell 2000 (IWM) */}
-                      <div
-                        onClick={() => openStockTab('AMEX:IWM', 'Russell 2000')}
-                        className="hatch-card p-4 sm:p-5 flex flex-col justify-between gap-3 min-h-[124px] hover:border-zinc-300 transition-colors cursor-pointer"
-                      >
-                        <div className="flex items-center gap-2 text-[13px] font-semibold text-zinc-600">
-                          <span className="flex items-center justify-center size-7 rounded-full bg-zinc-100 text-zinc-900">
-                            <LineChart className="size-4" />
-                          </span>
-                          <span className="text-zinc-900 font-bold">Russell 2000</span>
-                          <span className="ml-auto text-xs font-mono font-medium text-zinc-400">IWM</span>
-                        </div>
-                        <div className="text-[25px] font-bold tracking-tight text-zinc-950 font-mono">
-                          $221.80
-                        </div>
-                        <div className="flex items-center gap-2 text-xs text-zinc-500">
-                          <span className="pulse-pill pulse-pill-up">↗ 0.50%</span>
-                          <span className="text-[11.5px]">+1.10 vs prev close</span>
-                        </div>
-                      </div>
-                    </div>
-                  </section>
-
-                  {/* ============ OVERVIEW TOOL SWITCHER TABS ============ */}
-                  <div className="flex items-center gap-1.5 overflow-x-auto py-1 border-b border-zinc-200/80 [scrollbar-width:none]">
-                    {[
-                      { id: 'chart', label: 'Live Chart (0ms)', icon: LineChart },
-                      { id: 'heatmap', label: currentMarketObj.id === 'crypto' ? 'Crypto Heatmap' : 'Market Heatmap', icon: Flame },
-                      { id: 'screener', label: 'Stock Screener', icon: SlidersHorizontal },
-                      { id: 'leaders', label: 'Leaders & Quotes', icon: TrendingUp },
-                      { id: 'news', label: 'News & Calendar', icon: Newspaper },
-                    ].map((tool) => {
-                      const Icon = tool.icon;
-                      const active = overviewTool === tool.id;
-                      return (
-                        <button
-                          key={tool.id}
-                          type="button"
-                          onClick={() => setOverviewTool(tool.id as any)}
-                          className={cn(
-                            'flex items-center gap-2 rounded-xl px-4 py-2 text-[13px] font-semibold transition-all shrink-0 cursor-pointer',
-                            active
-                              ? 'bg-zinc-950 text-white shadow-xs font-bold'
-                              : 'bg-zinc-100/80 text-zinc-600 hover:bg-zinc-200 hover:text-zinc-950',
-                          )}
-                        >
-                          <Icon className={cn('size-4', active ? 'text-white' : 'text-zinc-500')} />
-                          <span>{tool.label}</span>
-                          {tool.id === 'chart' && (
-                            <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.2 text-[10px] font-bold text-emerald-400">
-                              LIVE
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* ============ TOOL 1: LIVE REAL-TIME BENCHMARK CHART (0ms, 100+ Indicators) ============ */}
-                  {overviewTool === 'chart' && (
-                    <div className="terminal-panel">
-                      <div className="terminal-panel-head">
-                        <div>
-                          <h2 className="terminal-panel-title">
-                            Live Stream · {marketBenchmark.name} ({marketBenchmark.symbol})
-                          </h2>
-                          <p className="terminal-panel-sub">
-                            Sub-millisecond real-time candlestick streaming · 100+ technical indicators · 0 ms latency
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => openStockTab(marketBenchmark.symbol, marketBenchmark.name)}
-                            className="terminal-btn-sm"
-                          >
-                            Open in new tab
-                          </button>
-                        </div>
-                      </div>
-                      <div className="p-2 bg-white">
-                        <TradingViewWidget
-                          scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js"
-                          config={{
-                            autosize: true,
-                            symbol: marketBenchmark.symbol,
-                            interval: 'D',
-                            timezone: 'Etc/UTC',
-                            theme: 'light',
-                            style: '1',
-                            locale: 'en',
-                            enable_publishing: false,
-                            allow_symbol_change: true,
-                            calendar: true,
-                            details: true,
-                            hotlist: true,
-                            studies: ['STD;RSI', 'STD;MACD', 'STD;Bollinger_Bands', 'STD;EMA'],
-                            support_host: 'https://www.tradingview.com',
-                          }}
-                          height={620}
-                          allowExpand
-                          lazy={false}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ============ TOOL 2: MARKET HEATMAP ============ */}
-                  {overviewTool === 'heatmap' && (
-                    <div className="terminal-panel">
-                      <div className="terminal-panel-head">
-                        <div>
-                          <h2 className="terminal-panel-title">
-                            {currentMarketObj.id === 'crypto' ? 'Crypto Heatmap' : 'S&P 500 Heatmap'}
-                          </h2>
-                          <p className="terminal-panel-sub">Sized by market cap, colored by today’s price move</p>
-                        </div>
-                      </div>
-                      <div className="p-2 bg-white">
-                        <TradingViewWidget
-                          scriptUrl={`https://s3.tradingview.com/external-embedding/embed-widget-${
-                            currentMarketObj.id === 'crypto' ? 'crypto-coins-heatmap.js' : 'stock-heatmap.js'
-                          }`}
-                          config={{
-                            dataSource: currentMarketObj.id === 'crypto' ? 'Crypto' : 'SPX500',
-                            blockSize: currentMarketObj.id === 'crypto' ? 'market_cap_calc' : 'market_cap_basic',
-                            blockColor: 'change',
-                            grouping: 'sector',
-                            isTransparent: true,
-                            locale: 'en',
-                            colorTheme: 'light',
-                            hasTopBar: false,
-                            isZoomEnabled: true,
-                            hasSymbolTooltip: true,
-                          }}
-                          height={620}
-                          allowExpand
-                          lazy={false}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ============ TOOL 3: STOCK SCREENER ============ */}
-                  {overviewTool === 'screener' && (
-                    <div className="terminal-panel">
-                      <div className="terminal-panel-head">
-                        <div>
-                          <h2 className="terminal-panel-title">Stock Screener</h2>
-                          <p className="terminal-panel-sub">Top global equities sorted by capitalization & volume</p>
-                        </div>
-                      </div>
-                      <div className="p-2 bg-white">
-                        <TvScreener screenerType="stock" columns="overview" screen="most_capitalized" height={600} />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ============ TOOL 4: LEADERS & QUOTES ============ */}
-                  {overviewTool === 'leaders' && (
-                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
-                      <div className="terminal-panel">
-                        <div className="terminal-panel-head">
-                          <div>
-                            <h2 className="terminal-panel-title">Leaders</h2>
-                            <p className="terminal-panel-sub">12-month trend by group</p>
-                          </div>
-                        </div>
-                        <div className="p-2 bg-white">
-                          <TradingViewWidget
-                            scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js"
-                            config={{
-                              colorTheme: 'light',
-                              dateRange: '12M',
-                              locale: 'en',
-                              isTransparent: true,
-                              showFloatingTooltip: true,
-                              plotLineColorGrowing: '#059669',
-                              plotLineColorFalling: '#e11d48',
-                              tabs: currentMarketObj.groups.map(({ title, symbols }) => ({
-                                title,
-                                symbols: symbols.map(([s, d]) => ({ s, d })),
-                              })),
-                              support_host: 'https://www.tradingview.com',
-                              showSymbolLogo: true,
-                              showChart: true,
-                            }}
-                            height={580}
-                            lazy={false}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="terminal-panel">
-                        <div className="terminal-panel-head">
-                          <div>
-                            <h2 className="terminal-panel-title">Quotes</h2>
-                            <p className="terminal-panel-sub">{currentMarketObj.name} leaders by group</p>
-                          </div>
-                        </div>
-                        <div className="p-2 bg-white">
-                          <TradingViewWidget
-                            scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-market-quotes.js"
-                            config={{
-                              locale: 'en',
-                              showSymbolLogo: true,
-                              colorTheme: 'light',
-                              isTransparent: true,
-                              symbolsGroups: currentMarketObj.groups.map(({ title, symbols }) => ({
-                                name: title,
-                                symbols: symbols.map(([name, displayName]) => ({ name, displayName })),
-                              })),
-                            }}
-                            height={580}
-                            lazy={false}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ============ TOOL 5: NEWS & CALENDAR ============ */}
-                  {overviewTool === 'news' && (
-                    <div className="grid gap-4 xl:grid-cols-2">
-                      <div className="terminal-panel">
-                        <div className="terminal-panel-head">
-                          <div>
-                            <h2 className="terminal-panel-title">Top Stories</h2>
-                            <p className="terminal-panel-sub">Real-time market moving news</p>
-                          </div>
-                        </div>
-                        <div className="p-2 bg-white">
-                          <TradingViewWidget
-                            scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-timeline.js"
-                            config={{
-                              feedMode: 'all_symbols',
-                              isTransparent: true,
-                              displayMode: 'regular',
-                              width: '100%',
-                              height: 560,
-                              colorTheme: 'light',
-                              locale: 'en',
-                            }}
-                            height={560}
-                            lazy={false}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="terminal-panel">
-                        <div className="terminal-panel-head">
-                          <div>
-                            <h2 className="terminal-panel-title">Economic Calendar</h2>
-                            <p className="terminal-panel-sub">Key global economic releases & announcements</p>
-                          </div>
-                        </div>
-                        <div className="p-2 bg-white">
-                          <TvEconomicCalendar height={560} />
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-
-              {/* ───────────────────────────────────────────────────────────── */}
-              {/* 2. WATCHLIST VIEW */}
+              {/* 1. WATCHLIST VIEW */}
               {/* ───────────────────────────────────────────────────────────── */}
               {activeTab.type === 'watchlist' && (
                 <>
@@ -816,14 +407,23 @@ export default function MarketsHub() {
                           locale: 'en',
                           enable_publishing: false,
                           allow_symbol_change: true,
-                          calendar: true,
-                          details: true,
-                          hotlist: true,
-                          studies: ['STD;RSI', 'STD;MACD', 'STD;Bollinger_Bands', 'STD;EMA'],
-                          support_host: 'https://www.tradingview.com',
+                          show_popup_button: false,
+                          details: false,
+                          hotlist: false,
+                          calendar: false,
+                          withdateranges: true,
+                          hide_side_toolbar: false,
+                          studies: [
+                            'STD;RSI',
+                            'STD;MACD',
+                            'STD;Bollinger_Bands',
+                            'STD;EMA',
+                            'Volume@tv-basicstudies',
+                          ],
                         }}
-                        height={520}
+                        height={580}
                         allowExpand
+                        lazy={false}
                       />
                     </div>
                   </div>
@@ -986,14 +586,23 @@ export default function MarketsHub() {
                             locale: 'en',
                             enable_publishing: false,
                             allow_symbol_change: true,
-                            calendar: true,
-                            details: true,
-                            hotlist: true,
-                            studies: ['STD;RSI', 'STD;MACD', 'STD;Bollinger_Bands', 'STD;EMA'],
-                            support_host: 'https://www.tradingview.com',
+                            show_popup_button: false,
+                            details: false,
+                            hotlist: false,
+                            calendar: false,
+                            withdateranges: true,
+                            hide_side_toolbar: false,
+                            studies: [
+                              'STD;RSI',
+                              'STD;MACD',
+                              'STD;Bollinger_Bands',
+                              'STD;EMA',
+                              'Volume@tv-basicstudies',
+                            ],
                           }}
-                          height={520}
+                          height={580}
                           allowExpand
+                          lazy={false}
                         />
                       </div>
                     </div>

@@ -1,0 +1,510 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   KORTIX WORKSTATION THEME FOR GOD'S EYE VIEW
+   Modern, high-contrast, clean dark glass UI based on Kortix Design System
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --bg-dark: #09090b;
+  --glass-bg: rgba(10, 10, 12, 0.90);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-border-hover: rgba(255, 255, 255, 0.22);
+  --accent: #10b981;
+  --accent-dim: rgba(16, 185, 129, 0.18);
+  --accent-glow: rgba(16, 185, 129, 0.4);
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-dim: #71717a;
+  --menu-bg: #18181b;
+  --panel-radius: 16px;
+  --btn-radius: 10px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+  --dock-label-color: #a1a1aa;
+  --dock-label-font-size: 0.75rem;
+  --dock-label-font-weight: 500;
+  --dock-label-letter-spacing: normal;
+}
+
+/* ── Typography Global Override for Kortix ───────────────────────────── */
+body,
+button,
+input,
+select,
+textarea,
+.ui-panel,
+.scene-panel-inner,
+.data-panel-inner,
+.utilities-panel-inner,
+.cctv-panel-inner,
+.street-level-panel-inner,
+.ui-rail,
+#command-dock {
+  font-family: var(--font-sans) !important;
+  letter-spacing: normal !important;
+}
+
+/* ── Hide Duplicate In-Map Title Bar (Kortix Shell already has Top Bar) ── */
+#title-bar {
+  display: none !important;
+}
+
+/* ── 1. Top-Center Actions Bar (Floating Pill Capsule) ──────────────── */
+#top-center-actions {
+  top: 16px !important;
+  background: rgba(9, 9, 11, 0.85) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 9999px !important;
+  padding: 4px 6px !important;
+  box-shadow: 0 10px 30px -4px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  gap: 4px !important;
+}
+
+#top-center-actions button {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 9999px !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  color: #a1a1aa !important;
+  box-shadow: none !important;
+  transition: all 160ms cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+#top-center-actions button:hover,
+#top-center-actions button:focus-visible {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: #ffffff !important;
+  transform: scale(1.05) !important;
+}
+
+#top-center-actions button:active {
+  transform: scale(0.96) !important;
+}
+
+#top-center-actions button[aria-pressed='true'],
+#tilt-map-view[aria-pressed='true'] {
+  border-color: rgba(16, 185, 129, 0.5) !important;
+  background: rgba(16, 185, 129, 0.18) !important;
+  color: #10b981 !important;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.25) !important;
+}
+
+/* ── 2. Style Indicator Badge (Top Right) ────────────────────────────── */
+#style-indicator {
+  top: 16px !important;
+  right: 20px !important;
+  background: rgba(9, 9, 11, 0.82) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 9999px !important;
+  padding: 4px 12px !important;
+  backdrop-filter: blur(16px) !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4) !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+#style-indicator .indicator-label {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  letter-spacing: normal !important;
+  color: #71717a !important;
+  text-transform: capitalize !important;
+}
+
+#style-indicator .indicator-value {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: #10b981 !important;
+  letter-spacing: normal !important;
+  text-transform: capitalize !important;
+}
+
+/* ── 3. Kortix Cards & Side Panels ──────────────────────────────────── */
+.ui-panel,
+.panel-collapsible {
+  border-radius: var(--panel-radius) !important;
+}
+
+.panel-glow {
+  display: none !important;
+}
+
+.panel-inner,
+.scene-panel-inner,
+.data-panel-inner,
+.utilities-panel-inner,
+.cctv-panel-inner,
+.street-level-panel-inner,
+.pp-toggle-inner {
+  position: relative !important;
+  background: rgba(10, 10, 12, 0.92) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: var(--panel-radius) !important;
+  backdrop-filter: blur(28px) saturate(1.4) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(1.4) !important;
+  box-shadow:
+    0 20px 48px -6px rgba(0, 0, 0, 0.75),
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset,
+    inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Panel Headers */
+.panel-header,
+.ui-panel__head {
+  display: flex !important;
+  align-items: center !important;
+  padding-bottom: 10px !important;
+  margin-bottom: 12px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+.panel-title,
+.ui-panel__title {
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  color: #f4f4f5 !important;
+  text-transform: capitalize !important;
+}
+
+.panel-divider {
+  display: none !important;
+}
+
+.panel-collapse-btn {
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 6px !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  color: #a1a1aa !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  transition: all 150ms ease !important;
+}
+
+.panel-collapse-btn:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+}
+
+/* ── 4. Kortix Buttons ───────────────────────────────────────────────── */
+.gev-action-button,
+.scene-btn,
+.ui-button,
+button.pp-btn {
+  border-radius: 8px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  letter-spacing: -0.01em !important;
+  text-transform: none !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #f4f4f5 !important;
+  padding: 6px 14px !important;
+  transition: all 150ms ease !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15) !important;
+}
+
+.gev-action-button:hover:not(:disabled),
+.scene-btn:hover:not(:disabled),
+.ui-button:hover:not(:disabled),
+button.pp-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: #ffffff !important;
+  transform: none !important;
+}
+
+/* Primary Emerald Buttons (e.g. + Capture Shot, Play) */
+.scene-btn-primary,
+.scene-btn-primary:not(:disabled),
+#scene-start-btn:not(:disabled),
+.gev-action-button--primary {
+  background: #10b981 !important;
+  border: 1px solid #10b981 !important;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  text-shadow: none !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(16, 185, 129, 0.4) !important;
+}
+
+.scene-btn-primary:hover:not(:disabled),
+#scene-start-btn:hover:not(:disabled),
+.gev-action-button--primary:hover:not(:disabled) {
+  background: #059669 !important;
+  border-color: #059669 !important;
+  color: #ffffff !important;
+  transform: none !important;
+}
+
+/* Danger / Delete Buttons */
+.scene-btn-danger,
+.gev-action-button--danger {
+  background: rgba(239, 68, 68, 0.12) !important;
+  border: 1px solid rgba(239, 68, 68, 0.25) !important;
+  color: #f87171 !important;
+  font-weight: 500 !important;
+  text-transform: none !important;
+}
+
+.scene-btn-danger:hover:not(:disabled),
+.gev-action-button--danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.22) !important;
+  border-color: rgba(239, 68, 68, 0.45) !important;
+  color: #ffffff !important;
+  transform: none !important;
+}
+
+/* ── 5. Form Fields & Dropdowns ──────────────────────────────────────── */
+.gev-field,
+#scene-select,
+select.gev-field,
+input.gev-field {
+  background: rgba(24, 24, 27, 0.95) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 10px !important;
+  color: #f4f4f5 !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  letter-spacing: normal !important;
+  padding: 8px 12px !important;
+  outline: none !important;
+  transition: all 150ms ease !important;
+}
+
+.gev-field:focus,
+#scene-select:focus,
+select.gev-field:focus,
+input.gev-field:focus {
+  border-color: #10b981 !important;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25) !important;
+}
+
+/* ── 6. Scene Authoring Cards & Shot Rows ─────────────────────────────── */
+.scene-step-heading {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: normal !important;
+  color: #71717a !important;
+  text-transform: capitalize !important;
+  margin: 12px 0 8px !important;
+}
+
+.scene-shot-row {
+  border-radius: 12px !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  background: rgba(24, 24, 27, 0.6) !important;
+  padding: 10px 12px !important;
+  margin-bottom: 6px !important;
+  transition: all 150ms ease !important;
+}
+
+.scene-shot-row:hover {
+  background: rgba(24, 24, 27, 0.9) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+}
+
+.scene-shot-row.active {
+  border-color: #10b981 !important;
+  background: rgba(16, 185, 129, 0.12) !important;
+  box-shadow: inset 0 0 0 1px #10b981 !important;
+}
+
+.scene-shot-label {
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  color: #f4f4f5 !important;
+  letter-spacing: normal !important;
+}
+
+.scene-shot-meta {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  color: #a1a1aa !important;
+  margin-top: 4px !important;
+  letter-spacing: normal !important;
+}
+
+.scene-shot-actions .scene-shot-btn {
+  padding: 4px 8px !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  border-radius: 6px !important;
+  text-transform: uppercase !important;
+}
+
+/* ── 7. Side Rails (Left & Right Navigation) ─────────────────────────── */
+.ui-rail {
+  background: rgba(9, 9, 11, 0.85) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 16px !important;
+  padding: 4px !important;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5) !important;
+  backdrop-filter: blur(20px) !important;
+}
+
+.ui-rail__item {
+  border-radius: 10px !important;
+  color: #a1a1aa !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  letter-spacing: normal !important;
+  transition: all 150ms ease !important;
+}
+
+.ui-rail__item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
+}
+
+.ui-rail__item--on,
+.ui-rail__item--on:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.16) !important;
+  border-color: transparent !important;
+  color: #10b981 !important;
+  font-weight: 600 !important;
+}
+
+.ui-rail__label {
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  letter-spacing: normal !important;
+  text-transform: capitalize !important;
+}
+
+/* ── 8. Bottom Command Dock & Popovers ───────────────────────────────── */
+#command-dock {
+  background: rgba(9, 9, 11, 0.88) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 20px !important;
+  box-shadow: 0 16px 40px -4px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  backdrop-filter: blur(28px) saturate(1.4) !important;
+}
+
+#command-dock button,
+#command-dock .panel-title {
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  letter-spacing: normal !important;
+  text-transform: capitalize !important;
+}
+
+.dock-popover-content {
+  background: rgba(9, 9, 11, 0.95) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 16px !important;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.75) !important;
+  backdrop-filter: blur(28px) !important;
+}
+
+#gev-voice-control {
+  border-radius: 14px !important;
+  background: rgba(24, 24, 27, 0.7) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  transition: all 180ms ease !important;
+}
+
+#gev-voice-control:hover {
+  background: rgba(24, 24, 27, 0.9) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+}
+
+/* ── 9. Clean Recon Telemetry (HUD Overlay) ─────────────────────────── */
+#intel-hud {
+  --hud-color: #d4d4d8 !important;
+  --hud-glow: transparent !important;
+  --hud-border: rgba(255, 255, 255, 0.1) !important;
+}
+
+#intel-hud * {
+  font-family: var(--font-mono) !important;
+  color: var(--hud-color) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8) !important;
+  line-height: 1.5 !important;
+}
+
+.hud-top-left,
+.hud-top-right,
+.hud-bottom-left,
+.hud-bottom-right {
+  background: rgba(9, 9, 11, 0.45) !important;
+  border-radius: 8px !important;
+  padding: 6px 10px !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+.hud-classification {
+  color: #10b981 !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 1.5px !important;
+}
+
+.hud-mode {
+  color: #10b981 !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  letter-spacing: 2px !important;
+}
+
+.hud-system,
+.hud-orbital,
+.hud-rec {
+  color: #f4f4f5 !important;
+}
+
+#hud-mgrs,
+#hud-latlon,
+#hud-gsd,
+#hud-alt {
+  color: #f4f4f5 !important;
+  font-weight: 600 !important;
+}
+
+.hud-bracket {
+  color: #10b981 !important;
+  font-size: 16px !important;
+}
+
+/* ── 10. Remove Retro Vignette/Scope Mask ────────────────────────────── */
+#scope-mask {
+  opacity: 0.12 !important;
+}
+
+/* ── 11. Bottom Right Chips (Power up / Lang) ────────────────────────── */
+#key-setup-chip,
+.locale-chip {
+  background: rgba(9, 9, 11, 0.8) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 9999px !important;
+  color: #a1a1aa !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  padding: 4px 10px !important;
+  transition: all 150ms ease !important;
+}
+
+#key-setup-chip:hover,
+.locale-chip:hover {
+  background: rgba(24, 24, 27, 0.95) !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}

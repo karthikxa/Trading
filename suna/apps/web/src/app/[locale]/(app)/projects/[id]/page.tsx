@@ -36,6 +36,8 @@ import TvMiniChart from '@/features/markets/TvMiniChart';
 import TvScreener from '@/features/markets/TvScreener';
 import TvEconomicCalendar from '@/features/markets/TvEconomicCalendar';
 import WatchlistTable from '@/features/markets/WatchlistTable';
+import TvLiveChart from '@/features/markets/TvLiveChart';
+import GodsEyeSpecView from '@/features/spec/GodsEyeSpecView';
 import SearchCommand, { openSearch } from '@/features/markets/SearchCommand';
 import StockSymbolIcon from '@/features/markets/StockSymbolIcon';
 import { MARKETS } from '@/features/markets/markets';
@@ -66,16 +68,18 @@ export default function ProjectIndexPage() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  // Active view management: 'chat' | 'overview' | 'watchlist' | 'stock' | 'agent'
+  // Active view management: 'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent'
   const queryTab = searchParams.get('tab');
-  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'watchlist' | 'stock' | 'agent'>(
+  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent'>(
     queryTab === 'overview'
       ? 'overview'
       : queryTab === 'watchlist'
         ? 'watchlist'
-        : queryTab === 'agent'
-          ? 'agent'
-          : 'chat',
+        : queryTab === 'spec'
+          ? 'spec'
+          : queryTab === 'agent'
+            ? 'agent'
+            : 'chat',
   );
 
   // Tabs only contain individual stocks
@@ -117,6 +121,8 @@ export default function ProjectIndexPage() {
       setActiveView('overview');
     } else if (queryTab === 'watchlist') {
       setActiveView('watchlist');
+    } else if (queryTab === 'spec') {
+      setActiveView('spec');
     } else if (queryTab === 'agent') {
       setActiveView('agent');
     } else if (queryTab === 'chat' || (!queryTab && activeView !== 'stock')) {
@@ -302,7 +308,7 @@ export default function ProjectIndexPage() {
         })()}
 
         {/* ========================================================================= */}
-        {/* VIEW 2: FULL MARKETS OVERVIEW (With Top stories replacing Economic Map)   */}
+        {/* VIEW 2: MARKETS OVERVIEW                                                  */}
         {/* ========================================================================= */}
         {activeView === 'overview' && (
           <div className="max-w-7xl mx-auto p-4 sm:p-6 flex flex-col gap-6">
@@ -594,37 +600,24 @@ export default function ProjectIndexPage() {
                 <div className="flex items-center gap-2">
                   <Pin className="size-4 text-zinc-950 fill-zinc-950" />
                   <h2 className="terminal-panel-title">
-                    Live Chart: NASDAQ:{selectedWatchlistStock}
+                    Live Chart: {selectedWatchlistStock}
                   </h2>
                 </div>
               </div>
               <div className="p-2 bg-white">
-                <TradingViewWidget
-                  scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js"
-                  config={{
-                    autosize: true,
-                    symbol: `NASDAQ:${selectedWatchlistStock}`,
-                    interval: 'D',
-                    timezone: 'Etc/UTC',
-                    theme: 'light',
-                    style: '1',
-                    locale: 'en',
-                    enable_publishing: false,
-                    allow_symbol_change: true,
-                    hide_side_toolbar: false,
-                    details: true,
-                    hotlist: true,
-                    calendar: true,
-                    show_popup_button: true,
-                    popup_width: '1000',
-                    popup_height: '650',
-                  }}
+                <TvLiveChart
+                  symbol={selectedWatchlistStock}
                   height={560}
                 />
               </div>
             </div>
           </div>
         )}
+
+        {/* ========================================================================= */}
+        {/* VIEW: SPEC (God's Eye View - bilawalsidhu/gods-eye-view)                  */}
+        {/* ========================================================================= */}
+        {activeView === 'spec' && <GodsEyeSpecView />}
 
         {/* ========================================================================= */}
         {/* VIEW 4: SINGLE-STOCK RESEARCH TERMINAL                                     */}
@@ -754,24 +747,8 @@ export default function ProjectIndexPage() {
                   </div>
                 </div>
                 <div className="p-2 bg-white">
-                  <TradingViewWidget
-                    scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js"
-                    config={{
-                      autosize: true,
-                      symbol: `NASDAQ:${activeStockSymbol}`,
-                      interval: 'D',
-                      timezone: 'Etc/UTC',
-                      theme: 'light',
-                      style: '1',
-                      locale: 'en',
-                      enable_publishing: false,
-                      allow_symbol_change: true,
-                      hide_side_toolbar: false,
-                      details: true,
-                      hotlist: true,
-                      calendar: true,
-                      show_popup_button: true,
-                    }}
+                  <TvLiveChart
+                    symbol={`NASDAQ:${activeStockSymbol}`}
                     height={560}
                   />
                 </div>

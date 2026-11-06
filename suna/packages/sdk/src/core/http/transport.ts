@@ -1693,19 +1693,34 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }
-    const list = [mockSessions.get(defaultSessId)].filter(Boolean).map((s) => ({
-      session_id: s!.session_id,
-      project_id: s!.project_id,
+    // Sub-queries (pinned, shared, automated, paginated) should not repeat the root session
+    if (
+      url.includes('view=pinned') ||
+      url.includes('view=shared') ||
+      url.includes('view=automated') ||
+      url.includes('cursor=') ||
+      url.includes('teamLead=')
+    ) {
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const defaultSession = mockSessions.get(defaultSessId) || createInitialSession(defaultSessId);
+    const list = [{
+      session_id: defaultSession.session_id,
+      project_id: defaultSession.project_id,
       account_id: 'acc-default-workspace',
       branch_name: 'main',
       base_ref: 'main',
-      name: s!.title,
-      title: s!.title,
+      name: defaultSession.title,
+      title: defaultSession.title,
       agent_name: 'trader',
       status: 'ready',
-      created_at: s!.created_at,
-      updated_at: s!.created_at,
-    }));
+      created_at: defaultSession.created_at,
+      updated_at: defaultSession.created_at,
+    }];
     return new Response(JSON.stringify(list), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
