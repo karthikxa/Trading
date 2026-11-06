@@ -862,12 +862,12 @@ const sessionName = (s: ProjectSession) =>
   s.name ||
   (typeof s.metadata?.session_name === 'string' ? s.metadata.session_name : '') ||
   s.branch_name ||
-  s.session_id.slice(0, 8);
+  (s.session_id ? s.session_id.slice(0, 8) : '');
 
 export function sessionMatchesPaletteQuery(session: ProjectSession, query: string): boolean {
   return (
     sessionName(session).toLowerCase().includes(query) ||
-    session.session_id.toLowerCase().startsWith(query)
+    Boolean(session?.session_id && session.session_id.toLowerCase().startsWith(query))
   );
 }
 
@@ -940,7 +940,8 @@ export function CommandPalette() {
   // The project's own agents from the Kortix project config, filtered by the
   // SDK's one selectable-agent rule: the same list the composer offers. Never
   // the sandbox runtime's list, which adds its built-ins (`build`, `plan`, …).
-  const agents = useVisibleAgents({ projectId });
+  const rawAgents = useVisibleAgents({ projectId });
+  const agents = Array.isArray(rawAgents) ? rawAgents : [];
   const { data: providers } = useRuntimeProviders();
 
   const selectedAccountId = useCurrentAccountStore((s) => s.selectedAccountId);
@@ -1035,7 +1036,7 @@ export function CommandPalette() {
     enabled: open && !!projectId,
     staleTime: 5_000,
   });
-  const openChangeRequestCount = openChangeRequests?.change_requests.length ?? 0;
+  const openChangeRequestCount = openChangeRequests?.change_requests?.length ?? 0;
   const sendToSession = useChatSendStore((state) => state.sendToSession);
   const currentProjectSession = projectSessionsList?.find(
     (session) => session.session_id === currentSessionId,
@@ -1854,7 +1855,7 @@ export function CommandPalette() {
   );
 
   const hasSessionResults = rootSessionResults.length > 0 || firstChatResult;
-  const hasSpaceResults = rootSpaceResults.channels.length + rootSpaceResults.dms.length > 0;
+  const hasSpaceResults = (rootSpaceResults?.channels?.length ?? 0) + (rootSpaceResults?.dms?.length ?? 0) > 0;
   const hasMemoryResults = rootMemoryResults.length > 0;
   const hasWorkspaceResults = rootWorkspaceRows.length > 0;
   const hasSettingsResults = settingsResultCount > 0;

@@ -354,12 +354,12 @@ function useAgentUseCounts(projectId: string, agentName: string, config: Project
   // A trigger stored as `default` starts the project's default agent.
   const fallback = config.default_agent ?? config.open_code_default_agent ?? null;
   return {
-    triggerCount: triggers.data
+    triggerCount: Array.isArray(triggers.data?.triggers)
       ? triggers.data.triggers.filter(
-          (a) => a.target.kind === 'agent' && (a.target.agent === 'default' && fallback ? fallback : a.target.agent) === agentName,
-        ).length
+        (a) => a.target.kind === 'agent' && (a.target.agent === 'default' && fallback ? fallback : a.target.agent) === agentName,
+      ).length
       : undefined,
-    peopleCount: grants.data
+    peopleCount: Array.isArray(grants.data?.grants)
       ? grants.data.grants.filter((g) => g.resource_type === 'agent' && g.resource_id === agentName).length
       : undefined,
   };
@@ -1030,7 +1030,7 @@ function ReadOnlyAgentPage({
     queryKey: ['entity-file-content', projectId, sourcePath],
     queryFn: () => readProjectFile(projectId, sourcePath),
     staleTime: 30_000,
-    enabled: block.behavior?.prompt === undefined,
+    enabled: block.behavior?.prompt === undefined && !!sourcePath,
   });
   const prompt = block.behavior?.prompt ?? (fileQuery.data ? stripFrontmatter(fileQuery.data.content) : null);
   const views = useMemo(() => {

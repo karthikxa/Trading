@@ -18,14 +18,14 @@ export function ModelsTabGroup({
   const tAccess = useTranslations('modelAccess');
   const tList = useTranslations('modelsList');
   const providerDisabled =
-    access.data?.disabledProviders.includes(group.providerID) ?? false;
+    access.data?.disabledProviders?.includes(group.providerID) ?? false;
   const groupOn = group.rows.filter(({ model }) => model.enabled).length;
   // Platinum Inference serves every model it lists on zero-retention terms:
   // the Kortix managed models and the Platinum provider alike.
   const dataClaim =
     group.providerID === 'platinum' ||
     (group.providerID === 'kortix' &&
-      group.rows.every(({ model }) => !model.modelID.includes('/')));
+      group.rows.every(({ model }) => !model?.modelID?.includes('/')));
   return (
     <section
       key={group.providerID}
@@ -113,7 +113,7 @@ function ProviderSwitch({
 }) {
   const tAccess = useTranslations('modelAccess');
   if (!access.data?.enforced) return null;
-  const enabled = !access.data.disabledProviders.includes(providerId);
+  const enabled = !(access.data.disabledProviders?.includes(providerId) ?? false);
   const locked = access.defaultProvider === providerId && enabled;
   return (
     <Hint label={locked ? tAccess('defaultProviderHint') : tAccess('credentialsHint')} side="bottom">

@@ -88,33 +88,34 @@ export function createSessionScopeCatalogSources(
   fetchConnectors: typeof listConnectors = listConnectors,
 ): SessionScopeCatalogSources {
   return {
-    listSecrets: async (projectId) =>
-      (
-        await queryClient.fetchQuery({
-          queryKey: qk.project.secrets(projectId),
-          queryFn: () => fetchSecrets(projectId),
-          ...contract('config'),
-        })
-      ).items,
+    listSecrets: async (projectId) => {
+      const res = await queryClient.fetchQuery({
+        queryKey: qk.project.secrets(projectId),
+        queryFn: () => fetchSecrets(projectId),
+        ...contract('config'),
+      });
+      return (res && (res.items || res.secrets)) || [];
+    },
     // The CANONICAL `qk.project.connectors(id)` slot — the same key the
     // project shell's Customize prefetch (`use-customize-prefetch.ts`) warms
     // on every session-view mount. Reading it straight (as this used to)
     // ignored that warm entry and issued a second, identical
     // `GET /connectors/...` for one paint (the turn-latency spec (PR #7840) R4).
-    listConnectors: async (projectId) =>
-      (
-        await queryClient.fetchQuery({
-          queryKey: qk.project.connectors(projectId),
-          queryFn: () => fetchConnectors(projectId, { includeSchemas: false }),
-          ...contract(FRESHNESS.connectors),
-        })
-      ).connectors,
+    listConnectors: async (projectId) => {
+      const res = await queryClient.fetchQuery({
+        queryKey: qk.project.connectors(projectId),
+        queryFn: () => fetchConnectors(projectId, { includeSchemas: false }),
+        ...contract(FRESHNESS.connectors),
+      });
+      return (res && (res.connectors || res.items)) || [];
+    },
     // A session binds only accounts its creator may USE. A shared account a
     // connections manager sees just to manage it (`usable: false`) is not one.
-    listConnections: async (projectId) =>
-      (await fetchConnections(projectId)).connections.filter(
-        (connection) => connection.usable !== false,
-      ),
+    listConnections: async (projectId) => {
+      const res = await fetchConnections(projectId);
+      const conns = (res && res.connections) || [];
+      return conns.filter((connection: any) => connection.usable !== false);
+    },
   };
 }
 

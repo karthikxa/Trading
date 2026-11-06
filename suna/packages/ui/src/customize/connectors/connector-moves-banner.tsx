@@ -17,7 +17,7 @@ export function ConnectorMovesBanner({ projectId }: { projectId: string }) {
   const t = useTranslations('connectorPages');
   const moves = useQuery({
     queryKey: connectorMovesQueryKey(projectId),
-    queryFn: () => listConnectorMoves(projectId),
+    queryFn: async () => (await listConnectorMoves(projectId)) ?? [],
   });
   const movable = (moves.data ?? []).filter((move) => move.to && move.provider === 'pipedream');
   if (movable.length === 0) return null;

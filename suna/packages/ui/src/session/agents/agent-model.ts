@@ -89,7 +89,7 @@ export function agentRowOf(session: ProjectSession): AgentRow {
   const name = session.name ? subagentTitle(session.name) : '';
   const own = session.agent_handle?.trim() || name;
   const agent = session.agent_name?.trim() || null;
-  const handle = own || (agent ? agentDisplayName(agent) : session.session_id.slice(0, 8));
+  const handle = own || (agent ? agentDisplayName(agent) : (session.session_id ? session.session_id.slice(0, 8) : 'session'));
   const excerpt = session.result_excerpt?.replace(/\s+/g, ' ').trim() || null;
   const activity = Date.parse(session.last_activity_at ?? session.updated_at ?? session.created_at);
   const state = boardStateOf(session);

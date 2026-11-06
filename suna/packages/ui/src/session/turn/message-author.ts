@@ -24,9 +24,9 @@ export function resolveTranscriptAuthors(
   const byMessage = new Map<string, SessionMessageAuthor>();
   let initial = data?.initial_author ?? null;
   for (const id of userMessageIds) {
-    const author = data?.authors[id] ?? initial;
+    const author = data?.authors?.[id] ?? initial;
     if (!author) continue;
-    if (!data?.authors[id]) initial = null;
+    if (!data?.authors?.[id]) initial = null;
     byMessage.set(id, author);
   }
   const distinct = new Set([...byMessage.values()].map(authorKey));
@@ -42,7 +42,7 @@ export const AUTHOR_RETRY_DELAYS_MS = [2000, 5000, 12000];
  * prompt) and ends when it does not. Empty before the first read.
  */
 export function missingAuthorKey(data: SessionMessageAuthors | undefined, ids: readonly string[]): string {
-  if (!data) return '';
+  if (!data || !data.authors) return '';
   return ids.filter((id) => id && !data.authors[id]).sort().join(',');
 }
 
@@ -60,8 +60,8 @@ export function authorForTurn(
 ): SessionMessageAuthor | undefined {
   return (
     resolved.byMessage.get(messageId) ??
-    data?.authors[messageId] ??
-    (wireMessageId ? data?.authors[wireMessageId] : undefined)
+    data?.authors?.[messageId] ??
+    (wireMessageId ? data?.authors?.[wireMessageId] : undefined)
   );
 }
 

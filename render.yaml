@@ -1,13 +1,67 @@
+# Kortix single-service Render blueprint.
+#
+# One service runs the whole stack:
+#   web (Next.js)  listens on $PORT — the only publicly routed port
+#   api  (bun)     listens on 127.0.0.1:8008 — same container, loopback only
+# next.config.ts rewrites /v1/* to KORTIX_API_PROXY_TARGET (default
+# http://localhost:8008), so the web app proxies every API call to the
+# in-container API. The swarm run registry is replica-local by design, which
+# holds here because each service resolves to a single instance that talks to
+# the same in-container API.
+#
+# This supersedes the zed-trading python/uvicorn blueprint that previously
+# occupied this file (the Tauric prototype). The root Procfile (uvicorn) is
+# inert while a render.yaml exists and is queued for removal with the next
+# approved commit.
+#
+# Memory budget (standing constraint): 512 MB service, target <=400 MB RSS.
+# next start holds ~150-250 MB; the bun API ~60-150 MB. No runtime heap cap is
+# pre-set: measure RSS on the first deploy and trim NODE_OPTIONS only if the
+# sum exceeds the target — a premature cap trades availability for megabytes.
 services:
   - type: web
-    name: zed-trading
-    runtime: python
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT --workers 1
-    plan: free
+    name: kortix-trading
+    runtime: node
+    rootDir: suna
+    plan: starter # 512 MB, always on. Use `free` for zero cost (15-min idle spin-down).
     autoDeploy: true
+    # 200, unauthenticated, and exercises the full Next -> API proxy chain.
+    healthCheckPath: /v1/auth/client-config
+    buildCommand: |
+      # pnpm 8.11.0 = suna/package.json packageManager + pnpm-lock lockfileVersion 6.0
+      npm i -g pnpm@8.11.0
+      pnpm install --frozen-lockfile
+      # web build: Supabase env validation, wasm/emoji prep, fumadocs gen, next build
+      pnpm --filter Kortix-Computer-Frontend build
+      # API runtime (bun) lands in ~/.bun
+      curl -fsSL https://bun.sh/install | bash
+    startCommand: |
+      set -e
+      export PATH="$HOME/.bun/bin:$PATH"
+      # API first; env comes from the Render dashboard, `--no-env-file` skips
+      # any stray .env the image might carry.
+      ( cd apps/api && bun --no-env-file --max-http-header-size=65536 run src/index.ts > /tmp/kortix-api.log 2>&1 & )
+      until curl -sf http://127.0.0.1:8008/v1/health > /dev/null 2>&1; do sleep 1; done
+      # `exec` makes next start the container's main process, so a web crash
+      # still trips Render's restart logic. A late API crash degrades the web
+      # to proxied 502s until the next manual restart (logged in /tmp).
+      exec pnpm --filter Kortix-Computer-Frontend start
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.8
-      - key: USE_DEEP_MODELS
-        value: "0"
+      - key: NODE_VERSION
+        value: "22"
+      # Secrets stay in the Render dashboard; `sync: false` prompts on apply.
+      - key: DATABASE_URL # Supabase pooler URL (…pooler.supabase.com:5432/postgres)
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_URL # must be present at BUILD time (validate-production-supabase-env.mjs)
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY # must be present at BUILD time
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # FLM_MASTER_KEY is optional: the gateway config ships a default master
+      # key. Add it here (sync: false) before any public-facing deploy; the
+      # default is acceptable for a private smoke test only.

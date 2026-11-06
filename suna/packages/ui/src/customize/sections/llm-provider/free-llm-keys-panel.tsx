@@ -258,8 +258,8 @@ export function FreeLlmKeysPanel({
 
   // Host URL for OpenAI-compatible gateway
   const gatewayBaseUrl = typeof window !== 'undefined'
-    ? `${window.location.protocol}//${window.location.hostname}:3001/v1`
-    : 'http://localhost:3001/v1';
+    ? `${window.location.protocol}//${window.location.host}/v1`
+    : 'http://localhost:3000/v1';
 
   const handleCopy = async (text: string, onDone: () => void) => {
     try {

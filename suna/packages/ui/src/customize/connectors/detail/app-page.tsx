@@ -755,7 +755,7 @@ function useAppData(projectId: string, app: ReturnType<typeof appRefFromLocation
   });
   // The managed (Composio) twin found by name: it adds the sign-in, category
   // and app-event facts, and is a way to connect when the record lists none.
-  const twinName = discoverQuery.data?.item.name ?? null;
+  const twinName = discoverQuery.data?.item?.name ?? null;
   const managedTwinQuery = useQuery({
     queryKey: ['easy-connect-twin', projectId, provider, twinName],
     queryFn: async () => {
@@ -781,7 +781,7 @@ function useAppData(projectId: string, app: ReturnType<typeof appRefFromLocation
   const managed = managedTwinQuery.data ?? undefined;
   // The managed app as one more way to connect, after the API/MCP surfaces,
   // unless the catalogue already lists it (it ranks every way).
-  const listsComposio = detail?.variants.some((variant) => variant.kind === 'composio') === true;
+  const listsComposio = detail?.variants?.some((variant) => variant.kind === 'composio') === true;
   const managedSurface =
     managed && !listsComposio
       ? {
@@ -795,8 +795,8 @@ function useAppData(projectId: string, app: ReturnType<typeof appRefFromLocation
           url: null,
         }
       : null;
-  const installable = detail ? installableVariants(detail.variants) : [];
-  const resolved: ResolvedApp | null = detail
+  const installable = detail?.variants ? installableVariants(detail.variants) : [];
+  const resolved: ResolvedApp | null = detail && detail.item
     ? {
         name: managed?.name ?? detail.item.name,
         description: detail.item.description ?? managed?.description ?? null,
@@ -804,7 +804,7 @@ function useAppData(projectId: string, app: ReturnType<typeof appRefFromLocation
         logo: discoverLogoSource(detail.item),
         // Server order: best way first, the recommended one marked.
         surfaces: [
-          ...detail.variants.flatMap((variant): ResolvedApp['surfaces'] => {
+          ...(detail.variants || []).flatMap((variant): ResolvedApp['surfaces'] => {
             if (variant.kind === 'kortix') {
               return [
                 {

@@ -8,12 +8,15 @@ const TICKER_TAPE_SCRIPT =
 
 const TICKER_TAPE_CONFIG = {
   symbols: [
-    { proName: 'NASDAQ:AAPL', title: 'Apple' },
-    { proName: 'NASDAQ:NVDA', title: 'NVIDIA' },
-    { proName: 'NASDAQ:TSLA', title: 'Tesla' },
-    { proName: 'NASDAQ:MSFT', title: 'Microsoft' },
+    { proName: 'NSE:NIFTY', title: 'NIFTY 50' },
+    { proName: 'TVC:GOLD', title: 'Gold (Spot)' },
     { proName: 'BINANCE:BTCUSDT', title: 'BTC/USDT' },
+    { proName: 'NASDAQ:NVDA', title: 'NVIDIA' },
+    { proName: 'NASDAQ:AAPL', title: 'Apple' },
+    { proName: 'NASDAQ:TSLA', title: 'Tesla' },
     { proName: 'FX:EURUSD', title: 'EUR/USD' },
+    { proName: 'TVC:USOIL', title: 'Crude Oil' },
+    { proName: 'CME_MINI:ES1!', title: 'S&P 500 Futures' },
   ],
   showSymbolLogo: true,
   isTransparent: false,

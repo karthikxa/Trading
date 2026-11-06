@@ -528,6 +528,22 @@ const envSchema = z.object({
   // gateway stays internal and sandboxes reach it via the API's public origin.
   LLM_GATEWAY_PROXY_TARGET: optStr,
   OPENAI_API_KEY: optStr,
+  // ── FreeLLMAPI — free-tier model router (trading swarm + /v1 gateway) ─────
+  // Master key for /v1/models, /v1/chat/completions and /v1/messages. Default
+  // matches the Customize → FreeLLMAPI panel default. Empty disables master
+  // key auth (JWT-only).
+  FLM_MASTER_KEY: optStrDefault('flm_sk_live_free_gateway_9921'),
+  // Per-provider free-tier API keys; a provider is enabled the moment its key
+  // is set. Kilo's :free tier is keyless and always enabled.
+  FLM_GOOGLE_API_KEY: optStr,
+  FLM_GROQ_API_KEY: optStr,
+  FLM_CEREBRAS_API_KEY: optStr,
+  FLM_MISTRAL_API_KEY: optStr,
+  FLM_OPENROUTER_API_KEY: optStr,
+  FLM_SAMBANOVA_API_KEY: optStr,
+  FLM_NVIDIA_API_KEY: optStr,
+  FLM_COHERE_API_KEY: optStr,
+
   // ── Billing — Stripe (optional, only for cloud billing) ──────────────────
   STRIPE_SECRET_KEY: optStr,
   STRIPE_WEBHOOK_SECRET: optStr,
@@ -1412,6 +1428,15 @@ export const config = {
   LLM_GATEWAY_PROXY_PORT: env.LLM_GATEWAY_PROXY_PORT,
   LLM_GATEWAY_PROXY_TARGET: env.LLM_GATEWAY_PROXY_TARGET,
   OPENAI_API_KEY: env.OPENAI_API_KEY,
+  FLM_MASTER_KEY: env.FLM_MASTER_KEY,
+  FLM_GOOGLE_API_KEY: env.FLM_GOOGLE_API_KEY,
+  FLM_GROQ_API_KEY: env.FLM_GROQ_API_KEY,
+  FLM_CEREBRAS_API_KEY: env.FLM_CEREBRAS_API_KEY,
+  FLM_MISTRAL_API_KEY: env.FLM_MISTRAL_API_KEY,
+  FLM_OPENROUTER_API_KEY: env.FLM_OPENROUTER_API_KEY,
+  FLM_SAMBANOVA_API_KEY: env.FLM_SAMBANOVA_API_KEY,
+  FLM_NVIDIA_API_KEY: env.FLM_NVIDIA_API_KEY,
+  FLM_COHERE_API_KEY: env.FLM_COHERE_API_KEY,
   // ─── Stripe (Billing) ─────────────────────────────────────────────────────
   STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY,
   STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET,

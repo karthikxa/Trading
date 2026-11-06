@@ -51,9 +51,7 @@ import {
   CommandList as CossCommandList,
   CommandPanel,
   CommandSeparator as CossCommandSeparator,
-  CommandShortcut,
 } from '../../primitives/coss-command';
-import { Kbd, KbdGroup } from '../../primitives/kbd';
 import { AgentMark } from '../../internal/components/agent-mark';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { composerSelectableAgents } from './composer-agent-access';
@@ -380,6 +378,7 @@ export function AgentSelector({
       ...dynamicGroups.map((g) => ({
         id: g.id,
         value: g.id,
+        name: g.name,
         label: g.name,
         role: g.description || `${g.agentIds?.length || 3} agents in group`,
         agentIds: g.agentIds || ['fundamentals_analyst', 'trader_agent', 'portfolio_manager'],
@@ -391,6 +390,7 @@ export function AgentSelector({
       ...INITIAL_TAURIC_AGENTS.map((bot) => ({
         id: bot.id,
         value: bot.id,
+        name: bot.name,
         label: bot.name,
         role: bot.role,
         shape: bot.shape,
@@ -404,7 +404,15 @@ export function AgentSelector({
 
   function handleCommandItemClick(item: any) {
     if (item.isGroup) {
-      setSelectedGroup(item);
+      const gName = item.name || item.label || dynamicGroups.find((g) => g.id === item.id)?.name || 'Offsite crew';
+      const groupData = {
+        id: item.id,
+        name: gName,
+        label: gName,
+        agentIds: item.agentIds || ['fundamentals_analyst', 'trader_agent', 'portfolio_manager'],
+        isGroup: true,
+      };
+      setSelectedGroup(groupData);
     } else {
       setSelectedBotId(item.id);
       setSelectedGroup(null);
@@ -420,7 +428,15 @@ export function AgentSelector({
         sp.set('agentId', item.id);
       }
       window.history.pushState(null, '', `?${sp.toString()}`);
-      window.dispatchEvent(new CustomEvent('selected-swarm-agent', { detail: item }));
+      window.dispatchEvent(
+        new CustomEvent('selected-swarm-agent', {
+          detail: {
+            ...item,
+            name: item.name || item.label || 'Offsite crew',
+            isGroup: Boolean(item.isGroup),
+          },
+        })
+      );
     }
     setOpenCommand(false);
   }
@@ -431,18 +447,11 @@ export function AgentSelector({
         e.preventDefault();
         setOpenCommand((open) => !open);
       }
-      if ((e.metaKey || e.ctrlKey) && /^[1-7]$/.test(e.key)) {
-        const idx = parseInt(e.key, 10) - 1;
-        if (flatAgentItems[idx]) {
-          e.preventDefault();
-          handleCommandItemClick(flatAgentItems[idx]);
-        }
-      }
     };
 
     document.addEventListener('keydown', down);
     return () => document.removeEventListener('keydown', down);
-  }, [flatAgentItems]);
+  }, []);
 
   /**
    * Render the Coss UI Command Dialog particle for agents selection.
@@ -450,6 +459,10 @@ export function AgentSelector({
    */
   if (primaryAgents.length === 0 || activeSwarmBot || selectedGroup) {
     const isAll = selectedBotId === 'all_swarm';
+    const groupDisplayName = selectedGroup
+      ? selectedGroup.name || selectedGroup.label || dynamicGroups.find((g) => g.id === selectedGroup.id)?.name || 'Offsite crew'
+      : null;
+    const currentDisplayName = groupDisplayName || (isAll ? '@all (All Agents)' : (activeSwarmBot.name || activeSwarmBot.label));
 
     return (
       <CommandDialog onOpenChange={setOpenCommand} open={openCommand}>
@@ -457,7 +470,7 @@ export function AgentSelector({
           render={
             <button
               type="button"
-              aria-label={selectedGroup ? `Selected group: ${selectedGroup.name}` : `Selected agent: ${activeSwarmBot.name}`}
+              aria-label={selectedGroup ? `Selected group: ${groupDisplayName}` : `Selected agent: ${activeSwarmBot.name}`}
               style={{ outline: 'none', boxShadow: 'none' }}
               className="flex items-center gap-2 px-2.5 py-1 rounded-full border border-zinc-200 bg-white hover:bg-zinc-50 hover:border-zinc-300 text-zinc-900 transition-colors cursor-pointer outline-none focus:outline-none focus-visible:outline-none ring-0 focus:ring-0 focus-visible:ring-0 select-none shadow-2xs"
             />
@@ -474,11 +487,8 @@ export function AgentSelector({
               isAnimated={true}
             />
           )}
-          <span className={cn('max-w-[130px] truncate font-medium text-xs text-zinc-900 font-sans', triggerLabelClassName)}>
-            {selectedGroup ? selectedGroup.name : isAll ? '@all (All Agents)' : activeSwarmBot.name}
-          </span>
-          <span className="ml-1 text-[11px] font-sans font-normal text-zinc-400 tracking-tight select-none">
-            ⌘ J
+          <span className={cn('truncate text-sm font-medium text-zinc-900 leading-tight font-sans tracking-normal max-w-[160px]', triggerLabelClassName)}>
+            {currentDisplayName}
           </span>
         </CommandDialogTrigger>
         <CommandDialogPopup aria-label="Agents" className="outline-none focus:outline-none focus-visible:outline-none ring-0 focus:ring-0 border border-zinc-200/90 shadow-2xl rounded-2xl">
@@ -487,7 +497,7 @@ export function AgentSelector({
             <CommandPanel className="p-2 max-h-[380px] overflow-y-auto overscroll-contain outline-none focus:outline-none [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:bg-zinc-200/80 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-track]:bg-transparent">
               <CommandEmpty>No agents found.</CommandEmpty>
               <CossCommandList>
-                {(item: any, index: number) => {
+                {(item: any) => {
                   const isCurrent = selectedGroup ? selectedGroup.id === item.id : selectedBotId === item.id;
                   return (
                     <CossCommandItem
@@ -496,7 +506,7 @@ export function AgentSelector({
                       value={item.value}
                       className={cn(
                         'flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer hover:bg-zinc-100 transition-colors outline-none focus:outline-none select-none',
-                        isCurrent && 'bg-zinc-100/90 font-semibold',
+                        isCurrent && 'bg-zinc-100/90',
                       )}
                     >
                       {item.isGroup ? (
@@ -511,14 +521,11 @@ export function AgentSelector({
                         />
                       )}
                       <div className="flex flex-col min-w-0 flex-1">
-                        <span className="text-xs font-semibold text-zinc-900">{item.label}</span>
-                        <span className="text-[11px] text-zinc-400 truncate">{item.role}</span>
+                        <span className="text-sm font-medium text-zinc-900 leading-tight font-sans tracking-normal">
+                          {item.label || item.name}
+                        </span>
+                        <span className="text-xs text-zinc-400 truncate mt-0.5 font-sans">{item.role}</span>
                       </div>
-                      {index < 7 && (
-                        <CommandShortcut className="text-xs text-zinc-400 font-sans font-normal ml-auto">
-                          ⌘{index + 1}
-                        </CommandShortcut>
-                      )}
                     </CossCommandItem>
                   );
                 }}

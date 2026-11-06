@@ -628,7 +628,7 @@ function PrincipalAccessDialog({
     ...contract('inventory'),
   });
   const projectAgents = useMemo<ProjectAgentResourceItem[]>(
-    () => resourceGrantsQuery.data?.resources.agents ?? [],
+    () => resourceGrantsQuery.data?.resources?.agents ?? [],
     [resourceGrantsQuery.data],
   );
 

@@ -6,6 +6,8 @@ import { cn } from '../lib/utils';
 import { Hint } from '../../primitives/hint';
 import { isMyKortixAgentName, MY_KORTIX_DISPLAY_NAME } from '@kortix/shared';
 import { pixelMark } from '../lib/pixel-mark';
+import { BotAvatar } from '../../workspace/sidebar/bot-avatar';
+import { INITIAL_TAURIC_AGENTS } from '../../workspace/sidebar/trading-agents-nav';
 
 /** Mark size → tile size. The mark is a multiple of 7, so each pixel lands on
  *  whole device pixels; any other size blurs the edges. Literal px because
@@ -82,6 +84,34 @@ export function AgentMark({
   label?: string;
   className?: string;
 }) {
+  const match = INITIAL_TAURIC_AGENTS.find(
+    (b) =>
+      b.id === slug ||
+      (slug === 'neutral_risk' && (b.id === 'trader_agent' || b.name === 'Invoice Collector')) ||
+      b.id.replace(/_/g, '-') === slug.replace(/_/g, '-') ||
+      b.id.replace(/-/g, '_') === slug.replace(/-/g, '_')
+  );
+
+  if (match) {
+    return (
+      <Hint side="top" sideOffset={6} alignOffset={0} label={label ?? match.name}>
+        <span
+          data-slot="agent-mark"
+          style={{ width: tile, height: tile }}
+          className={cn('inline-flex shrink-0 items-center justify-center', className)}
+        >
+          <BotAvatar
+            shape={match.shape}
+            color={match.color}
+            expression={match.expression}
+            size={tile}
+            isAnimated={true}
+          />
+        </span>
+      </Hint>
+    );
+  }
+
   // A mark is a face, not a name: the hover hint says whose face it is.
   const mark = (
     <span
@@ -113,6 +143,14 @@ export function AgentMark({
  */
 export function agentDisplayName(slug: string): string {
   if (isMyKortixAgentName(slug)) return MY_KORTIX_DISPLAY_NAME;
+  const match = INITIAL_TAURIC_AGENTS.find(
+    (b) =>
+      b.id === slug ||
+      (slug === 'neutral_risk' && (b.id === 'trader_agent' || b.name === 'Invoice Collector')) ||
+      b.id.replace(/_/g, '-') === slug.replace(/_/g, '-') ||
+      b.id.replace(/-/g, '_') === slug.replace(/-/g, '_')
+  );
+  if (match) return match.name;
   const words = slug.replace(/[-_]+/g, ' ').trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
 }

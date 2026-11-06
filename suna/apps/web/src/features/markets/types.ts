@@ -20,7 +20,7 @@ export type StockWithWatchlistStatus = {
   isInWatchlist?: boolean;
 };
 
-export type MarketId = 'us' | 'in' | 'de' | 'ca' | 'au' | 'crypto' | 'fx';
+export type MarketId = 'us' | 'in' | 'commodities' | 'futures' | 'fx' | 'crypto' | 'de' | 'ca' | 'au';
 
 export type Hours = { open: number; close: number };
 

@@ -58,8 +58,8 @@ export function connectorSummary(
   connector: Pick<AdminConnector, 'actions'>,
   providerLabel: string,
 ): string {
-  const count = connector.actions.length;
-  return `${count} ${count === 1 ? 'tool' : 'tools'} · ${providerLabel}`;
+  const count = Array.isArray(connector?.actions) ? connector.actions.length : 0;
+  return `${count} ${count === 1 ? 'tool' : 'tools'} · ${providerLabel || 'Integration'}`;
 }
 
 /**

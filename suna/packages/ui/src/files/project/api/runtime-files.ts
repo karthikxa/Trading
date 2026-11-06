@@ -97,12 +97,15 @@ export async function listFiles(
   cursor?: string,
 ): Promise<FileListPage> {
   const relativeDir = toRepoRelative(dirPath);
-  const { entries, truncated, next_cursor } = await listProjectDirectory(projectId, {
+  const result = await listProjectDirectory(projectId, {
     ref,
     path: relativeDir || undefined,
     cursor,
     limit: FILE_LIST_PAGE_SIZE,
   });
+  const entries = Array.isArray(result?.entries) ? result.entries : [];
+  const truncated = result?.truncated;
+  const next_cursor = result?.next_cursor;
 
   const toNode = (entry: (typeof entries)[number]): FileNode => ({
     name: basename(entry.path),

@@ -109,13 +109,17 @@ function catalogRows(
   t: ReturnType<typeof useI18nTranslations>,
   agentMode: boolean,
 ): { project: AccessItem[]; builtin: AccessItem[]; ids: string[] } {
+  const skillsList = Array.isArray(catalog?.skills) ? catalog.skills : [];
+  const toolsList = Array.isArray(catalog?.tools) ? catalog.tools : [];
+  const extensionsList = Array.isArray(catalog?.extensions) ? catalog.extensions : [];
+
   if (view === 'skills') {
     const item = (skill: ProjectCapabilities['skills'][number]): AccessItem => ({ id: skill.id, description: skill.description, disabled: !skill.available });
     return {
-      project: catalog.skills.filter((s) => s.group === 'project').map(item),
-      builtin: catalog.skills.filter((s) => s.group === 'builtin').map(item),
+      project: skillsList.filter((s) => s.group === 'project').map(item),
+      builtin: skillsList.filter((s) => s.group === 'builtin').map(item),
       // Specific names only skills a session can load: a flagged skill whose flag is off is not one.
-      ids: catalog.skills.filter((s) => s.available).map((s) => s.id),
+      ids: skillsList.filter((s) => s.available).map((s) => s.id),
     };
   }
   if (view === 'tools') {
@@ -129,9 +133,9 @@ function catalogRows(
             : tool.description,
     });
     return {
-      project: catalog.tools.filter((tool) => tool.group === 'project').map(item),
-      builtin: BUILTIN_TOOL_GROUPS.flatMap((group) => catalog.tools.filter((tool) => tool.group === group).map(item)),
-      ids: catalog.tools.map((tool) => tool.id),
+      project: toolsList.filter((tool) => tool.group === 'project').map(item),
+      builtin: BUILTIN_TOOL_GROUPS.flatMap((group) => toolsList.filter((tool) => tool.group === group).map(item)),
+      ids: toolsList.map((tool) => tool.id),
     };
   }
   const item = (ext: ProjectCapabilities['extensions'][number]): AccessItem => ({
@@ -144,9 +148,9 @@ function catalogRows(
   // A required platform extension (permission rules on script calls, the show
   // tool's part, the turn's date) is plumbing, not a choice: it is not listed.
   return {
-    project: catalog.extensions.filter((ext) => ext.group === 'project').map(item),
-    builtin: catalog.extensions.filter((ext) => ext.group === 'platform' && !ext.required).map(item),
-    ids: catalog.extensions.filter((ext) => ext.group === 'project').map((ext) => ext.id),
+    project: extensionsList.filter((ext) => ext.group === 'project').map(item),
+    builtin: extensionsList.filter((ext) => ext.group === 'platform' && !ext.required).map(item),
+    ids: extensionsList.filter((ext) => ext.group === 'project').map((ext) => ext.id),
   };
 }
 
@@ -161,6 +165,8 @@ function withSwitches(
   catalog: ProjectCapabilities,
   editor: AgentDraft,
 ): AccessItem[] {
+  const toolsList = Array.isArray(catalog?.tools) ? catalog.tools : [];
+  const extensionsList = Array.isArray(catalog?.extensions) ? catalog.extensions : [];
   const toolSwitch = (id: string, aliases: string[]): Pick<AccessItem, 'checked' | 'onCheckedChange'> => {
     const value = editor.draft.tools;
     const codemodeOff = id === 'codemode' && editor.draft.codemode === 'off';
@@ -174,14 +180,14 @@ function withSwitches(
   };
   return rows.map((row) => {
     if (view === 'tools') {
-      const tool = catalog.tools.find((x) => x.id === row.id);
+      const tool = toolsList.find((x) => x.id === row.id);
       return { ...row, ...toolSwitch(row.id, tool?.aliases ?? []) };
     }
     if (view === 'extensions') {
-      const ext = catalog.extensions.find((x) => x.id === row.id);
+      const ext = extensionsList.find((x) => x.id === row.id);
       if (!ext || ext.required) return row;
       if (ext.group === 'platform') {
-        const tool = catalog.tools.find((x) => x.id === ext.controlled_by);
+        const tool = toolsList.find((x) => x.id === ext.controlled_by);
         return tool ? { ...row, ...toolSwitch(tool.id, tool.aliases) } : row;
       }
     }

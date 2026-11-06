@@ -1310,7 +1310,7 @@ function ProjectSessionView({ projectId, sessionId }: { projectId: string; sessi
         projectId={projectId}
         sessionId={sessionId}
         sessionLabel={
-          currentProjectSession
+          currentProjectSession && !Array.isArray(currentProjectSession)
             ? sessionDisplayLabel(currentProjectSession)
             : tSessionPage('failedLabel')
         }

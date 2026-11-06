@@ -22,14 +22,14 @@ export interface BrowseSectionsPage {
  */
 export function sectionsPageFromDiscover(page: DiscoverSectionsPage): BrowseSectionsPage {
   return {
-    popular: page.popular.map(catalogEntryFromDiscover),
-    sections: page.sections.map((section) => ({
+    popular: ((page && page.popular) || []).map(catalogEntryFromDiscover),
+    sections: ((page && page.sections) || []).map((section) => ({
       key: section.key,
       label: section.key,
       total: section.total,
-      items: section.items.map(catalogEntryFromDiscover),
+      items: ((section && section.items) || []).map(catalogEntryFromDiscover),
     })),
-    categories: page.categories.map((category) => ({
+    categories: ((page && page.categories) || []).map((category) => ({
       key: category.key,
       label: category.key,
       count: category.count,
@@ -54,7 +54,7 @@ export function browseSections(
     title: (label: string) => string;
   },
 ): CatalogSection[] {
-  const popularItems = page.popular.slice(0, opts.cardCount);
+  const popularItems = ((page && page.popular) || []).slice(0, opts.cardCount);
   const popular: CatalogSection[] =
     popularItems.length > 0
       ? [
@@ -67,11 +67,11 @@ export function browseSections(
         ]
       : [];
   return popular.concat(
-    page.sections.map((section) => ({
+    ((page && page.sections) || []).map((section) => ({
       key: section.key,
       label: opts.title(section.label),
       total: section.total,
-      items: section.items.slice(0, opts.cardCount),
+      items: ((section && section.items) || []).slice(0, opts.cardCount),
     })),
   );
 }

@@ -295,11 +295,14 @@ export const supabaseMFAService = {
       } = await supabase.auth.getUser();
 
       if (error) {
+        if (error.message?.includes('Auth session missing') || error.message?.includes('session') || error.status === 401) {
+          return { factors: [] };
+        }
         throw new Error(error.message);
       }
 
       if (!user) {
-        throw new Error('User not found');
+        return { factors: [] };
       }
 
       const factors: FactorInfo[] = [];
@@ -378,6 +381,9 @@ export const supabaseMFAService = {
       const aalResponse = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
 
       if (aalResponse.error) {
+        if (aalResponse.error.message?.includes('Auth session missing') || aalResponse.error.message?.includes('session')) {
+          return { currentLevel: 'aal1', nextLevel: 'aal1', currentAuthenticationMethods: [] };
+        }
         throw new Error(aalResponse.error.message);
       }
 
@@ -388,11 +394,14 @@ export const supabaseMFAService = {
       } = known ? { data: { user: known }, error: null } : await supabase.auth.getUser();
 
       if (userError) {
+        if (userError.message?.includes('Auth session missing') || userError.message?.includes('session')) {
+          return { currentLevel: 'aal1', nextLevel: 'aal1', currentAuthenticationMethods: [] };
+        }
         throw new Error(userError.message);
       }
 
       if (!user) {
-        throw new Error('User not found');
+        return { currentLevel: 'aal1', nextLevel: 'aal1', currentAuthenticationMethods: [] };
       }
 
       let userCreatedAt: Date | null = null;

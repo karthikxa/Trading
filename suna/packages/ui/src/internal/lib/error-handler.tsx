@@ -349,6 +349,22 @@ export const handleApiError = (
     return;
   }
 
+  // 401 (Invalid or expired token / unauthorized) is handled inline by surfaces
+  // (e.g. project-session-list Alert card) rather than spamming intrusive global toasts.
+  const lowerMsg = (formattedMessage || '').toLowerCase();
+  if (
+    status === 401 ||
+    status === 403 ||
+    lowerMsg.includes('forbidden') ||
+    lowerMsg.includes('invalid or expired token') ||
+    lowerMsg.includes('auth session missing') ||
+    lowerMsg.includes('permission') ||
+    lowerMsg.includes('validation failed') ||
+    lowerMsg.includes('jwt')
+  ) {
+    return;
+  }
+
   if (error?.status >= 500) {
     errorToast(formattedMessage, {
       description: tI18nComplete.raw('text75aec78d2ee8'),

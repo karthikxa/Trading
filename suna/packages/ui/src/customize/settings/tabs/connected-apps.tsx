@@ -85,16 +85,20 @@ export function ConnectedApps({ relativeTime }: { relativeTime: (iso: string) =>
       {grantsQuery.isLoading ? (
         <Skeleton className="h-14 rounded-md" />
       ) : grantsQuery.isError ? (
-        <ErrorState
-          size="sm"
-          title={t('loadFailed')}
-          description={grantsQuery.error instanceof Error ? grantsQuery.error.message : undefined}
-          action={
-            <Button variant="outline" size="sm" onClick={() => grantsQuery.refetch()}>
-              {t('retry')}
-            </Button>
-          }
-        />
+        ((grantsQuery.error as any)?.status === 401 || (grantsQuery.error as any)?.message?.toLowerCase().includes('token') || (grantsQuery.error as any)?.message?.toLowerCase().includes('auth')) ? (
+          <EmptyState icon={PlugsConnectedIcon} size="sm" title={t('emptyTitle')} description={t('emptyDescription')} />
+        ) : (
+          <ErrorState
+            size="sm"
+            title={t('loadFailed')}
+            description={grantsQuery.error instanceof Error ? grantsQuery.error.message : undefined}
+            action={
+              <Button variant="outline" size="sm" onClick={() => grantsQuery.refetch()}>
+                {t('retry')}
+              </Button>
+            }
+          />
+        )
       ) : grants.length === 0 ? (
         <EmptyState icon={PlugsConnectedIcon} size="sm" title={t('emptyTitle')} description={t('emptyDescription')} />
       ) : (

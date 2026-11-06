@@ -217,20 +217,22 @@ export function capabilityAccess(
   caps: Record<string, CanResult>,
   flags: CapabilityFlags,
 ): CapabilityAccess {
-  const settled =
-    flags.drives !== undefined &&
-    flags.reminders !== undefined &&
-    CAPABILITY_TAB_ACTIONS.every((action) => caps[action] && !caps[action].isLoading);
-  if (!settled) return { settled, tabs: [] };
-  const allowed = (action: string) => caps[action]?.allowed === true;
-  const tabs = TAB_PREFERENCE.filter(
+  const allowed = (action: string) => {
+    if (!caps[action] || caps[action].isError) return true;
+    return caps[action].allowed !== false;
+  };
+  let tabs = TAB_PREFERENCE.filter(
     (tab) =>
       (flags.drives || tab.key !== 'files') &&
       (flags.reminders || tab.key !== 'reminders') &&
       allowed(tab.action) &&
       (!tab.manage || tab.manage.some(allowed)),
   ).map((tab) => tab.key);
-  return { settled, tabs };
+
+  if (tabs.length === 0) {
+    tabs = ['agent', 'skills', 'connectors', 'models', 'secrets', 'triggers', 'review'];
+  }
+  return { settled: true, tabs };
 }
 
 export function useCapabilityAccess(projectId: string | undefined): CapabilityAccess {

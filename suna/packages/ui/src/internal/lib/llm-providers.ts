@@ -262,7 +262,8 @@ function order(entries: LlmProviderEntry[]): LlmProviderEntry[] {
 }
 
 /** Pure: raw catalog (baked seed OR a live `/llm-catalog/providers` fetch) → the modal's provider list, sorted. */
-export function buildLlmProviderCatalog(raw: RawCatalog): LlmProviderEntry[] {
+export function buildLlmProviderCatalog(raw?: RawCatalog | null): LlmProviderEntry[] {
+  if (!raw || !Array.isArray(raw.providers)) return [];
   return order(raw.providers.map(toEntry));
 }
 
@@ -318,6 +319,7 @@ export function getLlmProviderCatalogRevision(): number {
  * from the given raw catalog, never a partial merge.
  */
 export function applyLiveLlmProviderCatalog(raw: RawCatalog): void {
+  if (!raw || !Array.isArray(raw.providers)) return;
   LLM_PROVIDERS = buildLlmProviderCatalog(raw);
   LLM_PROVIDER_BY_ID = new Map(LLM_PROVIDERS.map((entry) => [entry.id, entry]));
   LLM_PROVIDER_BY_ENV_VAR = new Map(

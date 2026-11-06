@@ -8,8 +8,8 @@ export const MY_KORTIX_AGENT_NAME = 'mykortix';
  *  session or box from before the rename is live. */
 export const LEGACY_MY_KORTIX_AGENT_NAME = 'meta';
 export const MY_KORTIX_SANDBOX_SLUG = 'mykortix';
-/** My Kortix — the built-in agent's DISPLAY name, the name every UI renders. */
-export const MY_KORTIX_DISPLAY_NAME = 'My Kortix';
+/** Maus Agent (connected with Kortix) — the primary built-in agent's DISPLAY name. */
+export const MY_KORTIX_DISPLAY_NAME = 'Maus Agent';
 
 /** True for My Kortix under its slug, or the legacy `meta` slug of an older session. */
 /**

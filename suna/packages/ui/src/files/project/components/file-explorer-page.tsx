@@ -383,7 +383,7 @@ export function FileExplorerPage({ embedded = false }: { embedded?: boolean } = 
     setRightPanel((current) => (current === panel ? null : panel));
 
   const openCrCountQuery = useOpenChangeRequestList({ refetchInterval: 10_000 });
-  const openCrCount = openCrCountQuery.data?.change_requests.length ?? 0;
+  const openCrCount = openCrCountQuery.data?.change_requests?.length ?? 0;
 
   const searchParams = useUiSearchParams();
   const pathname = useUiPathname();

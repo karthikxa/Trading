@@ -1801,7 +1801,8 @@ export interface ConnectorMoveResult {
 
 /** The project's Pipedream and Composio connectors and the Kortix app each moves to. */
 export async function listConnectorMoves(projectId: string): Promise<ConnectorMove[]> {
-  return unwrap(await backendApi.get<{ moves: ConnectorMove[] }>(`/projects/${projectId}/connector-moves`)).moves;
+  const res = unwrap(await backendApi.get<{ moves: ConnectorMove[] }>(`/projects/${projectId}/connector-moves`));
+  return res?.moves ?? [];
 }
 
 /**

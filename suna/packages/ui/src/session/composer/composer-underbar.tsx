@@ -161,7 +161,7 @@ export function ComposerUnderbar({
           open={agentMenuOpen}
           onOpenChange={onAgentMenuOpenChange}
           onSelect={onAgentChange ?? NO_AGENT_SELECT}
-          triggerLabelClassName="max-w-[7rem]"
+          triggerLabelClassName="max-w-[11rem]"
           unavailableHint={noAccessibleAgents ? NO_AGENT_ACCESS_MESSAGE : undefined}
         />
 

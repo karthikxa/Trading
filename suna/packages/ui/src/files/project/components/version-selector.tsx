@@ -53,7 +53,7 @@ export function VersionSelector() {
 
   const { primary, others, archived } = useMemo(() => groupVersions(filtered), [filtered]);
 
-  const activeBranch = data?.branches.find((b) => b.name === activeRef);
+  const activeBranch = data?.branches?.find((b) => b.name === activeRef);
   const activeLabel = activeBranch ? versionTitle(activeBranch) : activeRef;
 
   const handleSelect = (branchName: string) => {

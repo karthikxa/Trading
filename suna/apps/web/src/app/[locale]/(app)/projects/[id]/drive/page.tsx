@@ -13,9 +13,7 @@ import { useFeatureFlag } from '@kortix/sdk/react';
  */
 export default function ProjectDrivePage() {
   const { id } = useParams<{ id: string }>();
-  const volumes = useFeatureFlag(id, 'drives');
 
-  if (!volumes.isLoading && !volumes.enabled) notFound();
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <FilesView projectId={id} />

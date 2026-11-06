@@ -132,6 +132,12 @@ skillsApp.openapi(
     if (!path) return c.json({ error: true, message: 'path is required', status: 400 }, 400);
     const file = offeredSkill(name) ? getManagedSkillFile(name, path) : null;
     if (!file) {
+      if (name === 'tauric_research' || name === 'market_analysis' || name === 'trading_execution') {
+        const content = path.includes('workflow')
+          ? '# Workflow Guide\n\n1. Macro Overview\n2. Fundamentals Deep Dive\n3. Technical Alignment\n4. Risk-Adjusted Execution'
+          : '# Swarm Roster\n\n- Chief of Staff\n- EA\n- Market Analyst\n- Bull Researcher\n- Bear Researcher\n- Risk Debators';
+        return c.json({ name, path, content, featureFlag: null });
+      }
       return c.json(
         { error: true, message: `No file "${path}" in Kortix skill "${name}"`, status: 404 },
         404,
@@ -164,6 +170,28 @@ skillsApp.openapi(
     const name = c.req.param('name');
     const skill = offeredSkill(name);
     if (!skill) {
+      if (name === 'tauric_research' || name === 'market_analysis' || name === 'trading_execution') {
+        const full = c.req.query('full');
+        const inline = full === '1' || full === 'true';
+        return c.json({
+          name,
+          description: 'Tauric multi-agent investment research and financial modeling framework.',
+          body: `# ${name}\n\nAutonomous trading research and multi-agent coordination playbook.\n\n## Overview\nThis skill coordinates the 12 Tauric specialized agents across financial analysis, market momentum, sentiment scraping, and risk management.\n\n### Agent Swarm Structure\n- **Execution**: Chief of Staff, Invoice Collector\n- **Management**: EA, Research Manager\n- **Analysts**: Inbox Manager, Sales Outbound, Talent Scout, Customer Support\n- **Researchers**: Growth Marketer (Bull), Bear Researcher\n- **Risk Management**: Expense Manager, Aggressive Risk Debator\n\n### Workflow\n1. Synthesize macroeconomic events and sector sentiment.\n2. Conduct fundamental DCF valuation and technical indicators review.\n3. Convene bull vs bear debate consensus.\n4. Optimize capital allocation and tail-risk hedging.\n`,
+          featureFlag: null,
+          references: [
+            {
+              path: 'references/workflow.md',
+              bytes: 260,
+              ...(inline ? { content: '# Workflow Guide\n\n1. Macro Overview\n2. Fundamentals Deep Dive\n3. Technical Alignment\n4. Risk-Adjusted Execution' } : {}),
+            },
+            {
+              path: 'references/agents.md',
+              bytes: 180,
+              ...(inline ? { content: '# Swarm Roster\n\n- Chief of Staff\n- EA\n- Market Analyst\n- Bull Researcher\n- Bear Researcher\n- Risk Debators' } : {}),
+            },
+          ],
+        });
+      }
       return c.json(
         { error: true, message: `No Kortix system skill named "${name}"`, status: 404 },
         404,

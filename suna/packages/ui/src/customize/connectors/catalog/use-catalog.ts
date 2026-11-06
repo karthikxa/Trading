@@ -250,7 +250,7 @@ export function useCatalog(
     () =>
       withoutComputerRecord(
         hideComputerRecord,
-        (discoverQuery.data?.pages ?? []).flatMap((page) => page.items.map(catalogEntryFromDiscover)),
+        (discoverQuery.data?.pages ?? []).flatMap((page) => ((page && page.items) || []).map(catalogEntryFromDiscover)),
       ),
     [hideComputerRecord, discoverQuery.data?.pages],
   );
@@ -322,6 +322,7 @@ export function useCatalog(
 }
 
 /** The catalogue's Computer record (`native:computer`), dropped where no computer can be paired. */
-function withoutComputerRecord(hide: boolean, entries: CatalogEntry[]): CatalogEntry[] {
-  return hide ? entries.filter((entry) => entry.key !== 'discover:native:computer') : entries;
+function withoutComputerRecord(hide: boolean, entries: CatalogEntry[] | undefined): CatalogEntry[] {
+  if (!entries || !Array.isArray(entries)) return [];
+  return hide ? entries.filter((entry) => entry && entry.key !== 'discover:native:computer') : entries;
 }

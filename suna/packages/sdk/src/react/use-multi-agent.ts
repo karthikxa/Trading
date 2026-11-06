@@ -60,7 +60,7 @@ export function usePeerMessages(
   const refresh = () => queryClient.invalidateQueries({ queryKey: qk.project.sessionAgents(projectId ?? '', sessionId ?? '') });
   const query = useQuery({
     queryKey: qk.project.peerMessages(projectId ?? '', sessionId ?? '', direction ?? 'all'),
-    queryFn: async () => (await listPeerMessages(projectId as string, sessionId as string, { direction })).messages,
+    queryFn: async () => ((await listPeerMessages(projectId as string, sessionId as string, { direction }).catch(() => ({ messages: [] }))).messages ?? []),
     enabled: !!projectId && !!sessionId,
     ...contract('inventory'),
     ...poll,
@@ -87,7 +87,7 @@ export function useTeamTasks(
   const refresh = () => queryClient.invalidateQueries({ queryKey: key });
   const query = useQuery({
     queryKey: key,
-    queryFn: async () => (await listSessionTasks(projectId as string, leadSessionId as string)).tasks,
+    queryFn: async () => ((await listSessionTasks(projectId as string, leadSessionId as string).catch(() => ({ tasks: [] }))).tasks ?? []),
     enabled: !!projectId && !!leadSessionId && (options.enabled ?? true),
     ...contract('inventory'),
     ...poll,
@@ -117,8 +117,8 @@ export function useTeammates(
   return useQuery({
     queryKey: qk.project.teammates(projectId ?? '', leadSessionId ?? ''),
     queryFn: async (): Promise<ProjectSession[]> =>
-      (await listProjectSessionsPage(projectId as string, { teamLead: leadSessionId as string, limit: TEAMMATES_LIMIT }))
-        .items,
+      ((await listProjectSessionsPage(projectId as string, { teamLead: leadSessionId as string, limit: TEAMMATES_LIMIT }).catch(() => ({ items: [] })))
+        .items ?? []),
     enabled: !!projectId && !!leadSessionId && (options.enabled ?? true),
     ...contract('inventory'),
     ...poll,

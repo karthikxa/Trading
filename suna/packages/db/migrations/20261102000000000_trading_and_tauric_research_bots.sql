@@ -1,4 +1,4 @@
--- 20261102000000000_trading_and_tauric_research_bots.sql
+ -- 20261102000000000_trading_and_tauric_research_bots.sql
 -- Migration for Trading schema and TauricResearch bots
 
 CREATE SCHEMA IF NOT EXISTS trading;

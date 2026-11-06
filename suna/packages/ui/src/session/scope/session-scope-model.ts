@@ -77,13 +77,13 @@ export interface SessionScopeCommit {
 }
 
 function cloneBindings(
-  bindings: Record<string, { connection_id: string }>,
+  bindings?: Record<string, { connection_id: string }> | null,
 ): Record<string, { connection_id: string }> {
   return Object.fromEntries(
-    Object.entries(bindings).map(([alias, binding]) => [
+    Object.entries(bindings || {}).map(([alias, binding]) => [
       alias,
       {
-        connection_id: binding.connection_id,
+        connection_id: binding?.connection_id,
       },
     ]),
   );
@@ -119,10 +119,12 @@ export function createSessionScopeDraft(
 ): SessionScopeDraft {
   const draft: SessionScopeDraft = {};
   if (!catalog || catalog.secrets.status === 'ready') {
-    draft.secrets = scope.secrets_allowlist === null ? null : [...scope.secrets_allowlist];
+    draft.secrets = Array.isArray(scope?.secrets_allowlist)
+      ? [...scope.secrets_allowlist]
+      : null;
   }
   if (!catalog || catalog.connector_connections.status === 'ready') {
-    draft.connector_bindings = cloneBindings(scope.connector_bindings);
+    draft.connector_bindings = cloneBindings(scope?.connector_bindings);
     // `scope.connector_bindings` is the SERVER-RESOLVED map, which is identical
     // for a session that overrode its connectors and one that just inherits the
     // project defaults. `connector_bindings_configured` is the only thing that
@@ -130,7 +132,7 @@ export function createSessionScopeDraft(
     // user selection, so an untouched Save posted it back as a full
     // replacement — freezing project defaults into an override, and turning an
     // empty resolve into an explicit zero-connector session.
-    draft.connector_bindings_inherited = scope.connector_bindings_configured !== true;
+    draft.connector_bindings_inherited = scope?.connector_bindings_configured !== true;
   }
   return draft;
 }
@@ -296,14 +298,20 @@ export function buildSessionScopeReplacement(
 export function buildSessionScopeSelectionCatalog(
   input: SessionScopeRawCatalogs,
 ): SessionScopeSelectionCatalog {
+  const secretItems =
+    input?.secrets && input.secrets.status === 'ready' && Array.isArray(input.secrets.items)
+      ? input.secrets.items
+      : [];
+
   const secrets: SessionScopeSelectionCatalog['secrets'] =
-    input.secrets.status === 'unavailable'
+    !input?.secrets || input.secrets.status === 'unavailable'
       ? { status: 'unavailable' }
       : {
           status: 'ready',
-          items: input.secrets.items
+          items: secretItems
             .filter(
               (secret) =>
+                secret &&
                 secret.effective_source !== 'none' &&
                 secretGrantIncludes(input.grants?.secrets, secret.identifier),
             )
@@ -313,14 +321,14 @@ export function buildSessionScopeSelectionCatalog(
             })),
         };
 
-  if (input.connectors.status === 'unavailable' || input.connections.status === 'unavailable') {
+  if (!input?.connectors || input.connectors.status === 'unavailable' || !input?.connections || input.connections.status === 'unavailable') {
     return {
       secrets,
       connector_connections: { status: 'unavailable' },
     };
   }
-  const connectors = input.connectors.items;
-  const connections = input.connections.items;
+  const connectors = Array.isArray(input.connectors.items) ? input.connectors.items : [];
+  const connections = Array.isArray(input.connections.items) ? input.connections.items : [];
 
   return {
     secrets,
@@ -329,6 +337,7 @@ export function buildSessionScopeSelectionCatalog(
       items: connectors
         .filter(
           (connector) =>
+            connector &&
             connector.status !== 'disabled' &&
             connectorGrantIncludes(input.grants?.connectors, connector.slug),
         )
@@ -346,6 +355,7 @@ export function buildSessionScopeSelectionCatalog(
             connections: connections
               .filter(
                 (connection) =>
+                  connection &&
                   connection.connector_alias === connector.slug &&
                   (connection.owner_type === 'project' || connection.owner_type === 'member') &&
                   connection.status === 'active',
@@ -353,7 +363,7 @@ export function buildSessionScopeSelectionCatalog(
               .sort(
                 (left, right) =>
                   Number(right.is_default) - Number(left.is_default) ||
-                  left.connection_id.localeCompare(right.connection_id),
+                  (left.connection_id || '').localeCompare(right.connection_id || ''),
               )
               .map((connection) => ({
                 connection_id: connection.connection_id,

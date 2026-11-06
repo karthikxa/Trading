@@ -749,7 +749,7 @@ export function AgentsSidebarView({
 
                       <div className="flex flex-col min-w-0 flex-1 gap-0.5">
                         <div className="flex items-center justify-between gap-1.5">
-                          <span className="font-medium text-[13px] truncate text-zinc-800 leading-tight">
+                          <span className="font-medium text-sm truncate text-zinc-900 leading-tight font-sans tracking-normal">
                             {group.name}
                           </span>
                           <div className="flex items-center gap-1.5 shrink-0">
@@ -890,7 +890,7 @@ export function AgentsSidebarView({
                       <div className="flex flex-col min-w-0 flex-1 gap-0.5">
                         {/* Top Row: Name on Left (Light font), Time + Pin + 3-dots on Right */}
                         <div className="flex items-center justify-between gap-1.5">
-                          <span className="font-normal text-[13px] truncate text-zinc-800 leading-tight">
+                          <span className="font-medium text-sm truncate text-zinc-900 leading-tight font-sans tracking-normal">
                             {bot.name}
                           </span>
                           <div className="flex items-center gap-1.5 shrink-0">

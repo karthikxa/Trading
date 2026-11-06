@@ -165,6 +165,17 @@ app.route('/v1/usage', usageApp); // GET /v1/usage[?start&end&group_by] — acco
 app.route('/v1/billing', billingApp); // /v1/billing/account-state, /v1/billing/webhooks/*
 app.route('/v1/account', accountDeletionApp); // account deletion status/request/cancel/immediate
 app.route('/v1/drives', drivesApp); // personal, agent and company drives + their files and versions
+
+// Trading: the Tauric Swarm (agents, runs, decisions, bot chat) and the
+// FreeLLMAPI gateway surfaces (/v1/models, /v1/chat/completions, /v1/messages).
+// supabaseAuth guards /v1/trading; the gateway routes carry their own master
+// key or JWT check (master key default: see config FLM_MASTER_KEY).
+import { tradingApp } from './trading/routes';
+import { tradingGatewayApp } from './trading/gateway';
+app.use('/v1/trading', supabaseAuth);
+app.use('/v1/trading/*', supabaseAuth);
+app.route('/v1/trading', tradingApp);
+app.route('/v1', tradingGatewayApp);
 // Kortix in Chrome: the user's own Chrome, driven from a session sandbox. The
 // control socket (/v1/chrome/ws) is upgraded in inbound-dispatch.ts. The sandbox
 // routes (attach, release) take only a session-scoped credential, checked in the

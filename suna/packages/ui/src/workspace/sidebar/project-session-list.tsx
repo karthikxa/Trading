@@ -13,6 +13,7 @@ import {
   sessionSource,
 } from '../../session/actions/session-label';
 import { SessionSharedIcon } from '../projects/session-shared-icon';
+import { Alert, AlertDescription, AlertTitle } from '../../primitives/alert';
 import { Button } from '../../primitives/button';
 import { CountBadge } from '../../primitives/count-badge';
 import { Disclosure, DisclosureContent, DisclosureTrigger } from '../../primitives/disclosure';
@@ -620,23 +621,31 @@ export function ProjectSessionList({ projectId }: ProjectSessionListProps) {
     }
 
     if (viewState === 'error') {
+      const errStatus = (error as any)?.status ?? (error as any)?.response?.status;
       const message = error instanceof Error ? error.message : undefined;
+      const lower = (message || '').toLowerCase();
+      // 401 or token/session issues in local dev — don't show an error card, show empty state cleanly.
+      if (errStatus === 401 || lower.includes('token') || lower.includes('auth') || lower.includes('session')) {
+        return <SessionsEmptyState className="flex-1 pb-16" />;
+      }
       return (
-        <div className="space-y-1.5 px-2 py-2">
-          <p className="text-destructive/80 text-xs">{t('sessionList.loadError')}</p>
-          {message && (
-            <p className="text-muted-foreground truncate text-xs" title={message}>
-              {message}
-            </p>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-6 px-2 text-xs"
-            onClick={() => refetch()}
-          >
-            {t('retry')}
-          </Button>
+        <div className="px-2 py-2">
+          <Alert variant="destructive" className="rounded-2xl border border-red-200/90 bg-red-50/70 p-3 shadow-2xs">
+            <AlertTitle className="text-xs font-semibold text-red-950">
+              {t('sessionList.loadError')}
+            </AlertTitle>
+            <AlertDescription className="text-xs text-zinc-600 space-y-2 mt-1">
+              <p className="text-[11.5px] leading-snug">{message || t('sessionList.loadError')}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2.5 text-xs bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-800 shadow-2xs font-medium cursor-pointer"
+                onClick={() => refetch()}
+              >
+                {t('retry')}
+              </Button>
+            </AlertDescription>
+          </Alert>
         </div>
       );
     }

@@ -3,7 +3,7 @@
 import React, { memo, useState, useEffect } from 'react';
 import useTradingViewWidget from './useTradingViewWidget';
 import { cn } from '@kortix/ui';
-import { Maximize2, Minimize2 } from 'lucide-react';
+import { Maximize2, Minimize2, Loader2 } from 'lucide-react';
 
 interface TradingViewWidgetProps {
   scriptUrl: string;
@@ -11,6 +11,7 @@ interface TradingViewWidgetProps {
   height?: number;
   className?: string;
   allowExpand?: boolean;
+  lazy?: boolean;
 }
 
 const TradingViewWidget = ({
@@ -19,6 +20,7 @@ const TradingViewWidget = ({
   height = 560,
   className,
   allowExpand = false,
+  lazy,
 }: TradingViewWidgetProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -34,6 +36,8 @@ const TradingViewWidget = ({
   }, [isExpanded]);
 
   const isAdvancedChart = scriptUrl.includes('advanced-chart');
+  const shouldLazy = lazy !== undefined ? lazy : !isAdvancedChart;
+
   const widgetConfig = {
     ...config,
     width: '100%',
@@ -41,7 +45,7 @@ const TradingViewWidget = ({
     ...(isAdvancedChart ? { autosize: true } : {}),
   };
 
-  const containerRef = useTradingViewWidget(scriptUrl, widgetConfig);
+  const containerRef = useTradingViewWidget(scriptUrl, widgetConfig, shouldLazy);
 
   return (
     <>
@@ -64,7 +68,7 @@ const TradingViewWidget = ({
             type="button"
             onClick={() => setIsExpanded(!isExpanded)}
             className={cn(
-              'absolute top-3 right-3 z-10 p-2 rounded-lg bg-white/90 shadow-sm border border-zinc-200/80 hover:bg-zinc-100 transition-colors',
+              'absolute top-3 right-3 z-10 p-2 rounded-lg bg-white/90 shadow-sm border border-zinc-200/80 hover:bg-zinc-100 transition-colors cursor-pointer',
               !isExpanded && 'opacity-0 hover:opacity-100 focus-visible:opacity-100',
             )}
             aria-label={isExpanded ? 'Exit full screen' : 'Full screen'}

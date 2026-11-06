@@ -121,6 +121,6 @@ export function turnServedModelResolver(models: readonly NamedModel[] | undefine
  */
 export function sessionBilledCost(usage: SessionModelUsage | undefined): number | null {
   if (!usage) return null;
-  const fellBack = Object.values(usage.turns).some((turn) => turn.fallback_from) || !!usage.latest?.fallback_from;
+  const fellBack = Object.values(usage.turns ?? {}).some((turn) => turn?.fallback_from) || !!usage.latest?.fallback_from;
   return fellBack ? usage.billed_cost : null;
 }

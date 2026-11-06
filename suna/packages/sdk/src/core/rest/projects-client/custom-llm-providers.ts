@@ -39,9 +39,15 @@ export interface CustomLlmProviderInput {
 
 /** Every custom provider of the project, legacy key-only rows included (`configured: false`). */
 export async function listCustomLlmProviders(projectId: string): Promise<CustomLlmProvider[]> {
-  return unwrap(await backendApi.get<{ providers: CustomLlmProvider[] }>(
+  try {
+    const res = await backendApi.get<{ providers: CustomLlmProvider[] }>(
       `/projects/${encodeURIComponent(projectId)}/custom-providers`,
-    )).providers;
+    );
+    const data = unwrap(res);
+    return data?.providers ?? [];
+  } catch {
+    return [];
+  }
 }
 
 /** Create or replace one custom provider. Rejects with `400` `invalid_body`, `reserved_provider_id` or `unsafe_base_url`. */

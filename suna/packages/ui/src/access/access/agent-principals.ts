@@ -159,7 +159,14 @@ export const projectAgentIdentitiesQueryKey = (projectId: string | undefined) =>
 export function useProjectAgentIdentities(projectId: string | undefined, enabled = true) {
   return useQuery({
     queryKey: projectAgentIdentitiesQueryKey(projectId),
-    queryFn: () => listProjectAgentIdentities(projectId as string),
+    queryFn: async () => {
+      try {
+        const res = await listProjectAgentIdentities(projectId as string);
+        return Array.isArray(res) ? res : [];
+      } catch {
+        return [];
+      }
+    },
     enabled: enabled && !!projectId,
     staleTime: 60_000,
     retry: false,
@@ -169,7 +176,14 @@ export function useProjectAgentIdentities(projectId: string | undefined, enabled
 export function useAgentIdentities(accountId: string | undefined, enabled = true) {
   return useQuery({
     queryKey: agentIdentitiesQueryKey(accountId),
-    queryFn: () => listAgentIdentities(accountId as string),
+    queryFn: async () => {
+      try {
+        const res = await listAgentIdentities(accountId as string);
+        return Array.isArray(res) ? res : [];
+      } catch {
+        return [];
+      }
+    },
     enabled: enabled && !!accountId,
     staleTime: 60_000,
     retry: false,

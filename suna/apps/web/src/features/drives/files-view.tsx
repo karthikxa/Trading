@@ -18,6 +18,7 @@ import {
 } from '@kortix/ui/internal/stores/files-store';
 import { Home } from '@kortix/ui/internal/icons/home';
 import { ErrorState } from '@kortix/ui/error-state';
+import { ProjectFilesView } from '@kortix/ui/workspace';
 import {
   DriveExplorer,
   FileExplorerSourceProvider,
@@ -81,12 +82,6 @@ export function FilesView({ projectId }: { projectId: string }) {
     ...contract('config'),
     refetchOnWindowFocus: false,
   });
-  const settled = detail.isFetchedAfterMount || (detail.isSuccess && !detail.isStale);
-  const off = settled && !detail.isFetching && !availability.enabled;
-  useEffect(() => {
-    if (off) router.replace(`/projects/${projectId}/files`);
-  }, [off, projectId, router]);
-
   let body: ReactNode;
   if (availability.isLoading || (availability.enabled && drive.isLoading)) {
     body = (
@@ -95,20 +90,8 @@ export function FilesView({ projectId }: { projectId: string }) {
         <Skeleton className="h-40 w-full" />
       </div>
     );
-  } else if (!availability.enabled) {
-    body = null;
-  } else if (drive.isError || !drive.data) {
-    body = (
-      <ErrorState
-        title={t('loadError')}
-        className="h-full"
-        action={
-          <Button variant="outline" size="sm" onClick={() => void drive.refetch()}>
-            {t('retry')}
-          </Button>
-        }
-      />
-    );
+  } else if (!availability.enabled || drive.isError || !drive.data) {
+    body = <ProjectFilesView projectId={projectId} />;
   } else {
     body = <FilesBrowser drive={drive.data} projectId={projectId} />;
   }

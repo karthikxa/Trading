@@ -3670,8 +3670,8 @@
   },
   "firstChat": {
     "title": "Your first chat with Kortix",
-    "greeting": "Welcome, {name}. I'm Kortix.",
-    "greetingNoName": "Welcome. I'm Kortix.",
+    "greeting": "Welcome, {name}.",
+    "greetingNoName": "Welcome.",
     "intro": "Bring me anything: a task, a workflow, or a half-formed idea. We'll figure it out together.",
     "canTitle": "What you can do with Kortix",
     "can": {

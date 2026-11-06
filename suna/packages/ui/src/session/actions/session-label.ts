@@ -99,14 +99,18 @@ export function sessionSource(session: ProjectSession, tI18nComplete: UiTranslat
  * session.name (OpenCode auto-title mirrored during session reads) → legacy
  * metadata.session_name → branch slice → short id.
  */
-export function sessionDisplayLabel(session: ProjectSession): string {
+export function sessionDisplayLabel(session?: Partial<ProjectSession> | null): string {
+  if (!session || typeof session !== 'object') return 'Session';
   const metadataName =
     typeof session.metadata?.session_name === 'string'
       ? (session.metadata.session_name as string)
       : null;
-  const fallback = session.branch_name
-    ? session.branch_name.slice(0, 14)
-    : session.session_id.slice(0, 8);
+  const fallback =
+    session.branch_name && typeof session.branch_name === 'string'
+      ? session.branch_name.slice(0, 14)
+      : session.session_id && typeof session.session_id === 'string'
+        ? session.session_id.slice(0, 8)
+        : 'Session';
   return (
     stripChatMentionMarkup(session.custom_name ?? '') ||
     stripChatMentionMarkup(session.name ?? '') ||
