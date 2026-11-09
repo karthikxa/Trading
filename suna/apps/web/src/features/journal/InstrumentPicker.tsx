@@ -228,3 +228,4 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
 }
 
 export default InstrumentPicker;
+

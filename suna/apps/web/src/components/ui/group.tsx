@@ -45,3 +45,4 @@ export const GroupSeparator = React.forwardRef<
 GroupSeparator.displayName = 'GroupSeparator';
 
 export default Group;
+
