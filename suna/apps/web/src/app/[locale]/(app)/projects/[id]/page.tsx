@@ -38,6 +38,7 @@ import TvEconomicCalendar from '@/features/markets/TvEconomicCalendar';
 import WatchlistTable from '@/features/markets/WatchlistTable';
 import TvLiveChart from '@/features/markets/TvLiveChart';
 import GodsEyeSpecView from '@/features/spec/GodsEyeSpecView';
+import JournalView from '@/features/journal/JournalView';
 import SearchCommand, { openSearch } from '@/features/markets/SearchCommand';
 import StockSymbolIcon from '@/features/markets/StockSymbolIcon';
 import { MARKETS } from '@/features/markets/markets';
@@ -68,18 +69,20 @@ export default function ProjectIndexPage() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  // Active view management: 'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent'
+  // Active view management: 'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent' | 'journal'
   const queryTab = searchParams.get('tab');
-  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent'>(
+  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent' | 'journal'>(
     queryTab === 'overview'
       ? 'overview'
       : queryTab === 'watchlist'
         ? 'watchlist'
-        : queryTab === 'spec'
-          ? 'spec'
-          : queryTab === 'agent'
-            ? 'agent'
-            : 'chat',
+        : queryTab === 'journal'
+          ? 'journal'
+          : queryTab === 'spec'
+            ? 'spec'
+            : queryTab === 'agent'
+              ? 'agent'
+              : 'chat',
   );
 
   // Tabs only contain individual stocks
@@ -121,6 +124,8 @@ export default function ProjectIndexPage() {
       setActiveView('overview');
     } else if (queryTab === 'watchlist') {
       setActiveView('watchlist');
+    } else if (queryTab === 'journal') {
+      setActiveView('journal');
     } else if (queryTab === 'spec') {
       setActiveView('spec');
     } else if (queryTab === 'agent') {
@@ -618,6 +623,11 @@ export default function ProjectIndexPage() {
         {/* VIEW: SPEC (God's Eye View - bilawalsidhu/gods-eye-view)                  */}
         {/* ========================================================================= */}
         {activeView === 'spec' && <GodsEyeSpecView />}
+
+        {/* ========================================================================= */}
+        {/* VIEW: JOURNAL                                                             */}
+        {/* ========================================================================= */}
+        {activeView === 'journal' && <JournalView projectId={projectId} />}
 
         {/* ========================================================================= */}
         {/* VIEW 4: SINGLE-STOCK RESEARCH TERMINAL                                     */}

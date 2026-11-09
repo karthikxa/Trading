@@ -45,6 +45,7 @@ import {
   ChartLineUp,
   PushPin,
   Eye,
+  Notebook,
   ChatCircleDots,
   Sliders,
   HardDrives,
@@ -301,6 +302,20 @@ export function ProjectSidebar({
                             <PushPin className="size-4" />
                           </span>
                           <span>Watchlist</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        asChild
+                        className="group/menu-button text-sidebar-foreground relative cursor-pointer"
+                      >
+                        <Link href={`/projects/${projectId}?tab=journal`}>
+                          <span className="shrink-0">
+                            <Notebook className="size-4" />
+                          </span>
+                          <span>Journal</span>
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
