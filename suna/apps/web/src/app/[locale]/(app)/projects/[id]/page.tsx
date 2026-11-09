@@ -41,6 +41,7 @@ import GodsEyeSpecView from '@/features/spec/GodsEyeSpecView';
 import JournalView from '@/features/journal/JournalView';
 import SearchCommand, { openSearch } from '@/features/markets/SearchCommand';
 import StockSymbolIcon from '@/features/markets/StockSymbolIcon';
+import { resolveTradingViewSymbol } from '@/features/markets/symbol-resolver';
 import { MARKETS } from '@/features/markets/markets';
 import { getStoredWatchlist, type WatchlistEntry } from '@/features/markets/watchlist.store';
 import type { MarketId } from '@/features/markets/types';
@@ -137,12 +138,12 @@ export default function ProjectIndexPage() {
 
   // Open a stock tab
   const openStockTab = (symbolRaw: string, companyName?: string) => {
-    const symbol = symbolRaw.replace(/^.*:/, '').toUpperCase().trim();
-    const tabId = `stock:${symbol}`;
-    const name = companyName || symbol;
+    const resolved = resolveTradingViewSymbol(symbolRaw, companyName);
+    const tabId = `stock:${resolved.fullSymbol}`;
+    const name = companyName || resolved.name || resolved.cleanSymbol;
     setStockTabs((prev) => {
       if (prev.some((t) => t.id === tabId)) return prev;
-      return [...prev, { id: tabId, symbol, name }];
+      return [...prev, { id: tabId, symbol: resolved.fullSymbol, name }];
     });
     setActiveStockTab(tabId);
     setActiveView('stock');
@@ -219,11 +220,12 @@ export default function ProjectIndexPage() {
   const currentMarketObj = MARKETS.find((m) => m.id === activeMarket) || MARKETS[0];
   const currentStockItem =
     stockTabs.find((t) => t.id === activeStockTab) || stockTabs[0] || {
-      id: 'stock:AAPL',
-      symbol: 'AAPL',
+      id: 'stock:NASDAQ:AAPL',
+      symbol: 'NASDAQ:AAPL',
       name: 'Apple',
     };
-  const activeStockSymbol = currentStockItem.symbol;
+  const resolvedActive = resolveTradingViewSymbol(currentStockItem.symbol, currentStockItem.name);
+  const activeStockSymbol = resolvedActive.cleanSymbol;
 
   return (
     <div className="flex flex-col h-full w-full overflow-hidden bg-background font-sans">
@@ -650,14 +652,14 @@ export default function ProjectIndexPage() {
                         </span>
                       </div>
                       <p className="text-xs text-zinc-500 mt-0.5 font-medium">
-                        {activeStockSymbol} · NASDAQ NMS - GLOBAL MARKET · Common Stock
+                        {resolvedActive.cleanSymbol} · {resolvedActive.exchange} · {resolvedActive.assetType.toUpperCase()}
                       </p>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-4">
                     {/* Live TradingView Mini Chart Web Component (<tv-mini-chart>) */}
-                    <TvMiniChart symbol={`NASDAQ:${activeStockSymbol}`} width={340} height={120} />
+                    <TvMiniChart symbol={resolvedActive.fullSymbol} width={340} height={120} />
 
                     <div className="flex items-center gap-2">
                       <button
@@ -732,13 +734,13 @@ export default function ProjectIndexPage() {
                       <span className="flex items-center justify-center size-6 rounded-full bg-zinc-200/60 text-zinc-700">
                         <Landmark className="size-3.5" />
                       </span>
-                      <span>Market cap</span>
+                      <span>Market cap / Venue</span>
                     </div>
                     <div>
                       <p className="text-[19px] font-bold tracking-tight text-zinc-950 font-mono">
-                        {activeStockSymbol === 'TSLA' ? '1.58T' : '3.52T'}
+                        {resolvedActive.exchange}
                       </p>
-                      <p className="text-[11.5px] text-zinc-400 mt-0.5">USD</p>
+                      <p className="text-[11.5px] text-zinc-400 mt-0.5">{resolvedActive.assetType.toUpperCase()}</p>
                     </div>
                   </div>
                 </div>
@@ -750,7 +752,7 @@ export default function ProjectIndexPage() {
               <div className="terminal-panel">
                 <div className="terminal-panel-head">
                   <div>
-                    <h2 className="terminal-panel-title">Chart</h2>
+                    <h2 className="terminal-panel-title">Chart ({resolvedActive.fullSymbol})</h2>
                     <p className="terminal-panel-sub">
                       Live from TradingView · switch interval and style in the chart
                     </p>
@@ -758,7 +760,7 @@ export default function ProjectIndexPage() {
                 </div>
                 <div className="p-2 bg-white">
                   <TvLiveChart
-                    symbol={`NASDAQ:${activeStockSymbol}`}
+                    symbol={resolvedActive.fullSymbol}
                     height={560}
                   />
                 </div>
@@ -780,7 +782,7 @@ export default function ProjectIndexPage() {
                         width: '100%',
                         isTransparent: true,
                         height: 380,
-                        symbol: `NASDAQ:${activeStockSymbol}`,
+                        symbol: resolvedActive.fullSymbol,
                         showIntervalTabs: true,
                         displayMode: 'single',
                         locale: 'en',
@@ -794,13 +796,19 @@ export default function ProjectIndexPage() {
                 <div className="terminal-panel p-4 flex flex-col justify-between bg-white">
                   <div>
                     <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                      Dividend Yield
+                      {resolvedActive.isCorporateStock ? 'Dividend Yield' : 'Asset Category'}
                     </h3>
-                    <p className="text-2xl font-bold font-mono text-zinc-950 mt-1">
-                      {activeStockSymbol === 'AAPL' ? '0.52%' : '—'}
+                    <p className="text-2xl font-bold font-mono text-zinc-950 mt-1 capitalize">
+                      {resolvedActive.isCorporateStock
+                        ? (activeStockSymbol === 'AAPL' ? '0.52%' : '—')
+                        : resolvedActive.assetType}
                     </p>
                   </div>
-                  <p className="text-xs text-zinc-500 mt-2">Annualized payout relative to share price</p>
+                  <p className="text-xs text-zinc-500 mt-2">
+                    {resolvedActive.isCorporateStock
+                      ? 'Annualized payout relative to share price'
+                      : `24/7 Tick Stream via ${resolvedActive.exchange}`}
+                  </p>
                 </div>
               </div>
             </div>
@@ -810,7 +818,7 @@ export default function ProjectIndexPage() {
               <div className="terminal-panel-head">
                 <div>
                   <h2 className="terminal-panel-title">Top Stories</h2>
-                  <p className="terminal-panel-sub">Latest headlines via TradingView</p>
+                  <p className="terminal-panel-sub">Latest {resolvedActive.cleanSymbol} headlines via TradingView</p>
                 </div>
               </div>
               <div className="p-2 bg-white">
@@ -818,7 +826,8 @@ export default function ProjectIndexPage() {
                   scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-timeline.js"
                   config={{
                     feedMode: 'symbol',
-                    symbol: `NASDAQ:${activeStockSymbol}`,
+                    symbol: resolvedActive.fullSymbol,
+                    market: resolvedActive.assetType === 'crypto' ? 'crypto' : resolvedActive.assetType === 'forex' ? 'forex' : 'stock',
                     colorTheme: 'light',
                     isTransparent: true,
                     displayMode: 'regular',
@@ -838,7 +847,7 @@ export default function ProjectIndexPage() {
                   <div>
                     <h2 className="terminal-panel-title">Comparison Overview</h2>
                     <p className="terminal-panel-sub">
-                      Performance vs benchmark ({activeStockSymbol === 'NVDA' ? 'AAPL' : 'NVDA'}) · percentage scale
+                      Performance vs benchmark ({resolvedActive.assetType === 'forex' ? 'GBP/USD' : resolvedActive.assetType === 'crypto' ? 'ETH/USD' : 'S&P 500'}) · percentage scale
                     </p>
                   </div>
                 </div>
@@ -848,8 +857,8 @@ export default function ProjectIndexPage() {
                     config={{
                       symbols: [
                         [
-                          currentStockItem.name || activeStockSymbol,
-                          `${activeStockSymbol}|1D`,
+                          currentStockItem.name || resolvedActive.cleanSymbol,
+                          `${resolvedActive.fullSymbol}|1D`,
                         ],
                       ],
                       chartOnly: true,
@@ -877,7 +886,14 @@ export default function ProjectIndexPage() {
                       lineWidth: 2,
                       lineType: 0,
                       compareSymbol: {
-                        symbol: activeStockSymbol === 'NVDA' ? 'NASDAQ:AAPL' : 'NASDAQ:NVDA',
+                        symbol:
+                          resolvedActive.assetType === 'forex'
+                            ? 'FX:GBPUSD'
+                            : resolvedActive.assetType === 'crypto'
+                            ? 'BINANCE:ETHUSDT'
+                            : resolvedActive.cleanSymbol === 'NVDA'
+                            ? 'NASDAQ:AAPL'
+                            : 'NASDAQ:NVDA',
                         lineColor: 'rgba(41, 98, 255, 1)',
                         lineWidth: 2,
                       },
@@ -900,22 +916,51 @@ export default function ProjectIndexPage() {
                 <div className="terminal-panel-head">
                   <div>
                     <h2 className="terminal-panel-title">Profile</h2>
-                    <p className="terminal-panel-sub">What the company does and stories</p>
+                    <p className="terminal-panel-sub">
+                      {resolvedActive.isCorporateStock
+                        ? 'What the company does and stories'
+                        : `${resolvedActive.cleanSymbol} asset overview & market specifications`}
+                    </p>
                   </div>
                 </div>
                 <div className="p-2 bg-white">
-                  <TradingViewWidget
-                    scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-symbol-profile.js"
-                    config={{
-                      width: '100%',
-                      height: 420,
-                      colorTheme: 'light',
-                      isTransparent: true,
-                      symbol: `NASDAQ:${activeStockSymbol}`,
-                      locale: 'en',
-                    }}
-                    height={420}
-                  />
+                  {resolvedActive.isCorporateStock ? (
+                    <TradingViewWidget
+                      scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-symbol-profile.js"
+                      config={{
+                        width: '100%',
+                        height: 420,
+                        colorTheme: 'light',
+                        isTransparent: true,
+                        symbol: resolvedActive.fullSymbol,
+                        locale: 'en',
+                      }}
+                      height={420}
+                    />
+                  ) : (
+                    <div className="p-5 space-y-4 font-sans text-xs">
+                      <div className="flex justify-between items-center py-2.5 border-b border-zinc-100">
+                        <span className="text-zinc-500 font-medium">Exchange Venue</span>
+                        <span className="font-bold text-zinc-950 font-mono">{resolvedActive.exchange}</span>
+                      </div>
+                      <div className="flex justify-between items-center py-2.5 border-b border-zinc-100">
+                        <span className="text-zinc-500 font-medium">Asset Class</span>
+                        <span className="font-bold text-zinc-950 uppercase">{resolvedActive.assetType}</span>
+                      </div>
+                      <div className="flex justify-between items-center py-2.5 border-b border-zinc-100">
+                        <span className="text-zinc-500 font-medium">Trading Schedule</span>
+                        <span className="font-bold text-emerald-600">24/7 Real-Time Active</span>
+                      </div>
+                      <div className="flex justify-between items-center py-2.5 border-b border-zinc-100">
+                        <span className="text-zinc-500 font-medium">Data Stream Latency</span>
+                        <span className="font-bold text-emerald-600">0 ms Tick-by-Tick</span>
+                      </div>
+                      <div className="flex justify-between items-center py-2.5">
+                        <span className="text-zinc-500 font-medium">Full Ticker Symbol</span>
+                        <span className="font-mono font-semibold text-zinc-800">{resolvedActive.fullSymbol}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -925,25 +970,56 @@ export default function ProjectIndexPage() {
               <div className="terminal-panel">
                 <div className="terminal-panel-head">
                   <div>
-                    <h2 className="terminal-panel-title">Financials</h2>
-                    <p className="terminal-panel-sub">Income statement, balance sheet and ratios</p>
+                    <h2 className="terminal-panel-title">
+                      {resolvedActive.isCorporateStock ? 'Financials' : 'Market Specifications'}
+                    </h2>
+                    <p className="terminal-panel-sub">
+                      {resolvedActive.isCorporateStock
+                        ? 'Income statement, balance sheet and ratios'
+                        : `${resolvedActive.cleanSymbol} contract parameters and liquidity info`}
+                    </p>
                   </div>
                 </div>
                 <div className="p-2 bg-white">
-                  <TradingViewWidget
-                    scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-financials.js"
-                    config={{
-                      isTransparent: true,
-                      largeChartUrl: '',
-                      displayMode: 'regular',
-                      width: '100%',
-                      height: 520,
-                      colorTheme: 'light',
-                      symbol: `NASDAQ:${activeStockSymbol}`,
-                      locale: 'en',
-                    }}
-                    height={520}
-                  />
+                  {resolvedActive.isCorporateStock ? (
+                    <TradingViewWidget
+                      scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-financials.js"
+                      config={{
+                        isTransparent: true,
+                        largeChartUrl: '',
+                        displayMode: 'regular',
+                        width: '100%',
+                        height: 520,
+                        colorTheme: 'light',
+                        symbol: resolvedActive.fullSymbol,
+                        locale: 'en',
+                      }}
+                      height={520}
+                    />
+                  ) : (
+                    <div className="p-6 space-y-5 font-sans">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="p-4 rounded-xl bg-zinc-50 border border-zinc-200/80">
+                          <span className="text-[11px] font-semibold text-zinc-500 uppercase">Contract Base</span>
+                          <p className="text-base font-bold text-zinc-950 font-mono mt-1">
+                            {resolvedActive.cleanSymbol.slice(0, 3)}
+                          </p>
+                        </div>
+                        <div className="p-4 rounded-xl bg-zinc-50 border border-zinc-200/80">
+                          <span className="text-[11px] font-semibold text-zinc-500 uppercase">Quote Currency</span>
+                          <p className="text-base font-bold text-zinc-950 font-mono mt-1">
+                            {resolvedActive.cleanSymbol.slice(3) || 'USD'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="p-4 rounded-xl bg-emerald-50/50 border border-emerald-200/60">
+                        <span className="text-xs font-semibold text-emerald-800">Global Liquidity Feed</span>
+                        <p className="text-xs text-emerald-700 mt-1">
+                          Direct institutional market quotes streamed continuously from {resolvedActive.exchange}. Multi-timeframe execution analysis available in the Journal.
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -958,18 +1034,27 @@ export default function ProjectIndexPage() {
                   <TradingViewWidget
                     scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-symbol-overview.js"
                     config={{
-                      symbols: [
-                        [
-                          currentStockItem.name || activeStockSymbol,
-                          `${activeStockSymbol}|1D`,
-                        ],
-                        [
-                          'NASDAQ:AMD|1D',
-                        ],
-                        [
-                          'NASDAQ:MSFT|1D',
-                        ],
-                      ],
+                      symbols:
+                        resolvedActive.assetType === 'forex'
+                          ? [
+                              ['EUR/USD', 'FX:EURUSD|1D'],
+                              ['GBP/USD', 'FX:GBPUSD|1D'],
+                              ['USD/JPY', 'FX:USDJPY|1D'],
+                            ]
+                          : resolvedActive.assetType === 'crypto'
+                          ? [
+                              ['BTC/USD', 'BINANCE:BTCUSDT|1D'],
+                              ['ETH/USD', 'BINANCE:ETHUSDT|1D'],
+                              ['SOL/USD', 'BINANCE:SOLUSDT|1D'],
+                            ]
+                          : [
+                              [
+                                currentStockItem.name || resolvedActive.cleanSymbol,
+                                `${resolvedActive.fullSymbol}|1D`,
+                              ],
+                              ['NASDAQ:AMD|1D'],
+                              ['NASDAQ:MSFT|1D'],
+                            ],
                       chartOnly: true,
                       width: 320,
                       height: 520,

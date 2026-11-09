@@ -179,6 +179,83 @@ const EXACT_IMAGE_SYMBOLS: TradingViewModalItem[] = [
   },
 ];
 
+const CATEGORY_PRESETS: Record<string, TradingViewModalItem[]> = {
+  all: EXACT_IMAGE_SYMBOLS,
+  stocks: [
+    { symbol: 'AAPL', description: 'Apple Inc.', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
+    { symbol: 'NVDA', description: 'NVIDIA Corporation', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
+    { symbol: 'TSLA', description: 'Tesla, Inc.', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
+    { symbol: 'MSFT', description: 'Microsoft Corporation', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
+    { symbol: 'AMZN', description: 'Amazon.com, Inc.', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
+    { symbol: 'GOOGL', description: 'Alphabet Inc. (Class A)', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
+    { symbol: 'META', description: 'Meta Platforms, Inc.', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
+    { symbol: 'RELIANCE', description: 'Reliance Industries Ltd', badge: 'COMMON STOCK', type: 'stock', exchange: 'NSE', country: 'IN', isIndia: true },
+    { symbol: 'TCS', description: 'Tata Consultancy Services', badge: 'COMMON STOCK', type: 'stock', exchange: 'NSE', country: 'IN', isIndia: true },
+    { symbol: 'INFY', description: 'Infosys Limited', badge: 'COMMON STOCK', type: 'stock', exchange: 'NSE', country: 'IN', isIndia: true },
+    { symbol: 'HDFCBANK', description: 'HDFC Bank Ltd', badge: 'COMMON STOCK', type: 'stock', exchange: 'NSE', country: 'IN', isIndia: true },
+    { symbol: 'JPM', description: 'JPMorgan Chase & Co.', badge: 'COMMON STOCK', type: 'stock', exchange: 'NYSE', country: 'US' },
+  ],
+  funds: [
+    { symbol: 'SPY', description: 'SPDR S&P 500 ETF Trust', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
+    { symbol: 'QQQ', description: 'Invesco QQQ Trust Series 1', badge: 'ETF', type: 'funds', exchange: 'NASDAQ', country: 'US' },
+    { symbol: 'IWM', description: 'iShares Russell 2000 ETF', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
+    { symbol: 'VOO', description: 'Vanguard S&P 500 ETF', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
+    { symbol: 'VTI', description: 'Vanguard Total Stock Market ETF', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
+    { symbol: 'DIA', description: 'SPDR Dow Jones Industrial Average ETF', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
+    { symbol: 'GLD', description: 'SPDR Gold Shares', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
+    { symbol: 'TLT', description: 'iShares 20+ Year Treasury Bond ETF', badge: 'ETF', type: 'funds', exchange: 'NASDAQ', country: 'US' },
+    { symbol: 'XLF', description: 'Financial Select Sector SPDR Fund', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
+  ],
+  futures: [
+    { symbol: 'ES1!', description: 'E-mini S&P 500 Futures', badge: 'FUTURES', type: 'futures', exchange: 'CME', multiSource: '+18 ∨' },
+    { symbol: 'NQ1!', description: 'E-mini Nasdaq 100 Futures', badge: 'FUTURES', type: 'futures', exchange: 'CME', multiSource: '+18 ∨' },
+    { symbol: 'CL1!', description: 'Crude Oil Futures', badge: 'FUTURES', type: 'futures', exchange: 'NYMEX', multiSource: '+12 ∨' },
+    { symbol: 'GC1!', description: 'Gold Futures', badge: 'FUTURES', type: 'futures', exchange: 'COMEX', multiSource: '+14 ∨' },
+    { symbol: 'NIFTY', description: 'GIFT NIFTY 50 INDEX FUTURES', badge: 'FUTURES', type: 'futures', exchange: 'NSEIX', multiSource: '+8 ∨' },
+    { symbol: 'BANKNIFTY', description: 'Nifty Bank Futures', badge: 'FUTURES', type: 'futures', exchange: 'NSE', isIndia: true },
+  ],
+  forex: [
+    { symbol: 'EURUSD', description: 'Euro / U.S. Dollar', badge: 'FOREX', type: 'forex', exchange: 'FOREXCOM' },
+    { symbol: 'GBPUSD', description: 'British Pound / U.S. Dollar', badge: 'FOREX', type: 'forex', exchange: 'FOREXCOM' },
+    { symbol: 'USDJPY', description: 'U.S. Dollar / Japanese Yen', badge: 'FOREX', type: 'forex', exchange: 'FOREXCOM' },
+    { symbol: 'AUDUSD', description: 'Australian Dollar / U.S. Dollar', badge: 'FOREX', type: 'forex', exchange: 'OANDA' },
+    { symbol: 'USDCAD', description: 'U.S. Dollar / Canadian Dollar', badge: 'FOREX', type: 'forex', exchange: 'FXCM' },
+    { symbol: 'USDCHF', description: 'U.S. Dollar / Swiss Franc', badge: 'FOREX', type: 'forex', exchange: 'OANDA' },
+    { symbol: 'EURGBP', description: 'Euro / British Pound', badge: 'FOREX', type: 'forex', exchange: 'FOREXCOM' },
+    { symbol: 'GBPJPY', description: 'British Pound / Japanese Yen', badge: 'FOREX', type: 'forex', exchange: 'SAXO' },
+  ],
+  crypto: [
+    { symbol: 'BTCUSD', description: 'Bitcoin', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO', multiSource: '+49 ∨' },
+    { symbol: 'ETHUSD', description: 'Ethereum', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO', multiSource: '+35 ∨' },
+    { symbol: 'SOLUSD', description: 'Solana', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO', multiSource: '+22 ∨' },
+    { symbol: 'XRPUSD', description: 'XRP', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO', multiSource: '+28 ∨' },
+    { symbol: 'BNBUSD', description: 'BNB', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO' },
+    { symbol: 'DOGEUSD', description: 'Dogecoin', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO' },
+  ],
+  index: [
+    { symbol: 'NIFTY', description: 'Nifty 50 Index', badge: 'INDEX', type: 'index', exchange: 'NSE', country: 'IN', isIndia: true },
+    { symbol: 'BANKNIFTY', description: 'Nifty Bank Index', badge: 'INDEX', type: 'index', exchange: 'NSE', country: 'IN', isIndia: true },
+    { symbol: 'SENSEX', description: 'BSE Sensex Index', badge: 'INDEX', type: 'index', exchange: 'BSE', country: 'IN', isIndia: true },
+    { symbol: 'SPX', description: 'S&P 500 Index', badge: 'INDEX', type: 'index', exchange: 'SP', country: 'US' },
+    { symbol: 'NDX', description: 'Nasdaq 100 Index', badge: 'INDEX', type: 'index', exchange: 'NASDAQ', country: 'US' },
+    { symbol: 'DJI', description: 'Dow Jones Industrial Average', badge: 'INDEX', type: 'index', exchange: 'DJ', country: 'US' },
+    { symbol: 'DAX', description: 'DAX Index', badge: 'INDEX', type: 'index', exchange: 'XETR', country: 'DE' },
+  ],
+  bond: [
+    { symbol: 'US10Y', description: 'U.S. 10 Year Treasury Yield', badge: 'BOND', type: 'bond', exchange: 'TVC' },
+    { symbol: 'US02Y', description: 'U.S. 2 Year Treasury Yield', badge: 'BOND', type: 'bond', exchange: 'TVC' },
+    { symbol: 'US30Y', description: 'U.S. 30 Year Treasury Yield', badge: 'BOND', type: 'bond', exchange: 'TVC' },
+    { symbol: 'TNX', description: 'CBOE 10 Year Treasury Note Yield', badge: 'BOND', type: 'bond', exchange: 'CBOE' },
+  ],
+  options: [
+    { symbol: 'SPY', description: 'SPDR S&P 500 Options Chain', badge: 'OPTIONS', type: 'options', exchange: 'CBOE' },
+    { symbol: 'QQQ', description: 'Invesco QQQ Options Chain', badge: 'OPTIONS', type: 'options', exchange: 'CBOE' },
+    { symbol: 'AAPL', description: 'Apple Inc. Options Chain', badge: 'OPTIONS', type: 'options', exchange: 'OPRA' },
+    { symbol: 'NVDA', description: 'NVIDIA Options Chain', badge: 'OPTIONS', type: 'options', exchange: 'OPRA' },
+    { symbol: 'TSLA', description: 'Tesla, Inc. Options Chain', badge: 'OPTIONS', type: 'options', exchange: 'OPRA' },
+  ],
+};
+
 // Helper to render official TradingView style circular badge
 function renderTvCircularBadge(item: TradingViewModalItem) {
   const sym = (item.symbol || '').toUpperCase();
@@ -350,8 +427,9 @@ export default function SearchCommand({
   }, [open]);
 
   const fetchSymbols = useCallback(async (query: string, catValue: string) => {
-    if (!query.trim() && catValue === 'all') {
-      setSymbols(EXACT_IMAGE_SYMBOLS);
+    if (!query.trim()) {
+      const preset = CATEGORY_PRESETS[catValue] || CATEGORY_PRESETS.all;
+      setSymbols(preset);
       setLoading(false);
       return;
     }
@@ -446,15 +524,18 @@ export default function SearchCommand({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="max-w-[760px] w-[95vw] overflow-hidden p-0 rounded-2xl bg-white text-zinc-900 border border-zinc-200/90 shadow-2xl font-sans">
+      <DialogContent
+        hideCloseButton={true}
+        className="!max-w-4xl sm:!max-w-4xl w-[92vw] sm:w-[860px] md:w-[860px] overflow-hidden p-0 rounded-2xl bg-white text-zinc-900 border border-zinc-200/90 shadow-2xl font-sans"
+      >
         <DialogHeader className="sr-only">
           <DialogTitle>Symbol Search</DialogTitle>
           <DialogDescription>Search worldwide symbols, ISIN, or CUSIP</DialogDescription>
         </DialogHeader>
 
-        {/* ============ HEADER SEARCH INPUT (Matching Image 2) ============ */}
-        <div className="flex items-center gap-3 px-4 pt-3.5 pb-2.5 bg-white">
-          <Search className="size-4.5 text-zinc-400 shrink-0 stroke-[2.2]" />
+        {/* ============ HEADER SEARCH INPUT (Spacious & Clean) ============ */}
+        <div className="flex items-center gap-3 px-4.5 pt-4 pb-3 bg-white">
+          <Search className="size-5 text-zinc-400 shrink-0 stroke-[2.2]" />
           <input
             ref={inputRef}
             type="text"
@@ -462,7 +543,7 @@ export default function SearchCommand({
             onChange={(e) => setSearchTerm(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Symbol, ISIN, or CUSIP"
-            className="flex-1 bg-transparent text-[15px] font-normal text-zinc-900 placeholder:text-zinc-400 outline-none font-sans"
+            className="flex-1 bg-transparent text-[16px] font-normal text-zinc-900 placeholder:text-zinc-400 outline-none font-sans"
           />
           {searchTerm && (
             <button
@@ -475,26 +556,15 @@ export default function SearchCommand({
             </button>
           )}
 
-          {/* Calculator / Keypad math operator icon on right (from Image 2) */}
-          <div
-            className="p-1 text-zinc-400 hover:text-zinc-700 transition-colors cursor-pointer"
-            title="Compare or Add Symbol (+, -, *, /)"
+          {/* Clean Close Button (Replaces overlapping wrong button) */}
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors cursor-pointer"
+            title="Close (Esc)"
           >
-            <svg
-              className="size-4.5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-            >
-              <rect x="4" y="3" width="16" height="18" rx="2" />
-              <line x1="8" y1="7" x2="16" y2="7" />
-              <line x1="8" y1="11" x2="10" y2="11" />
-              <line x1="14" y1="11" x2="16" y2="11" />
-              <line x1="8" y1="15" x2="10" y2="15" />
-              <line x1="14" y1="15" x2="16" y2="15" />
-            </svg>
-          </div>
+            <X className="size-5" />
+          </button>
         </div>
 
         {/* ============ CATEGORY FILTER PILLS (Matching Image 2) ============ */}
@@ -525,7 +595,7 @@ export default function SearchCommand({
         {/* ============ RESULTS LIST (Exact Layout from Image 2) ============ */}
         <div
           ref={listRef}
-          className="max-h-[460px] min-h-[320px] overflow-y-auto divide-y divide-zinc-100/60 font-sans"
+          className="max-h-[64vh] min-h-[460px] overflow-y-auto divide-y divide-zinc-100/60 font-sans"
         >
           {loading && (
             <div className="flex items-center justify-center py-12 text-zinc-400 gap-2">

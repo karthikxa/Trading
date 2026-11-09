@@ -325,8 +325,8 @@ export function ConnectorsPage({
   // The catalogue app whose own MCP server the MCP dialog connects. Null for
   // a server the user pastes (New → MCP server).
   const [mcpApp, setMcpApp] = useState<McpServerApp | null>(null);
-  // The catalogue opens on the apps that connect in one click.
-  const [oneClick, setOneClick] = useState(true);
+  // The catalogue opens showing all connectors (Composio 5000+ & MCP servers).
+  const [oneClick, setOneClick] = useState(false);
   const [kindFilter, setKindFilter] = useState<CatalogKindFilter>('all');
   const kinds = useMemo(() => CATALOG_KIND_FILTERS[kindFilter], [kindFilter]);
   const tSharing = useI18nTranslations('accessSharing');

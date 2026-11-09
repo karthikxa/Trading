@@ -81,7 +81,16 @@ export default function WatchlistTable({ onSelectSymbol, selectedSymbol }: Watch
                 return (
                   <tr
                     key={item.symbol}
-                    onClick={() => onSelectSymbol?.(item.symbol)}
+                    onClick={() => {
+                      if (onSelectSymbol) {
+                        onSelectSymbol(item.symbol);
+                      }
+                      window.dispatchEvent(
+                        new CustomEvent('selected-stock-symbol', {
+                          detail: { symbol: item.symbol, name: item.name },
+                        }),
+                      );
+                    }}
                     className={cn(
                       'group hover:bg-zinc-50/80 cursor-pointer transition-colors',
                       isSelected && 'bg-zinc-100/60 font-semibold',
