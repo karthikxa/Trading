@@ -126,3 +126,4 @@ export {
   TabsTab as TabsTrigger,
   TabsPanel as TabsContent,
 };
+

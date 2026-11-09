@@ -20,6 +20,15 @@ import { Field, FieldLabel, FieldDescription } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 interface AddTradeViewProps {
   onBack: () => void;
@@ -89,21 +98,21 @@ const MISTAKE_CATEGORIES = {
 };
 
 const ENTRY_EMOTIONS = [
-    'Confident',
-    'Neutral',
-    'Revenge',
-    'FOMO',
-    'Fearful',
-    'Impatient',
+  'Confident',
+  'Neutral',
+  'Revenge',
+  'FOMO',
+  'Fearful',
+  'Impatient',
 ];
 
 const EXIT_EMOTIONS = [
-    'Relieved',
-    'Disciplined',
-    'Greedy',
-    'Frustrated',
-    'Regret',
-    'Neutral',
+  'Relieved',
+  'Disciplined',
+  'Greedy',
+  'Frustrated',
+  'Regret',
+  'Neutral',
 ];
 
 const QUICK_INSTRUMENTS = ['EURUSD', 'GBPUSD', 'AUDCHF', 'USDJPY', 'XAUUSD', 'BTCUSD', 'NDX100'];
@@ -253,17 +262,19 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
     <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full font-sans pb-16">
       {/* Top Breadcrumb and Actions */}
       <div className="flex items-center justify-between">
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="sm"
           onClick={onBack}
-          className="inline-flex items-center gap-2 text-xs font-semibold text-zinc-600 hover:text-zinc-950 transition-colors cursor-pointer"
+          className="gap-2 text-xs font-semibold text-zinc-600 hover:text-zinc-950 p-0 hover:bg-transparent"
         >
           <ArrowLeft className="size-4" />
           <span>Back to Calendar</span>
-        </button>
+        </Button>
 
         <div className="flex items-center gap-2.5">
-          <Button variant="outline" size="sm" onClick={onBack}>
+          <Button variant="outline" size="sm" onClick={onBack} className="h-8">
             Cancel
           </Button>
           <Button
@@ -271,7 +282,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
             size="sm"
             onClick={handleSave}
             disabled={isSaving}
-            className="bg-zinc-950 text-white hover:bg-zinc-800 font-semibold shadow-xs"
+            className="bg-zinc-950 text-white hover:bg-zinc-800 font-semibold shadow-xs h-8"
           >
             {isSaving ? 'Saving...' : 'Save Manual Trade'}
           </Button>
@@ -290,13 +301,15 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
         {/* ========================================================================= */}
         {/* COLUMN 1: TRADE DETAILS & EXECUTION (5 Cols)                              */}
         {/* ========================================================================= */}
-        <div className="lg:col-span-5 bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-5">
+        <Card className="lg:col-span-5 bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-5">
           <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
             <h2 className="text-sm font-bold text-zinc-950 tracking-tight flex items-center gap-2">
               <CalendarIcon className="size-4 text-zinc-500" />
               Trade Details
             </h2>
-            <span className="text-[11px] font-mono text-zinc-400">Manual Entry</span>
+            <Badge variant="secondary" className="bg-zinc-100 text-zinc-700 text-[10px] font-mono">
+              Manual Entry
+            </Badge>
           </div>
 
           {/* Entry & Exit Date/Time */}
@@ -338,7 +351,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
             </Field>
           </div>
 
-          {/* Instrument and Quick Symbol Chips */}
+          {/* Instrument and Quick Symbol Chips using Button */}
           <Field>
             <FieldLabel>Instrument Symbol</FieldLabel>
             <Input
@@ -349,18 +362,20 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
             />
             <div className="flex flex-wrap gap-1.5 pt-1">
               {QUICK_INSTRUMENTS.map((sym) => (
-                <button
+                <Button
                   key={sym}
                   type="button"
+                  variant={instrument === sym ? 'default' : 'outline'}
+                  size="xs"
                   onClick={() => setInstrument(sym)}
-                  className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold transition-colors cursor-pointer ${
+                  className={`h-6 px-2 text-[10px] font-mono font-bold rounded-md ${
                     instrument === sym
                       ? 'bg-zinc-950 text-white'
-                      : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700'
+                      : 'bg-zinc-100 text-zinc-700 border-zinc-200 hover:bg-zinc-200'
                   }`}
                 >
                   {sym}
-                </button>
+                </Button>
               ))}
             </div>
           </Field>
@@ -370,30 +385,34 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
             <Field>
               <FieldLabel>Direction</FieldLabel>
               <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-zinc-100 border border-zinc-200">
-                <button
+                <Button
                   type="button"
+                  variant={direction === 'Buy' ? 'default' : 'ghost'}
+                  size="xs"
                   onClick={() => setDirection('Buy')}
-                  className={`py-1.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                  className={`h-8 font-bold gap-1 rounded-lg ${
                     direction === 'Buy'
-                      ? 'bg-emerald-600 text-white shadow-xs'
-                      : 'text-zinc-600 hover:text-zinc-950'
+                      ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-xs'
+                      : 'text-zinc-600 hover:text-zinc-950 hover:bg-transparent'
                   }`}
                 >
                   <TrendingUp className="size-3.5" />
                   Buy
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
+                  variant={direction === 'Sell' ? 'default' : 'ghost'}
+                  size="xs"
                   onClick={() => setDirection('Sell')}
-                  className={`py-1.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                  className={`h-8 font-bold gap-1 rounded-lg ${
                     direction === 'Sell'
-                      ? 'bg-rose-600 text-white shadow-xs'
-                      : 'text-zinc-600 hover:text-zinc-950'
+                      ? 'bg-rose-600 text-white hover:bg-rose-700 shadow-xs'
+                      : 'text-zinc-600 hover:text-zinc-950 hover:bg-transparent'
                   }`}
                 >
                   <TrendingDown className="size-3.5" />
                   Sell
-                </button>
+                </Button>
               </div>
             </Field>
 
@@ -408,19 +427,20 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
             </Field>
           </div>
 
-          {/* Session */}
+          {/* Session using COSS Select */}
           <Field>
             <FieldLabel>Trading Session</FieldLabel>
-            <select
-              value={session}
-              onChange={(e) => setSession(e.target.value)}
-              className="w-full h-9 rounded-xl border border-zinc-200 bg-white px-3 text-xs text-zinc-900 focus:border-zinc-950 focus:outline-none"
-            >
-              <option value="London">London Session</option>
-              <option value="New York">New York Session</option>
-              <option value="Asian">Asian Session</option>
-              <option value="Overlap">London / NY Overlap</option>
-            </select>
+            <Select value={session} onValueChange={setSession}>
+              <SelectTrigger className="w-full h-9 rounded-xl border-zinc-200 bg-white text-xs">
+                <SelectValue placeholder="Select session" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="London">London Session</SelectItem>
+                <SelectItem value="New York">New York Session</SelectItem>
+                <SelectItem value="Asian">Asian Session</SelectItem>
+                <SelectItem value="Overlap">London / NY Overlap</SelectItem>
+              </SelectContent>
+            </Select>
           </Field>
 
           {/* Execution Prices */}
@@ -521,14 +541,14 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
               </Field>
             </div>
           </div>
-        </div>
+        </Card>
 
         {/* ========================================================================= */}
         {/* COLUMN 2: CHARTS & TABS (CONFLUENCES / MISTAKES / REFLECTION) (7 Cols)     */}
         {/* ========================================================================= */}
         <div className="lg:col-span-7 space-y-6">
           {/* CHARTS UPLOAD BOXES (HTF, MTF, LTF) */}
-          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs">
+          <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs">
             <div className="flex items-center justify-between border-b border-zinc-100 pb-3 mb-4">
               <div>
                 <h2 className="text-sm font-bold text-zinc-950 tracking-tight flex items-center gap-2">
@@ -555,7 +575,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   {chartHtf ? (
                     <div className="relative w-full h-full flex flex-col items-center">
                       <img src={chartHtf} alt="HTF Chart" className="h-20 w-auto object-cover rounded-lg shadow-2xs" />
-                      <span className="text-[10px] text-emerald-700 font-semibold mt-1">Uploaded</span>
+                      <Badge variant="secondary" className="text-[10px] text-emerald-700 font-semibold mt-1 bg-emerald-50 border-emerald-200">Uploaded</Badge>
                     </div>
                   ) : (
                     <>
@@ -582,7 +602,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   {chartMtf ? (
                     <div className="relative w-full h-full flex flex-col items-center">
                       <img src={chartMtf} alt="MTF Chart" className="h-20 w-auto object-cover rounded-lg shadow-2xs" />
-                      <span className="text-[10px] text-emerald-700 font-semibold mt-1">Uploaded</span>
+                      <Badge variant="secondary" className="text-[10px] text-emerald-700 font-semibold mt-1 bg-emerald-50 border-emerald-200">Uploaded</Badge>
                     </div>
                   ) : (
                     <>
@@ -609,7 +629,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   {chartLtf ? (
                     <div className="relative w-full h-full flex flex-col items-center">
                       <img src={chartLtf} alt="LTF Chart" className="h-20 w-auto object-cover rounded-lg shadow-2xs" />
-                      <span className="text-[10px] text-emerald-700 font-semibold mt-1">Uploaded</span>
+                      <Badge variant="secondary" className="text-[10px] text-emerald-700 font-semibold mt-1 bg-emerald-50 border-emerald-200">Uploaded</Badge>
                     </div>
                   ) : (
                     <>
@@ -623,21 +643,21 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                 </label>
               </div>
             </div>
-          </div>
+          </Card>
 
           {/* COSS TABS SECTION FOR CONFLUENCES */}
-          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
+          <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
             <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
               <div>
                 <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Entry Confluences</h2>
                 <p className="text-xs text-zinc-500 mt-0.5">Categorized strategy confluences and validation reasons</p>
               </div>
-              <span className="text-xs font-mono font-bold text-zinc-700 bg-zinc-100 px-2.5 py-0.5 rounded-full">
+              <Badge variant="secondary" className="font-mono font-bold bg-zinc-100 text-zinc-800">
                 {confluences.length} Selected
-              </span>
+              </Badge>
             </div>
 
-            {/* Coss Tabs Component */}
+            {/* Strict Coss Tabs Component */}
             <Tabs defaultValue="structure" className="w-full">
               <TabsList size="sm" variant="default" className="w-full overflow-x-auto flex">
                 <TabsTab value="structure">Structure</TabsTab>
@@ -651,19 +671,21 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   {CONFLUENCE_CATEGORIES.structure.map((item) => {
                     const isSelected = confluences.includes(item);
                     return (
-                      <button
+                      <Button
                         key={item}
                         type="button"
+                        variant={isSelected ? 'default' : 'outline'}
+                        size="xs"
                         onClick={() => toggleConfluence(item)}
-                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
                           isSelected
-                            ? 'bg-zinc-950 border-zinc-950 text-white shadow-2xs'
+                            ? 'bg-zinc-950 text-white shadow-2xs'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
                         }`}
                       >
                         {isSelected ? '✓ ' : '+ '}
                         {item}
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -674,19 +696,21 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   {CONFLUENCE_CATEGORIES.orderflow.map((item) => {
                     const isSelected = confluences.includes(item);
                     return (
-                      <button
+                      <Button
                         key={item}
                         type="button"
+                        variant={isSelected ? 'default' : 'outline'}
+                        size="xs"
                         onClick={() => toggleConfluence(item)}
-                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
                           isSelected
-                            ? 'bg-zinc-950 border-zinc-950 text-white shadow-2xs'
+                            ? 'bg-zinc-950 text-white shadow-2xs'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
                         }`}
                       >
                         {isSelected ? '✓ ' : '+ '}
                         {item}
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -697,19 +721,21 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   {CONFLUENCE_CATEGORIES.execution.map((item) => {
                     const isSelected = confluences.includes(item);
                     return (
-                      <button
+                      <Button
                         key={item}
                         type="button"
+                        variant={isSelected ? 'default' : 'outline'}
+                        size="xs"
                         onClick={() => toggleConfluence(item)}
-                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
                           isSelected
-                            ? 'bg-zinc-950 border-zinc-950 text-white shadow-2xs'
+                            ? 'bg-zinc-950 text-white shadow-2xs'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
                         }`}
                       >
                         {isSelected ? '✓ ' : '+ '}
                         {item}
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -720,19 +746,21 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   {CONFLUENCE_CATEGORIES.session.map((item) => {
                     const isSelected = confluences.includes(item);
                     return (
-                      <button
+                      <Button
                         key={item}
                         type="button"
+                        variant={isSelected ? 'default' : 'outline'}
+                        size="xs"
                         onClick={() => toggleConfluence(item)}
-                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
                           isSelected
-                            ? 'bg-zinc-950 border-zinc-950 text-white shadow-2xs'
+                            ? 'bg-zinc-950 text-white shadow-2xs'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
                         }`}
                       >
                         {isSelected ? '✓ ' : '+ '}
                         {item}
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -749,23 +777,23 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                 onKeyDown={(e) => e.key === 'Enter' && addCustomConfluence()}
                 sizeVariant="sm"
               />
-              <Button variant="outline" size="sm" onClick={addCustomConfluence}>
+              <Button variant="outline" size="sm" onClick={addCustomConfluence} className="h-8 gap-1">
                 <Plus className="size-3.5" />
                 Add
               </Button>
             </div>
-          </div>
+          </Card>
 
           {/* COSS TABS SECTION FOR MISTAKES */}
-          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
+          <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
             <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
               <div>
                 <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Mistakes & Rule Breaches</h2>
                 <p className="text-xs text-zinc-500 mt-0.5">Track execution errors to uncover subconscious leaks</p>
               </div>
-              <span className="text-xs font-mono font-bold text-rose-700 bg-rose-50 px-2.5 py-0.5 rounded-full">
+              <Badge variant="secondary" className="font-mono font-bold text-rose-700 bg-rose-50 border-rose-200">
                 {mistakes.length} Logged
-              </span>
+              </Badge>
             </div>
 
             <Tabs defaultValue="execution-mistakes" className="w-full">
@@ -780,19 +808,21 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   {MISTAKE_CATEGORIES.execution.map((item) => {
                     const isSelected = mistakes.includes(item);
                     return (
-                      <button
+                      <Button
                         key={item}
                         type="button"
+                        variant={isSelected ? 'default' : 'outline'}
+                        size="xs"
                         onClick={() => toggleMistake(item)}
-                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
                           isSelected
-                            ? 'bg-rose-700 border-rose-700 text-white shadow-2xs'
+                            ? 'bg-rose-700 text-white shadow-2xs hover:bg-rose-800'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
                         }`}
                       >
                         {isSelected ? '✕ ' : '+ '}
                         {item}
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -803,19 +833,21 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   {MISTAKE_CATEGORIES.risk.map((item) => {
                     const isSelected = mistakes.includes(item);
                     return (
-                      <button
+                      <Button
                         key={item}
                         type="button"
+                        variant={isSelected ? 'default' : 'outline'}
+                        size="xs"
                         onClick={() => toggleMistake(item)}
-                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
                           isSelected
-                            ? 'bg-rose-700 border-rose-700 text-white shadow-2xs'
+                            ? 'bg-rose-700 text-white shadow-2xs hover:bg-rose-800'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
                         }`}
                       >
                         {isSelected ? '✕ ' : '+ '}
                         {item}
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -826,19 +858,21 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   {MISTAKE_CATEGORIES.psychology.map((item) => {
                     const isSelected = mistakes.includes(item);
                     return (
-                      <button
+                      <Button
                         key={item}
                         type="button"
+                        variant={isSelected ? 'default' : 'outline'}
+                        size="xs"
                         onClick={() => toggleMistake(item)}
-                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
                           isSelected
-                            ? 'bg-rose-700 border-rose-700 text-white shadow-2xs'
+                            ? 'bg-rose-700 text-white shadow-2xs hover:bg-rose-800'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
                         }`}
                       >
                         {isSelected ? '✕ ' : '+ '}
                         {item}
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -854,15 +888,15 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                 onKeyDown={(e) => e.key === 'Enter' && addCustomMistake()}
                 sizeVariant="sm"
               />
-              <Button variant="outline" size="sm" onClick={addCustomMistake}>
+              <Button variant="outline" size="sm" onClick={addCustomMistake} className="h-8 gap-1">
                 <Plus className="size-3.5" />
                 Add
               </Button>
             </div>
-          </div>
+          </Card>
 
           {/* REVIEW, PLAN & EMOTIONS */}
-          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
+          <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
             <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
               <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Review & Reflection</h2>
               <label className="flex items-center gap-2 cursor-pointer select-none">
@@ -879,32 +913,34 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
             <div className="grid grid-cols-2 gap-3">
               <Field>
                 <FieldLabel>Entry Emotion</FieldLabel>
-                <select
-                  value={entryEmotion}
-                  onChange={(e) => setEntryEmotion(e.target.value)}
-                  className="w-full h-9 rounded-xl border border-zinc-200 bg-white px-3 text-xs text-zinc-900 focus:border-zinc-950 focus:outline-none"
-                >
-                  {ENTRY_EMOTIONS.map((em) => (
-                    <option key={em} value={em}>
-                      {em}
-                    </option>
-                  ))}
-                </select>
+                <Select value={entryEmotion} onValueChange={setEntryEmotion}>
+                  <SelectTrigger className="w-full h-9 rounded-xl border-zinc-200 bg-white text-xs">
+                    <SelectValue placeholder="Select entry emotion" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ENTRY_EMOTIONS.map((em) => (
+                      <SelectItem key={em} value={em}>
+                        {em}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </Field>
 
               <Field>
                 <FieldLabel>Exit Emotion</FieldLabel>
-                <select
-                  value={exitEmotion}
-                  onChange={(e) => setExitEmotion(e.target.value)}
-                  className="w-full h-9 rounded-xl border border-zinc-200 bg-white px-3 text-xs text-zinc-900 focus:border-zinc-950 focus:outline-none"
-                >
-                  {EXIT_EMOTIONS.map((em) => (
-                    <option key={em} value={em}>
-                      {em}
-                    </option>
-                  ))}
-                </select>
+                <Select value={exitEmotion} onValueChange={setExitEmotion}>
+                  <SelectTrigger className="w-full h-9 rounded-xl border-zinc-200 bg-white text-xs">
+                    <SelectValue placeholder="Select exit emotion" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {EXIT_EMOTIONS.map((em) => (
+                      <SelectItem key={em} value={em}>
+                        {em}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </Field>
             </div>
 
@@ -927,7 +963,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                 placeholder="What went well? What will you do differently next time?"
               />
             </Field>
-          </div>
+          </Card>
         </div>
       </div>
     </div>

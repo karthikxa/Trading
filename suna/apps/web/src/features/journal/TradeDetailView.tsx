@@ -27,6 +27,9 @@ import { JournalTrade } from './types';
 import { uploadChartImage, saveJournalTrade } from './storage';
 import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogPopup, DialogClose } from '@/components/ui/dialog';
 
 interface TradeDetailViewProps {
   trade: JournalTrade;
@@ -113,48 +116,42 @@ export function TradeDetailView({
 
   return (
     <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full pb-16 font-sans text-zinc-950">
-      {/* Lightbox Modal */}
-      {lightboxImage && (
-        <div
-          className="fixed inset-0 z-50 bg-black/85 flex flex-col items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-150"
-          onClick={() => setLightboxImage(null)}
-        >
-          <div className="flex items-center justify-between w-full max-w-5xl mb-3 text-white">
-            <span className="font-mono text-sm font-semibold">{lightboxImage.title}</span>
-            <button
-              type="button"
-              onClick={() => setLightboxImage(null)}
-              className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer"
-            >
-              <X className="size-5" />
-            </button>
+      {/* COSS Dialog Modal for Chart Zoom Lightbox */}
+      <Dialog open={!!lightboxImage} onOpenChange={(open) => !open && setLightboxImage(null)}>
+        <DialogPopup className="max-w-5xl bg-zinc-950 text-white border-zinc-800 p-4">
+          <div className="flex items-center justify-between w-full mb-3">
+            <span className="font-mono text-sm font-semibold">{lightboxImage?.title}</span>
+            <DialogClose className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300">
+              <X className="size-4" />
+            </DialogClose>
           </div>
-          <div
-            className="relative max-w-5xl max-h-[85vh] w-full flex items-center justify-center overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-950"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <img
-              src={lightboxImage.url}
-              alt={lightboxImage.title}
-              className="w-full h-auto max-h-[85vh] object-contain"
-            />
-          </div>
-        </div>
-      )}
+          {lightboxImage && (
+            <div className="relative max-h-[80vh] w-full flex items-center justify-center overflow-hidden rounded-xl bg-black">
+              <img
+                src={lightboxImage.url}
+                alt={lightboxImage.title}
+                className="w-full h-auto max-h-[80vh] object-contain"
+              />
+            </div>
+          )}
+        </DialogPopup>
+      </Dialog>
 
       {/* ========================================================================= */}
-      {/* 1. TOP NAVIGATION BAR                                                     */}
+      {/* 1. TOP NAVIGATION BAR (Strict COSS UI Buttons & Badges)                    */}
       {/* ========================================================================= */}
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-4">
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="sm"
             onClick={onBack}
-            className="flex items-center gap-2 text-xs font-semibold text-zinc-600 hover:text-zinc-950 transition-colors cursor-pointer group"
+            className="flex items-center gap-2 text-xs font-semibold text-zinc-600 hover:text-zinc-950 p-0 hover:bg-transparent"
           >
-            <ArrowLeft className="size-4 transition-transform group-hover:-translate-x-1" />
+            <ArrowLeft className="size-4" />
             <span>Back to Calendar</span>
-          </button>
+          </Button>
 
           {/* Top Actions: Share, Focus, Prev, Next */}
           <div className="flex items-center gap-2">
@@ -167,7 +164,7 @@ export function TradeDetailView({
                   alert('Trade link copied to clipboard!');
                 }
               }}
-              className="text-xs font-semibold gap-1.5"
+              className="text-xs font-semibold gap-1.5 h-8"
             >
               <Share2 className="size-3.5" />
               <span>Share</span>
@@ -179,7 +176,7 @@ export function TradeDetailView({
                 size="sm"
                 disabled={!prevTrade}
                 onClick={() => prevTrade && onNavigateTrade(prevTrade)}
-                className="text-xs font-semibold gap-1"
+                className="text-xs font-semibold gap-1 h-8"
               >
                 <ChevronLeft className="size-3.5" />
                 <span>Prev</span>
@@ -189,7 +186,7 @@ export function TradeDetailView({
                 size="sm"
                 disabled={!nextTrade}
                 onClick={() => nextTrade && onNavigateTrade(nextTrade)}
-                className="text-xs font-semibold gap-1"
+                className="text-xs font-semibold gap-1 h-8"
               >
                 <span>Next</span>
                 <ChevronRight className="size-3.5" />
@@ -200,7 +197,7 @@ export function TradeDetailView({
 
         {/* Title row */}
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="size-9 rounded-xl bg-zinc-900 text-white flex items-center justify-center text-xs font-mono font-bold shadow-2xs">
+          <div className="size-9 rounded-xl bg-zinc-950 text-white flex items-center justify-center text-xs font-mono font-bold shadow-2xs">
             {currentTrade.instrument.slice(0, 3)}
           </div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-zinc-950 flex items-center gap-2">
@@ -223,16 +220,17 @@ export function TradeDetailView({
           </h1>
 
           {/* Badge: Manual / Auto */}
-          <span
-            className={`text-[10px] px-2.5 py-0.5 rounded-full font-mono font-bold flex items-center gap-1 ${
+          <Badge
+            variant="secondary"
+            className={`text-[10px] font-mono font-bold flex items-center gap-1 ${
               currentTrade.source === 'auto'
-                ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                : 'bg-zinc-100 text-zinc-700 border border-zinc-200'
+                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                : 'bg-zinc-100 text-zinc-700 border-zinc-200'
             }`}
           >
             {currentTrade.source === 'auto' && <Zap className="size-3 text-amber-500 fill-amber-500" />}
             {currentTrade.source === 'auto' ? 'Auto Logged' : 'Manual Entry'}
-          </span>
+          </Badge>
         </div>
       </div>
 
@@ -244,7 +242,7 @@ export function TradeDetailView({
         {/* LEFT COLUMN: TRADE DETAILS & METRICS (5 cols)                             */}
         {/* ========================================================================= */}
         <div className="lg:col-span-5 flex flex-col gap-5">
-          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-5">
+          <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-5">
             <h2 className="text-sm font-bold text-zinc-950">Trade Details</h2>
 
             {/* Big Net P&L */}
@@ -404,7 +402,7 @@ export function TradeDetailView({
                     size="xs"
                     onClick={handleDelete}
                     disabled={isDeleting}
-                    className="bg-rose-600 hover:bg-rose-700 text-white"
+                    className="bg-rose-600 hover:bg-rose-700 text-white h-7"
                   >
                     Yes, Delete
                   </Button>
@@ -412,39 +410,42 @@ export function TradeDetailView({
                     variant="outline"
                     size="xs"
                     onClick={() => setConfirmDelete(false)}
+                    className="h-7"
                   >
                     Cancel
                   </Button>
                 </div>
               ) : (
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="xs"
                   onClick={() => setConfirmDelete(true)}
-                  className="flex items-center gap-1.5 text-xs text-rose-600 hover:text-rose-700 font-semibold cursor-pointer"
+                  className="flex items-center gap-1.5 text-xs text-rose-600 hover:text-rose-700 font-semibold p-0 hover:bg-transparent"
                 >
                   <Trash2 className="size-3.5" />
                   <span>Delete</span>
-                </button>
+                </Button>
               )}
 
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => onEdit(currentTrade)}
-                className="gap-1.5 text-xs font-semibold"
+                className="gap-1.5 text-xs font-semibold h-8"
               >
                 <Edit className="size-3.5" />
                 <span>Edit Trade</span>
               </Button>
             </div>
-          </div>
+          </Card>
         </div>
 
         {/* ========================================================================= */}
         {/* RIGHT COLUMN: COSS TABS (CHARTS / CONFLUENCES / MISTAKES / REFLECTION)     */}
         {/* ========================================================================= */}
         <div className="lg:col-span-7 flex flex-col gap-6">
-          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-5">
+          <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-5">
             <Tabs defaultValue="charts" className="w-full">
               <TabsList size="sm" variant="default" className="w-full flex overflow-x-auto">
                 <TabsTab value="charts">Charts Proof</TabsTab>
@@ -570,7 +571,7 @@ export function TradeDetailView({
 
               {/* TAB 2: CONFLUENCES & STRATEGY */}
               <TabsPanel value="confluences" className="pt-4 space-y-4">
-                <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-50 border border-zinc-200/80">
+                <Card className="flex flex-row items-center justify-between p-3 rounded-xl bg-zinc-50 border-zinc-200/80 shadow-none">
                   <span className="text-xs font-semibold text-zinc-700">Adherence to Trade Plan</span>
                   <span
                     className={`text-xs font-bold flex items-center gap-1.5 ${
@@ -587,19 +588,20 @@ export function TradeDetailView({
                       </>
                     )}
                   </span>
-                </div>
+                </Card>
 
                 <div className="space-y-2">
                   <span className="text-xs font-semibold text-zinc-700">Validated Entry Confluences</span>
                   <div className="flex flex-wrap gap-2">
                     {currentTrade.confluences && currentTrade.confluences.length > 0 ? (
                       currentTrade.confluences.map((c) => (
-                        <span
+                        <Badge
                           key={c}
-                          className="text-xs font-medium px-3 py-1 rounded-xl bg-zinc-100 border border-zinc-200 text-zinc-900"
+                          variant="secondary"
+                          className="text-xs font-medium px-3 py-1 rounded-xl bg-zinc-100 border-zinc-200 text-zinc-900"
                         >
                           ✓ {c}
-                        </span>
+                        </Badge>
                       ))
                     ) : (
                       <span className="text-xs text-zinc-400">None logged</span>
@@ -620,19 +622,19 @@ export function TradeDetailView({
               {/* TAB 3: MISTAKES & EMOTIONS */}
               <TabsPanel value="mistakes" className="pt-4 space-y-4">
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="p-3.5 rounded-xl border border-zinc-200 bg-zinc-50 flex flex-col gap-1">
+                  <Card className="p-3.5 rounded-xl border-zinc-200 bg-zinc-50 flex flex-col gap-1 shadow-none">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Entry Emotion</span>
                     <span className="text-sm font-semibold text-zinc-900">
                       {currentTrade.entryEmotion || 'Neutral'}
                     </span>
-                  </div>
+                  </Card>
 
-                  <div className="p-3.5 rounded-xl border border-zinc-200 bg-zinc-50 flex flex-col gap-1">
+                  <Card className="p-3.5 rounded-xl border-zinc-200 bg-zinc-50 flex flex-col gap-1 shadow-none">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Exit Emotion</span>
                     <span className="text-sm font-semibold text-zinc-900">
                       {currentTrade.exitEmotion || 'Disciplined'}
                     </span>
-                  </div>
+                  </Card>
                 </div>
 
                 <div className="space-y-2">
@@ -640,12 +642,13 @@ export function TradeDetailView({
                   <div className="flex flex-wrap gap-2">
                     {currentTrade.mistakes && currentTrade.mistakes.length > 0 ? (
                       currentTrade.mistakes.map((m) => (
-                        <span
+                        <Badge
                           key={m}
-                          className="text-xs font-medium px-3 py-1 rounded-xl bg-rose-50 border border-rose-200 text-rose-700"
+                          variant="secondary"
+                          className="text-xs font-medium px-3 py-1 rounded-xl bg-rose-50 border-rose-200 text-rose-700"
                         >
                           ✕ {m}
-                        </span>
+                        </Badge>
                       ))
                     ) : (
                       <span className="text-xs text-emerald-700 font-medium">None · Zero mistakes executed</span>
@@ -662,7 +665,7 @@ export function TradeDetailView({
                 </p>
               </TabsPanel>
             </Tabs>
-          </div>
+          </Card>
         </div>
       </div>
     </div>

@@ -7,6 +7,9 @@ import {
   Calendar as CalendarIcon,
 } from 'lucide-react';
 import { CurrencyMode, JournalTrade } from './types';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card';
 
 interface TradingCalendarProps {
   currentYear: number;
@@ -73,7 +76,6 @@ export function TradingCalendar({
   const firstDayOfMonth = new Date(currentYear, currentMonth, 1);
   const lastDayOfMonth = new Date(currentYear, currentMonth + 1, 0);
 
-  // JavaScript getDay(): 0 = Sun, 1 = Mon ... We want 0 = Mon, 6 = Sun
   const startDayOfWeek = (firstDayOfMonth.getDay() + 6) % 7;
   const daysInMonth = lastDayOfMonth.getDate();
 
@@ -129,28 +131,32 @@ export function TradingCalendar({
   const weekHeaders = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
   return (
-    <div className="bg-white border border-zinc-200/90 rounded-2xl shadow-2xs flex flex-col font-sans overflow-hidden">
+    <Card className="bg-white border-zinc-200/90 rounded-2xl shadow-2xs flex flex-col font-sans overflow-hidden p-0 gap-0">
       {/* ========================================================================= */}
-      {/* CALENDAR CONTROLS BAR (Crisp Black and White)                             */}
+      {/* CALENDAR CONTROLS BAR (COSS UI Components)                                */}
       {/* ========================================================================= */}
       <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-zinc-200/80 bg-white">
         <div className="flex items-center gap-2">
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="xs"
             onClick={onPrevMonth}
-            className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-950 hover:bg-zinc-100 border border-zinc-200 transition-colors"
+            className="h-8 w-8 p-0 rounded-lg text-zinc-600 hover:text-zinc-950 border-zinc-200"
             title="Previous month"
           >
             <ChevronLeft className="size-4" />
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="outline"
+            size="xs"
             onClick={onNextMonth}
-            className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-950 hover:bg-zinc-100 border border-zinc-200 transition-colors"
+            className="h-8 w-8 p-0 rounded-lg text-zinc-600 hover:text-zinc-950 border-zinc-200"
             title="Next month"
           >
             <ChevronRight className="size-4" />
-          </button>
+          </Button>
           <h2 className="text-sm sm:text-base font-bold text-zinc-950 ml-1.5 tracking-tight flex items-center gap-2">
             <CalendarIcon className="size-4 text-zinc-500" />
             {monthName}
@@ -158,13 +164,15 @@ export function TradingCalendar({
         </div>
 
         <div className="flex items-center gap-2">
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             onClick={onJumpThisMonth}
-            className="text-xs px-3 py-1.5 rounded-xl bg-white hover:bg-zinc-50 text-zinc-800 font-semibold border border-zinc-200 transition-colors shadow-2xs cursor-pointer"
+            className="h-8 px-3 rounded-xl bg-white hover:bg-zinc-50 text-zinc-800 font-semibold border-zinc-200 shadow-2xs cursor-pointer"
           >
             This Month
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -224,9 +232,9 @@ export function TradingCalendar({
                   </span>
 
                   {isToday && (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-950 text-white shadow-2xs">
+                    <Badge variant="default" className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-950 text-white shadow-2xs">
                       Today {cell.dayNumber}
-                    </span>
+                    </Badge>
                   )}
                 </div>
 
@@ -254,6 +262,6 @@ export function TradingCalendar({
           })}
         </div>
       </div>
-    </div>
+    </Card>
   );
 }

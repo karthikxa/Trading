@@ -2,6 +2,8 @@
 
 import React from 'react';
 import { JournalTrade } from './types';
+import { Card } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 
 interface WeeklyBreakdownCardProps {
   trades: JournalTrade[];
@@ -45,19 +47,21 @@ export function WeeklyBreakdownCard({ trades }: WeeklyBreakdownCardProps) {
   };
 
   return (
-    <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-full">
+    <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-full">
       <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
         <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Weekly Breakdown</h2>
-        <span className="text-xs font-mono text-zinc-500 font-medium">4 Weeks</span>
+        <Badge variant="secondary" className="font-mono text-zinc-500 font-medium bg-zinc-100 text-[10px]">
+          4 Weeks
+        </Badge>
       </div>
 
       <div className="grid grid-cols-2 gap-3.5 flex-1 items-stretch">
         {weeks.map((w) => {
           const isProfitable = w.pnl >= 0;
           return (
-            <div
+            <Card
               key={w.name}
-              className={`p-4 rounded-xl border flex flex-col justify-between transition-all select-none ${
+              className={`p-4 rounded-xl border flex flex-col justify-between transition-all select-none shadow-none ${
                 w.active
                   ? 'border-zinc-950 bg-white ring-2 ring-zinc-950/10 shadow-xs'
                   : 'border-zinc-200/80 bg-zinc-50/50 hover:bg-zinc-50 hover:border-zinc-300'
@@ -66,9 +70,9 @@ export function WeeklyBreakdownCard({ trades }: WeeklyBreakdownCardProps) {
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-zinc-700">{w.name}</span>
                 {w.active && (
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-zinc-950 text-white font-bold">
+                  <Badge variant="default" className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-zinc-950 text-white font-bold">
                     Active
-                  </span>
+                  </Badge>
                 )}
               </div>
 
@@ -86,10 +90,10 @@ export function WeeklyBreakdownCard({ trades }: WeeklyBreakdownCardProps) {
                   {formatCurrency(w.pnl)}
                 </span>
               </div>
-            </div>
+            </Card>
           );
         })}
       </div>
-    </div>
+    </Card>
   );
 }

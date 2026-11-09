@@ -2,6 +2,8 @@
 
 import React from 'react';
 import { JournalTrade } from './types';
+import { Card } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 
 interface MonthlySummaryCardProps {
   trades: JournalTrade[];
@@ -47,10 +49,12 @@ export function MonthlySummaryCard({ trades }: MonthlySummaryCardProps) {
   };
 
   return (
-    <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-full">
+    <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-full">
       <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
         <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Monthly Summary</h2>
-        <span className="text-xs font-mono text-zinc-500 font-medium">Performance Metrics</span>
+        <Badge variant="secondary" className="font-mono text-zinc-500 font-medium bg-zinc-100 text-[10px]">
+          Performance Metrics
+        </Badge>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-end flex-1">
@@ -66,7 +70,7 @@ export function MonthlySummaryCard({ trades }: MonthlySummaryCardProps) {
                   </span>
                   <div
                     style={{ height: `${heightPct}%` }}
-                    className="w-full max-w-[44px] rounded-t-lg bg-zinc-900 hover:bg-zinc-800 transition-all shadow-2xs group-hover:bg-zinc-950"
+                    className="w-full max-w-[44px] rounded-t-lg bg-zinc-950 hover:bg-zinc-800 transition-all shadow-2xs"
                   />
                   <span className="text-[10px] text-zinc-600 font-mono font-medium tracking-tighter truncate max-w-[55px] text-center">
                     {b.label}
@@ -120,6 +124,6 @@ export function MonthlySummaryCard({ trades }: MonthlySummaryCardProps) {
           </div>
         </div>
       </div>
-    </div>
+    </Card>
   );
 }

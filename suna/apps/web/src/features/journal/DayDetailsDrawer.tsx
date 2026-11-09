@@ -20,6 +20,8 @@ import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { Card } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 
 interface DayDetailsDrawerProps {
   date: string; // YYYY-MM-DD
@@ -113,43 +115,51 @@ export function DayDetailsDrawer({
       {/* ========================================================================= */}
       <div className="flex items-center justify-between px-5 py-3.5 border-b border-zinc-200/80 bg-white">
         <div className="flex items-center gap-1.5">
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="xs"
             onClick={() => stepDate(-1)}
-            className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-950 hover:bg-zinc-100 transition-colors"
+            className="h-8 w-8 p-0 rounded-lg text-zinc-500 hover:text-zinc-950"
             title="Previous Day"
           >
             <ChevronLeft className="size-4" />
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="ghost"
+            size="xs"
             onClick={() => stepDate(1)}
-            className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-950 hover:bg-zinc-100 transition-colors"
+            className="h-8 w-8 p-0 rounded-lg text-zinc-500 hover:text-zinc-950"
             title="Next Day"
           >
             <ChevronRight className="size-4" />
-          </button>
+          </Button>
           <h2 className="text-sm font-bold text-zinc-950 ml-1">{formattedDateTitle}</h2>
         </div>
 
         <div className="flex items-center gap-2">
           {!isToday && (
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="xs"
               onClick={jumpToToday}
-              className="text-xs px-2.5 py-1 rounded-lg bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-semibold transition-colors"
+              className="h-7 px-2.5 rounded-lg text-zinc-700 font-semibold"
             >
               Today
-            </button>
+            </Button>
           )}
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="xs"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-950 hover:bg-zinc-100 transition-colors cursor-pointer"
+            className="h-8 w-8 p-0 rounded-lg text-zinc-400 hover:text-zinc-950"
             title="Close panel"
           >
             <X className="size-4" />
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -157,8 +167,8 @@ export function DayDetailsDrawer({
       {/* 2. DRAWER SCROLLABLE BODY                                                 */}
       {/* ========================================================================= */}
       <div className="flex-1 overflow-y-auto p-4 sm:p-5 flex flex-col gap-4">
-        {/* Net P&L Display Card (Green / Red) */}
-        <div className="p-4 rounded-xl border border-zinc-200/80 bg-zinc-50/50 flex flex-col gap-1">
+        {/* Net P&L Display Card using COSS Card */}
+        <Card className="p-4 rounded-xl border-zinc-200/80 bg-zinc-50/50 flex flex-col gap-1 shadow-none">
           <div
             className={`text-2xl sm:text-3xl font-black tracking-tight font-mono ${
               netPnl >= 0 ? 'text-emerald-700' : 'text-rose-700'
@@ -169,10 +179,10 @@ export function DayDetailsDrawer({
           <span className="text-[10px] font-bold tracking-wider text-zinc-500 uppercase">
             Net Daily Profit / Loss
           </span>
-        </div>
+        </Card>
 
-        {/* 5-Item Mini Stats Grid */}
-        <div className="grid grid-cols-2 gap-2.5 bg-white p-3.5 rounded-xl border border-zinc-200/90 shadow-2xs">
+        {/* 5-Item Mini Stats Grid using COSS Card */}
+        <Card className="grid grid-cols-2 gap-2.5 bg-white p-3.5 rounded-xl border-zinc-200/90 shadow-2xs">
           <div className="flex flex-col">
             <span className="text-sm font-bold font-mono text-zinc-950">
               {winRate.toFixed(1)}%
@@ -215,10 +225,10 @@ export function DayDetailsDrawer({
               </span>
             </div>
           </div>
-        </div>
+        </Card>
 
         {/* ======================================================================= */}
-        {/* COSS TABS FOR DRAWER: TRADES | ROUTINE | NOTES                          */}
+        {/* STRICT COSS TABS FOR DRAWER: TRADES | ROUTINE | NOTES                   */}
         {/* ======================================================================= */}
         <Tabs defaultValue="trades" className="w-full flex-1 flex flex-col">
           <TabsList size="sm" variant="default" className="w-full grid grid-cols-3">
@@ -231,46 +241,52 @@ export function DayDetailsDrawer({
           <TabsPanel value="trades" className="flex flex-col gap-3 pt-2">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center p-0.5 rounded-lg bg-zinc-100 border border-zinc-200">
-                <button
+                <Button
                   type="button"
+                  variant={filterMode === 'all' ? 'default' : 'ghost'}
+                  size="xs"
                   onClick={() => setFilterMode('all')}
-                  className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${
+                  className={`h-6 px-2.5 text-[11px] font-semibold rounded-md ${
                     filterMode === 'all'
                       ? 'bg-zinc-950 text-white shadow-xs'
-                      : 'text-zinc-600 hover:text-zinc-950'
+                      : 'text-zinc-600 hover:text-zinc-950 hover:bg-transparent'
                   }`}
                 >
                   All
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
+                  variant={filterMode === 'wins' ? 'default' : 'ghost'}
+                  size="xs"
                   onClick={() => setFilterMode('wins')}
-                  className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${
+                  className={`h-6 px-2.5 text-[11px] font-semibold rounded-md ${
                     filterMode === 'wins'
                       ? 'bg-emerald-700 text-white shadow-xs'
-                      : 'text-zinc-600 hover:text-zinc-950'
+                      : 'text-zinc-600 hover:text-zinc-950 hover:bg-transparent'
                   }`}
                 >
                   Wins
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
+                  variant={filterMode === 'losses' ? 'default' : 'ghost'}
+                  size="xs"
                   onClick={() => setFilterMode('losses')}
-                  className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${
+                  className={`h-6 px-2.5 text-[11px] font-semibold rounded-md ${
                     filterMode === 'losses'
                       ? 'bg-rose-700 text-white shadow-xs'
-                      : 'text-zinc-600 hover:text-zinc-950'
+                      : 'text-zinc-600 hover:text-zinc-950 hover:bg-transparent'
                   }`}
                 >
                   Losses
-                </button>
+                </Button>
               </div>
 
               <Button
                 variant="outline"
-                size="sm"
+                size="xs"
                 onClick={() => onAddTradeForDate(date)}
-                className="text-xs font-semibold gap-1"
+                className="h-7 text-xs font-semibold gap-1"
               >
                 <Plus className="size-3.5" />
                 Add
@@ -288,10 +304,10 @@ export function DayDetailsDrawer({
                 {filteredTrades.map((t) => {
                   const isProfitable = t.pnl >= 0;
                   return (
-                    <div
+                    <Card
                       key={t.id}
                       onClick={() => onSelectTrade(t)}
-                      className="p-3 rounded-xl border border-zinc-200/90 bg-white hover:bg-zinc-50/80 hover:border-zinc-300 transition-all cursor-pointer flex items-center justify-between group shadow-2xs"
+                      className="p-3 rounded-xl border-zinc-200/90 bg-white hover:bg-zinc-50/80 hover:border-zinc-300 transition-all cursor-pointer flex flex-row items-center justify-between group shadow-2xs"
                     >
                       <div className="flex items-center gap-3">
                         <div className="size-8 rounded-lg bg-zinc-100 flex items-center justify-center text-xs font-mono font-bold text-zinc-800">
@@ -335,7 +351,7 @@ export function DayDetailsDrawer({
                           </span>
                         )}
                       </div>
-                    </div>
+                    </Card>
                   );
                 })}
               </div>
@@ -344,7 +360,7 @@ export function DayDetailsDrawer({
 
           {/* TAB 2: ROUTINE & GUARDRAILS */}
           <TabsPanel value="routine" className="flex flex-col gap-3 pt-2">
-            <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-50 border border-zinc-200/70 text-xs">
+            <Card className="flex flex-row items-center justify-between p-3 rounded-xl bg-zinc-50 border-zinc-200/70 text-xs shadow-none">
               <span className="text-zinc-600 font-medium">Plan Followed</span>
               <span
                 className={`font-semibold flex items-center gap-1.5 ${
@@ -361,26 +377,26 @@ export function DayDetailsDrawer({
                   </>
                 )}
               </span>
-            </div>
+            </Card>
 
-            <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-50 border border-zinc-200/70 text-xs">
+            <Card className="flex flex-row items-center justify-between p-3 rounded-xl bg-zinc-50 border-zinc-200/70 text-xs shadow-none">
               <span className="text-zinc-600 font-medium">Guardrail Violations</span>
               <span className="font-semibold text-zinc-950">
                 {trades.reduce((acc, t) => acc + (t.mistakes?.length || 0), 0)} violations
               </span>
-            </div>
+            </Card>
 
-            <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-50 border border-zinc-200/70 text-xs">
+            <Card className="flex flex-row items-center justify-between p-3 rounded-xl bg-zinc-50 border-zinc-200/70 text-xs shadow-none">
               <span className="text-zinc-600 font-medium">Pre-Market Routine</span>
               <span className="font-semibold text-emerald-700">Completed 3/3</span>
-            </div>
+            </Card>
 
-            <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-50 border border-zinc-200/70 text-xs">
+            <Card className="flex flex-row items-center justify-between p-3 rounded-xl bg-zinc-50 border-zinc-200/70 text-xs shadow-none">
               <span className="text-zinc-600 font-medium">Trades Journaled</span>
               <span className="font-semibold text-zinc-950 font-mono">
                 {totalTrades}/{totalTrades} Logged
               </span>
-            </div>
+            </Card>
           </TabsPanel>
 
           {/* TAB 3: NOTES & REFLECTION */}
@@ -397,7 +413,7 @@ export function DayDetailsDrawer({
                 variant="default"
                 size="sm"
                 onClick={() => alert('Reflection saved!')}
-                className="bg-zinc-950 text-white hover:bg-zinc-800 self-end font-semibold text-xs mt-1"
+                className="bg-zinc-950 text-white hover:bg-zinc-800 self-end font-semibold text-xs mt-1 h-8 px-4"
               >
                 Save Reflection
               </Button>
