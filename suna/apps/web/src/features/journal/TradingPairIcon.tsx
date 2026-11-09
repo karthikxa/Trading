@@ -143,6 +143,32 @@ function FlagNZ({ size }: { size: number }) {
   );
 }
 
+function FlagIN({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 512 512" className="size-full object-cover">
+      <rect width="512" height="170.67" fill="#FF9933" />
+      <rect y="170.67" width="512" height="170.67" fill="#FFFFFF" />
+      <rect y="341.33" width="512" height="170.67" fill="#128807" />
+      <circle cx="256" cy="256" r="60" fill="none" stroke="#000080" strokeWidth="8" />
+      <circle cx="256" cy="256" r="14" fill="#000080" />
+      {[...Array(24)].map((_, i) => {
+        const angle = (i * 15 * Math.PI) / 180;
+        return (
+          <line
+            key={i}
+            x1="256"
+            y1="256"
+            x2={256 + 56 * Math.sin(angle)}
+            y2={256 - 56 * Math.cos(angle)}
+            stroke="#000080"
+            strokeWidth="4"
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
 function FlagGold({ size }: { size: number }) {
   return (
     <div
@@ -182,6 +208,8 @@ function getCurrencyBadge(code: string, size = 18) {
       return <FlagCH size={size} />;
     case 'AUD':
       return <FlagAU size={size} />;
+    case 'INR':
+      return <FlagIN size={size} />;
     case 'CAD':
       return <FlagCA size={size} />;
     case 'NZD':
@@ -206,6 +234,19 @@ function getCurrencyBadge(code: string, size = 18) {
 
 export function TradingPairIcon({ symbol, size = 'md', className = '' }: TradingPairIconProps) {
   const clean = symbol.toUpperCase().replace(/^.*:/, '').trim();
+
+  // US30 / Dow Jones
+  if (clean === 'US30' || clean.includes('DOW')) {
+    const badgeSize = size === 'sm' ? 18 : 22;
+    return (
+      <div
+        style={{ width: badgeSize, height: badgeSize }}
+        className={`rounded-full overflow-hidden ring-2 ring-white shadow-2xs shrink-0 ${className}`}
+      >
+        <FlagUS size={badgeSize} />
+      </div>
+    );
+  }
 
   // If it's a 6-character forex currency pair like EURUSD, GBPJPY, AUDCHF
   if (clean.length === 6 && !clean.startsWith('BTC') && !clean.startsWith('ETH')) {
@@ -278,3 +319,4 @@ export function TradingPairIcon({ symbol, size = 'md', className = '' }: Trading
 }
 
 export default TradingPairIcon;
+
