@@ -52,7 +52,7 @@ export function MonthlySummaryCard({ trades }: MonthlySummaryCardProps) {
     <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-full">
       <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
         <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Monthly Summary</h2>
-        <Badge variant="secondary" className="font-mono text-zinc-500 font-medium bg-zinc-100 text-[10px]">
+        <Badge variant="secondary" className="font-sans text-xs font-medium text-zinc-600 bg-zinc-100/90 border border-zinc-200/80 px-2.5 py-0.5 rounded-lg tracking-normal">
           Performance Metrics
         </Badge>
       </div>
@@ -72,14 +72,14 @@ export function MonthlySummaryCard({ trades }: MonthlySummaryCardProps) {
                     style={{ height: `${heightPct}%` }}
                     className="w-full max-w-[44px] rounded-t-lg bg-zinc-950 hover:bg-zinc-800 transition-all shadow-2xs"
                   />
-                  <span className="text-[10px] text-zinc-600 font-mono font-medium tracking-tighter truncate max-w-[55px] text-center">
+                  <span className="text-[11px] text-zinc-600 font-sans font-medium tracking-normal truncate max-w-[55px] text-center">
                     {b.label}
                   </span>
                 </div>
               );
             })}
           </div>
-          <div className="flex items-center justify-between text-[10px] text-zinc-500 px-2 pt-2 font-mono">
+          <div className="flex items-center justify-between text-xs text-zinc-500 px-2 pt-2.5 font-sans font-medium tracking-normal">
             <span>Risk-to-Reward Distribution</span>
             <span>R-Multiple</span>
           </div>

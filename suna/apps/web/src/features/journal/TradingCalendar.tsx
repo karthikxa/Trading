@@ -211,13 +211,13 @@ export function TradingCalendar({
                     : hasTrades
                     ? isProfitable
                       ? isSelected
-                        ? 'bg-[#ecfdf5] border-emerald-500 text-emerald-950 ring-2 ring-zinc-950 shadow-sm'
-                        : 'bg-[#f0fdf4] hover:bg-[#ecfdf5] border-emerald-300 text-emerald-950 shadow-2xs hover:border-emerald-400'
+                        ? 'bg-emerald-50 border-emerald-400 text-emerald-900 ring-2 ring-emerald-400/30 shadow-xs'
+                        : 'bg-emerald-50/60 hover:bg-emerald-50 border-emerald-200 text-emerald-900 shadow-2xs hover:border-emerald-300'
                       : isSelected
-                      ? 'bg-[#fff1f2] border-rose-500 text-rose-950 ring-2 ring-zinc-950 shadow-sm'
-                      : 'bg-[#fff5f5] hover:bg-[#fff1f2] border-rose-300 text-rose-950 shadow-2xs hover:border-rose-400'
+                      ? 'bg-rose-50 border-rose-400 text-rose-900 ring-2 ring-rose-400/30 shadow-xs'
+                      : 'bg-rose-50/60 hover:bg-rose-50 border-rose-200 text-rose-900 shadow-2xs hover:border-rose-300'
                     : isSelected
-                    ? 'bg-white border-zinc-950 ring-2 ring-zinc-950 shadow-sm'
+                    ? 'bg-zinc-50 border-zinc-400 ring-2 ring-zinc-300/60 shadow-xs'
                     : 'bg-white hover:bg-zinc-50 border-zinc-200/90 hover:border-zinc-300'
                 }`}
               >

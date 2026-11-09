@@ -259,7 +259,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
   };
 
   return (
-    <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full font-sans pb-16">
+    <div className="flex flex-col gap-8 w-full font-sans pb-20">
       {/* Top Breadcrumb and Actions */}
       <div className="flex items-center justify-between">
         <Button
@@ -273,8 +273,8 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
           <span>Back to Calendar</span>
         </Button>
 
-        <div className="flex items-center gap-2.5">
-          <Button variant="outline" size="sm" onClick={onBack} className="h-8">
+        <div className="flex items-center gap-3">
+          <Button variant="outline" size="sm" onClick={onBack} className="h-8.5 px-4 font-medium">
             Cancel
           </Button>
           <Button
@@ -282,38 +282,38 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
             size="sm"
             onClick={handleSave}
             disabled={isSaving}
-            className="bg-zinc-950 text-white hover:bg-zinc-800 font-semibold shadow-xs h-8"
+            className="bg-zinc-950 text-white hover:bg-zinc-800 font-semibold shadow-xs h-8.5 px-5"
           >
             {isSaving ? 'Saving...' : 'Save Manual Trade'}
           </Button>
         </div>
       </div>
 
-      <div>
-        <h1 className="text-xl font-bold text-zinc-950 tracking-tight">Add Trade</h1>
-        <p className="text-xs text-zinc-500 mt-0.5">
+      <div className="space-y-1">
+        <h1 className="text-2xl font-bold text-zinc-950 tracking-tight">Add Trade</h1>
+        <p className="text-xs text-zinc-500">
           Log execution parameters, multi-timeframe chart proof, and emotional confluences.
         </p>
       </div>
 
-      {/* Main 2-Column Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      {/* Main 2-Column Spacious Layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start w-full">
         {/* ========================================================================= */}
         {/* COLUMN 1: TRADE DETAILS & EXECUTION (5 Cols)                              */}
         {/* ========================================================================= */}
-        <Card className="lg:col-span-5 bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-5">
-          <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+        <Card className="lg:col-span-5 bg-white border-zinc-200/90 rounded-2xl p-6 sm:p-8 shadow-2xs space-y-6">
+          <div className="flex items-center justify-between border-b border-zinc-100 pb-3.5">
             <h2 className="text-sm font-bold text-zinc-950 tracking-tight flex items-center gap-2">
               <CalendarIcon className="size-4 text-zinc-500" />
               Trade Details
             </h2>
-            <Badge variant="secondary" className="bg-zinc-100 text-zinc-700 text-[10px] font-mono">
+            <Badge variant="secondary" className="bg-zinc-100 text-zinc-700 text-xs font-sans font-medium px-2.5 py-0.5 rounded-lg border-zinc-200">
               Manual Entry
             </Badge>
           </div>
 
           {/* Entry & Exit Date/Time */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-4">
             <Field>
               <FieldLabel>Entry Date</FieldLabel>
               <Input
@@ -332,7 +332,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
             </Field>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-4">
             <Field>
               <FieldLabel>Exit Date</FieldLabel>
               <Input
@@ -352,7 +352,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
           </div>
 
           {/* Instrument and Quick Symbol Chips using Button */}
-          <Field>
+          <Field className="space-y-1.5">
             <FieldLabel>Instrument Symbol</FieldLabel>
             <Input
               type="text"
@@ -368,10 +368,10 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   variant={instrument === sym ? 'default' : 'outline'}
                   size="xs"
                   onClick={() => setInstrument(sym)}
-                  className={`h-6 px-2 text-[10px] font-mono font-bold rounded-md ${
+                  className={`h-6.5 px-2.5 text-[11px] font-sans font-medium rounded-lg transition-colors ${
                     instrument === sym
                       ? 'bg-zinc-950 text-white'
-                      : 'bg-zinc-100 text-zinc-700 border-zinc-200 hover:bg-zinc-200'
+                      : 'bg-zinc-50 text-zinc-700 border-zinc-200 hover:bg-zinc-100'
                   }`}
                 >
                   {sym}
@@ -380,37 +380,37 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
             </div>
           </Field>
 
-          {/* Direction & Lots */}
-          <div className="grid grid-cols-2 gap-3">
+          {/* Direction & Lots with Soft Colors */}
+          <div className="grid grid-cols-2 gap-4">
             <Field>
               <FieldLabel>Direction</FieldLabel>
-              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-zinc-100 border border-zinc-200">
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-zinc-100/80 border border-zinc-200">
                 <Button
                   type="button"
-                  variant={direction === 'Buy' ? 'default' : 'ghost'}
+                  variant="ghost"
                   size="xs"
                   onClick={() => setDirection('Buy')}
-                  className={`h-8 font-bold gap-1 rounded-lg ${
+                  className={`h-8 font-semibold gap-1.5 rounded-lg transition-all ${
                     direction === 'Buy'
-                      ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-xs'
+                      ? 'bg-emerald-50 text-emerald-800 border border-emerald-300 shadow-2xs hover:bg-emerald-100'
                       : 'text-zinc-600 hover:text-zinc-950 hover:bg-transparent'
                   }`}
                 >
-                  <TrendingUp className="size-3.5" />
+                  <TrendingUp className="size-3.5 text-emerald-600" />
                   Buy
                 </Button>
                 <Button
                   type="button"
-                  variant={direction === 'Sell' ? 'default' : 'ghost'}
+                  variant="ghost"
                   size="xs"
                   onClick={() => setDirection('Sell')}
-                  className={`h-8 font-bold gap-1 rounded-lg ${
+                  className={`h-8 font-semibold gap-1.5 rounded-lg transition-all ${
                     direction === 'Sell'
-                      ? 'bg-rose-600 text-white hover:bg-rose-700 shadow-xs'
+                      ? 'bg-rose-50 text-rose-800 border border-rose-300 shadow-2xs hover:bg-rose-100'
                       : 'text-zinc-600 hover:text-zinc-950 hover:bg-transparent'
                   }`}
                 >
-                  <TrendingDown className="size-3.5" />
+                  <TrendingDown className="size-3.5 text-rose-600" />
                   Sell
                 </Button>
               </div>
@@ -444,10 +444,10 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
           </Field>
 
           {/* Execution Prices */}
-          <div className="border-t border-zinc-100 pt-4 space-y-3">
+          <div className="border-t border-zinc-100 pt-5 space-y-4">
             <h3 className="text-xs font-bold text-zinc-950 tracking-tight uppercase">Execution & Pricing</h3>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-4">
               <Field>
                 <FieldLabel>Entry Price</FieldLabel>
                 <Input
@@ -468,7 +468,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
               </Field>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-4">
               <Field>
                 <FieldLabel>Stop Loss</FieldLabel>
                 <Input
@@ -501,7 +501,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
               />
             </Field>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-4">
               <Field>
                 <FieldLabel>Risk (R)</FieldLabel>
                 <Input
@@ -522,7 +522,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
               </Field>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-4">
               <Field>
                 <FieldLabel>Fees & Commission ($)</FieldLabel>
                 <Input
@@ -546,10 +546,10 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
         {/* ========================================================================= */}
         {/* COLUMN 2: CHARTS & TABS (CONFLUENCES / MISTAKES / REFLECTION) (7 Cols)     */}
         {/* ========================================================================= */}
-        <div className="lg:col-span-7 space-y-6">
+        <div className="lg:col-span-7 space-y-8">
           {/* CHARTS UPLOAD BOXES (HTF, MTF, LTF) */}
-          <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs">
-            <div className="flex items-center justify-between border-b border-zinc-100 pb-3 mb-4">
+          <Card className="bg-white border-zinc-200/90 rounded-2xl p-6 sm:p-8 shadow-2xs space-y-5">
+            <div className="flex items-center justify-between border-b border-zinc-100 pb-3.5">
               <div>
                 <h2 className="text-sm font-bold text-zinc-950 tracking-tight flex items-center gap-2">
                   <ImageIcon className="size-4 text-zinc-500" />
@@ -561,11 +561,11 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               {/* HTF Slot */}
-              <div className="flex flex-col gap-1.5">
-                <span className="text-[11px] font-semibold text-zinc-700">HTF (Daily / 4H)</span>
-                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[130px] group">
+              <div className="flex flex-col gap-2">
+                <span className="text-xs font-semibold text-zinc-700">HTF (Daily / 4H)</span>
+                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[145px] group">
                   <input
                     type="file"
                     accept="image/*"
@@ -574,12 +574,12 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   />
                   {chartHtf ? (
                     <div className="relative w-full h-full flex flex-col items-center">
-                      <img src={chartHtf} alt="HTF Chart" className="h-20 w-auto object-cover rounded-lg shadow-2xs" />
+                      <img src={chartHtf} alt="HTF Chart" className="h-24 w-auto object-cover rounded-lg shadow-2xs" />
                       <Badge variant="secondary" className="text-[10px] text-emerald-700 font-semibold mt-1 bg-emerald-50 border-emerald-200">Uploaded</Badge>
                     </div>
                   ) : (
                     <>
-                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-1.5" />
+                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-2" />
                       <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
                         {isUploading === 'htf' ? 'Uploading...' : 'Upload HTF'}
                       </span>
@@ -590,9 +590,9 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
               </div>
 
               {/* MTF Slot */}
-              <div className="flex flex-col gap-1.5">
-                <span className="text-[11px] font-semibold text-zinc-700">MTF (1H / 15M)</span>
-                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[130px] group">
+              <div className="flex flex-col gap-2">
+                <span className="text-xs font-semibold text-zinc-700">MTF (1H / 15M)</span>
+                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[145px] group">
                   <input
                     type="file"
                     accept="image/*"
@@ -601,12 +601,12 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   />
                   {chartMtf ? (
                     <div className="relative w-full h-full flex flex-col items-center">
-                      <img src={chartMtf} alt="MTF Chart" className="h-20 w-auto object-cover rounded-lg shadow-2xs" />
+                      <img src={chartMtf} alt="MTF Chart" className="h-24 w-auto object-cover rounded-lg shadow-2xs" />
                       <Badge variant="secondary" className="text-[10px] text-emerald-700 font-semibold mt-1 bg-emerald-50 border-emerald-200">Uploaded</Badge>
                     </div>
                   ) : (
                     <>
-                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-1.5" />
+                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-2" />
                       <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
                         {isUploading === 'mtf' ? 'Uploading...' : 'Upload MTF'}
                       </span>
@@ -617,9 +617,9 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
               </div>
 
               {/* LTF Slot */}
-              <div className="flex flex-col gap-1.5">
-                <span className="text-[11px] font-semibold text-zinc-700">LTF (5M / 1M)</span>
-                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[130px] group">
+              <div className="flex flex-col gap-2">
+                <span className="text-xs font-semibold text-zinc-700">LTF (5M / 1M)</span>
+                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[145px] group">
                   <input
                     type="file"
                     accept="image/*"
@@ -628,12 +628,12 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                   />
                   {chartLtf ? (
                     <div className="relative w-full h-full flex flex-col items-center">
-                      <img src={chartLtf} alt="LTF Chart" className="h-20 w-auto object-cover rounded-lg shadow-2xs" />
+                      <img src={chartLtf} alt="LTF Chart" className="h-24 w-auto object-cover rounded-lg shadow-2xs" />
                       <Badge variant="secondary" className="text-[10px] text-emerald-700 font-semibold mt-1 bg-emerald-50 border-emerald-200">Uploaded</Badge>
                     </div>
                   ) : (
                     <>
-                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-1.5" />
+                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-2" />
                       <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
                         {isUploading === 'ltf' ? 'Uploading...' : 'Upload LTF'}
                       </span>
@@ -646,28 +646,28 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
           </Card>
 
           {/* COSS TABS SECTION FOR CONFLUENCES */}
-          <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+          <Card className="bg-white border-zinc-200/90 rounded-2xl p-6 sm:p-8 shadow-2xs space-y-5">
+            <div className="flex items-center justify-between border-b border-zinc-100 pb-3.5">
               <div>
                 <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Entry Confluences</h2>
                 <p className="text-xs text-zinc-500 mt-0.5">Categorized strategy confluences and validation reasons</p>
               </div>
-              <Badge variant="secondary" className="font-mono font-bold bg-zinc-100 text-zinc-800">
+              <Badge variant="secondary" className="font-sans text-xs font-semibold bg-zinc-100 text-zinc-800 px-3 py-1 rounded-lg">
                 {confluences.length} Selected
               </Badge>
             </div>
 
             {/* Strict Coss Tabs Component */}
             <Tabs defaultValue="structure" className="w-full">
-              <TabsList size="sm" variant="default" className="w-full overflow-x-auto flex">
-                <TabsTab value="structure">Structure</TabsTab>
-                <TabsTab value="orderflow">Orderflow & POI</TabsTab>
-                <TabsTab value="execution">Execution</TabsTab>
-                <TabsTab value="session">Session & Time</TabsTab>
+              <TabsList size="sm" variant="default" className="w-full overflow-x-auto flex p-1 rounded-xl bg-zinc-100/90 border border-zinc-200/80">
+                <TabsTab value="structure" className="font-sans text-xs font-semibold tracking-normal py-1.5">Structure</TabsTab>
+                <TabsTab value="orderflow" className="font-sans text-xs font-semibold tracking-normal py-1.5">Orderflow & POI</TabsTab>
+                <TabsTab value="execution" className="font-sans text-xs font-semibold tracking-normal py-1.5">Execution</TabsTab>
+                <TabsTab value="session" className="font-sans text-xs font-semibold tracking-normal py-1.5">Session & Time</TabsTab>
               </TabsList>
 
-              <TabsPanel value="structure" className="pt-3">
-                <div className="flex flex-wrap gap-2">
+              <TabsPanel value="structure" className="pt-4">
+                <div className="flex flex-wrap gap-2.5">
                   {CONFLUENCE_CATEGORIES.structure.map((item) => {
                     const isSelected = confluences.includes(item);
                     return (
@@ -677,7 +677,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                         variant={isSelected ? 'default' : 'outline'}
                         size="xs"
                         onClick={() => toggleConfluence(item)}
-                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
+                        className={`h-8 px-3.5 rounded-xl font-medium text-xs transition-colors ${
                           isSelected
                             ? 'bg-zinc-950 text-white shadow-2xs'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
@@ -691,8 +691,8 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                 </div>
               </TabsPanel>
 
-              <TabsPanel value="orderflow" className="pt-3">
-                <div className="flex flex-wrap gap-2">
+              <TabsPanel value="orderflow" className="pt-4">
+                <div className="flex flex-wrap gap-2.5">
                   {CONFLUENCE_CATEGORIES.orderflow.map((item) => {
                     const isSelected = confluences.includes(item);
                     return (
@@ -702,7 +702,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                         variant={isSelected ? 'default' : 'outline'}
                         size="xs"
                         onClick={() => toggleConfluence(item)}
-                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
+                        className={`h-8 px-3.5 rounded-xl font-medium text-xs transition-colors ${
                           isSelected
                             ? 'bg-zinc-950 text-white shadow-2xs'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
@@ -716,8 +716,8 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                 </div>
               </TabsPanel>
 
-              <TabsPanel value="execution" className="pt-3">
-                <div className="flex flex-wrap gap-2">
+              <TabsPanel value="execution" className="pt-4">
+                <div className="flex flex-wrap gap-2.5">
                   {CONFLUENCE_CATEGORIES.execution.map((item) => {
                     const isSelected = confluences.includes(item);
                     return (
@@ -727,7 +727,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                         variant={isSelected ? 'default' : 'outline'}
                         size="xs"
                         onClick={() => toggleConfluence(item)}
-                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
+                        className={`h-8 px-3.5 rounded-xl font-medium text-xs transition-colors ${
                           isSelected
                             ? 'bg-zinc-950 text-white shadow-2xs'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
@@ -741,8 +741,8 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                 </div>
               </TabsPanel>
 
-              <TabsPanel value="session" className="pt-3">
-                <div className="flex flex-wrap gap-2">
+              <TabsPanel value="session" className="pt-4">
+                <div className="flex flex-wrap gap-2.5">
                   {CONFLUENCE_CATEGORIES.session.map((item) => {
                     const isSelected = confluences.includes(item);
                     return (
@@ -752,7 +752,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                         variant={isSelected ? 'default' : 'outline'}
                         size="xs"
                         onClick={() => toggleConfluence(item)}
-                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
+                        className={`h-8 px-3.5 rounded-xl font-medium text-xs transition-colors ${
                           isSelected
                             ? 'bg-zinc-950 text-white shadow-2xs'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
@@ -768,16 +768,16 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
             </Tabs>
 
             {/* Custom Confluence Input */}
-            <div className="flex items-center gap-2 pt-2">
+            <div className="flex items-center gap-2.5 pt-3">
               <Input
                 type="text"
                 placeholder="Add custom confluence..."
                 value={customConfluence}
                 onChange={(e) => setCustomConfluence(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && addCustomConfluence()}
-                sizeVariant="sm"
+                sizeVariant="default"
               />
-              <Button variant="outline" size="sm" onClick={addCustomConfluence} className="h-8 gap-1">
+              <Button variant="outline" size="sm" onClick={addCustomConfluence} className="h-9 px-4 gap-1.5 font-medium">
                 <Plus className="size-3.5" />
                 Add
               </Button>
@@ -785,26 +785,26 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
           </Card>
 
           {/* COSS TABS SECTION FOR MISTAKES */}
-          <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+          <Card className="bg-white border-zinc-200/90 rounded-2xl p-6 sm:p-8 shadow-2xs space-y-5">
+            <div className="flex items-center justify-between border-b border-zinc-100 pb-3.5">
               <div>
                 <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Mistakes & Rule Breaches</h2>
                 <p className="text-xs text-zinc-500 mt-0.5">Track execution errors to uncover subconscious leaks</p>
               </div>
-              <Badge variant="secondary" className="font-mono font-bold text-rose-700 bg-rose-50 border-rose-200">
+              <Badge variant="secondary" className="font-sans text-xs font-semibold text-rose-700 bg-rose-50 border-rose-200 px-3 py-1 rounded-lg">
                 {mistakes.length} Logged
               </Badge>
             </div>
 
             <Tabs defaultValue="execution-mistakes" className="w-full">
-              <TabsList size="sm" variant="default" className="w-full flex">
-                <TabsTab value="execution-mistakes">Execution</TabsTab>
-                <TabsTab value="risk-mistakes">Risk & Sizing</TabsTab>
-                <TabsTab value="psychology-mistakes">Psychology & FOMO</TabsTab>
+              <TabsList size="sm" variant="default" className="w-full flex p-1 rounded-xl bg-zinc-100/90 border border-zinc-200/80">
+                <TabsTab value="execution-mistakes" className="font-sans text-xs font-semibold tracking-normal py-1.5">Execution</TabsTab>
+                <TabsTab value="risk-mistakes" className="font-sans text-xs font-semibold tracking-normal py-1.5">Risk & Sizing</TabsTab>
+                <TabsTab value="psychology-mistakes" className="font-sans text-xs font-semibold tracking-normal py-1.5">Psychology & FOMO</TabsTab>
               </TabsList>
 
-              <TabsPanel value="execution-mistakes" className="pt-3">
-                <div className="flex flex-wrap gap-2">
+              <TabsPanel value="execution-mistakes" className="pt-4">
+                <div className="flex flex-wrap gap-2.5">
                   {MISTAKE_CATEGORIES.execution.map((item) => {
                     const isSelected = mistakes.includes(item);
                     return (
@@ -814,9 +814,9 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                         variant={isSelected ? 'default' : 'outline'}
                         size="xs"
                         onClick={() => toggleMistake(item)}
-                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
+                        className={`h-8 px-3.5 rounded-xl font-medium text-xs transition-colors ${
                           isSelected
-                            ? 'bg-rose-700 text-white shadow-2xs hover:bg-rose-800'
+                            ? 'bg-rose-50 text-rose-800 border-rose-300 shadow-2xs hover:bg-rose-100'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
                         }`}
                       >
@@ -828,8 +828,8 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                 </div>
               </TabsPanel>
 
-              <TabsPanel value="risk-mistakes" className="pt-3">
-                <div className="flex flex-wrap gap-2">
+              <TabsPanel value="risk-mistakes" className="pt-4">
+                <div className="flex flex-wrap gap-2.5">
                   {MISTAKE_CATEGORIES.risk.map((item) => {
                     const isSelected = mistakes.includes(item);
                     return (
@@ -839,9 +839,9 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                         variant={isSelected ? 'default' : 'outline'}
                         size="xs"
                         onClick={() => toggleMistake(item)}
-                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
+                        className={`h-8 px-3.5 rounded-xl font-medium text-xs transition-colors ${
                           isSelected
-                            ? 'bg-rose-700 text-white shadow-2xs hover:bg-rose-800'
+                            ? 'bg-rose-50 text-rose-800 border-rose-300 shadow-2xs hover:bg-rose-100'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
                         }`}
                       >
@@ -853,8 +853,8 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                 </div>
               </TabsPanel>
 
-              <TabsPanel value="psychology-mistakes" className="pt-3">
-                <div className="flex flex-wrap gap-2">
+              <TabsPanel value="psychology-mistakes" className="pt-4">
+                <div className="flex flex-wrap gap-2.5">
                   {MISTAKE_CATEGORIES.psychology.map((item) => {
                     const isSelected = mistakes.includes(item);
                     return (
@@ -864,9 +864,9 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                         variant={isSelected ? 'default' : 'outline'}
                         size="xs"
                         onClick={() => toggleMistake(item)}
-                        className={`h-7 px-3 rounded-xl font-medium text-xs ${
+                        className={`h-8 px-3.5 rounded-xl font-medium text-xs transition-colors ${
                           isSelected
-                            ? 'bg-rose-700 text-white shadow-2xs hover:bg-rose-800'
+                            ? 'bg-rose-50 text-rose-800 border-rose-300 shadow-2xs hover:bg-rose-100'
                             : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
                         }`}
                       >
@@ -879,16 +879,16 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
               </TabsPanel>
             </Tabs>
 
-            <div className="flex items-center gap-2 pt-2">
+            <div className="flex items-center gap-2.5 pt-3">
               <Input
                 type="text"
                 placeholder="Add custom mistake..."
                 value={customMistake}
                 onChange={(e) => setCustomMistake(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && addCustomMistake()}
-                sizeVariant="sm"
+                sizeVariant="default"
               />
-              <Button variant="outline" size="sm" onClick={addCustomMistake} className="h-8 gap-1">
+              <Button variant="outline" size="sm" onClick={addCustomMistake} className="h-9 px-4 gap-1.5 font-medium">
                 <Plus className="size-3.5" />
                 Add
               </Button>
@@ -896,10 +896,10 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
           </Card>
 
           {/* REVIEW, PLAN & EMOTIONS */}
-          <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+          <Card className="bg-white border-zinc-200/90 rounded-2xl p-6 sm:p-8 shadow-2xs space-y-5">
+            <div className="flex items-center justify-between border-b border-zinc-100 pb-3.5">
               <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Review & Reflection</h2>
-              <label className="flex items-center gap-2 cursor-pointer select-none">
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={followedPlan}
@@ -910,7 +910,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
               </label>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-4">
               <Field>
                 <FieldLabel>Entry Emotion</FieldLabel>
                 <Select value={entryEmotion} onValueChange={setEntryEmotion}>

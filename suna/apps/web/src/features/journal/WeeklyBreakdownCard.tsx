@@ -50,7 +50,7 @@ export function WeeklyBreakdownCard({ trades }: WeeklyBreakdownCardProps) {
     <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-full">
       <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
         <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Weekly Breakdown</h2>
-        <Badge variant="secondary" className="font-mono text-zinc-500 font-medium bg-zinc-100 text-[10px]">
+        <Badge variant="secondary" className="font-sans text-xs font-medium text-zinc-600 bg-zinc-100/90 border border-zinc-200/80 px-2.5 py-0.5 rounded-lg tracking-normal">
           4 Weeks
         </Badge>
       </div>

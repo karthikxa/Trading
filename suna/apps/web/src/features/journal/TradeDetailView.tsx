@@ -115,7 +115,7 @@ export function TradeDetailView({
   };
 
   return (
-    <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full pb-16 font-sans text-zinc-950">
+    <div className="flex flex-col gap-8 w-full px-6 py-6 sm:px-8 sm:py-8 pb-16 font-sans text-zinc-950">
       {/* COSS Dialog Modal for Chart Zoom Lightbox */}
       <Dialog open={!!lightboxImage} onOpenChange={(open) => !open && setLightboxImage(null)}>
         <DialogPopup className="max-w-5xl bg-zinc-950 text-white border-zinc-800 p-4">
@@ -204,14 +204,16 @@ export function TradeDetailView({
             <span>{currentTrade.instrument}</span>
             <span className="text-zinc-300 font-normal">·</span>
             <span
-              className={`flex items-center gap-1 font-semibold ${
-                currentTrade.direction === 'Buy' ? 'text-emerald-700' : 'text-rose-700'
+              className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-lg border ${
+                currentTrade.direction === 'Buy'
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  : 'bg-rose-50 text-rose-800 border-rose-200'
               }`}
             >
               {currentTrade.direction === 'Buy' ? (
-                <TrendingUp className="size-4" />
+                <TrendingUp className="size-3.5" />
               ) : (
-                <TrendingDown className="size-4" />
+                <TrendingDown className="size-3.5" />
               )}
               {currentTrade.direction}
             </span>
@@ -272,8 +274,8 @@ export function TradeDetailView({
 
               <div className="flex flex-col">
                 <span
-                  className={`text-sm font-bold flex items-center gap-1 ${
-                    currentTrade.direction === 'Buy' ? 'text-emerald-700' : 'text-rose-700'
+                  className={`text-sm font-semibold flex items-center gap-1 ${
+                    currentTrade.direction === 'Buy' ? 'text-emerald-800' : 'text-rose-800'
                   }`}
                 >
                   {currentTrade.direction === 'Buy' ? '↑ Buy' : '↓ Sell'}

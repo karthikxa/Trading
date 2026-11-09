@@ -231,10 +231,10 @@ export function DayDetailsDrawer({
         {/* STRICT COSS TABS FOR DRAWER: TRADES | ROUTINE | NOTES                   */}
         {/* ======================================================================= */}
         <Tabs defaultValue="trades" className="w-full flex-1 flex flex-col">
-          <TabsList size="sm" variant="default" className="w-full grid grid-cols-3">
-            <TabsTab value="trades">Trades ({trades.length})</TabsTab>
-            <TabsTab value="routine">Routine</TabsTab>
-            <TabsTab value="notes">Notes</TabsTab>
+          <TabsList size="sm" variant="default" className="w-full grid grid-cols-3 p-1 rounded-xl bg-zinc-100/90 border border-zinc-200/80">
+            <TabsTab value="trades" className="font-sans text-xs font-semibold tracking-normal py-1.5">Trades ({trades.length})</TabsTab>
+            <TabsTab value="routine" className="font-sans text-xs font-semibold tracking-normal py-1.5">Routine</TabsTab>
+            <TabsTab value="notes" className="font-sans text-xs font-semibold tracking-normal py-1.5">Notes</TabsTab>
           </TabsList>
 
           {/* TAB 1: TRADES LIST */}
@@ -259,9 +259,9 @@ export function DayDetailsDrawer({
                   variant={filterMode === 'wins' ? 'default' : 'ghost'}
                   size="xs"
                   onClick={() => setFilterMode('wins')}
-                  className={`h-6 px-2.5 text-[11px] font-semibold rounded-md ${
+                  className={`h-6 px-2.5 text-[11px] font-semibold rounded-md transition-colors ${
                     filterMode === 'wins'
-                      ? 'bg-emerald-700 text-white shadow-xs'
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-xs'
                       : 'text-zinc-600 hover:text-zinc-950 hover:bg-transparent'
                   }`}
                 >
@@ -272,9 +272,9 @@ export function DayDetailsDrawer({
                   variant={filterMode === 'losses' ? 'default' : 'ghost'}
                   size="xs"
                   onClick={() => setFilterMode('losses')}
-                  className={`h-6 px-2.5 text-[11px] font-semibold rounded-md ${
+                  className={`h-6 px-2.5 text-[11px] font-semibold rounded-md transition-colors ${
                     filterMode === 'losses'
-                      ? 'bg-rose-700 text-white shadow-xs'
+                      ? 'bg-rose-100 text-rose-800 border border-rose-300 shadow-xs'
                       : 'text-zinc-600 hover:text-zinc-950 hover:bg-transparent'
                   }`}
                 >
@@ -319,8 +319,10 @@ export function DayDetailsDrawer({
                               {t.instrument}
                             </span>
                             <span
-                              className={`text-[10px] font-semibold flex items-center gap-0.5 ${
-                                t.direction === 'Buy' ? 'text-emerald-700' : 'text-rose-700'
+                              className={`text-[10px] font-semibold flex items-center gap-0.5 px-1.5 py-0.2 rounded border ${
+                                t.direction === 'Buy'
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                  : 'bg-rose-50 text-rose-800 border-rose-200'
                               }`}
                             >
                               {t.direction === 'Buy' ? (

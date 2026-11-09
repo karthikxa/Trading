@@ -179,7 +179,7 @@ export default function JournalView({ projectId }: JournalViewProps) {
             ))}
           </div>
 
-          {/* + Add Manual Trade Button using COSS Button */}
+          {/* Add Manual Trade Button using COSS Button */}
           <Button
             type="button"
             variant="default"
@@ -188,7 +188,7 @@ export default function JournalView({ projectId }: JournalViewProps) {
             className="bg-zinc-950 hover:bg-zinc-800 text-white font-semibold shadow-xs gap-1.5 h-8 px-4 rounded-xl cursor-pointer"
           >
             <Plus className="size-3.5" />
-            <span>+ Add Manual Trade</span>
+            <span>Add Manual Trade</span>
           </Button>
 
           {/* Toggle Right Drawer using COSS Button */}
@@ -216,7 +216,7 @@ export default function JournalView({ projectId }: JournalViewProps) {
       {/* ========================================================================= */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Main Work Area */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 min-w-0">
+        <main className="flex-1 overflow-y-auto px-6 py-6 sm:px-8 sm:py-8 min-w-0 w-full">
           {isLoading ? (
             <div className="h-full flex flex-col items-center justify-center gap-3 text-zinc-400">
               <Loader2 className="size-6 animate-spin text-zinc-950" />
@@ -244,7 +244,7 @@ export default function JournalView({ projectId }: JournalViewProps) {
             />
           ) : (
             /* ==================== VIEW 1: BIG CALENDAR & SUMMARY ==================== */
-            <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full">
+            <div className="flex flex-col gap-8 w-full">
               {/* Big Monthly Calendar with Boxes */}
               <TradingCalendar
                 currentYear={currentYear}
