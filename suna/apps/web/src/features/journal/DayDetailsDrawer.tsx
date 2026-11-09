@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -14,8 +14,11 @@ import {
   ClipboardList,
   ShieldAlert,
   FileText,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { JournalTrade } from './types';
+import { TradingPairIcon } from './TradingPairIcon';
+import { getStoredWatchlist, WatchlistEntry } from '../markets/watchlist.store';
 import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -42,7 +45,17 @@ export function DayDetailsDrawer({
 }: DayDetailsDrawerProps) {
   const [filterMode, setFilterMode] = useState<'all' | 'wins' | 'losses'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedSymbol, setSelectedSymbol] = useState<string>('ALL');
   const [dayNote, setDayNote] = useState('');
+  const [watchlist, setWatchlist] = useState<WatchlistEntry[]>([]);
+
+  // Load user's TradingView watchlist
+  useEffect(() => {
+    setWatchlist(getStoredWatchlist());
+    const onUpdate = () => setWatchlist(getStoredWatchlist());
+    window.addEventListener('watchlist-updated', onUpdate);
+    return () => window.removeEventListener('watchlist-updated', onUpdate);
+  }, []);
 
   // Parse date
   const [year, month, day] = date.split('-').map(Number);
@@ -86,15 +99,23 @@ export function DayDetailsDrawer({
   const planFollowedCount = trades.filter((t) => t.followedPlan).length;
   const isPlanFollowed = totalTrades > 0 ? planFollowedCount === totalTrades : true;
 
-  // Filtered trades list
+  // Day's traded instruments and watchlist symbols
+  const dayTradedSymbols = Array.from(new Set(trades.map((t) => t.instrument.toUpperCase())));
+  const availableWatchlistSymbols = Array.from(
+    new Set([...dayTradedSymbols, ...watchlist.map((w) => w.symbol.toUpperCase())])
+  );
+
+  // Filtered trades list (by Wins/Losses, selected symbol chip, and search query)
   const filteredTrades = trades.filter((t) => {
     if (filterMode === 'wins' && t.pnl <= 0) return false;
     if (filterMode === 'losses' && t.pnl >= 0) return false;
+    if (selectedSymbol !== 'ALL' && t.instrument.toUpperCase() !== selectedSymbol) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       return (
         t.instrument.toLowerCase().includes(q) ||
-        (t.notes && t.notes.toLowerCase().includes(q))
+        (t.notes && t.notes.toLowerCase().includes(q)) ||
+        (t.entryTime && t.entryTime.includes(q))
       );
     }
     return true;
@@ -170,8 +191,8 @@ export function DayDetailsDrawer({
         {/* Net P&L Display Card using COSS Card */}
         <Card className="p-4 rounded-xl border-zinc-200/80 bg-zinc-50/50 flex flex-col gap-1 shadow-none">
           <div
-            className={`text-2xl sm:text-3xl font-black tracking-tight font-mono ${
-              netPnl >= 0 ? 'text-emerald-700' : 'text-rose-700'
+            className={`text-2xl sm:text-3xl font-bold tracking-tight font-mono ${
+              netPnl >= 0 ? 'text-emerald-600' : 'text-rose-600'
             }`}
           >
             {formatCurrency(netPnl)}
@@ -194,7 +215,7 @@ export function DayDetailsDrawer({
           <div className="flex flex-col">
             <span
               className={`text-sm font-bold font-mono ${
-                avgR >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                avgR >= 0 ? 'text-emerald-600' : 'text-rose-600'
               }`}
             >
               {avgR >= 0 ? `+${avgR.toFixed(2)}R` : `${avgR.toFixed(2)}R`}
@@ -213,13 +234,13 @@ export function DayDetailsDrawer({
           </div>
           <div className="flex items-center gap-4 pt-2.5 border-t border-zinc-100">
             <div className="flex flex-col">
-              <span className="text-sm font-bold font-mono text-emerald-700">{wins}</span>
+              <span className="text-sm font-bold font-mono text-emerald-600">{wins}</span>
               <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">
                 Wins
               </span>
             </div>
             <div className="flex flex-col">
-              <span className="text-sm font-bold font-mono text-rose-700">{losses}</span>
+              <span className="text-sm font-bold font-mono text-rose-600">{losses}</span>
               <span className="text-[10px] text-zinc-500 font-semibold tracking-wider uppercase">
                 Losses
               </span>
@@ -237,8 +258,17 @@ export function DayDetailsDrawer({
             <TabsTab value="notes" className="font-sans text-xs font-semibold tracking-normal py-1.5">Notes</TabsTab>
           </TabsList>
 
-          {/* TAB 1: TRADES LIST */}
+          {/* TAB 1: TRADES LIST (TradingView Watchlist Table Style) */}
           <TabsPanel value="trades" className="flex flex-col gap-3 pt-2">
+            {/* Header Hint */}
+            <div className="flex items-center justify-between text-xs text-zinc-500">
+              <span>Tap a trade to see full details</span>
+              <span className="font-mono text-[11px] font-semibold text-zinc-400">
+                {filteredTrades.length} of {trades.length}
+              </span>
+            </div>
+
+            {/* Filter Controls Row: [All] [Wins] [Losses] + Instrument Search + Add */}
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center p-0.5 rounded-lg bg-zinc-100 border border-zinc-200">
                 <Button
@@ -282,78 +312,180 @@ export function DayDetailsDrawer({
                 </Button>
               </div>
 
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() => onAddTradeForDate(date)}
-                className="h-7 text-xs font-semibold gap-1"
-              >
-                <Plus className="size-3.5" />
-                Add
-              </Button>
+              {/* Instrument Search Input */}
+              <div className="flex items-center gap-1.5 flex-1 max-w-[170px] justify-end">
+                <div className="relative w-full">
+                  <Input
+                    type="text"
+                    placeholder="Instrument..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="h-7 text-xs pl-2 pr-6 py-0 rounded-lg bg-white border-zinc-200 focus:border-zinc-900"
+                  />
+                  <Search className="size-3 text-zinc-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => onAddTradeForDate(date)}
+                  className="h-7 px-2 text-xs font-semibold gap-1 shrink-0"
+                  title="Add trade on this day"
+                >
+                  <Plus className="size-3.5" />
+                </Button>
+              </div>
             </div>
 
-            {/* Trades List */}
+            {/* Quick Watchlist Symbol Filter Chips */}
+            {availableWatchlistSymbols.length > 0 && (
+              <div className="flex items-center gap-1.5 overflow-x-auto py-1 scrollbar-none text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setSelectedSymbol('ALL')}
+                  className={`px-2 py-0.5 rounded-md font-medium shrink-0 transition-colors ${
+                    selectedSymbol === 'ALL'
+                      ? 'bg-zinc-900 text-white'
+                      : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200/80 hover:text-zinc-950'
+                  }`}
+                >
+                  All Pairs
+                </button>
+                {availableWatchlistSymbols.map((sym) => {
+                  const symTrades = trades.filter((t) => t.instrument.toUpperCase() === sym);
+                  const isSelected = selectedSymbol === sym;
+                  const hasTradesToday = symTrades.length > 0;
+                  const symPnl = symTrades.reduce((acc, t) => acc + (t.pnl || 0), 0);
+
+                  return (
+                    <button
+                      key={sym}
+                      type="button"
+                      onClick={() => setSelectedSymbol(isSelected ? 'ALL' : sym)}
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-medium shrink-0 transition-colors border ${
+                        isSelected
+                          ? 'bg-zinc-900 text-white border-zinc-900'
+                          : hasTradesToday
+                          ? symPnl >= 0
+                            ? 'bg-emerald-50/70 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                            : 'bg-rose-50/70 text-rose-800 border-rose-200 hover:bg-rose-100'
+                          : 'bg-zinc-50 text-zinc-500 border-zinc-200 hover:bg-zinc-100'
+                      }`}
+                    >
+                      <span>{sym}</span>
+                      {hasTradesToday && (
+                        <span
+                          className={`text-[9px] font-mono px-1 rounded ${
+                            isSelected ? 'bg-white/20 text-white' : 'bg-black/5 text-zinc-700'
+                          }`}
+                        >
+                          {symTrades.length}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* TradingView Watchlist Table Header */}
+            <div className="grid grid-cols-12 text-[10px] font-bold text-zinc-400 uppercase tracking-wider px-3 py-1.5 bg-zinc-50/80 rounded-lg border border-zinc-200/60 mt-1">
+              <div className="col-span-5">Instrument</div>
+              <div className="col-span-2 text-center">Time</div>
+              <div className="col-span-2 text-center">Direction</div>
+              <div className="col-span-3 text-right">PnL / R</div>
+            </div>
+
+            {/* Trades List (TradingView Watchlist Rows) */}
             {filteredTrades.length === 0 ? (
-              <div className="py-8 text-center text-zinc-400 text-xs flex flex-col items-center gap-2">
+              <div className="py-8 text-center text-zinc-400 text-xs flex flex-col items-center gap-2 rounded-xl border border-dashed border-zinc-200 p-4 bg-zinc-50/40">
                 <ClipboardList className="size-6 text-zinc-300" />
-                <span>No trades recorded for this day</span>
+                <span>
+                  {selectedSymbol !== 'ALL'
+                    ? `No ${selectedSymbol} trades logged for this day`
+                    : 'No trades recorded for this day'}
+                </span>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => onAddTradeForDate(date)}
+                  className="mt-1 text-xs"
+                >
+                  <Plus className="size-3.5 mr-1" />
+                  Log Trade
+                </Button>
               </div>
             ) : (
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-1.5">
                 {filteredTrades.map((t) => {
                   const isProfitable = t.pnl >= 0;
                   return (
-                    <Card
+                    <div
                       key={t.id}
                       onClick={() => onSelectTrade(t)}
-                      className="p-3 rounded-xl border-zinc-200/90 bg-white hover:bg-zinc-50/80 hover:border-zinc-300 transition-all cursor-pointer flex flex-row items-center justify-between group shadow-2xs"
+                      className="grid grid-cols-12 items-center px-3 py-2.5 rounded-xl border border-zinc-200/80 bg-white hover:bg-zinc-50/90 hover:border-zinc-300 transition-all cursor-pointer group shadow-2xs select-none"
                     >
-                      <div className="flex items-center gap-3">
-                        <div className="size-8 rounded-lg bg-zinc-100 flex items-center justify-center text-xs font-mono font-bold text-zinc-800">
-                          {t.instrument.slice(0, 3)}
-                        </div>
-                        <div className="flex flex-col">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs font-bold text-zinc-950 tracking-tight">
-                              {t.instrument}
-                            </span>
-                            <span
-                              className={`text-[10px] font-semibold flex items-center gap-0.5 px-1.5 py-0.2 rounded border ${
-                                t.direction === 'Buy'
-                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                                  : 'bg-rose-50 text-rose-800 border-rose-200'
-                              }`}
-                            >
-                              {t.direction === 'Buy' ? (
-                                <TrendingUp className="size-3" />
-                              ) : (
-                                <TrendingDown className="size-3" />
-                              )}
-                              {t.direction}
-                            </span>
-                          </div>
-                          <span className="text-[10px] font-mono text-zinc-400">
-                            {t.entryTime} · {t.lots} lots
+                      {/* Instrument with TradingView Pair Flag / Icon */}
+                      <div className="col-span-5 flex items-center gap-2 overflow-hidden pr-1">
+                        <TradingPairIcon symbol={t.instrument} size="sm" />
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-xs font-bold text-zinc-950 truncate tracking-tight">
+                            {t.instrument}
+                          </span>
+                          <span className="text-[10px] font-mono text-zinc-400 truncate">
+                            {t.lots} lots
                           </span>
                         </div>
                       </div>
 
-                      <div className="flex flex-col items-end">
+                      {/* Time We Traded on That Day */}
+                      <div className="col-span-2 flex flex-col items-center justify-center">
+                        <span className="text-xs font-mono font-medium text-zinc-700">
+                          {t.entryTime}
+                        </span>
+                        <span className="text-[9px] text-zinc-400">Traded</span>
+                      </div>
+
+                      {/* Direction: Light Red / Green */}
+                      <div className="col-span-2 flex items-center justify-center">
+                        <span
+                          className={`text-[10px] font-semibold flex items-center gap-0.5 px-2 py-0.5 rounded-md border ${
+                            t.direction === 'Buy'
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                              : 'bg-rose-50 text-rose-800 border-rose-200'
+                          }`}
+                        >
+                          {t.direction === 'Buy' ? (
+                            <TrendingUp className="size-3 text-emerald-600" />
+                          ) : (
+                            <TrendingDown className="size-3 text-rose-600" />
+                          )}
+                          {t.direction}
+                        </span>
+                      </div>
+
+                      {/* Profit or Loss: Light Red / Green */}
+                      <div className="col-span-3 flex flex-col items-end">
                         <span
                           className={`text-xs font-mono font-bold tracking-tight ${
-                            isProfitable ? 'text-emerald-700' : 'text-rose-700'
+                            isProfitable ? 'text-emerald-600' : 'text-rose-600'
                           }`}
                         >
                           {formatCurrency(t.pnl)}
                         </span>
-                        {t.returnR !== null && t.returnR !== undefined && (
-                          <span className="text-[10px] font-mono text-zinc-500">
+                        {t.returnR !== null && t.returnR !== undefined ? (
+                          <span
+                            className={`text-[10px] font-mono font-semibold ${
+                              t.returnR >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                            }`}
+                          >
                             {t.returnR >= 0 ? `+${t.returnR}R` : `${t.returnR}R`}
                           </span>
+                        ) : (
+                          <span className="text-[10px] font-mono text-zinc-400">1.0R</span>
                         )}
                       </div>
-                    </Card>
+                    </div>
                   );
                 })}
               </div>

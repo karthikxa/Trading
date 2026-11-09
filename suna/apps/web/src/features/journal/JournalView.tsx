@@ -140,21 +140,11 @@ export default function JournalView({ projectId }: JournalViewProps) {
       {/* 1. TOP HEADER BAR (Strict COSS UI Components)                             */}
       {/* ========================================================================= */}
       <header className="px-6 py-3.5 border-b border-zinc-200/90 bg-white shadow-2xs flex items-center justify-between shrink-0 select-none">
-        <div className="flex items-center gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-zinc-950 text-white shadow-2xs">
-            <BookOpen className="size-4.5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-base font-bold text-zinc-950 tracking-tight">Journal</h1>
-              <Badge variant="secondary" className="bg-zinc-100 text-zinc-800 border-zinc-200 font-mono text-[10px]">
-                COSS UI
-              </Badge>
-            </div>
-            <p className="text-xs text-zinc-500 hidden sm:block">
-              Review trades, execution quality, and emotional confluences.
-            </p>
-          </div>
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-xl font-bold text-zinc-950 tracking-tight">Journal</h1>
+          <p className="text-xs text-zinc-400 hidden sm:block font-normal">
+            Review your trades, emotions, and patterns to build consistency and self-awareness.
+          </p>
         </div>
 
         {/* Header Right Actions */}

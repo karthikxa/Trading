@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { JournalTrade } from './types';
 import { uploadChartImage, saveJournalTrade } from './storage';
+import { TradingPairIcon } from './TradingPairIcon';
 import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -197,9 +198,7 @@ export function TradeDetailView({
 
         {/* Title row */}
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="size-9 rounded-xl bg-zinc-950 text-white flex items-center justify-center text-xs font-mono font-bold shadow-2xs">
-            {currentTrade.instrument.slice(0, 3)}
-          </div>
+          <TradingPairIcon symbol={currentTrade.instrument} size="md" />
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-zinc-950 flex items-center gap-2">
             <span>{currentTrade.instrument}</span>
             <span className="text-zinc-300 font-normal">·</span>
@@ -264,8 +263,9 @@ export function TradeDetailView({
             {/* Instrument / Direction / Lots */}
             <div className="grid grid-cols-3 gap-2 pb-4 border-b border-zinc-100">
               <div className="flex flex-col">
-                <span className="text-sm font-bold font-mono text-zinc-950 flex items-center gap-1">
-                  {currentTrade.instrument}
+                <span className="text-sm font-bold font-mono text-zinc-950 flex items-center gap-1.5">
+                  <TradingPairIcon symbol={currentTrade.instrument} size="sm" />
+                  <span>{currentTrade.instrument}</span>
                 </span>
                 <span className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wider">
                   Instrument

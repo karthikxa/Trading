@@ -232,25 +232,21 @@ export function TradingCalendar({
                   </span>
 
                   {isToday && (
-                    <Badge variant="default" className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-950 text-white shadow-2xs">
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#7c5cfc] text-white shadow-2xs">
                       Today {cell.dayNumber}
-                    </Badge>
+                    </span>
                   )}
                 </div>
 
-                {/* Day Trades and Net P&L (Red & Green) */}
+                {/* Day Trades and Net P&L (Light Red & Green) */}
                 {hasTrades && (
-                  <div className="flex flex-col mt-auto pt-2 gap-1">
-                    <span
-                      className={`text-[11px] font-medium ${
-                        isProfitable ? 'text-emerald-800' : 'text-rose-800'
-                      }`}
-                    >
+                  <div className="flex flex-col mt-auto pt-2 gap-0.5">
+                    <span className="text-[11px] font-medium text-zinc-600">
                       {dayTrades.length} {dayTrades.length === 1 ? 'Trade' : 'Trades'}
                     </span>
                     <span
-                      className={`text-xs sm:text-sm font-mono font-black tracking-tight truncate ${
-                        isProfitable ? 'text-emerald-700' : 'text-rose-700'
+                      className={`text-xs sm:text-[13px] font-mono font-bold tracking-tight truncate ${
+                        isProfitable ? 'text-emerald-600' : 'text-rose-600'
                       }`}
                     >
                       {formatValue(dayPnl, dayR)}
