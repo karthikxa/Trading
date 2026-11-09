@@ -170,13 +170,13 @@ export function DayDetailsDrawer({
         {/* --- Big Net Daily P&L --- */}
         <div className="flex flex-col gap-0.5">
           <div
-            className={`text-3xl font-extrabold font-mono tracking-tight ${
+            className={`text-3xl font-medium font-mono tracking-tight ${
               netPnl >= 0 ? 'text-emerald-600' : 'text-rose-600'
             }`}
           >
             {formatCurrency(netPnl)}
           </div>
-          <span className="text-[10px] font-bold tracking-wider text-zinc-400 uppercase">
+          <span className="text-[10px] font-medium tracking-wider text-zinc-400 uppercase">
             Net PnL
           </span>
         </div>
@@ -184,44 +184,44 @@ export function DayDetailsDrawer({
         {/* --- 2-Column Summary Metrics --- */}
         <div className="grid grid-cols-2 gap-4 pt-1 pb-3 border-b border-zinc-100 text-xs">
           <div className="flex flex-col">
-            <span className="font-bold font-mono text-zinc-900 text-sm">
+            <span className="font-normal font-mono text-zinc-800 text-sm">
               {winRate.toFixed(1)}%
             </span>
-            <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">
+            <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-normal">
               Win Rate
             </span>
           </div>
           <div className="flex flex-col">
             <span
-              className={`font-bold font-mono text-sm ${
+              className={`font-normal font-mono text-sm ${
                 avgR >= 0 ? 'text-emerald-600' : 'text-rose-600'
               }`}
             >
               {avgR >= 0 ? `+${avgR.toFixed(2)}R` : `${avgR.toFixed(2)}R`}
             </span>
-            <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">
+            <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-normal">
               Average R
             </span>
           </div>
 
           <div className="flex flex-col pt-1">
-            <span className="font-bold font-mono text-zinc-900 text-sm">
+            <span className="font-normal font-mono text-zinc-800 text-sm">
               {totalTrades} / 5
             </span>
-            <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">
+            <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-normal">
               Total Trades
             </span>
           </div>
           <div className="flex items-center gap-5 pt-1">
             <div className="flex flex-col">
-              <span className="font-bold font-mono text-emerald-600 text-sm">{wins}</span>
-              <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">
+              <span className="font-normal font-mono text-emerald-600 text-sm">{wins}</span>
+              <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-normal">
                 Wins
               </span>
             </div>
             <div className="flex flex-col">
-              <span className="font-bold font-mono text-rose-600 text-sm">{losses}</span>
-              <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">
+              <span className="font-normal font-mono text-rose-600 text-sm">{losses}</span>
+              <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-normal">
                 Losses
               </span>
             </div>
@@ -290,9 +290,9 @@ export function DayDetailsDrawer({
               <button
                 type="button"
                 onClick={() => setFilterMode('all')}
-                className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors ${
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                   filterMode === 'all'
-                    ? 'bg-[#7c5cfc] text-white shadow-xs'
+                    ? 'bg-black text-white shadow-xs'
                     : 'text-zinc-600 hover:text-zinc-950'
                 }`}
               >
@@ -301,7 +301,7 @@ export function DayDetailsDrawer({
               <button
                 type="button"
                 onClick={() => setFilterMode('wins')}
-                className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors ${
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                   filterMode === 'wins'
                     ? 'bg-emerald-600 text-white shadow-xs'
                     : 'text-zinc-600 hover:text-zinc-950'
@@ -312,7 +312,7 @@ export function DayDetailsDrawer({
               <button
                 type="button"
                 onClick={() => setFilterMode('losses')}
-                className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors ${
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                   filterMode === 'losses'
                     ? 'bg-rose-600 text-white shadow-xs'
                     : 'text-zinc-600 hover:text-zinc-950'
@@ -393,7 +393,7 @@ export function DayDetailsDrawer({
                     </div>
 
                     {/* PnL in Light Red or Light Green */}
-                    <div className="col-span-2 text-right font-mono text-xs font-bold">
+                    <div className="col-span-2 text-right font-mono text-xs font-normal">
                       <span className={isWin ? 'text-emerald-600' : 'text-rose-600'}>
                         {formatCompactCurrency(t.pnl)}
                       </span>

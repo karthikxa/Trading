@@ -89,34 +89,34 @@ export function MonthlySummaryCard({ trades }: MonthlySummaryCardProps) {
         <div className="md:col-span-5 flex flex-col justify-between h-full border-t md:border-t-0 md:border-l border-zinc-100 md:pl-6 pt-4 md:pt-0">
           <div className="space-y-2 text-xs">
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
-              <span className="text-zinc-500 font-medium">Expectancy</span>
-              <span className="font-mono font-bold text-zinc-950">+{avgR.toFixed(2)}R</span>
+              <span className="text-zinc-500 font-normal">Expectancy</span>
+              <span className="font-mono font-medium text-zinc-900">+{avgR.toFixed(2)}R</span>
             </div>
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
-              <span className="text-zinc-500 font-medium">Win rate</span>
-              <span className="font-mono font-bold text-zinc-950">{winRate.toFixed(1)}%</span>
+              <span className="text-zinc-500 font-normal">Win rate</span>
+              <span className="font-mono font-medium text-zinc-900">{winRate.toFixed(1)}%</span>
             </div>
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
-              <span className="text-zinc-500 font-medium">Avg Win</span>
-              <span className="font-mono font-bold text-emerald-700">{formatCurrency(avgWin)}</span>
+              <span className="text-zinc-500 font-normal">Avg Win</span>
+              <span className="font-mono font-medium text-emerald-600">{formatCurrency(avgWin)}</span>
             </div>
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
-              <span className="text-zinc-500 font-medium">Avg Loss</span>
-              <span className="font-mono font-bold text-rose-700">{formatCurrency(avgLoss)}</span>
+              <span className="text-zinc-500 font-normal">Avg Loss</span>
+              <span className="font-mono font-medium text-rose-600">{formatCurrency(avgLoss)}</span>
             </div>
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
-              <span className="text-zinc-500 font-medium">Best trade</span>
-              <span className="font-mono font-bold text-emerald-700">{formatCurrency(bestTrade)}</span>
+              <span className="text-zinc-500 font-normal">Best trade</span>
+              <span className="font-mono font-medium text-emerald-600">{formatCurrency(bestTrade)}</span>
             </div>
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
-              <span className="text-zinc-500 font-medium">Worst trade</span>
-              <span className="font-mono font-bold text-rose-700">{formatCurrency(worstTrade)}</span>
+              <span className="text-zinc-500 font-normal">Worst trade</span>
+              <span className="font-mono font-medium text-rose-600">{formatCurrency(worstTrade)}</span>
             </div>
             <div className="flex items-center justify-between py-1.5 pt-2">
-              <span className="text-zinc-500 font-medium">Total trades</span>
+              <span className="text-zinc-500 font-normal">Total trades</span>
               <div className="text-right">
-                <span className="font-mono font-bold text-zinc-950 mr-2">{totalTrades}</span>
-                <span className="text-[10px] font-mono text-zinc-500">
+                <span className="font-mono font-medium text-zinc-800 mr-2">{totalTrades}</span>
+                <span className="text-[10px] font-mono text-zinc-400">
                   {winCount}W:{lossCount}L
                 </span>
               </div>

@@ -63,28 +63,23 @@ export function WeeklyBreakdownCard({ trades }: WeeklyBreakdownCardProps) {
               key={w.name}
               className={`p-4 rounded-xl border flex flex-col justify-between transition-all select-none shadow-none ${
                 w.active
-                  ? 'border-zinc-950 bg-white ring-2 ring-zinc-950/10 shadow-xs'
-                  : 'border-zinc-200/80 bg-zinc-50/50 hover:bg-zinc-50 hover:border-zinc-300'
+                  ? 'border-zinc-300 bg-white shadow-2xs'
+                  : 'border-zinc-200/70 bg-zinc-50/40 hover:bg-zinc-50 hover:border-zinc-300'
               }`}
             >
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-zinc-700">{w.name}</span>
-                {w.active && (
-                  <Badge variant="default" className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-zinc-950 text-white font-bold">
-                    Active
-                  </Badge>
-                )}
+                <span className="text-xs font-medium text-zinc-700">{w.name}</span>
               </div>
 
               <div className="mt-4 flex flex-col gap-0.5">
-                <span className="text-[11px] font-mono text-zinc-500">{w.days}</span>
+                <span className="text-[11px] font-mono text-zinc-400">{w.days}</span>
                 <span
-                  className={`text-sm sm:text-base font-mono font-black tracking-tight ${
+                  className={`text-sm sm:text-base font-mono font-medium tracking-tight ${
                     w.pnl === 0
                       ? 'text-zinc-400'
                       : isProfitable
-                      ? 'text-emerald-700'
-                      : 'text-rose-700'
+                      ? 'text-emerald-600'
+                      : 'text-rose-600'
                   }`}
                 >
                   {formatCurrency(w.pnl)}

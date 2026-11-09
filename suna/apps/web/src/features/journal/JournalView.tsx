@@ -22,6 +22,7 @@ import { AddTradeView } from './AddTradeView';
 import { TradeDetailView } from './TradeDetailView';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Group, GroupSeparator } from '@/components/ui/group';
 
 interface JournalViewProps {
   projectId?: string;
@@ -149,36 +150,61 @@ export default function JournalView({ projectId }: JournalViewProps) {
 
         {/* Header Right Actions */}
         <div className="flex items-center gap-2.5">
-          {/* Currency / Mode toggle ($ | % | R) using Button components */}
-          <div className="flex items-center p-0.5 rounded-xl bg-zinc-100 border border-zinc-200 shadow-2xs">
-            {(['$', '%', 'R'] as const).map((mode) => (
-              <Button
-                key={mode}
-                type="button"
-                variant={currencyMode === mode ? 'default' : 'ghost'}
-                size="xs"
-                onClick={() => setCurrencyMode(mode)}
-                className={`font-mono font-bold h-7 px-3 rounded-lg ${
-                  currencyMode === mode
-                    ? 'bg-zinc-950 text-white shadow-xs'
-                    : 'text-zinc-600 hover:text-zinc-950 hover:bg-transparent'
-                }`}
-              >
-                {mode}
-              </Button>
-            ))}
-          </div>
+          {/* Currency / Mode toggle ($ | % | R) using COSS Group */}
+          <Group aria-label="Currency and return mode">
+            <Button
+              type="button"
+              variant={currencyMode === '$' ? 'default' : 'ghost'}
+              size="xs"
+              onClick={() => setCurrencyMode('$')}
+              className={`font-mono text-xs px-2.5 h-7 rounded-sm transition-colors ${
+                currencyMode === '$'
+                  ? 'bg-zinc-950 text-white shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-950'
+              }`}
+            >
+              $
+            </Button>
+            <GroupSeparator />
+            <Button
+              type="button"
+              variant={currencyMode === '%' ? 'default' : 'ghost'}
+              size="xs"
+              onClick={() => setCurrencyMode('%')}
+              className={`font-mono text-xs px-2.5 h-7 rounded-sm transition-colors ${
+                currencyMode === '%'
+                  ? 'bg-zinc-950 text-white shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-950'
+              }`}
+            >
+              %
+            </Button>
+            <GroupSeparator />
+            <Button
+              type="button"
+              variant={currencyMode === 'R' ? 'default' : 'ghost'}
+              size="xs"
+              onClick={() => setCurrencyMode('R')}
+              className={`font-mono text-xs px-2.5 h-7 rounded-sm transition-colors ${
+                currencyMode === 'R'
+                  ? 'bg-zinc-950 text-white shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-950'
+              }`}
+            >
+              R
+            </Button>
+          </Group>
 
-          {/* Add Manual Trade Button using COSS Button */}
+          {/* Add Trade Button: Boxy (not curved), with text "+ Add Trade" */}
           <Button
             type="button"
             variant="default"
             size="sm"
             onClick={() => handleOpenAddTrade(selectedDate)}
-            className="bg-zinc-950 hover:bg-zinc-800 text-white font-semibold shadow-xs gap-1.5 h-8 px-4 rounded-xl cursor-pointer"
+            className="bg-zinc-950 hover:bg-zinc-800 text-white font-medium shadow-xs gap-1.5 h-8 px-3.5 rounded-md cursor-pointer"
           >
             <Plus className="size-3.5" />
-            <span>Add Manual Trade</span>
+            <span>Add Trade</span>
           </Button>
 
           {/* Toggle Right Drawer using COSS Button */}
@@ -188,7 +214,7 @@ export default function JournalView({ projectId }: JournalViewProps) {
               variant="outline"
               size="sm"
               onClick={() => setDrawerOpen((prev) => !prev)}
-              className="h-8 w-8 p-0 rounded-xl border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-700 shadow-2xs"
+              className="h-8 w-8 p-0 rounded-md border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-700 shadow-2xs"
               title={drawerOpen ? 'Collapse side panel' : 'Expand side panel'}
             >
               {drawerOpen ? (

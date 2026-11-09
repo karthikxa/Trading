@@ -12,9 +12,13 @@ import {
   CheckCircle2,
   Image as ImageIcon,
   Plus,
+  Eye,
+  Trash2,
 } from 'lucide-react';
 import { Direction, JournalTrade } from './types';
 import { uploadChartImage } from './storage';
+import { InstrumentPicker } from './InstrumentPicker';
+import { Dialog, DialogPopup, DialogClose } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
 import { Field, FieldLabel, FieldDescription } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
@@ -164,6 +168,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
   const [chartLtf, setChartLtf] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
 
   // Auto-calculated PnL if not overridden manually
   const calculatedPnl = React.useMemo(() => {
@@ -351,33 +356,10 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
             </Field>
           </div>
 
-          {/* Instrument and Quick Symbol Chips using Button */}
+          {/* Instrument Dropdown via COSS Command Palette */}
           <Field className="space-y-1.5">
             <FieldLabel>Instrument Symbol</FieldLabel>
-            <Input
-              type="text"
-              value={instrument}
-              onChange={(e) => setInstrument(e.target.value.toUpperCase())}
-              placeholder="e.g. EURUSD"
-            />
-            <div className="flex flex-wrap gap-1.5 pt-1">
-              {QUICK_INSTRUMENTS.map((sym) => (
-                <Button
-                  key={sym}
-                  type="button"
-                  variant={instrument === sym ? 'default' : 'outline'}
-                  size="xs"
-                  onClick={() => setInstrument(sym)}
-                  className={`h-6.5 px-2.5 text-[11px] font-sans font-medium rounded-lg transition-colors ${
-                    instrument === sym
-                      ? 'bg-zinc-950 text-white'
-                      : 'bg-zinc-50 text-zinc-700 border-zinc-200 hover:bg-zinc-100'
-                  }`}
-                >
-                  {sym}
-                </Button>
-              ))}
-            </div>
+            <InstrumentPicker value={instrument} onChange={setInstrument} />
           </Field>
 
           {/* Direction & Lots with Soft Colors */}
@@ -565,82 +547,139 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
               {/* HTF Slot */}
               <div className="flex flex-col gap-2">
                 <span className="text-xs font-semibold text-zinc-700">HTF (Daily / 4H)</span>
-                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[145px] group">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => handleFileUpload(e, 'htf')}
-                  />
-                  {chartHtf ? (
-                    <div className="relative w-full h-full flex flex-col items-center">
-                      <img src={chartHtf} alt="HTF Chart" className="h-24 w-auto object-cover rounded-lg shadow-2xs" />
-                      <Badge variant="secondary" className="text-[10px] text-emerald-700 font-semibold mt-1 bg-emerald-50 border-emerald-200">Uploaded</Badge>
+                {chartHtf ? (
+                  <div className="relative w-full aspect-[4/3] rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 group shadow-2xs">
+                    <img
+                      src={chartHtf}
+                      alt="HTF Chart"
+                      className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+                    />
+                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2.5">
+                      <button
+                        type="button"
+                        title="View image"
+                        onClick={() => setPreviewImage({ url: chartHtf, title: 'HTF (Daily / 4H) Chart' })}
+                        className="p-2.5 rounded-lg bg-white/20 hover:bg-white/30 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                      >
+                        <Eye className="size-4.5" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Delete image"
+                        onClick={() => setChartHtf(null)}
+                        className="p-2.5 rounded-lg bg-rose-500/80 hover:bg-rose-600 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="size-4.5" />
+                      </button>
                     </div>
-                  ) : (
-                    <>
-                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-2" />
-                      <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
-                        {isUploading === 'htf' ? 'Uploading...' : 'Upload HTF'}
-                      </span>
-                      <span className="text-[10px] text-zinc-400 mt-0.5">Click to browse</span>
-                    </>
-                  )}
-                </label>
+                  </div>
+                ) : (
+                  <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all aspect-[4/3] group">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handleFileUpload(e, 'htf')}
+                    />
+                    <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-2" />
+                    <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
+                      {isUploading === 'htf' ? 'Uploading...' : 'Upload HTF'}
+                    </span>
+                    <span className="text-[10px] text-zinc-400 mt-0.5">Click to browse</span>
+                  </label>
+                )}
               </div>
 
               {/* MTF Slot */}
               <div className="flex flex-col gap-2">
                 <span className="text-xs font-semibold text-zinc-700">MTF (1H / 15M)</span>
-                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[145px] group">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => handleFileUpload(e, 'mtf')}
-                  />
-                  {chartMtf ? (
-                    <div className="relative w-full h-full flex flex-col items-center">
-                      <img src={chartMtf} alt="MTF Chart" className="h-24 w-auto object-cover rounded-lg shadow-2xs" />
-                      <Badge variant="secondary" className="text-[10px] text-emerald-700 font-semibold mt-1 bg-emerald-50 border-emerald-200">Uploaded</Badge>
+                {chartMtf ? (
+                  <div className="relative w-full aspect-[4/3] rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 group shadow-2xs">
+                    <img
+                      src={chartMtf}
+                      alt="MTF Chart"
+                      className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+                    />
+                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2.5">
+                      <button
+                        type="button"
+                        title="View image"
+                        onClick={() => setPreviewImage({ url: chartMtf, title: 'MTF (1H / 15M) Chart' })}
+                        className="p-2.5 rounded-lg bg-white/20 hover:bg-white/30 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                      >
+                        <Eye className="size-4.5" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Delete image"
+                        onClick={() => setChartMtf(null)}
+                        className="p-2.5 rounded-lg bg-rose-500/80 hover:bg-rose-600 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="size-4.5" />
+                      </button>
                     </div>
-                  ) : (
-                    <>
-                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-2" />
-                      <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
-                        {isUploading === 'mtf' ? 'Uploading...' : 'Upload MTF'}
-                      </span>
-                      <span className="text-[10px] text-zinc-400 mt-0.5">Click to browse</span>
-                    </>
-                  )}
-                </label>
+                  </div>
+                ) : (
+                  <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all aspect-[4/3] group">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handleFileUpload(e, 'mtf')}
+                    />
+                    <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-2" />
+                    <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
+                      {isUploading === 'mtf' ? 'Uploading...' : 'Upload MTF'}
+                    </span>
+                    <span className="text-[10px] text-zinc-400 mt-0.5">Click to browse</span>
+                  </label>
+                )}
               </div>
 
               {/* LTF Slot */}
               <div className="flex flex-col gap-2">
                 <span className="text-xs font-semibold text-zinc-700">LTF (5M / 1M)</span>
-                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[145px] group">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => handleFileUpload(e, 'ltf')}
-                  />
-                  {chartLtf ? (
-                    <div className="relative w-full h-full flex flex-col items-center">
-                      <img src={chartLtf} alt="LTF Chart" className="h-24 w-auto object-cover rounded-lg shadow-2xs" />
-                      <Badge variant="secondary" className="text-[10px] text-emerald-700 font-semibold mt-1 bg-emerald-50 border-emerald-200">Uploaded</Badge>
+                {chartLtf ? (
+                  <div className="relative w-full aspect-[4/3] rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 group shadow-2xs">
+                    <img
+                      src={chartLtf}
+                      alt="LTF Chart"
+                      className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+                    />
+                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2.5">
+                      <button
+                        type="button"
+                        title="View image"
+                        onClick={() => setPreviewImage({ url: chartLtf, title: 'LTF (5M / 1M) Chart' })}
+                        className="p-2.5 rounded-lg bg-white/20 hover:bg-white/30 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                      >
+                        <Eye className="size-4.5" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Delete image"
+                        onClick={() => setChartLtf(null)}
+                        className="p-2.5 rounded-lg bg-rose-500/80 hover:bg-rose-600 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="size-4.5" />
+                      </button>
                     </div>
-                  ) : (
-                    <>
-                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-2" />
-                      <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
-                        {isUploading === 'ltf' ? 'Uploading...' : 'Upload LTF'}
-                      </span>
-                      <span className="text-[10px] text-zinc-400 mt-0.5">Click to browse</span>
-                    </>
-                  )}
-                </label>
+                  </div>
+                ) : (
+                  <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all aspect-[4/3] group">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handleFileUpload(e, 'ltf')}
+                    />
+                    <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-2" />
+                    <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
+                      {isUploading === 'ltf' ? 'Uploading...' : 'Upload LTF'}
+                    </span>
+                    <span className="text-[10px] text-zinc-400 mt-0.5">Click to browse</span>
+                  </label>
+                )}
               </div>
             </div>
           </Card>
@@ -966,6 +1005,26 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
           </Card>
         </div>
       </div>
+
+      {/* Lightbox Dialog */}
+      <Dialog open={!!previewImage} onOpenChange={(open) => !open && setPreviewImage(null)}>
+        <DialogPopup className="max-w-4xl p-4 bg-zinc-950/95 border-zinc-800 text-white">
+          <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
+            <h3 className="text-sm font-semibold text-zinc-200">
+              {previewImage?.title || 'Chart Preview'}
+            </h3>
+          </div>
+          {previewImage && (
+            <div className="relative mt-3 max-h-[75vh] overflow-hidden rounded-xl bg-black flex items-center justify-center">
+              <img
+                src={previewImage.url}
+                alt={previewImage.title}
+                className="max-h-[75vh] w-auto max-w-full object-contain"
+              />
+            </div>
+          )}
+        </DialogPopup>
+      </Dialog>
     </div>
   );
 }

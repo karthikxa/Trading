@@ -211,41 +211,41 @@ export function TradingCalendar({
                     : hasTrades
                     ? isProfitable
                       ? isSelected
-                        ? 'bg-emerald-50 border-emerald-400 text-emerald-900 ring-2 ring-emerald-400/30 shadow-xs'
-                        : 'bg-emerald-50/60 hover:bg-emerald-50 border-emerald-200 text-emerald-900 shadow-2xs hover:border-emerald-300'
+                        ? 'bg-emerald-50/80 border-emerald-300 text-emerald-900 ring-1 ring-emerald-300/40 shadow-xs'
+                        : 'bg-emerald-50/50 hover:bg-emerald-50/80 border-emerald-200/70 text-emerald-900 shadow-2xs hover:border-emerald-300'
                       : isSelected
-                      ? 'bg-rose-50 border-rose-400 text-rose-900 ring-2 ring-rose-400/30 shadow-xs'
-                      : 'bg-rose-50/60 hover:bg-rose-50 border-rose-200 text-rose-900 shadow-2xs hover:border-rose-300'
+                      ? 'bg-rose-50/80 border-rose-300 text-rose-900 ring-1 ring-rose-300/40 shadow-xs'
+                      : 'bg-rose-50/50 hover:bg-rose-50/80 border-rose-200/70 text-rose-900 shadow-2xs hover:border-rose-300'
                     : isSelected
-                    ? 'bg-zinc-50 border-zinc-400 ring-2 ring-zinc-300/60 shadow-xs'
-                    : 'bg-white hover:bg-zinc-50 border-zinc-200/90 hover:border-zinc-300'
+                    ? 'bg-zinc-50 border-zinc-300 ring-1 ring-zinc-200 shadow-xs'
+                    : 'bg-white hover:bg-zinc-50/80 border-zinc-200/70 hover:border-zinc-300'
                 }`}
               >
                 {/* Day Number and Today badge */}
                 <div className="flex items-center justify-between">
                   <span
-                    className={`text-xs font-mono font-medium ${
-                      cell.isCurrentMonth ? 'text-zinc-700' : 'text-zinc-400'
+                    className={`text-xs font-mono font-normal ${
+                      cell.isCurrentMonth ? 'text-zinc-600' : 'text-zinc-400'
                     }`}
                   >
                     {cell.dayNumber}
                   </span>
 
                   {isToday && (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#7c5cfc] text-white shadow-2xs">
+                    <span className="text-[10px] font-medium px-2 py-0.5 rounded-sm bg-black text-white shadow-2xs">
                       Today {cell.dayNumber}
                     </span>
                   )}
                 </div>
 
-                {/* Day Trades and Net P&L (Light Red & Green) */}
+                {/* Day Trades and Net P&L (Slim/Light Red & Green) */}
                 {hasTrades && (
                   <div className="flex flex-col mt-auto pt-2 gap-0.5">
-                    <span className="text-[11px] font-medium text-zinc-600">
+                    <span className="text-[10px] font-normal text-zinc-500">
                       {dayTrades.length} {dayTrades.length === 1 ? 'Trade' : 'Trades'}
                     </span>
                     <span
-                      className={`text-xs sm:text-[13px] font-mono font-bold tracking-tight truncate ${
+                      className={`text-xs sm:text-[13px] font-mono font-normal tracking-tight truncate ${
                         isProfitable ? 'text-emerald-600' : 'text-rose-600'
                       }`}
                     >

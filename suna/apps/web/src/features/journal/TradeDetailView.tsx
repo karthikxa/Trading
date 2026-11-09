@@ -15,6 +15,7 @@ import {
   CheckCircle,
   XCircle,
   ZoomIn,
+  Eye,
   X,
   Upload,
   Calendar as CalendarIcon,
@@ -113,6 +114,17 @@ export function TradeDetailView({
     } finally {
       setUploadingTf(null);
     }
+  };
+
+  const handleDeleteImage = async (timeframe: 'htf' | 'mtf' | 'ltf') => {
+    const updated = {
+      ...currentTrade,
+      ...(timeframe === 'htf' ? { chartHtf: undefined } : {}),
+      ...(timeframe === 'mtf' ? { chartMtf: undefined } : {}),
+      ...(timeframe === 'ltf' ? { chartLtf: undefined } : {}),
+    };
+    await saveJournalTrade(updated);
+    setCurrentTrade(updated);
   };
 
   return (
@@ -468,19 +480,30 @@ export function TradeDetailView({
                   <div className="flex flex-col gap-1.5">
                     <span className="text-[11px] font-semibold text-zinc-700">HTF (4H / Daily)</span>
                     {currentTrade.chartHtf ? (
-                      <div className="relative group rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 aspect-[4/3]">
+                      <div className="relative group rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 aspect-[4/3] shadow-2xs">
                         <img
                           src={currentTrade.chartHtf}
                           alt="HTF Chart"
-                          className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                          className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
                         />
-                        <button
-                          type="button"
-                          onClick={() => setLightboxImage({ url: currentTrade.chartHtf!, title: `${currentTrade.instrument} · HTF Context` })}
-                          className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white cursor-pointer"
-                        >
-                          <ZoomIn className="size-6" />
-                        </button>
+                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-2.5 transition-opacity">
+                          <button
+                            type="button"
+                            title="View image"
+                            onClick={() => setLightboxImage({ url: currentTrade.chartHtf!, title: `${currentTrade.instrument} · HTF Context` })}
+                            className="p-2.5 rounded-lg bg-white/20 hover:bg-white/30 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                          >
+                            <Eye className="size-4.5" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Delete image"
+                            onClick={() => handleDeleteImage('htf')}
+                            className="p-2.5 rounded-lg bg-rose-500/80 hover:bg-rose-600 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="size-4.5" />
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all aspect-[4/3] group">
@@ -503,19 +526,30 @@ export function TradeDetailView({
                   <div className="flex flex-col gap-1.5">
                     <span className="text-[11px] font-semibold text-zinc-700">MTF (1H / 15M)</span>
                     {currentTrade.chartMtf ? (
-                      <div className="relative group rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 aspect-[4/3]">
+                      <div className="relative group rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 aspect-[4/3] shadow-2xs">
                         <img
                           src={currentTrade.chartMtf}
                           alt="MTF Chart"
-                          className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                          className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
                         />
-                        <button
-                          type="button"
-                          onClick={() => setLightboxImage({ url: currentTrade.chartMtf!, title: `${currentTrade.instrument} · MTF Structure` })}
-                          className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white cursor-pointer"
-                        >
-                          <ZoomIn className="size-6" />
-                        </button>
+                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-2.5 transition-opacity">
+                          <button
+                            type="button"
+                            title="View image"
+                            onClick={() => setLightboxImage({ url: currentTrade.chartMtf!, title: `${currentTrade.instrument} · MTF Structure` })}
+                            className="p-2.5 rounded-lg bg-white/20 hover:bg-white/30 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                          >
+                            <Eye className="size-4.5" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Delete image"
+                            onClick={() => handleDeleteImage('mtf')}
+                            className="p-2.5 rounded-lg bg-rose-500/80 hover:bg-rose-600 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="size-4.5" />
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all aspect-[4/3] group">
@@ -538,19 +572,30 @@ export function TradeDetailView({
                   <div className="flex flex-col gap-1.5">
                     <span className="text-[11px] font-semibold text-zinc-700">LTF (5M / 1M)</span>
                     {currentTrade.chartLtf ? (
-                      <div className="relative group rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 aspect-[4/3]">
+                      <div className="relative group rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 aspect-[4/3] shadow-2xs">
                         <img
                           src={currentTrade.chartLtf}
                           alt="LTF Chart"
-                          className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                          className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
                         />
-                        <button
-                          type="button"
-                          onClick={() => setLightboxImage({ url: currentTrade.chartLtf!, title: `${currentTrade.instrument} · LTF Execution` })}
-                          className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white cursor-pointer"
-                        >
-                          <ZoomIn className="size-6" />
-                        </button>
+                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-2.5 transition-opacity">
+                          <button
+                            type="button"
+                            title="View image"
+                            onClick={() => setLightboxImage({ url: currentTrade.chartLtf!, title: `${currentTrade.instrument} · LTF Execution` })}
+                            className="p-2.5 rounded-lg bg-white/20 hover:bg-white/30 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                          >
+                            <Eye className="size-4.5" />
+                          </button>
+                          <button
+                            type="button"
+                            title="Delete image"
+                            onClick={() => handleDeleteImage('ltf')}
+                            className="p-2.5 rounded-lg bg-rose-500/80 hover:bg-rose-600 text-white backdrop-blur-xs transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="size-4.5" />
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all aspect-[4/3] group">
