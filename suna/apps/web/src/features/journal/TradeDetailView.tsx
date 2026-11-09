@@ -17,9 +17,16 @@ import {
   ZoomIn,
   X,
   Upload,
+  Calendar as CalendarIcon,
+  Layers,
+  Activity,
+  AlertTriangle,
+  FileText,
 } from 'lucide-react';
 import { JournalTrade } from './types';
 import { uploadChartImage, saveJournalTrade } from './storage';
+import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
+import { Button } from '@/components/ui/button';
 
 interface TradeDetailViewProps {
   trade: JournalTrade;
@@ -105,7 +112,7 @@ export function TradeDetailView({
   };
 
   return (
-    <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full pb-16 font-sans text-zinc-900 animate-in fade-in-50 duration-200">
+    <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full pb-16 font-sans text-zinc-950">
       {/* Lightbox Modal */}
       {lightboxImage && (
         <div
@@ -117,7 +124,7 @@ export function TradeDetailView({
             <button
               type="button"
               onClick={() => setLightboxImage(null)}
-              className="p-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+              className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 cursor-pointer"
             >
               <X className="size-5" />
             </button>
@@ -143,67 +150,62 @@ export function TradeDetailView({
           <button
             type="button"
             onClick={onBack}
-            className="flex items-center gap-2 text-sm font-medium text-zinc-500 hover:text-zinc-950 transition-colors cursor-pointer group"
+            className="flex items-center gap-2 text-xs font-semibold text-zinc-600 hover:text-zinc-950 transition-colors cursor-pointer group"
           >
             <ArrowLeft className="size-4 transition-transform group-hover:-translate-x-1" />
-            <span>Journal</span>
+            <span>Back to Calendar</span>
           </button>
 
           {/* Top Actions: Share, Focus, Prev, Next */}
           <div className="flex items-center gap-2">
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => {
                 if (navigator.clipboard) {
                   navigator.clipboard.writeText(window.location.href);
                   alert('Trade link copied to clipboard!');
                 }
               }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-50 text-xs font-semibold text-zinc-700 shadow-2xs transition-colors"
+              className="text-xs font-semibold gap-1.5"
             >
               <Share2 className="size-3.5" />
-              <span>Share Trade</span>
-            </button>
-
-            <button
-              type="button"
-              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-50 text-xs font-semibold text-zinc-700 shadow-2xs transition-colors"
-            >
-              <Maximize2 className="size-3.5" />
-              <span>Focus Mode</span>
-            </button>
+              <span>Share</span>
+            </Button>
 
             <div className="flex items-center gap-1 ml-2">
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                size="sm"
                 disabled={!prevTrade}
                 onClick={() => prevTrade && onNavigateTrade(prevTrade)}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-50 disabled:opacity-40 text-xs font-semibold text-zinc-700 shadow-2xs transition-colors"
+                className="text-xs font-semibold gap-1"
               >
                 <ChevronLeft className="size-3.5" />
-                <span>Previous</span>
-              </button>
-              <button
-                type="button"
+                <span>Prev</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 disabled={!nextTrade}
                 onClick={() => nextTrade && onNavigateTrade(nextTrade)}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-50 disabled:opacity-40 text-xs font-semibold text-zinc-700 shadow-2xs transition-colors"
+                className="text-xs font-semibold gap-1"
               >
-                <span>Next Trade</span>
+                <span>Next</span>
                 <ChevronRight className="size-3.5" />
-              </button>
+              </Button>
             </div>
           </div>
         </div>
 
         {/* Title row */}
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="size-8 rounded-xl bg-zinc-100 border border-zinc-200 flex items-center justify-center text-xs font-mono font-bold text-zinc-700">
+          <div className="size-9 rounded-xl bg-zinc-900 text-white flex items-center justify-center text-xs font-mono font-bold shadow-2xs">
             {currentTrade.instrument.slice(0, 3)}
           </div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-zinc-950 flex items-center gap-2">
             <span>{currentTrade.instrument}</span>
-            <span className="text-zinc-400 font-normal">·</span>
+            <span className="text-zinc-300 font-normal">·</span>
             <span
               className={`flex items-center gap-1 font-semibold ${
                 currentTrade.direction === 'Buy' ? 'text-emerald-700' : 'text-rose-700'
@@ -216,26 +218,26 @@ export function TradeDetailView({
               )}
               {currentTrade.direction}
             </span>
-            <span className="text-zinc-400 font-normal">·</span>
+            <span className="text-zinc-300 font-normal">·</span>
             <span className="text-zinc-600 font-normal">{formattedDateTitle}</span>
           </h1>
 
           {/* Badge: Manual / Auto */}
           <span
-            className={`text-[11px] px-2.5 py-0.5 rounded-full font-mono font-bold flex items-center gap-1 ${
+            className={`text-[10px] px-2.5 py-0.5 rounded-full font-mono font-bold flex items-center gap-1 ${
               currentTrade.source === 'auto'
                 ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                : 'bg-zinc-100 text-zinc-600 border border-zinc-200'
+                : 'bg-zinc-100 text-zinc-700 border border-zinc-200'
             }`}
           >
             {currentTrade.source === 'auto' && <Zap className="size-3 text-amber-500 fill-amber-500" />}
-            {currentTrade.source === 'auto' ? 'Auto' : 'Manual'}
+            {currentTrade.source === 'auto' ? 'Auto Logged' : 'Manual Entry'}
           </span>
         </div>
       </div>
 
       {/* ========================================================================= */}
-      {/* 2. MAIN 2-COLUMN VIEW (White Theme)                                       */}
+      {/* 2. MAIN 2-COLUMN VIEW                                                     */}
       {/* ========================================================================= */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* ========================================================================= */}
@@ -243,26 +245,26 @@ export function TradeDetailView({
         {/* ========================================================================= */}
         <div className="lg:col-span-5 flex flex-col gap-5">
           <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-5">
-            <h2 className="text-sm font-semibold text-zinc-900">Trade Details</h2>
+            <h2 className="text-sm font-bold text-zinc-950">Trade Details</h2>
 
             {/* Big Net P&L */}
             <div className="flex flex-col gap-0.5 pb-4 border-b border-zinc-100">
               <span
                 className={`text-3xl sm:text-4xl font-black font-mono tracking-tight ${
-                  isWin ? 'text-emerald-600' : 'text-rose-600'
+                  isWin ? 'text-emerald-700' : 'text-rose-700'
                 }`}
               >
                 {formatCurrency(currentTrade.pnl)}
               </span>
               <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-                Net PnL
+                Net Profit / Loss
               </span>
             </div>
 
             {/* Instrument / Direction / Lots */}
             <div className="grid grid-cols-3 gap-2 pb-4 border-b border-zinc-100">
               <div className="flex flex-col">
-                <span className="text-sm font-bold font-mono text-zinc-900 flex items-center gap-1">
+                <span className="text-sm font-bold font-mono text-zinc-950 flex items-center gap-1">
                   {currentTrade.instrument}
                 </span>
                 <span className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wider">
@@ -284,7 +286,7 @@ export function TradeDetailView({
               </div>
 
               <div className="flex flex-col">
-                <span className="text-sm font-bold font-mono text-zinc-900">
+                <span className="text-sm font-bold font-mono text-zinc-950">
                   {currentTrade.lots.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                 </span>
                 <span className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wider">
@@ -294,32 +296,32 @@ export function TradeDetailView({
             </div>
 
             {/* Context: Date, Session, Duration */}
-            <div className="flex flex-col gap-2.5 pb-4 border-b border-zinc-100">
-              <span className="text-xs font-semibold text-zinc-500">Context</span>
-              <div className="flex items-center justify-between text-xs">
+            <div className="flex flex-col gap-2.5 pb-4 border-b border-zinc-100 text-xs">
+              <span className="font-semibold text-zinc-400 uppercase text-[10px] tracking-wider">Context</span>
+              <div className="flex items-center justify-between">
                 <span className="text-zinc-500">Date</span>
-                <span className="text-zinc-900 font-medium">{formattedDateTitle}</span>
+                <span className="text-zinc-950 font-medium">{formattedDateTitle}</span>
               </div>
-              <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center justify-between">
                 <span className="text-zinc-500">Session</span>
-                <span className="text-zinc-900 font-medium">{currentTrade.session || 'London'}</span>
+                <span className="text-zinc-950 font-medium">{currentTrade.session || 'London'}</span>
               </div>
-              <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center justify-between">
                 <span className="text-zinc-500">Duration</span>
-                <span className="text-zinc-900 font-mono">{currentTrade.duration || '15m'}</span>
+                <span className="text-zinc-950 font-mono">{currentTrade.duration || '15m'}</span>
               </div>
             </div>
 
             {/* Execution: Prices, SL, TP, Split Orders */}
-            <div className="flex flex-col gap-2.5 pb-4 border-b border-zinc-100">
-              <span className="text-xs font-semibold text-zinc-500">Execution</span>
-              <div className="flex items-center justify-between text-xs">
+            <div className="flex flex-col gap-2.5 pb-4 border-b border-zinc-100 text-xs">
+              <span className="font-semibold text-zinc-400 uppercase text-[10px] tracking-wider">Execution</span>
+              <div className="flex items-center justify-between">
                 <span className="text-zinc-500">
                   {currentTrade.splitOrders && currentTrade.splitOrders.length > 0
                     ? 'Avg Entry Price'
                     : 'Entry / Exit Price'}
                 </span>
-                <span className="text-zinc-900 font-mono font-medium">
+                <span className="text-zinc-950 font-mono font-medium">
                   {currentTrade.entryPrice.toFixed(5)}
                   {(!currentTrade.splitOrders || currentTrade.splitOrders.length === 0) &&
                     ` / ${currentTrade.exitPrice.toFixed(5)}`}
@@ -348,327 +350,318 @@ export function TradeDetailView({
                 </div>
               )}
 
-              <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center justify-between">
                 <span className="text-zinc-500">Stop Loss</span>
-                <span className="text-zinc-900 font-mono">
-                  {currentTrade.stopLoss ? currentTrade.stopLoss.toFixed(5) : 'Not Set'}
+                <span className="text-zinc-950 font-mono font-medium">
+                  {currentTrade.stopLoss !== null && currentTrade.stopLoss !== undefined
+                    ? currentTrade.stopLoss.toFixed(5)
+                    : 'Not Set'}
                 </span>
               </div>
-              <div className="flex items-center justify-between text-xs">
+
+              <div className="flex items-center justify-between">
                 <span className="text-zinc-500">Take Profit</span>
-                <span className="text-zinc-900 font-mono">
-                  {currentTrade.takeProfit ? currentTrade.takeProfit.toFixed(5) : 'Not Set'}
+                <span className="text-zinc-950 font-mono font-medium">
+                  {currentTrade.takeProfit !== null && currentTrade.takeProfit !== undefined
+                    ? currentTrade.takeProfit.toFixed(5)
+                    : 'Not Set'}
                 </span>
               </div>
             </div>
 
-            {/* Performance: Risk R, Return R */}
-            <div className="flex flex-col gap-2.5 pb-4 border-b border-zinc-100">
-              <span className="text-xs font-semibold text-zinc-500">Performance</span>
-              <div className="flex items-center justify-between text-xs">
+            {/* Performance: Risk, Return */}
+            <div className="flex flex-col gap-2.5 pb-4 border-b border-zinc-100 text-xs">
+              <span className="font-semibold text-zinc-400 uppercase text-[10px] tracking-wider">Performance</span>
+              <div className="flex items-center justify-between">
                 <span className="text-zinc-500">Risk (R)</span>
-                <span className="text-zinc-900 font-mono">
-                  {currentTrade.riskR !== null ? `${currentTrade.riskR}R` : 'N/A'}
+                <span className="text-zinc-950 font-mono font-medium">
+                  {currentTrade.riskR !== null && currentTrade.riskR !== undefined
+                    ? `${currentTrade.riskR}R`
+                    : 'N/A'}
                 </span>
               </div>
-              <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center justify-between">
                 <span className="text-zinc-500">Return (R)</span>
                 <span
-                  className={`font-mono font-semibold ${
+                  className={`font-mono font-bold ${
                     (currentTrade.returnR || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700'
                   }`}
                 >
-                  {currentTrade.returnR !== null
+                  {currentTrade.returnR !== null && currentTrade.returnR !== undefined
                     ? `${currentTrade.returnR >= 0 ? '+' : ''}${currentTrade.returnR}R`
                     : 'N/A'}
                 </span>
               </div>
             </div>
 
-            {/* Costs */}
-            <div className="flex flex-col gap-2.5 pb-4 border-b border-zinc-100">
-              <span className="text-xs font-semibold text-zinc-500">Costs</span>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-zinc-500">Fees</span>
-                <span className="text-zinc-900 font-mono font-medium">
-                  {currentTrade.commission !== undefined
-                    ? formatCurrency(currentTrade.commission)
-                    : '$0.00'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-zinc-500">Swap</span>
-                <span className="text-zinc-900 font-mono font-medium">
-                  {currentTrade.swap !== undefined ? formatCurrency(currentTrade.swap) : '$0.00'}
-                </span>
-              </div>
-            </div>
-
-            {/* Actions: Delete / Edit */}
+            {/* Action buttons: Edit, Delete */}
             <div className="flex items-center justify-between pt-1">
-              {!confirmDelete ? (
+              {confirmDelete ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-rose-700 font-semibold">Confirm delete?</span>
+                  <Button
+                    variant="default"
+                    size="xs"
+                    onClick={handleDelete}
+                    disabled={isDeleting}
+                    className="bg-rose-600 hover:bg-rose-700 text-white"
+                  >
+                    Yes, Delete
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    onClick={() => setConfirmDelete(false)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
                 <button
                   type="button"
                   onClick={() => setConfirmDelete(true)}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 transition-colors"
+                  className="flex items-center gap-1.5 text-xs text-rose-600 hover:text-rose-700 font-semibold cursor-pointer"
                 >
                   <Trash2 className="size-3.5" />
                   <span>Delete</span>
                 </button>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-zinc-500">Confirm?</span>
-                  <button
-                    type="button"
-                    disabled={isDeleting}
-                    onClick={handleDelete}
-                    className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold"
-                  >
-                    Yes, Delete
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDelete(false)}
-                    className="px-2 py-1 text-xs text-zinc-500 hover:text-zinc-950"
-                  >
-                    Cancel
-                  </button>
-                </div>
               )}
 
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => onEdit(currentTrade)}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-zinc-100 hover:bg-zinc-200 text-xs text-zinc-800 font-medium transition-colors shadow-2xs"
+                className="gap-1.5 text-xs font-semibold"
               >
                 <Edit className="size-3.5" />
                 <span>Edit Trade</span>
-              </button>
+              </Button>
             </div>
           </div>
         </div>
 
         {/* ========================================================================= */}
-        {/* RIGHT COLUMN: CHARTS + REVIEW & REFLECTION (7 cols)                       */}
+        {/* RIGHT COLUMN: COSS TABS (CHARTS / CONFLUENCES / MISTAKES / REFLECTION)     */}
         {/* ========================================================================= */}
-        <div className="lg:col-span-7 flex flex-col gap-5">
-          {/* Charts Card */}
-          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-4">
-            <div>
-              <h2 className="text-sm font-semibold text-zinc-900">Charts</h2>
-              <p className="text-[11px] text-zinc-500 mt-0.5">
-                Screenshots reviewing context + execution:
-              </p>
-            </div>
+        <div className="lg:col-span-7 flex flex-col gap-6">
+          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-5">
+            <Tabs defaultValue="charts" className="w-full">
+              <TabsList size="sm" variant="default" className="w-full flex overflow-x-auto">
+                <TabsTab value="charts">Charts Proof</TabsTab>
+                <TabsTab value="confluences">Strategy & Confluences</TabsTab>
+                <TabsTab value="mistakes">Mistakes & Emotions</TabsTab>
+                <TabsTab value="reflection">Trader Reflection</TabsTab>
+              </TabsList>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
-              {/* HTF */}
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs font-mono font-medium text-zinc-600">HTF (4H/Daily)</span>
-                {currentTrade.chartHtf ? (
-                  <div
-                    onClick={() =>
-                      setLightboxImage({ url: currentTrade.chartHtf!, title: `${currentTrade.instrument} HTF Chart` })
-                    }
-                    className="relative rounded-xl border border-zinc-200 bg-zinc-50 overflow-hidden h-40 flex items-center justify-center cursor-pointer group shadow-2xs"
-                  >
-                    <img
-                      src={currentTrade.chartHtf}
-                      alt="HTF Chart"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                    />
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                      <ZoomIn className="size-5 text-white" />
-                    </div>
+              {/* TAB 1: CHARTS PROOF */}
+              <TabsPanel value="charts" className="pt-4 space-y-4">
+                <div>
+                  <h3 className="text-xs font-bold text-zinc-950 uppercase tracking-wider">Multi-Timeframe Screenshots</h3>
+                  <p className="text-xs text-zinc-500 mt-0.5">Click any screenshot to zoom in full resolution, or upload new proof.</p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                  {/* HTF Slot */}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold text-zinc-700">HTF (4H / Daily)</span>
+                    {currentTrade.chartHtf ? (
+                      <div className="relative group rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 aspect-[4/3]">
+                        <img
+                          src={currentTrade.chartHtf}
+                          alt="HTF Chart"
+                          className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setLightboxImage({ url: currentTrade.chartHtf!, title: `${currentTrade.instrument} · HTF Context` })}
+                          className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white cursor-pointer"
+                        >
+                          <ZoomIn className="size-6" />
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all aspect-[4/3] group">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => handleUploadImage(e, 'htf')}
+                        />
+                        <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-1.5" />
+                        <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
+                          {uploadingTf === 'htf' ? 'Uploading...' : 'Upload HTF'}
+                        </span>
+                        <span className="text-[10px] text-zinc-400 mt-0.5">Attach screenshot</span>
+                      </label>
+                    )}
                   </div>
-                ) : (
-                  <label className="rounded-xl border border-dashed border-zinc-300 hover:border-purple-400 bg-zinc-50/70 hover:bg-zinc-50 h-40 flex flex-col items-center justify-center cursor-pointer group transition-colors">
-                    <Upload className="size-5 text-zinc-400 group-hover:text-purple-600 mb-1" />
-                    <span className="text-[11px] font-medium text-zinc-600 group-hover:text-purple-700">
-                      Upload HTF
-                    </span>
-                    <span className="text-[9px] text-zinc-400">Attach screenshot</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => handleUploadImage(e, 'htf')}
-                      className="hidden"
-                    />
-                  </label>
-                )}
-              </div>
 
-              {/* MTF */}
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs font-mono font-medium text-zinc-600">MTF (1H/15M)</span>
-                {currentTrade.chartMtf ? (
-                  <div
-                    onClick={() =>
-                      setLightboxImage({ url: currentTrade.chartMtf!, title: `${currentTrade.instrument} MTF Chart` })
-                    }
-                    className="relative rounded-xl border border-zinc-200 bg-zinc-50 overflow-hidden h-40 flex items-center justify-center cursor-pointer group shadow-2xs"
-                  >
-                    <img
-                      src={currentTrade.chartMtf}
-                      alt="MTF Chart"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                    />
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                      <ZoomIn className="size-5 text-white" />
-                    </div>
+                  {/* MTF Slot */}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold text-zinc-700">MTF (1H / 15M)</span>
+                    {currentTrade.chartMtf ? (
+                      <div className="relative group rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 aspect-[4/3]">
+                        <img
+                          src={currentTrade.chartMtf}
+                          alt="MTF Chart"
+                          className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setLightboxImage({ url: currentTrade.chartMtf!, title: `${currentTrade.instrument} · MTF Structure` })}
+                          className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white cursor-pointer"
+                        >
+                          <ZoomIn className="size-6" />
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all aspect-[4/3] group">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => handleUploadImage(e, 'mtf')}
+                        />
+                        <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-1.5" />
+                        <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
+                          {uploadingTf === 'mtf' ? 'Uploading...' : 'Upload MTF'}
+                        </span>
+                        <span className="text-[10px] text-zinc-400 mt-0.5">Attach screenshot</span>
+                      </label>
+                    )}
                   </div>
-                ) : (
-                  <label className="rounded-xl border border-dashed border-zinc-300 hover:border-purple-400 bg-zinc-50/70 hover:bg-zinc-50 h-40 flex flex-col items-center justify-center cursor-pointer group transition-colors">
-                    <Upload className="size-5 text-zinc-400 group-hover:text-purple-600 mb-1" />
-                    <span className="text-[11px] font-medium text-zinc-600 group-hover:text-purple-700">
-                      Upload MTF
-                    </span>
-                    <span className="text-[9px] text-zinc-400">Attach screenshot</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => handleUploadImage(e, 'mtf')}
-                      className="hidden"
-                    />
-                  </label>
-                )}
-              </div>
 
-              {/* LTF */}
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs font-mono font-medium text-zinc-600">LTF (5M/1M)</span>
-                {currentTrade.chartLtf ? (
-                  <div
-                    onClick={() =>
-                      setLightboxImage({ url: currentTrade.chartLtf!, title: `${currentTrade.instrument} LTF Chart` })
-                    }
-                    className="relative rounded-xl border border-zinc-200 bg-zinc-50 overflow-hidden h-40 flex items-center justify-center cursor-pointer group shadow-2xs"
-                  >
-                    <img
-                      src={currentTrade.chartLtf}
-                      alt="LTF Chart"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                    />
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                      <ZoomIn className="size-5 text-white" />
-                    </div>
+                  {/* LTF Slot */}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-semibold text-zinc-700">LTF (5M / 1M)</span>
+                    {currentTrade.chartLtf ? (
+                      <div className="relative group rounded-xl overflow-hidden border border-zinc-200 bg-zinc-950 aspect-[4/3]">
+                        <img
+                          src={currentTrade.chartLtf}
+                          alt="LTF Chart"
+                          className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setLightboxImage({ url: currentTrade.chartLtf!, title: `${currentTrade.instrument} · LTF Execution` })}
+                          className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white cursor-pointer"
+                        >
+                          <ZoomIn className="size-6" />
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all aspect-[4/3] group">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => handleUploadImage(e, 'ltf')}
+                        />
+                        <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-1.5" />
+                        <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
+                          {uploadingTf === 'ltf' ? 'Uploading...' : 'Upload LTF'}
+                        </span>
+                        <span className="text-[10px] text-zinc-400 mt-0.5">Attach screenshot</span>
+                      </label>
+                    )}
                   </div>
-                ) : (
-                  <label className="rounded-xl border border-dashed border-zinc-300 hover:border-purple-400 bg-zinc-50/70 hover:bg-zinc-50 h-40 flex flex-col items-center justify-center cursor-pointer group transition-colors">
-                    <Upload className="size-5 text-zinc-400 group-hover:text-purple-600 mb-1" />
-                    <span className="text-[11px] font-medium text-zinc-600 group-hover:text-purple-700">
-                      Upload LTF
-                    </span>
-                    <span className="text-[9px] text-zinc-400">Attach screenshot</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => handleUploadImage(e, 'ltf')}
-                      className="hidden"
-                    />
-                  </label>
-                )}
-              </div>
-            </div>
-          </div>
+                </div>
+              </TabsPanel>
 
-          {/* Review & Reflection Card */}
-          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-5">
-            <h2 className="text-sm font-semibold text-zinc-900">Review & Reflection</h2>
-
-            {/* Plan followed */}
-            <div className="flex items-center justify-between pb-3 border-b border-zinc-100">
-              <div className="flex items-center gap-2">
-                {currentTrade.followedPlan ? (
-                  <CheckCircle className="size-4 text-emerald-600" />
-                ) : (
-                  <XCircle className="size-4 text-rose-600" />
-                )}
-                <span className="text-xs font-semibold text-zinc-900">
-                  {currentTrade.followedPlan ? 'I followed my trade plan' : 'Did not follow trade plan'}
-                </span>
-              </div>
-
-              <span className="text-xs font-medium text-zinc-500">
-                Plan: <span className="text-zinc-900 font-semibold">{currentTrade.planName}</span>
-              </span>
-            </div>
-
-            {/* Entry Confluences */}
-            <div className="flex flex-col gap-2 pb-3 border-b border-zinc-100">
-              <span className="text-xs font-semibold text-zinc-600">Entry Confluences</span>
-              <div className="flex flex-wrap gap-1.5">
-                {currentTrade.confluences && currentTrade.confluences.length > 0 ? (
-                  currentTrade.confluences.map((c) => (
-                    <span
-                      key={c}
-                      className="text-xs px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 font-medium"
-                    >
-                      {c}
-                    </span>
-                  ))
-                ) : (
-                  <span className="text-xs text-zinc-400">None logged</span>
-                )}
-              </div>
-            </div>
-
-            {/* Trade Management */}
-            <div className="flex flex-col gap-1.5 pb-3 border-b border-zinc-100">
-              <span className="text-xs font-semibold text-zinc-600">Trade Management</span>
-              <p className="text-xs text-zinc-800 font-medium">
-                {currentTrade.tradeManagement || 'Standard execution, let runner ride.'}
-              </p>
-            </div>
-
-            {/* Mistakes */}
-            <div className="flex flex-col gap-2 pb-3 border-b border-zinc-100">
-              <span className="text-xs font-semibold text-zinc-600">Mistakes</span>
-              <div className="flex flex-wrap gap-1.5">
-                {currentTrade.mistakes && currentTrade.mistakes.length > 0 ? (
-                  currentTrade.mistakes.map((m) => (
-                    <span
-                      key={m}
-                      className="text-xs px-2.5 py-1 rounded-lg bg-rose-50 text-rose-800 border border-rose-200 font-medium"
-                    >
-                      {m}
-                    </span>
-                  ))
-                ) : (
-                  <span className="text-xs text-emerald-700 font-medium">
-                    None · Zero mistakes
+              {/* TAB 2: CONFLUENCES & STRATEGY */}
+              <TabsPanel value="confluences" className="pt-4 space-y-4">
+                <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-50 border border-zinc-200/80">
+                  <span className="text-xs font-semibold text-zinc-700">Adherence to Trade Plan</span>
+                  <span
+                    className={`text-xs font-bold flex items-center gap-1.5 ${
+                      currentTrade.followedPlan ? 'text-emerald-700' : 'text-rose-700'
+                    }`}
+                  >
+                    {currentTrade.followedPlan ? (
+                      <>
+                        <CheckCircle className="size-4 text-emerald-600" /> Plan followed: {currentTrade.planName}
+                      </>
+                    ) : (
+                      <>
+                        <XCircle className="size-4 text-rose-600" /> Plan violated
+                      </>
+                    )}
                   </span>
+                </div>
+
+                <div className="space-y-2">
+                  <span className="text-xs font-semibold text-zinc-700">Validated Entry Confluences</span>
+                  <div className="flex flex-wrap gap-2">
+                    {currentTrade.confluences && currentTrade.confluences.length > 0 ? (
+                      currentTrade.confluences.map((c) => (
+                        <span
+                          key={c}
+                          className="text-xs font-medium px-3 py-1 rounded-xl bg-zinc-100 border border-zinc-200 text-zinc-900"
+                        >
+                          ✓ {c}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-xs text-zinc-400">None logged</span>
+                    )}
+                  </div>
+                </div>
+
+                {currentTrade.tradeManagement && (
+                  <div className="space-y-1.5 pt-2">
+                    <span className="text-xs font-semibold text-zinc-700">Trade Management Protocol</span>
+                    <p className="text-xs text-zinc-600 bg-zinc-50 p-3 rounded-xl border border-zinc-200/70">
+                      {currentTrade.tradeManagement}
+                    </p>
+                  </div>
                 )}
-              </div>
-            </div>
+              </TabsPanel>
 
-            {/* Emotions */}
-            <div className="grid grid-cols-2 gap-4 pb-3 border-b border-zinc-100">
-              <div className="flex flex-col gap-1">
-                <span className="text-[11px] text-zinc-400 uppercase font-semibold">
-                  Entry Emotion
-                </span>
-                <span className="text-xs font-semibold text-zinc-800">
-                  {currentTrade.entryEmotion || '😐 Neutral'}
-                </span>
-              </div>
-              <div className="flex flex-col gap-1">
-                <span className="text-[11px] text-zinc-400 uppercase font-semibold">
-                  Exit Emotion
-                </span>
-                <span className="text-xs font-semibold text-zinc-800">
-                  {currentTrade.exitEmotion || '😌 Relieved'}
-                </span>
-              </div>
-            </div>
+              {/* TAB 3: MISTAKES & EMOTIONS */}
+              <TabsPanel value="mistakes" className="pt-4 space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-3.5 rounded-xl border border-zinc-200 bg-zinc-50 flex flex-col gap-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Entry Emotion</span>
+                    <span className="text-sm font-semibold text-zinc-900">
+                      {currentTrade.entryEmotion || 'Neutral'}
+                    </span>
+                  </div>
 
-            {/* Notes */}
-            <div className="flex flex-col gap-2">
-              <span className="text-xs font-semibold text-zinc-600">Trader Reflection Notes</span>
-              <div className="bg-zinc-50 border border-zinc-200/80 p-3.5 rounded-xl text-xs text-zinc-800 leading-relaxed">
-                {currentTrade.notes || 'No reflections logged for this trade.'}
-              </div>
-            </div>
+                  <div className="p-3.5 rounded-xl border border-zinc-200 bg-zinc-50 flex flex-col gap-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Exit Emotion</span>
+                    <span className="text-sm font-semibold text-zinc-900">
+                      {currentTrade.exitEmotion || 'Disciplined'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <span className="text-xs font-semibold text-zinc-700">Mistakes & Rule Breaches</span>
+                  <div className="flex flex-wrap gap-2">
+                    {currentTrade.mistakes && currentTrade.mistakes.length > 0 ? (
+                      currentTrade.mistakes.map((m) => (
+                        <span
+                          key={m}
+                          className="text-xs font-medium px-3 py-1 rounded-xl bg-rose-50 border border-rose-200 text-rose-700"
+                        >
+                          ✕ {m}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-xs text-emerald-700 font-medium">None · Zero mistakes executed</span>
+                    )}
+                  </div>
+                </div>
+              </TabsPanel>
+
+              {/* TAB 4: REFLECTION & NOTES */}
+              <TabsPanel value="reflection" className="pt-4 space-y-3">
+                <span className="text-xs font-semibold text-zinc-700">Trader Reflection & Lessons</span>
+                <p className="text-xs text-zinc-700 bg-zinc-50 p-4 rounded-xl border border-zinc-200 leading-relaxed min-h-[90px]">
+                  {currentTrade.notes || 'No reflection recorded for this trade.'}
+                </p>
+              </TabsPanel>
+            </Tabs>
           </div>
         </div>
       </div>

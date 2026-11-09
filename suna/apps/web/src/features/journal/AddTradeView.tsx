@@ -11,9 +11,15 @@ import {
   TrendingDown,
   CheckCircle2,
   Image as ImageIcon,
+  Plus,
 } from 'lucide-react';
 import { Direction, JournalTrade } from './types';
 import { uploadChartImage } from './storage';
+import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
+import { Field, FieldLabel, FieldDescription } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Button } from '@/components/ui/button';
 
 interface AddTradeViewProps {
   onBack: () => void;
@@ -21,46 +27,86 @@ interface AddTradeViewProps {
   initialDate?: string;
 }
 
-const COMMON_CONFLUENCES = [
-  'LQ sweep',
-  'LTF POI Mitigation',
-  'MTF POI mitigation',
-  'MS',
-  '4H FVG Fill',
-  'Order Block',
-  'Session High Sweep',
-  'Session Low Sweep',
-  'Breakout & Retest',
-  'Volume Spike',
-];
+const CONFLUENCE_CATEGORIES = {
+  structure: [
+    'LQ sweep',
+    'Internal BOS',
+    'CHoCH',
+    'Swing BOS',
+    'Session High Sweep',
+    'Session Low Sweep',
+    'Asia Range Liquidity',
+  ],
+  orderflow: [
+    'LTF POI Mitigation',
+    'MTF POI mitigation',
+    '4H FVG Fill',
+    'Order Block',
+    'Breaker Block',
+    'Fair Value Gap',
+    'Discount / Premium Array',
+  ],
+  execution: [
+    'Breakout & Retest',
+    'Volume Spike',
+    'Wick Rejection',
+    'Inducement Taken',
+    'Momentum Shift',
+    'SMR Confirmation',
+  ],
+  session: [
+    'London Open Expansion',
+    'London Close Reversal',
+    'New York AM Silver Bullet',
+    'New York PM Session',
+    'Asia Open Accumulation',
+  ],
+};
 
-const COMMON_MISTAKES = [
-  'Impatience',
-  'too late',
-  'overleveraged',
-  'moved SL',
-  'fomo',
-  'fighting trend',
-  'no clear invalidation',
-];
+const MISTAKE_CATEGORIES = {
+  execution: [
+    'Impatience',
+    'too late',
+    'front-running signal',
+    'chasing price',
+    'hesitation / missed entry',
+  ],
+  risk: [
+    'overleveraged',
+    'moved SL',
+    'removed SL',
+    'risked > 1%',
+    'bad risk-to-reward',
+  ],
+  psychology: [
+    'fomo',
+    'revenge trading',
+    'fighting trend',
+    'boredom trade',
+    'no clear invalidation',
+    'overtrading',
+  ],
+};
 
 const ENTRY_EMOTIONS = [
-  '🤩 Confident',
-  '😐 Neutral',
-  '😡 Revenge',
-  '😰 FOMO',
-  '😨 Fearful',
-  '😤 Impatient',
+    'Confident',
+    'Neutral',
+    'Revenge',
+    'FOMO',
+    'Fearful',
+    'Impatient',
 ];
 
 const EXIT_EMOTIONS = [
-  '😌 Relieved',
-  '🧘 Disciplined',
-  '🤑 Greedy',
-  '😡 Frustrated',
-  '😔 Regret',
-  '😐 Neutral',
+    'Relieved',
+    'Disciplined',
+    'Greedy',
+    'Frustrated',
+    'Regret',
+    'Neutral',
 ];
+
+const QUICK_INSTRUMENTS = ['EURUSD', 'GBPUSD', 'AUDCHF', 'USDJPY', 'XAUUSD', 'BTCUSD', 'NDX100'];
 
 export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps) {
   const todayStr = initialDate || new Date().toISOString().split('T')[0];
@@ -99,98 +145,91 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
   );
   const [mistakes, setMistakes] = useState<string[]>([]);
   const [customMistake, setCustomMistake] = useState('');
-  const [entryEmotion, setEntryEmotion] = useState('🤩 Confident');
-  const [exitEmotion, setExitEmotion] = useState('🧘 Disciplined');
+  const [entryEmotion, setEntryEmotion] = useState('Confident');
+  const [exitEmotion, setExitEmotion] = useState('Disciplined');
   const [notes, setNotes] = useState('');
 
-  // Charts State
-  const [chartHtf, setChartHtf] = useState<string>('');
-  const [chartMtf, setChartMtf] = useState<string>('');
-  const [chartLtf, setChartLtf] = useState<string>('');
-  const [uploadingTimeframe, setUploadingTimeframe] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  // Chart screenshots (HTF, MTF, LTF)
+  const [chartHtf, setChartHtf] = useState<string | null>(null);
+  const [chartMtf, setChartMtf] = useState<string | null>(null);
+  const [chartLtf, setChartLtf] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
 
-  // Auto-calculated PnL if not overridden
-  const calcPnl = () => {
+  // Auto-calculated PnL if not overridden manually
+  const calculatedPnl = React.useMemo(() => {
     if (pnlManual !== '') return parseFloat(pnlManual) || 0;
     const diff = direction === 'Buy' ? exitPrice - entryPrice : entryPrice - exitPrice;
-    const mult = instrument.includes('USD') || instrument.includes('CHF') ? 100000 : 100;
-    const rough = diff * mult * lots;
-    return Math.round(rough * 100) / 100;
-  };
-
-  const currentPnl = calcPnl();
-
-  const handleImageFileChange = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-    timeframe: 'htf' | 'mtf' | 'ltf'
-  ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploadingTimeframe(timeframe);
-    try {
-      const url = await uploadChartImage(file, timeframe);
-      if (timeframe === 'htf') setChartHtf(url);
-      if (timeframe === 'mtf') setChartMtf(url);
-      if (timeframe === 'ltf') setChartLtf(url);
-    } catch (err) {
-      console.error('Failed to upload chart image:', err);
-    } finally {
-      setUploadingTimeframe(null);
-    }
-  };
+    return Math.round(diff * lots * 100000);
+  }, [entryPrice, exitPrice, lots, direction, pnlManual]);
 
   const toggleConfluence = (item: string) => {
     setConfluences((prev) =>
-      prev.includes(item) ? prev.filter((i) => i !== item) : [...prev, item]
+      prev.includes(item) ? prev.filter((c) => c !== item) : [...prev, item]
     );
   };
 
-  const addCustomConfluence = (e: React.KeyboardEvent | React.MouseEvent) => {
-    if ('key' in e && e.key !== 'Enter') return;
+  const addCustomConfluence = () => {
     if (!customConfluence.trim()) return;
     if (!confluences.includes(customConfluence.trim())) {
-      setConfluences([...confluences, customConfluence.trim()]);
+      setConfluences((prev) => [...prev, customConfluence.trim()]);
     }
     setCustomConfluence('');
   };
 
   const toggleMistake = (item: string) => {
     setMistakes((prev) =>
-      prev.includes(item) ? prev.filter((i) => i !== item) : [...prev, item]
+      prev.includes(item) ? prev.filter((m) => m !== item) : [...prev, item]
     );
   };
 
-  const addCustomMistake = (e: React.KeyboardEvent | React.MouseEvent) => {
-    if ('key' in e && e.key !== 'Enter') return;
+  const addCustomMistake = () => {
     if (!customMistake.trim()) return;
     if (!mistakes.includes(customMistake.trim())) {
-      setMistakes([...mistakes, customMistake.trim()]);
+      setMistakes((prev) => [...prev, customMistake.trim()]);
     }
     setCustomMistake('');
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSubmitting(true);
+  const handleFileUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    type: 'htf' | 'mtf' | 'ltf'
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploading(type);
+    try {
+      const publicUrl = await uploadChartImage(file);
+      if (type === 'htf') setChartHtf(publicUrl);
+      if (type === 'mtf') setChartMtf(publicUrl);
+      if (type === 'ltf') setChartLtf(publicUrl);
+    } catch (err) {
+      console.error('Upload failed:', err);
+    } finally {
+      setIsUploading(null);
+    }
+  };
+
+  const handleSave = async () => {
+    setIsSaving(true);
     try {
       await onSave({
         entryDate,
         entryTime,
         exitDate,
         exitTime,
-        instrument: instrument.trim().toUpperCase(),
+        instrument: instrument.toUpperCase(),
         direction,
         lots,
         entryPrice,
         exitPrice,
         stopLoss: stopLoss ? parseFloat(stopLoss) : null,
         takeProfit: takeProfit ? parseFloat(takeProfit) : null,
-        pnl: currentPnl,
+        pnl: calculatedPnl,
         riskR: riskR ? parseFloat(riskR) : null,
         returnR: returnR ? parseFloat(returnR) : null,
-        swap: swap ? parseFloat(swap) : 0,
-        commission: commission ? parseFloat(commission) : 0,
+        swap: parseFloat(swap) || 0,
+        commission: parseFloat(commission) || 0,
         followedPlan,
         planName,
         confluences,
@@ -199,589 +238,651 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
         entryEmotion,
         exitEmotion,
         notes,
-        chartHtf,
-        chartMtf,
-        chartLtf,
+        chartHtf: chartHtf || undefined,
+        chartMtf: chartMtf || undefined,
+        chartLtf: chartLtf || undefined,
         session,
-        duration: '1h 30m',
         source: 'manual',
       });
-      onBack();
-    } catch (err) {
-      console.error('Failed to save trade:', err);
     } finally {
-      setIsSubmitting(false);
+      setIsSaving(false);
     }
   };
 
   return (
-    <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full pb-16 font-sans text-zinc-900 animate-in fade-in-50 duration-200">
-      {/* Top Header */}
-      <div className="flex items-center justify-between gap-4">
+    <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full font-sans pb-16">
+      {/* Top Breadcrumb and Actions */}
+      <div className="flex items-center justify-between">
         <button
           type="button"
           onClick={onBack}
-          className="flex items-center gap-2 text-sm font-medium text-zinc-500 hover:text-zinc-950 transition-colors cursor-pointer group"
+          className="inline-flex items-center gap-2 text-xs font-semibold text-zinc-600 hover:text-zinc-950 transition-colors cursor-pointer"
         >
-          <ArrowLeft className="size-4 transition-transform group-hover:-translate-x-1" />
-          <span>Journal</span>
+          <ArrowLeft className="size-4" />
+          <span>Back to Calendar</span>
         </button>
-      </div>
 
-      <div className="flex items-center justify-between border-b border-zinc-200 pb-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-900">Add Trade</h1>
-          <p className="text-xs text-zinc-500 mt-1">
-            Log execution parameters, multi-timeframe chart proof, and emotional confluences.
-          </p>
+        <div className="flex items-center gap-2.5">
+          <Button variant="outline" size="sm" onClick={onBack}>
+            Cancel
+          </Button>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={handleSave}
+            disabled={isSaving}
+            className="bg-zinc-950 text-white hover:bg-zinc-800 font-semibold shadow-xs"
+          >
+            {isSaving ? 'Saving...' : 'Save Manual Trade'}
+          </Button>
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      <div>
+        <h1 className="text-xl font-bold text-zinc-950 tracking-tight">Add Trade</h1>
+        <p className="text-xs text-zinc-500 mt-0.5">
+          Log execution parameters, multi-timeframe chart proof, and emotional confluences.
+        </p>
+      </div>
+
+      {/* Main 2-Column Layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* ========================================================================= */}
-        {/* LEFT COLUMN: TRADE DETAILS (5 cols)                                       */}
+        {/* COLUMN 1: TRADE DETAILS & EXECUTION (5 Cols)                              */}
         {/* ========================================================================= */}
-        <div className="lg:col-span-5 flex flex-col gap-5">
-          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-4">
-            <h2 className="text-sm font-semibold text-zinc-900 flex items-center gap-2">
-              <CalendarIcon className="size-4 text-[#704fe6]" />
-              <span>Trade Details</span>
+        <div className="lg:col-span-5 bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-5">
+          <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+            <h2 className="text-sm font-bold text-zinc-950 tracking-tight flex items-center gap-2">
+              <CalendarIcon className="size-4 text-zinc-500" />
+              Trade Details
             </h2>
+            <span className="text-[11px] font-mono text-zinc-400">Manual Entry</span>
+          </div>
 
-            {/* Entry Date & Time */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-zinc-600 font-medium block mb-1.5">Entry Date</label>
-                <input
-                  type="date"
-                  value={entryDate}
-                  onChange={(e) => setEntryDate(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 focus:outline-hidden focus:border-[#704fe6] focus:ring-1 focus:ring-[#704fe6]"
-                  required
-                />
-              </div>
-              <div>
-                <label className="text-xs text-zinc-600 font-medium block mb-1.5">Entry Time</label>
-                <input
-                  type="time"
-                  value={entryTime}
-                  onChange={(e) => setEntryTime(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 focus:outline-hidden focus:border-[#704fe6] focus:ring-1 focus:ring-[#704fe6]"
-                  required
-                />
-              </div>
-            </div>
+          {/* Entry & Exit Date/Time */}
+          <div className="grid grid-cols-2 gap-3">
+            <Field>
+              <FieldLabel>Entry Date</FieldLabel>
+              <Input
+                type="date"
+                value={entryDate}
+                onChange={(e) => setEntryDate(e.target.value)}
+              />
+            </Field>
+            <Field>
+              <FieldLabel>Entry Time</FieldLabel>
+              <Input
+                type="time"
+                value={entryTime}
+                onChange={(e) => setEntryTime(e.target.value)}
+              />
+            </Field>
+          </div>
 
-            {/* Exit Date & Time */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-zinc-600 font-medium block mb-1.5">Exit Date</label>
-                <input
-                  type="date"
-                  value={exitDate}
-                  onChange={(e) => setExitDate(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 focus:outline-hidden focus:border-[#704fe6] focus:ring-1 focus:ring-[#704fe6]"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-zinc-600 font-medium block mb-1.5">Exit Time</label>
-                <input
-                  type="time"
-                  value={exitTime}
-                  onChange={(e) => setExitTime(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 focus:outline-hidden focus:border-[#704fe6] focus:ring-1 focus:ring-[#704fe6]"
-                />
-              </div>
-            </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field>
+              <FieldLabel>Exit Date</FieldLabel>
+              <Input
+                type="date"
+                value={exitDate}
+                onChange={(e) => setExitDate(e.target.value)}
+              />
+            </Field>
+            <Field>
+              <FieldLabel>Exit Time</FieldLabel>
+              <Input
+                type="time"
+                value={exitTime}
+                onChange={(e) => setExitTime(e.target.value)}
+              />
+            </Field>
+          </div>
 
-            {/* Instrument & Direction */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-zinc-600 font-medium block mb-1.5">Instrument</label>
-                <input
-                  type="text"
-                  placeholder="e.g. EURUSD, AUDCHF"
-                  value={instrument}
-                  onChange={(e) => setInstrument(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 uppercase focus:outline-hidden focus:border-[#704fe6] focus:ring-1 focus:ring-[#704fe6] font-mono"
-                  required
-                />
-              </div>
-              <div>
-                <label className="text-xs text-zinc-600 font-medium block mb-1.5">Direction</label>
-                <div className="grid grid-cols-2 gap-1.5 p-1 bg-zinc-100 rounded-xl border border-zinc-200">
-                  <button
-                    type="button"
-                    onClick={() => setDirection('Buy')}
-                    className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                      direction === 'Buy'
-                        ? 'bg-emerald-600 text-white shadow-2xs'
-                        : 'text-zinc-600 hover:text-zinc-950'
-                    }`}
-                  >
-                    <TrendingUp className="size-3.5" />
-                    <span>Buy</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDirection('Sell')}
-                    className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                      direction === 'Sell'
-                        ? 'bg-rose-600 text-white shadow-2xs'
-                        : 'text-zinc-600 hover:text-zinc-950'
-                    }`}
-                  >
-                    <TrendingDown className="size-3.5" />
-                    <span>Sell</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Lots & Session */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-zinc-600 font-medium block mb-1.5">Lots / Size</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={lots}
-                  onChange={(e) => setLots(parseFloat(e.target.value) || 0)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 focus:outline-hidden focus:border-[#704fe6] font-mono"
-                  required
-                />
-              </div>
-              <div>
-                <label className="text-xs text-zinc-600 font-medium block mb-1.5">Session</label>
-                <select
-                  value={session}
-                  onChange={(e) => setSession(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 focus:outline-hidden focus:border-[#704fe6]"
+          {/* Instrument and Quick Symbol Chips */}
+          <Field>
+            <FieldLabel>Instrument Symbol</FieldLabel>
+            <Input
+              type="text"
+              value={instrument}
+              onChange={(e) => setInstrument(e.target.value.toUpperCase())}
+              placeholder="e.g. EURUSD"
+            />
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {QUICK_INSTRUMENTS.map((sym) => (
+                <button
+                  key={sym}
+                  type="button"
+                  onClick={() => setInstrument(sym)}
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold transition-colors cursor-pointer ${
+                    instrument === sym
+                      ? 'bg-zinc-950 text-white'
+                      : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700'
+                  }`}
                 >
-                  <option value="London">London</option>
-                  <option value="New York">New York</option>
-                  <option value="Asian">Asian</option>
-                  <option value="Pre-Market">Pre-Market</option>
-                </select>
+                  {sym}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          {/* Direction & Lots */}
+          <div className="grid grid-cols-2 gap-3">
+            <Field>
+              <FieldLabel>Direction</FieldLabel>
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-zinc-100 border border-zinc-200">
+                <button
+                  type="button"
+                  onClick={() => setDirection('Buy')}
+                  className={`py-1.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                    direction === 'Buy'
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'text-zinc-600 hover:text-zinc-950'
+                  }`}
+                >
+                  <TrendingUp className="size-3.5" />
+                  Buy
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDirection('Sell')}
+                  className={`py-1.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                    direction === 'Sell'
+                      ? 'bg-rose-600 text-white shadow-xs'
+                      : 'text-zinc-600 hover:text-zinc-950'
+                  }`}
+                >
+                  <TrendingDown className="size-3.5" />
+                  Sell
+                </button>
               </div>
+            </Field>
+
+            <Field>
+              <FieldLabel>Lots / Position Size</FieldLabel>
+              <Input
+                type="number"
+                step="0.01"
+                value={lots}
+                onChange={(e) => setLots(parseFloat(e.target.value) || 0)}
+              />
+            </Field>
+          </div>
+
+          {/* Session */}
+          <Field>
+            <FieldLabel>Trading Session</FieldLabel>
+            <select
+              value={session}
+              onChange={(e) => setSession(e.target.value)}
+              className="w-full h-9 rounded-xl border border-zinc-200 bg-white px-3 text-xs text-zinc-900 focus:border-zinc-950 focus:outline-none"
+            >
+              <option value="London">London Session</option>
+              <option value="New York">New York Session</option>
+              <option value="Asian">Asian Session</option>
+              <option value="Overlap">London / NY Overlap</option>
+            </select>
+          </Field>
+
+          {/* Execution Prices */}
+          <div className="border-t border-zinc-100 pt-4 space-y-3">
+            <h3 className="text-xs font-bold text-zinc-950 tracking-tight uppercase">Execution & Pricing</h3>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field>
+                <FieldLabel>Entry Price</FieldLabel>
+                <Input
+                  type="number"
+                  step="0.00001"
+                  value={entryPrice}
+                  onChange={(e) => setEntryPrice(parseFloat(e.target.value) || 0)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel>Exit Price</FieldLabel>
+                <Input
+                  type="number"
+                  step="0.00001"
+                  value={exitPrice}
+                  onChange={(e) => setExitPrice(parseFloat(e.target.value) || 0)}
+                />
+              </Field>
             </div>
 
-            {/* Execution Sub-card */}
-            <div className="pt-3 border-t border-zinc-100 flex flex-col gap-3">
-              <span className="text-xs font-semibold text-zinc-800">Execution</span>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[11px] text-zinc-500 block mb-1">Entry Price</label>
-                  <input
-                    type="number"
-                    step="0.00001"
-                    value={entryPrice}
-                    onChange={(e) => setEntryPrice(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 font-mono focus:outline-hidden focus:border-[#704fe6]"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] text-zinc-500 block mb-1">Exit Price</label>
-                  <input
-                    type="number"
-                    step="0.00001"
-                    value={exitPrice}
-                    onChange={(e) => setExitPrice(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 font-mono focus:outline-hidden focus:border-[#704fe6]"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[11px] text-zinc-500 block mb-1">Stop Loss</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 1.18100"
-                    value={stopLoss}
-                    onChange={(e) => setStopLoss(e.target.value)}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 font-mono focus:outline-hidden focus:border-[#704fe6]"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] text-zinc-500 block mb-1">Take Profit</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 1.19000"
-                    value={takeProfit}
-                    onChange={(e) => setTakeProfit(e.target.value)}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 font-mono focus:outline-hidden focus:border-[#704fe6]"
-                  />
-                </div>
-              </div>
-
-              {/* Net P&L */}
-              <div>
-                <label className="text-[11px] text-zinc-500 block mb-1">
-                  Net P&L ($) <span className="text-zinc-400 font-normal">(auto-calculated, editable)</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={pnlManual !== '' ? pnlManual : currentPnl}
-                    onChange={(e) => setPnlManual(e.target.value)}
-                    className={`w-full bg-zinc-50 border rounded-xl px-3 py-2 text-xs font-mono font-bold focus:outline-hidden ${
-                      currentPnl >= 0
-                        ? 'text-emerald-700 border-emerald-300'
-                        : 'text-rose-700 border-rose-300'
-                    }`}
-                  />
-                </div>
-              </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field>
+                <FieldLabel>Stop Loss</FieldLabel>
+                <Input
+                  type="number"
+                  step="0.00001"
+                  value={stopLoss}
+                  onChange={(e) => setStopLoss(e.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel>Take Profit</FieldLabel>
+                <Input
+                  type="number"
+                  step="0.00001"
+                  value={takeProfit}
+                  onChange={(e) => setTakeProfit(e.target.value)}
+                />
+              </Field>
             </div>
 
-            {/* Performance (Risk R & Return R) */}
-            <div className="pt-3 border-t border-zinc-100 flex flex-col gap-3">
-              <span className="text-xs font-semibold text-zinc-800">Performance</span>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[11px] text-zinc-500 block mb-1">Risk (R)</label>
-                  <input
-                    type="text"
-                    placeholder="1.0R"
-                    value={riskR}
-                    onChange={(e) => setRiskR(e.target.value)}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 font-mono focus:outline-hidden focus:border-[#704fe6]"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] text-zinc-500 block mb-1">Return (R)</label>
-                  <input
-                    type="text"
-                    placeholder="2.5R"
-                    value={returnR}
-                    onChange={(e) => setReturnR(e.target.value)}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 font-mono focus:outline-hidden focus:border-[#704fe6]"
-                  />
-                </div>
-              </div>
+            <Field>
+              <FieldLabel>Net P&L ($) (Auto-calculated / Editable)</FieldLabel>
+              <Input
+                type="number"
+                value={pnlManual !== '' ? pnlManual : calculatedPnl}
+                onChange={(e) => setPnlManual(e.target.value)}
+                className={`font-mono font-bold ${
+                  calculatedPnl >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                }`}
+              />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field>
+                <FieldLabel>Risk (R)</FieldLabel>
+                <Input
+                  type="number"
+                  step="0.1"
+                  value={riskR}
+                  onChange={(e) => setRiskR(e.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel>Return (R)</FieldLabel>
+                <Input
+                  type="number"
+                  step="0.1"
+                  value={returnR}
+                  onChange={(e) => setReturnR(e.target.value)}
+                />
+              </Field>
             </div>
 
-            {/* Costs (Swap & Commission) */}
-            <div className="pt-3 border-t border-zinc-100 flex flex-col gap-3">
-              <span className="text-xs font-semibold text-zinc-800">Costs</span>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[11px] text-zinc-500 block mb-1">Swap ($)</label>
-                  <input
-                    type="text"
-                    value={swap}
-                    onChange={(e) => setSwap(e.target.value)}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 font-mono focus:outline-hidden focus:border-[#704fe6]"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] text-zinc-500 block mb-1">Commission ($)</label>
-                  <input
-                    type="text"
-                    value={commission}
-                    onChange={(e) => setCommission(e.target.value)}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 font-mono focus:outline-hidden focus:border-[#704fe6]"
-                  />
-                </div>
-              </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field>
+                <FieldLabel>Fees & Commission ($)</FieldLabel>
+                <Input
+                  type="number"
+                  value={commission}
+                  onChange={(e) => setCommission(e.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel>Swap ($)</FieldLabel>
+                <Input
+                  type="number"
+                  value={swap}
+                  onChange={(e) => setSwap(e.target.value)}
+                />
+              </Field>
             </div>
           </div>
         </div>
 
         {/* ========================================================================= */}
-        {/* RIGHT COLUMN: CHARTS + REVIEW & REFLECTION (7 cols)                       */}
+        {/* COLUMN 2: CHARTS & TABS (CONFLUENCES / MISTAKES / REFLECTION) (7 Cols)     */}
         {/* ========================================================================= */}
-        <div className="lg:col-span-7 flex flex-col gap-5">
-          {/* Charts Card (HTF, MTF, LTF) */}
-          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-4">
-            <div className="flex items-center justify-between">
+        <div className="lg:col-span-7 space-y-6">
+          {/* CHARTS UPLOAD BOXES (HTF, MTF, LTF) */}
+          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs">
+            <div className="flex items-center justify-between border-b border-zinc-100 pb-3 mb-4">
               <div>
-                <h2 className="text-sm font-semibold text-zinc-900 flex items-center gap-2">
-                  <ImageIcon className="size-4 text-[#704fe6]" />
-                  <span>Charts</span>
+                <h2 className="text-sm font-bold text-zinc-950 tracking-tight flex items-center gap-2">
+                  <ImageIcon className="size-4 text-zinc-500" />
+                  Charts Proof
                 </h2>
-                <p className="text-[11px] text-zinc-500 mt-0.5">
-                  Add screenshots to review context + execution:
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  Upload screenshots of Higher, Mid, and Lower Timeframe execution proof.
                 </p>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
-              {/* HTF */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+              {/* HTF Slot */}
               <div className="flex flex-col gap-1.5">
-                <div className="flex items-center justify-between text-xs text-zinc-600 font-medium">
-                  <span className="flex items-center gap-1 font-mono text-[11px] text-zinc-700">
-                    HTF <Info className="size-3 text-zinc-400" />
-                  </span>
-                  {chartHtf && (
-                    <button
-                      type="button"
-                      onClick={() => setChartHtf('')}
-                      className="text-zinc-400 hover:text-rose-600"
-                    >
-                      <X className="size-3.5" />
-                    </button>
-                  )}
-                </div>
-
-                <label className="relative border border-dashed border-zinc-300 hover:border-purple-400 bg-zinc-50/70 hover:bg-zinc-50 rounded-xl h-36 flex flex-col items-center justify-center cursor-pointer overflow-hidden transition-all group">
+                <span className="text-[11px] font-semibold text-zinc-700">HTF (Daily / 4H)</span>
+                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[130px] group">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => handleFileUpload(e, 'htf')}
+                  />
                   {chartHtf ? (
-                    <img
-                      src={chartHtf}
-                      alt="HTF Chart"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center gap-1 text-zinc-400 group-hover:text-purple-600">
-                      <Upload className="size-5 mb-1" />
-                      <span className="text-[11px] font-medium text-zinc-600 group-hover:text-purple-700">
-                        Upload HTF
-                      </span>
-                      <span className="text-[9px] text-zinc-400">Daily / 4H context</span>
+                    <div className="relative w-full h-full flex flex-col items-center">
+                      <img src={chartHtf} alt="HTF Chart" className="h-20 w-auto object-cover rounded-lg shadow-2xs" />
+                      <span className="text-[10px] text-emerald-700 font-semibold mt-1">Uploaded</span>
                     </div>
+                  ) : (
+                    <>
+                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-1.5" />
+                      <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
+                        {isUploading === 'htf' ? 'Uploading...' : 'Upload HTF'}
+                      </span>
+                      <span className="text-[10px] text-zinc-400 mt-0.5">Click to browse</span>
+                    </>
                   )}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => handleImageFileChange(e, 'htf')}
-                    className="hidden"
-                  />
                 </label>
               </div>
 
-              {/* MTF */}
+              {/* MTF Slot */}
               <div className="flex flex-col gap-1.5">
-                <div className="flex items-center justify-between text-xs text-zinc-600 font-medium">
-                  <span className="flex items-center gap-1 font-mono text-[11px] text-zinc-700">
-                    MTF <Info className="size-3 text-zinc-400" />
-                  </span>
-                  {chartMtf && (
-                    <button
-                      type="button"
-                      onClick={() => setChartMtf('')}
-                      className="text-zinc-400 hover:text-rose-600"
-                    >
-                      <X className="size-3.5" />
-                    </button>
-                  )}
-                </div>
-
-                <label className="relative border border-dashed border-zinc-300 hover:border-purple-400 bg-zinc-50/70 hover:bg-zinc-50 rounded-xl h-36 flex flex-col items-center justify-center cursor-pointer overflow-hidden transition-all group">
+                <span className="text-[11px] font-semibold text-zinc-700">MTF (1H / 15M)</span>
+                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[130px] group">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => handleFileUpload(e, 'mtf')}
+                  />
                   {chartMtf ? (
-                    <img
-                      src={chartMtf}
-                      alt="MTF Chart"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center gap-1 text-zinc-400 group-hover:text-purple-600">
-                      <Upload className="size-5 mb-1" />
-                      <span className="text-[11px] font-medium text-zinc-600 group-hover:text-purple-700">
-                        Upload MTF
-                      </span>
-                      <span className="text-[9px] text-zinc-400">1H / 15M structure</span>
+                    <div className="relative w-full h-full flex flex-col items-center">
+                      <img src={chartMtf} alt="MTF Chart" className="h-20 w-auto object-cover rounded-lg shadow-2xs" />
+                      <span className="text-[10px] text-emerald-700 font-semibold mt-1">Uploaded</span>
                     </div>
+                  ) : (
+                    <>
+                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-1.5" />
+                      <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
+                        {isUploading === 'mtf' ? 'Uploading...' : 'Upload MTF'}
+                      </span>
+                      <span className="text-[10px] text-zinc-400 mt-0.5">Click to browse</span>
+                    </>
                   )}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => handleImageFileChange(e, 'mtf')}
-                    className="hidden"
-                  />
                 </label>
               </div>
 
-              {/* LTF */}
+              {/* LTF Slot */}
               <div className="flex flex-col gap-1.5">
-                <div className="flex items-center justify-between text-xs text-zinc-600 font-medium">
-                  <span className="flex items-center gap-1 font-mono text-[11px] text-zinc-700">
-                    LTF <Info className="size-3 text-zinc-400" />
-                  </span>
-                  {chartLtf && (
-                    <button
-                      type="button"
-                      onClick={() => setChartLtf('')}
-                      className="text-zinc-400 hover:text-rose-600"
-                    >
-                      <X className="size-3.5" />
-                    </button>
-                  )}
-                </div>
-
-                <label className="relative border border-dashed border-zinc-300 hover:border-purple-400 bg-zinc-50/70 hover:bg-zinc-50 rounded-xl h-36 flex flex-col items-center justify-center cursor-pointer overflow-hidden transition-all group">
-                  {chartLtf ? (
-                    <img
-                      src={chartLtf}
-                      alt="LTF Chart"
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                    />
-                  ) : (
-                    <div className="flex flex-col items-center gap-1 text-zinc-400 group-hover:text-purple-600">
-                      <Upload className="size-5 mb-1" />
-                      <span className="text-[11px] font-medium text-zinc-600 group-hover:text-purple-700">
-                        Upload LTF
-                      </span>
-                      <span className="text-[9px] text-zinc-400">5M / 1M execution</span>
-                    </div>
-                  )}
+                <span className="text-[11px] font-semibold text-zinc-700">LTF (5M / 1M)</span>
+                <label className="border border-dashed border-zinc-300 hover:border-zinc-950 bg-zinc-50/50 hover:bg-zinc-50 rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[130px] group">
                   <input
                     type="file"
                     accept="image/*"
-                    onChange={(e) => handleImageFileChange(e, 'ltf')}
                     className="hidden"
+                    onChange={(e) => handleFileUpload(e, 'ltf')}
                   />
+                  {chartLtf ? (
+                    <div className="relative w-full h-full flex flex-col items-center">
+                      <img src={chartLtf} alt="LTF Chart" className="h-20 w-auto object-cover rounded-lg shadow-2xs" />
+                      <span className="text-[10px] text-emerald-700 font-semibold mt-1">Uploaded</span>
+                    </div>
+                  ) : (
+                    <>
+                      <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-1.5" />
+                      <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
+                        {isUploading === 'ltf' ? 'Uploading...' : 'Upload LTF'}
+                      </span>
+                      <span className="text-[10px] text-zinc-400 mt-0.5">Click to browse</span>
+                    </>
+                  )}
                 </label>
               </div>
             </div>
           </div>
 
-          {/* Review & Reflection Card */}
-          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-5">
-            <h2 className="text-sm font-semibold text-zinc-900">Review & Reflection</h2>
+          {/* COSS TABS SECTION FOR CONFLUENCES */}
+          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
+            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+              <div>
+                <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Entry Confluences</h2>
+                <p className="text-xs text-zinc-500 mt-0.5">Categorized strategy confluences and validation reasons</p>
+              </div>
+              <span className="text-xs font-mono font-bold text-zinc-700 bg-zinc-100 px-2.5 py-0.5 rounded-full">
+                {confluences.length} Selected
+              </span>
+            </div>
 
-            {/* Plan followed & which plan */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
-              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+            {/* Coss Tabs Component */}
+            <Tabs defaultValue="structure" className="w-full">
+              <TabsList size="sm" variant="default" className="w-full overflow-x-auto flex">
+                <TabsTab value="structure">Structure</TabsTab>
+                <TabsTab value="orderflow">Orderflow & POI</TabsTab>
+                <TabsTab value="execution">Execution</TabsTab>
+                <TabsTab value="session">Session & Time</TabsTab>
+              </TabsList>
+
+              <TabsPanel value="structure" className="pt-3">
+                <div className="flex flex-wrap gap-2">
+                  {CONFLUENCE_CATEGORIES.structure.map((item) => {
+                    const isSelected = confluences.includes(item);
+                    return (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => toggleConfluence(item)}
+                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-zinc-950 border-zinc-950 text-white shadow-2xs'
+                            : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
+                        }`}
+                      >
+                        {isSelected ? '✓ ' : '+ '}
+                        {item}
+                      </button>
+                    );
+                  })}
+                </div>
+              </TabsPanel>
+
+              <TabsPanel value="orderflow" className="pt-3">
+                <div className="flex flex-wrap gap-2">
+                  {CONFLUENCE_CATEGORIES.orderflow.map((item) => {
+                    const isSelected = confluences.includes(item);
+                    return (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => toggleConfluence(item)}
+                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-zinc-950 border-zinc-950 text-white shadow-2xs'
+                            : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
+                        }`}
+                      >
+                        {isSelected ? '✓ ' : '+ '}
+                        {item}
+                      </button>
+                    );
+                  })}
+                </div>
+              </TabsPanel>
+
+              <TabsPanel value="execution" className="pt-3">
+                <div className="flex flex-wrap gap-2">
+                  {CONFLUENCE_CATEGORIES.execution.map((item) => {
+                    const isSelected = confluences.includes(item);
+                    return (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => toggleConfluence(item)}
+                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-zinc-950 border-zinc-950 text-white shadow-2xs'
+                            : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
+                        }`}
+                      >
+                        {isSelected ? '✓ ' : '+ '}
+                        {item}
+                      </button>
+                    );
+                  })}
+                </div>
+              </TabsPanel>
+
+              <TabsPanel value="session" className="pt-3">
+                <div className="flex flex-wrap gap-2">
+                  {CONFLUENCE_CATEGORIES.session.map((item) => {
+                    const isSelected = confluences.includes(item);
+                    return (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => toggleConfluence(item)}
+                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-zinc-950 border-zinc-950 text-white shadow-2xs'
+                            : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
+                        }`}
+                      >
+                        {isSelected ? '✓ ' : '+ '}
+                        {item}
+                      </button>
+                    );
+                  })}
+                </div>
+              </TabsPanel>
+            </Tabs>
+
+            {/* Custom Confluence Input */}
+            <div className="flex items-center gap-2 pt-2">
+              <Input
+                type="text"
+                placeholder="Add custom confluence..."
+                value={customConfluence}
+                onChange={(e) => setCustomConfluence(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addCustomConfluence()}
+                sizeVariant="sm"
+              />
+              <Button variant="outline" size="sm" onClick={addCustomConfluence}>
+                <Plus className="size-3.5" />
+                Add
+              </Button>
+            </div>
+          </div>
+
+          {/* COSS TABS SECTION FOR MISTAKES */}
+          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
+            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+              <div>
+                <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Mistakes & Rule Breaches</h2>
+                <p className="text-xs text-zinc-500 mt-0.5">Track execution errors to uncover subconscious leaks</p>
+              </div>
+              <span className="text-xs font-mono font-bold text-rose-700 bg-rose-50 px-2.5 py-0.5 rounded-full">
+                {mistakes.length} Logged
+              </span>
+            </div>
+
+            <Tabs defaultValue="execution-mistakes" className="w-full">
+              <TabsList size="sm" variant="default" className="w-full flex">
+                <TabsTab value="execution-mistakes">Execution</TabsTab>
+                <TabsTab value="risk-mistakes">Risk & Sizing</TabsTab>
+                <TabsTab value="psychology-mistakes">Psychology & FOMO</TabsTab>
+              </TabsList>
+
+              <TabsPanel value="execution-mistakes" className="pt-3">
+                <div className="flex flex-wrap gap-2">
+                  {MISTAKE_CATEGORIES.execution.map((item) => {
+                    const isSelected = mistakes.includes(item);
+                    return (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => toggleMistake(item)}
+                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-rose-700 border-rose-700 text-white shadow-2xs'
+                            : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
+                        }`}
+                      >
+                        {isSelected ? '✕ ' : '+ '}
+                        {item}
+                      </button>
+                    );
+                  })}
+                </div>
+              </TabsPanel>
+
+              <TabsPanel value="risk-mistakes" className="pt-3">
+                <div className="flex flex-wrap gap-2">
+                  {MISTAKE_CATEGORIES.risk.map((item) => {
+                    const isSelected = mistakes.includes(item);
+                    return (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => toggleMistake(item)}
+                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-rose-700 border-rose-700 text-white shadow-2xs'
+                            : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
+                        }`}
+                      >
+                        {isSelected ? '✕ ' : '+ '}
+                        {item}
+                      </button>
+                    );
+                  })}
+                </div>
+              </TabsPanel>
+
+              <TabsPanel value="psychology-mistakes" className="pt-3">
+                <div className="flex flex-wrap gap-2">
+                  {MISTAKE_CATEGORIES.psychology.map((item) => {
+                    const isSelected = mistakes.includes(item);
+                    return (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => toggleMistake(item)}
+                        className={`text-xs px-3 py-1.5 rounded-xl border font-medium transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-rose-700 border-rose-700 text-white shadow-2xs'
+                            : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
+                        }`}
+                      >
+                        {isSelected ? '✕ ' : '+ '}
+                        {item}
+                      </button>
+                    );
+                  })}
+                </div>
+              </TabsPanel>
+            </Tabs>
+
+            <div className="flex items-center gap-2 pt-2">
+              <Input
+                type="text"
+                placeholder="Add custom mistake..."
+                value={customMistake}
+                onChange={(e) => setCustomMistake(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addCustomMistake()}
+                sizeVariant="sm"
+              />
+              <Button variant="outline" size="sm" onClick={addCustomMistake}>
+                <Plus className="size-3.5" />
+                Add
+              </Button>
+            </div>
+          </div>
+
+          {/* REVIEW, PLAN & EMOTIONS */}
+          <div className="bg-white border border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
+            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+              <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Review & Reflection</h2>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={followedPlan}
                   onChange={(e) => setFollowedPlan(e.target.checked)}
-                  className="rounded border-zinc-300 text-purple-600 focus:ring-purple-500 size-4"
+                  className="rounded text-zinc-950 focus:ring-zinc-950 size-4"
                 />
-                <span className="text-xs font-medium text-zinc-800">I followed my trade plan</span>
+                <span className="text-xs font-semibold text-zinc-900">I followed my trade plan</span>
               </label>
-
-              <div>
-                <label className="text-[11px] text-zinc-500 block mb-1">
-                  Which plan did you intend to follow?
-                </label>
-                <select
-                  value={planName}
-                  onChange={(e) => setPlanName(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 focus:outline-hidden focus:border-[#704fe6]"
-                >
-                  <option value="A+ Setup Checklist">A+ Setup Checklist</option>
-                  <option value="Liquidity Sweep">Liquidity Sweep</option>
-                  <option value="Breakout & Retest">Breakout & Retest</option>
-                  <option value="Trend Continuation">Trend Continuation</option>
-                  <option value="Supply & Demand Reversal">Supply & Demand Reversal</option>
-                </select>
-              </div>
             </div>
 
-            {/* Entry Confluences */}
-            <div>
-              <label className="text-xs font-medium text-zinc-700 block mb-2">
-                Entry Confluences
-              </label>
-              <div className="flex flex-wrap gap-1.5 mb-2.5">
-                {COMMON_CONFLUENCES.map((item) => {
-                  const active = confluences.includes(item);
-                  return (
-                    <button
-                      key={item}
-                      type="button"
-                      onClick={() => toggleConfluence(item)}
-                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all ${
-                        active
-                          ? 'bg-emerald-50 border-emerald-300 text-emerald-800 font-semibold'
-                          : 'bg-zinc-50 border-zinc-200 text-zinc-600 hover:text-zinc-900'
-                      }`}
-                    >
-                      {active ? `✓ ${item}` : item}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Custom Confluence Input */}
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  placeholder="Add custom confluence..."
-                  value={customConfluence}
-                  onChange={(e) => setCustomConfluence(e.target.value)}
-                  onKeyDown={addCustomConfluence}
-                  className="flex-1 bg-white border border-zinc-200 rounded-xl px-3 py-1.5 text-xs text-zinc-900 placeholder-zinc-400 focus:outline-hidden focus:border-purple-600"
-                />
-                <button
-                  type="button"
-                  onClick={addCustomConfluence}
-                  className="px-3 py-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-xl text-xs font-semibold"
-                >
-                  Add
-                </button>
-              </div>
-            </div>
-
-            {/* Trade Management */}
-            <div>
-              <label className="text-xs font-medium text-zinc-700 block mb-1">
-                Trade Management
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Partial at 1R, move SL to BE after 1R, set and forget etc."
-                value={tradeManagement}
-                onChange={(e) => setTradeManagement(e.target.value)}
-                className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 placeholder-zinc-400 focus:outline-hidden focus:border-purple-600"
-              />
-            </div>
-
-            {/* Mistakes */}
-            <div>
-              <label className="text-xs font-medium text-zinc-700 block mb-2">
-                Mistakes <span className="text-zinc-400 font-normal">(if any)</span>
-              </label>
-              <div className="flex flex-wrap gap-1.5 mb-2.5">
-                {COMMON_MISTAKES.map((item) => {
-                  const active = mistakes.includes(item);
-                  return (
-                    <button
-                      key={item}
-                      type="button"
-                      onClick={() => toggleMistake(item)}
-                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all ${
-                        active
-                          ? 'bg-rose-50 border-rose-300 text-rose-800 font-semibold'
-                          : 'bg-zinc-50 border-zinc-200 text-zinc-600 hover:text-zinc-900'
-                      }`}
-                    >
-                      {active ? `✕ ${item}` : item}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  placeholder="Add custom mistake..."
-                  value={customMistake}
-                  onChange={(e) => setCustomMistake(e.target.value)}
-                  onKeyDown={addCustomMistake}
-                  className="flex-1 bg-white border border-zinc-200 rounded-xl px-3 py-1.5 text-xs text-zinc-900 placeholder-zinc-400 focus:outline-hidden focus:border-purple-600"
-                />
-                <button
-                  type="button"
-                  onClick={addCustomMistake}
-                  className="px-3 py-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-xl text-xs font-semibold"
-                >
-                  Add
-                </button>
-              </div>
-            </div>
-
-            {/* Emotions */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-[11px] text-zinc-500 block mb-1">Entry Emotion</label>
+            <div className="grid grid-cols-2 gap-3">
+              <Field>
+                <FieldLabel>Entry Emotion</FieldLabel>
                 <select
                   value={entryEmotion}
                   onChange={(e) => setEntryEmotion(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 focus:outline-hidden focus:border-purple-600"
+                  className="w-full h-9 rounded-xl border border-zinc-200 bg-white px-3 text-xs text-zinc-900 focus:border-zinc-950 focus:outline-none"
                 >
                   {ENTRY_EMOTIONS.map((em) => (
                     <option key={em} value={em}>
@@ -789,14 +890,14 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                     </option>
                   ))}
                 </select>
-              </div>
+              </Field>
 
-              <div>
-                <label className="text-[11px] text-zinc-500 block mb-1">Exit Emotion</label>
+              <Field>
+                <FieldLabel>Exit Emotion</FieldLabel>
                 <select
                   value={exitEmotion}
                   onChange={(e) => setExitEmotion(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-900 focus:outline-hidden focus:border-purple-600"
+                  className="w-full h-9 rounded-xl border border-zinc-200 bg-white px-3 text-xs text-zinc-900 focus:border-zinc-950 focus:outline-none"
                 >
                   {EXIT_EMOTIONS.map((em) => (
                     <option key={em} value={em}>
@@ -804,50 +905,31 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
                     </option>
                   ))}
                 </select>
-              </div>
+              </Field>
             </div>
 
-            {/* Notes / Reflection Textarea */}
-            <div>
-              <label className="text-xs font-medium text-zinc-700 block mb-1">
-                Add a note or voice reflection
-              </label>
-              <textarea
+            <Field>
+              <FieldLabel>Trade Management Strategy</FieldLabel>
+              <Input
+                type="text"
+                value={tradeManagement}
+                onChange={(e) => setTradeManagement(e.target.value)}
+                placeholder="e.g. Partial at 1R, move SL to BE..."
+              />
+            </Field>
+
+            <Field>
+              <FieldLabel>Reflection Notes</FieldLabel>
+              <Textarea
                 rows={3}
-                placeholder="What went well? What will you do differently next time?"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                className="w-full bg-white border border-zinc-200 rounded-xl p-3 text-xs text-zinc-900 placeholder-zinc-400 focus:outline-hidden focus:border-purple-600 resize-none"
+                placeholder="What went well? What will you do differently next time?"
               />
-            </div>
-          </div>
-
-          {/* Bottom Submit Buttons */}
-          <div className="flex items-center justify-end gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onBack}
-              className="px-5 py-2.5 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-100 text-xs font-semibold text-zinc-700 transition-colors shadow-2xs"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="px-6 py-2.5 rounded-xl bg-[#704fe6] hover:bg-[#5f3dd4] text-white text-xs font-semibold shadow-xs transition-all flex items-center gap-2 disabled:opacity-50"
-            >
-              {isSubmitting ? (
-                <span>Saving...</span>
-              ) : (
-                <>
-                  <CheckCircle2 className="size-4" />
-                  <span>Save Manual Trade</span>
-                </>
-              )}
-            </button>
+            </Field>
           </div>
         </div>
-      </form>
+      </div>
     </div>
   );
 }

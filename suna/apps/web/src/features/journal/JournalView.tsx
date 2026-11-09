@@ -100,28 +100,29 @@ export default function JournalView({ projectId }: JournalViewProps) {
     setViewMode('detail');
   };
 
-  // Add trade click
-  const handleOpenAddTrade = (dateForNewTrade?: string) => {
-    if (dateForNewTrade) setSelectedDate(dateForNewTrade);
+  // Open "Add Manual Trade" form
+  const handleOpenAddTrade = (dateStr?: string) => {
+    if (dateStr) setSelectedDate(dateStr);
     setViewMode('add');
   };
 
-  // Save trade
+  // Save Trade handler
   const handleSaveTrade = async (tradeData: Partial<JournalTrade>) => {
     const saved = await saveJournalTrade(tradeData, projectId);
     setTrades((prev) => {
       const idx = prev.findIndex((t) => t.id === saved.id);
       if (idx >= 0) {
-        return prev.map((t, i) => (i === idx ? saved : t));
+        const copy = [...prev];
+        copy[idx] = saved;
+        return copy;
       }
       return [saved, ...prev];
     });
     setSelectedDate(saved.entryDate);
     setViewMode('calendar');
-    setDrawerOpen(true);
   };
 
-  // Delete trade
+  // Delete Trade handler
   const handleDeleteTrade = async (tradeId: string) => {
     await deleteJournalTrade(tradeId);
     setTrades((prev) => prev.filter((t) => t.id !== tradeId));
@@ -132,24 +133,24 @@ export default function JournalView({ projectId }: JournalViewProps) {
   const selectedDateTrades = trades.filter((t) => t.entryDate === selectedDate);
 
   return (
-    <div className="flex flex-col h-full w-full overflow-hidden bg-[#f8f9fa] text-zinc-900 font-sans">
+    <div className="flex flex-col h-full w-full overflow-hidden bg-[#fafafa] text-zinc-950 font-sans">
       {/* ========================================================================= */}
-      {/* 1. TOP HEADER BAR (Kortix White Theme)                                     */}
+      {/* 1. TOP HEADER BAR (Kortix Black and White Theme)                           */}
       {/* ========================================================================= */}
       <header className="px-6 py-3.5 border-b border-zinc-200/90 bg-white shadow-2xs flex items-center justify-between shrink-0 select-none">
         <div className="flex items-center gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-purple-50 border border-purple-100 text-[#704fe6] shadow-2xs">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-zinc-900 text-white shadow-2xs">
             <BookOpen className="size-4.5" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-base font-bold text-zinc-900 tracking-tight">Journal</h1>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">
-                Kortix Live
+              <h1 className="text-base font-bold text-zinc-950 tracking-tight">Journal</h1>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-800 border border-zinc-200 font-semibold">
+                Kortix
               </span>
             </div>
             <p className="text-xs text-zinc-500 hidden sm:block">
-              Review your trades, emotions, and patterns to build consistency and self-awareness.
+              Review trades, execution quality, and emotional confluences.
             </p>
           </div>
         </div>
@@ -163,9 +164,9 @@ export default function JournalView({ projectId }: JournalViewProps) {
                 key={mode}
                 type="button"
                 onClick={() => setCurrencyMode(mode)}
-                className={`text-xs font-mono font-bold px-3 py-1 rounded-lg transition-all ${
+                className={`text-xs font-mono font-bold px-3 py-1 rounded-lg transition-all cursor-pointer ${
                   currencyMode === mode
-                    ? 'bg-[#704fe6] text-white shadow-xs'
+                    ? 'bg-zinc-950 text-white shadow-xs'
                     : 'text-zinc-600 hover:text-zinc-950'
                 }`}
               >
@@ -174,11 +175,11 @@ export default function JournalView({ projectId }: JournalViewProps) {
             ))}
           </div>
 
-          {/* + New Trade Button */}
+          {/* + New Trade Button in Kortix Black */}
           <button
             type="button"
             onClick={() => handleOpenAddTrade(selectedDate)}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#704fe6] hover:bg-[#5f3dd4] text-white text-xs font-semibold shadow-xs transition-all cursor-pointer"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-zinc-950 hover:bg-zinc-800 text-white text-xs font-semibold shadow-xs transition-all cursor-pointer"
           >
             <Plus className="size-3.5" />
             <span>+ Add Manual Trade</span>
@@ -189,7 +190,7 @@ export default function JournalView({ projectId }: JournalViewProps) {
             <button
               type="button"
               onClick={() => setDrawerOpen((prev) => !prev)}
-              className="p-1.5 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-600 hover:text-zinc-950 transition-colors cursor-pointer shadow-2xs"
+              className="p-2 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-700 hover:text-zinc-950 transition-colors cursor-pointer shadow-2xs"
               title={drawerOpen ? 'Collapse side panel' : 'Expand side panel'}
             >
               {drawerOpen ? (
@@ -210,7 +211,7 @@ export default function JournalView({ projectId }: JournalViewProps) {
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 min-w-0">
           {isLoading ? (
             <div className="h-full flex flex-col items-center justify-center gap-3 text-zinc-400">
-              <Loader2 className="size-6 animate-spin text-[#704fe6]" />
+              <Loader2 className="size-6 animate-spin text-zinc-950" />
               <span className="text-xs font-medium">Loading trade journal...</span>
             </div>
           ) : viewMode === 'add' ? (
@@ -236,7 +237,7 @@ export default function JournalView({ projectId }: JournalViewProps) {
           ) : (
             /* ==================== VIEW 1: BIG CALENDAR & SUMMARY ==================== */
             <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full">
-              {/* Big Monthly Calendar */}
+              {/* Big Monthly Calendar with Boxes */}
               <TradingCalendar
                 currentYear={currentYear}
                 currentMonth={currentMonth}

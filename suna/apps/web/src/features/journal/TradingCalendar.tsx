@@ -4,7 +4,7 @@ import React from 'react';
 import {
   ChevronLeft,
   ChevronRight,
-  Maximize2,
+  Calendar as CalendarIcon,
 } from 'lucide-react';
 import { CurrencyMode, JournalTrade } from './types';
 
@@ -100,7 +100,7 @@ export function TradingCalendar({
     });
   }
 
-  // Current month days
+  // Current month active days
   for (let d = 1; d <= daysInMonth; d++) {
     const dateStr = formatDateKey(currentYear, currentMonth, d);
     calendarCells.push({
@@ -111,8 +111,9 @@ export function TradingCalendar({
     });
   }
 
-  // Leading next month days
-  const remaining = (7 - (calendarCells.length % 7)) % 7;
+  // Next month leading days (to fill 35 or 42 grid cells)
+  const totalCellsNeeded = calendarCells.length <= 35 ? 35 : 42;
+  const remaining = totalCellsNeeded - calendarCells.length;
   for (let d = 1; d <= remaining; d++) {
     const nextMonth = currentMonth === 11 ? 0 : currentMonth + 1;
     const nextYear = currentMonth === 11 ? currentYear + 1 : currentYear;
@@ -128,27 +129,30 @@ export function TradingCalendar({
   const weekHeaders = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
   return (
-    <div className="bg-white border border-zinc-200/90 rounded-2xl p-4 sm:p-6 shadow-2xs flex flex-col gap-3 font-sans">
+    <div className="bg-white border border-zinc-200/90 rounded-2xl shadow-2xs flex flex-col font-sans overflow-hidden">
       {/* ========================================================================= */}
-      {/* CALENDAR CONTROLS BAR                                                     */}
+      {/* CALENDAR CONTROLS BAR (Crisp Black and White)                             */}
       {/* ========================================================================= */}
-      <div className="flex items-center justify-between gap-3 pb-3 border-b border-zinc-100">
+      <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-zinc-200/80 bg-white">
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={onPrevMonth}
-            className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-950 hover:bg-zinc-100 border border-zinc-200/70 transition-colors"
+            className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-950 hover:bg-zinc-100 border border-zinc-200 transition-colors"
+            title="Previous month"
           >
             <ChevronLeft className="size-4" />
           </button>
           <button
             type="button"
             onClick={onNextMonth}
-            className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-950 hover:bg-zinc-100 border border-zinc-200/70 transition-colors"
+            className="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-950 hover:bg-zinc-100 border border-zinc-200 transition-colors"
+            title="Next month"
           >
             <ChevronRight className="size-4" />
           </button>
-          <h2 className="text-base font-bold text-zinc-900 ml-1.5 tracking-tight">
+          <h2 className="text-sm sm:text-base font-bold text-zinc-950 ml-1.5 tracking-tight flex items-center gap-2">
+            <CalendarIcon className="size-4 text-zinc-500" />
             {monthName}
           </h2>
         </div>
@@ -157,7 +161,7 @@ export function TradingCalendar({
           <button
             type="button"
             onClick={onJumpThisMonth}
-            className="text-xs px-3 py-1.5 rounded-xl bg-white hover:bg-zinc-50 text-zinc-700 font-medium border border-zinc-200 transition-colors shadow-2xs"
+            className="text-xs px-3 py-1.5 rounded-xl bg-white hover:bg-zinc-50 text-zinc-800 font-semibold border border-zinc-200 transition-colors shadow-2xs cursor-pointer"
           >
             This Month
           </button>
@@ -165,84 +169,90 @@ export function TradingCalendar({
       </div>
 
       {/* ========================================================================= */}
-      {/* 7-COLUMN WEEKDAY HEADERS                                                  */}
+      {/* 7-COLUMN WEEKDAY HEADERS (Boxed Strip)                                    */}
       {/* ========================================================================= */}
-      <div className="grid grid-cols-7 gap-2.5 text-center text-xs font-semibold text-zinc-400 py-1">
+      <div className="grid grid-cols-7 border-b border-zinc-200 bg-zinc-50/75 text-center text-xs font-semibold text-zinc-500 divide-x divide-zinc-200/70">
         {weekHeaders.map((day) => (
-          <div key={day} className="py-0.5">
+          <div key={day} className="py-2.5">
             {day}
           </div>
         ))}
       </div>
 
       {/* ========================================================================= */}
-      {/* CALENDAR GRID (Mon - Sun) - White Theme Kortix Style                      */}
+      {/* BOXED CALENDAR GRID (Mon - Sun)                                           */}
       {/* ========================================================================= */}
-      <div className="grid grid-cols-7 gap-2.5">
-        {calendarCells.map((cell) => {
-          const dayTrades = tradesByDate[cell.dateStr] || [];
-          const hasTrades = dayTrades.length > 0;
-          const dayPnl = dayTrades.reduce((acc, t) => acc + (t.pnl || 0), 0);
-          const dayR = dayTrades.reduce((acc, t) => acc + (t.returnR || 0), 0);
-          const isProfitable = dayPnl >= 0;
-          const isSelected = selectedDate === cell.dateStr;
-          const isToday = todayStr === cell.dateStr;
+      <div className="p-3 sm:p-4 bg-zinc-50/30">
+        <div className="grid grid-cols-7 gap-2">
+          {calendarCells.map((cell) => {
+            const dayTrades = tradesByDate[cell.dateStr] || [];
+            const hasTrades = dayTrades.length > 0;
+            const dayPnl = dayTrades.reduce((acc, t) => acc + (t.pnl || 0), 0);
+            const dayR = dayTrades.reduce((acc, t) => acc + (t.returnR || 0), 0);
+            const isProfitable = dayPnl >= 0;
+            const isSelected = selectedDate === cell.dateStr;
+            const isToday = todayStr === cell.dateStr;
 
-          return (
-            <div
-              key={cell.cellId}
-              onClick={() => onSelectDate(cell.dateStr)}
-              className={`min-h-[105px] sm:min-h-[115px] p-2.5 rounded-xl border flex flex-col justify-between transition-all cursor-pointer relative select-none ${
-                !cell.isCurrentMonth
-                  ? 'bg-zinc-50/40 border-zinc-100 text-zinc-400 opacity-40'
-                  : hasTrades
-                  ? isProfitable
-                    ? isSelected
-                      ? 'bg-[#ecfdf5] border-emerald-400 text-emerald-800 ring-2 ring-emerald-500/30 shadow-xs'
-                      : 'bg-[#f0fdf4] hover:bg-[#ecfdf5] border-emerald-200/90 text-emerald-800'
+            return (
+              <div
+                key={cell.cellId}
+                onClick={() => onSelectDate(cell.dateStr)}
+                className={`min-h-[110px] sm:min-h-[125px] p-2.5 rounded-xl border flex flex-col justify-between transition-all cursor-pointer relative select-none ${
+                  !cell.isCurrentMonth
+                    ? 'bg-zinc-100/40 border-zinc-200/50 text-zinc-400 opacity-40'
+                    : hasTrades
+                    ? isProfitable
+                      ? isSelected
+                        ? 'bg-[#ecfdf5] border-emerald-500 text-emerald-950 ring-2 ring-zinc-950 shadow-sm'
+                        : 'bg-[#f0fdf4] hover:bg-[#ecfdf5] border-emerald-300 text-emerald-950 shadow-2xs hover:border-emerald-400'
+                      : isSelected
+                      ? 'bg-[#fff1f2] border-rose-500 text-rose-950 ring-2 ring-zinc-950 shadow-sm'
+                      : 'bg-[#fff5f5] hover:bg-[#fff1f2] border-rose-300 text-rose-950 shadow-2xs hover:border-rose-400'
                     : isSelected
-                    ? 'bg-[#fff1f2] border-rose-400 text-rose-800 ring-2 ring-rose-500/30 shadow-xs'
-                    : 'bg-[#fff5f5] hover:bg-[#fff1f2] border-rose-200/90 text-rose-800'
-                  : isSelected
-                  ? 'bg-zinc-50 border-purple-600 ring-2 ring-purple-600/30 shadow-xs'
-                  : 'bg-white hover:bg-zinc-50/80 border-zinc-200/70 hover:border-zinc-300'
-              }`}
-            >
-              {/* Day Number and Today badge */}
-              <div className="flex items-center justify-between">
-                <span
-                  className={`text-xs font-mono font-medium ${
-                    cell.isCurrentMonth ? 'text-zinc-600' : 'text-zinc-400'
-                  }`}
-                >
-                  {cell.dayNumber}
-                </span>
-
-                {isToday && (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#704fe6] text-white shadow-2xs">
-                    Today {cell.dayNumber}
-                  </span>
-                )}
-              </div>
-
-              {/* Day Trades and Net P&L */}
-              {hasTrades && (
-                <div className="flex flex-col mt-auto pt-2 gap-0.5">
-                  <span className="text-[11px] font-semibold text-zinc-600">
-                    {dayTrades.length} {dayTrades.length === 1 ? 'Trade' : 'Trades'}
-                  </span>
+                    ? 'bg-white border-zinc-950 ring-2 ring-zinc-950 shadow-sm'
+                    : 'bg-white hover:bg-zinc-50 border-zinc-200/90 hover:border-zinc-300'
+                }`}
+              >
+                {/* Day Number and Today badge */}
+                <div className="flex items-center justify-between">
                   <span
-                    className={`text-xs font-mono font-black tracking-tight truncate ${
-                      isProfitable ? 'text-emerald-700' : 'text-rose-700'
+                    className={`text-xs font-mono font-medium ${
+                      cell.isCurrentMonth ? 'text-zinc-700' : 'text-zinc-400'
                     }`}
                   >
-                    {formatValue(dayPnl, dayR)}
+                    {cell.dayNumber}
                   </span>
+
+                  {isToday && (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-950 text-white shadow-2xs">
+                      Today {cell.dayNumber}
+                    </span>
+                  )}
                 </div>
-              )}
-            </div>
-          );
-        })}
+
+                {/* Day Trades and Net P&L (Red & Green) */}
+                {hasTrades && (
+                  <div className="flex flex-col mt-auto pt-2 gap-1">
+                    <span
+                      className={`text-[11px] font-medium ${
+                        isProfitable ? 'text-emerald-800' : 'text-rose-800'
+                      }`}
+                    >
+                      {dayTrades.length} {dayTrades.length === 1 ? 'Trade' : 'Trades'}
+                    </span>
+                    <span
+                      className={`text-xs sm:text-sm font-mono font-black tracking-tight truncate ${
+                        isProfitable ? 'text-emerald-700' : 'text-rose-700'
+                      }`}
+                    >
+                      {formatValue(dayPnl, dayR)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
