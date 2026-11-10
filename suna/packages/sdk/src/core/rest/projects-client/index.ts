@@ -58,6 +58,7 @@ export * from './audit';
 export * from './setup-links';
 export * from './marketplace-catalog';
 export * from './templates';
+export * from './trading';
 export * from './apps';
 export * from './apps-fleet';
 export * from './drives';

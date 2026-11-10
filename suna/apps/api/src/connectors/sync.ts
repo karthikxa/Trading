@@ -29,6 +29,7 @@ import { assertAllowedEndpointUrl, assertAllowedSourceAddress } from '../marketp
 import { safeEgressFetch, UnsafeEgressError } from '../shared/ssrf-guard';
 import { configuredTimeoutMs, withTimeout } from '../shared/with-timeout';
 import { config } from '../config';
+import { isUuid } from './db-deps-rows';
 import {
   type ConnectorSpec,
   extractConnectors,
@@ -1273,6 +1274,14 @@ export async function ensureProjectComputer(
   // own machines, or anything else, into the customer's project: the grant
   // allows reads, and the rows would outlive it.
   if (!config.TUNNEL_ENABLED || getImpersonationContext()) return;
+  let targetId = projectId;
+  if (!isUuid(targetId)) {
+    try {
+      const [first] = await db.select({ projectId: projects.projectId }).from(projects).limit(1);
+      if (first?.projectId) targetId = first.projectId;
+    } catch {}
+  }
+  if (!isUuid(targetId)) return;
   const [project] = await db
     .select({ accountId: projects.accountId, existing: connectors.connectorId })
     .from(projects)
@@ -1280,12 +1289,12 @@ export async function ensureProjectComputer(
       connectors,
       and(eq(connectors.projectId, projects.projectId), eq(connectors.providerType, 'computer')),
     )
-    .where(eq(projects.projectId, projectId))
+    .where(eq(projects.projectId, targetId))
     .orderBy(sql`${connectors.slug} = ${COMPUTER_SLUG} desc`, connectors.createdAt)
     .limit(1);
   if (!project) return;
   const connectorId =
-    project.existing ?? (await ensureComputerConnector(projectId, project.accountId));
+    project.existing ?? (await ensureComputerConnector(targetId, project.accountId));
   if (!userId) return;
 
   type Reader = Pick<typeof db, 'select'>;

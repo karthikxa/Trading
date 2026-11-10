@@ -57,9 +57,9 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { composerSelectableAgents } from './composer-agent-access';
 import { BotAvatar } from '../../workspace/sidebar/bot-avatar';
 import {
-  INITIAL_TAURIC_AGENTS,
   OverlappingAvatars,
   type TradingAgentDef,
+  useTradingAgents,
 } from '../../workspace/sidebar/trading-agents-nav';
 import {
   DropdownMenu,
@@ -361,8 +361,24 @@ export function AgentSelector({
     }
   }, [dynamicGroups]);
 
+  const { data: serverAgents = [] } = useTradingAgents();
+
+  const DEFAULT_SWARM_LEAD: TradingAgentDef = {
+    id: 'portfolio_manager',
+    name: 'Chief of Staff',
+    role: 'Capital Allocation & Swarm Lead',
+    group: 'Execution',
+    shape: 'circle',
+    color: '#8B5CF6',
+    expression: 'attentive',
+    lastAction: 'Lead Portfolio Manager and Workspace Administrator',
+    time: 'Active',
+    description: 'Lead Portfolio Manager and Workspace Administrator. Synthesizes swarm intelligence and directs execution.',
+    isAdmin: true,
+  };
+
   const activeSwarmBot =
-    INITIAL_TAURIC_AGENTS.find((b) => b.id === selectedBotId) || INITIAL_TAURIC_AGENTS[0];
+    serverAgents.find((b) => b.id === selectedBotId) || serverAgents[0] || DEFAULT_SWARM_LEAD;
 
   const flatAgentItems = useMemo(() => {
     return [
@@ -387,7 +403,7 @@ export function AgentSelector({
         expression: 'attentive' as const,
         isGroup: true,
       })),
-      ...INITIAL_TAURIC_AGENTS.map((bot) => ({
+      ...serverAgents.map((bot) => ({
         id: bot.id,
         value: bot.id,
         name: bot.name,
@@ -398,7 +414,7 @@ export function AgentSelector({
         expression: bot.expression,
       })),
     ];
-  }, [dynamicGroups]);
+  }, [dynamicGroups, serverAgents]);
 
   const [openCommand, setOpenCommand] = useState(false);
 
@@ -462,7 +478,7 @@ export function AgentSelector({
     const groupDisplayName = selectedGroup
       ? selectedGroup.name || selectedGroup.label || dynamicGroups.find((g) => g.id === selectedGroup.id)?.name || 'Offsite crew'
       : null;
-    const currentDisplayName = groupDisplayName || (isAll ? '@all (All Agents)' : (activeSwarmBot.name || activeSwarmBot.label));
+    const currentDisplayName = groupDisplayName || (isAll ? '@all (All Agents)' : (activeSwarmBot?.name || activeSwarmBot?.id || 'Chief of Staff'));
 
     return (
       <CommandDialog onOpenChange={setOpenCommand} open={openCommand}>
@@ -470,7 +486,7 @@ export function AgentSelector({
           render={
             <button
               type="button"
-              aria-label={selectedGroup ? `Selected group: ${groupDisplayName}` : `Selected agent: ${activeSwarmBot.name}`}
+              aria-label={selectedGroup ? `Selected group: ${groupDisplayName}` : `Selected agent: ${activeSwarmBot?.name || 'Chief of Staff'}`}
               style={{ outline: 'none', boxShadow: 'none' }}
               className="flex items-center gap-2 px-2.5 py-1 rounded-full border border-zinc-200 bg-white hover:bg-zinc-50 hover:border-zinc-300 text-zinc-900 transition-colors cursor-pointer outline-none focus:outline-none focus-visible:outline-none ring-0 focus:ring-0 focus-visible:ring-0 select-none shadow-2xs"
             />
@@ -480,9 +496,9 @@ export function AgentSelector({
             <OverlappingAvatars agentIds={selectedGroup.agentIds} size={20} />
           ) : (
             <BotAvatar
-              shape={activeSwarmBot.shape}
-              color={activeSwarmBot.color}
-              expression={activeSwarmBot.expression}
+              shape={activeSwarmBot?.shape || 'circle'}
+              color={activeSwarmBot?.color || '#8B5CF6'}
+              expression={activeSwarmBot?.expression || 'attentive'}
               size={20}
               isAnimated={true}
             />

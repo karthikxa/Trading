@@ -58,186 +58,15 @@ import { Field, FieldLabel } from '../../primitives/field';
 import { Form } from '../../primitives/form';
 import { Input } from '../../primitives/input';
 import { cn } from '../../lib/utils';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useUiRouter, useUiSearchParams } from '../../providers/ui-provider';
 
-export interface TradingAgentDef {
-  id: string;
-  name: string;
-  role: string;
-  group: 'Analysts' | 'Researchers' | 'Management' | 'Risk Management' | 'Execution';
-  shape: BotShape;
-  color: string;
-  expression: BotExpression;
-  lastAction: string;
-  time: string;
-  description: string;
-  isAdmin?: boolean;
-  isPinned?: boolean;
-  unread?: boolean;
-}
+import {
+  type TradingAgentDef,
+  useTradingAgents,
+} from './use-trading-agents';
 
-export const INITIAL_TAURIC_AGENTS: TradingAgentDef[] = [
-  // 1. Chief of Staff (Default Admin Lead)
-  {
-    id: 'portfolio_manager',
-    name: 'Chief of Staff',
-    role: 'Capital Allocation & Swarm Lead',
-    group: 'Execution',
-    shape: 'circle',
-    color: '#8B5CF6',
-    expression: 'attentive',
-    lastAction: 'Got it! Product updates shared with team.',
-    time: '7:34 PM',
-    description: 'Lead Portfolio Manager and Workspace Administrator. Synthesizes swarm intelligence and directs execution.',
-    isAdmin: true,
-  },
-  // 2. EA
-  {
-    id: 'ea_agent',
-    name: 'EA',
-    role: 'Executive & Workflow Automation',
-    group: 'Management',
-    shape: 'droplet',
-    color: '#3B82F6',
-    expression: 'attentive',
-    lastAction: 'Responded in 3 threads, with updates.',
-    time: '11:18 AM',
-    description: 'Coordinates automated actions, execution threads, and workflow scheduling across workspaces.',
-  },
-  // 3. Inbox Manager
-  {
-    id: 'fundamentals_analyst',
-    name: 'Inbox Manager',
-    role: 'Financials & Intrinsic Value',
-    group: 'Analysts',
-    shape: 'cloud',
-    color: '#10B981',
-    expression: 'attentive',
-    lastAction: 'Inbox at zero. 2 replies ready.',
-    time: '7:34 PM',
-    description: 'Evaluates balance sheets, cash flows, P/E ratios, and SEC EDGAR filings to assess intrinsic company valuation.',
-  },
-  // 4. Sales Outbound
-  {
-    id: 'market_analyst',
-    name: 'Sales Outbound',
-    role: 'Technicals & Price Momentum',
-    group: 'Analysts',
-    shape: 'pebble',
-    color: '#06B6D4',
-    expression: 'attentive',
-    lastAction: 'Outreach drafts queued for approval.',
-    time: '11:18 AM',
-    description: 'Monitors multi-timeframe moving averages, trend structure, RSI, and breakout volume.',
-  },
-  // 5. Talent Scout (with blue unread dot indicator)
-  {
-    id: 'news_analyst',
-    name: 'Talent Scout',
-    role: 'Global Wire & Headlines',
-    group: 'Analysts',
-    shape: 'pebble',
-    color: '#795548',
-    expression: 'attentive',
-    lastAction: 'Shortlist of 6 candidates reviewed.',
-    time: '10:05 AM',
-    unread: true,
-    description: 'Continuously digests financial media, earnings call transcripts, and breaking global macro events.',
-  },
-  // 6. Growth Marketer
-  {
-    id: 'bull_researcher',
-    name: 'Growth Marketer',
-    role: 'Growth Catalyst Identification',
-    group: 'Researchers',
-    shape: 'droplet',
-    color: '#F97316',
-    expression: 'attentive',
-    lastAction: 'A/B copy variants ready to review.',
-    time: '9:04 AM',
-    description: 'Builds aggressive upside thesis, revenue acceleration projections, and competitive advantage cases.',
-  },
-  // 7. Customer Support
-  {
-    id: 'sentiment_analyst',
-    name: 'Customer Support',
-    role: 'Social & Institutional Flow',
-    group: 'Analysts',
-    shape: 'capsule',
-    color: '#EF4444',
-    expression: 'attentive',
-    lastAction: '12 tickets resolved, 2 escalated.',
-    time: '2:20 PM',
-    description: 'Measures options order flow, retail sentiment, and institutional positioning ratios.',
-  },
-  // 8. Expense Manager
-  {
-    id: 'conservative_risk',
-    name: 'Expense Manager',
-    role: 'Capital Preservation & Tail Hedge',
-    group: 'Risk Management',
-    shape: 'triangle',
-    color: '#EC4899',
-    expression: 'attentive',
-    lastAction: 'Receipts coded – one needs approval.',
-    time: 'Tuesday',
-    description: 'Enforces drawdown constraints, tail-risk hedging, and protective stop-loss thresholds.',
-  },
-  // 9. Invoice Collector
-  {
-    id: 'trader_agent',
-    name: 'Invoice Collector',
-    role: 'Execution & Slippage Optimization',
-    group: 'Execution',
-    shape: 'squircle',
-    color: '#6366F1',
-    expression: 'attentive',
-    lastAction: 'Pulled 9 invoices from vendors.',
-    time: 'Yesterday',
-    description: 'Translates portfolio decisions into TWAP/VWAP order routing to minimize market impact.',
-  },
-  // 10. Bear Researcher
-  {
-    id: 'bear_researcher',
-    name: 'Bear Researcher',
-    role: 'Downside Risk & Short Bias',
-    group: 'Researchers',
-    shape: 'triangle',
-    color: '#DC2626',
-    expression: 'angry',
-    lastAction: 'China revenue slowdown & valuation risks flagged.',
-    time: 'Yesterday',
-    description: 'Stress-tests optimistic assumptions, highlights debt covenants, competition, and regulatory headwinds.',
-  },
-  // 11. Research Manager
-  {
-    id: 'research_manager',
-    name: 'Research Manager',
-    role: 'Bull/Bear Synthesis Lead',
-    group: 'Management',
-    shape: 'capsule',
-    color: '#A855F7',
-    expression: 'proud',
-    lastAction: 'Synthesized debate: 65% Bull / 35% Bear consensus.',
-    time: 'Monday',
-    description: 'Facilitates rigorous debates between bull and bear researchers, weighting evidence to reach consensus.',
-  },
-  // 12. Aggressive Risk Debator
-  {
-    id: 'aggressive_risk',
-    name: 'Aggressive Risk Debator',
-    role: 'Alpha Maximization',
-    group: 'Risk Management',
-    shape: 'hexagon',
-    color: '#EF4444',
-    expression: 'excited',
-    lastAction: 'Advocated unhedged 35% position on tech earnings.',
-    time: 'Monday',
-    description: 'Argues for maximum risk-adjusted upside and higher position sizing when catalysts align.',
-  },
-];
-
-export const TAURIC_TRADING_AGENTS = INITIAL_TAURIC_AGENTS;
+export type { TradingAgentDef };
+export { useTradingAgents };
 
 export interface AgentGroupDef {
   id: string;
@@ -266,16 +95,18 @@ export const INITIAL_TAURIC_GROUPS: AgentGroupDef[] = [
  */
 export function OverlappingAvatars({
   agentIds = ['fundamentals_analyst', 'trader_agent', 'portfolio_manager'],
-  allAgents = INITIAL_TAURIC_AGENTS,
+  allAgents,
   size = 32,
 }: {
   agentIds?: string[];
   allAgents?: TradingAgentDef[];
   size?: number;
 }) {
+  const { data: serverAgents = [] } = useTradingAgents();
+  const availableAgents = allAgents ?? serverAgents;
   // Resolve agents from agentIds in selection order
   const resolved = agentIds
-    .map((id) => allAgents.find((a) => a.id === id))
+    .map((id) => availableAgents.find((a) => a.id === id))
     .filter((a): a is TradingAgentDef => Boolean(a));
 
   // If admin is selected, admin bot MUST come first (top avatar slot)!
@@ -448,16 +279,32 @@ export function AgentsSidebarView({
   projectId: string;
   onBackToMainSidebar: () => void;
 }) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
+  const router = useUiRouter();
+  const searchParams = useUiSearchParams();
   const currentAgentId = searchParams.get('agentId');
   const currentGroupId = searchParams.get('groupId');
+
+  const {
+    data: serverAgents = [],
+    isLoading: isAgentsLoading,
+    isError: isAgentsError,
+    error: agentsError,
+    refetch: refetchAgents,
+  } = useTradingAgents();
+
+  const [agentOverrides, setAgentOverrides] = useState<Record<string, Partial<TradingAgentDef>>>({});
+
+  const agents = serverAgents
+    .filter((a) => !agentOverrides[a.id]?.isArchived)
+    .map((a) => ({
+      ...a,
+      ...(agentOverrides[a.id] || {}),
+    }));
 
   const [workspaces, setWorkspaces] = useState<WorkspaceTeam[]>([
     { id: 'team-trading', name: 'Trading', agentCount: 12 },
   ]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState('team-trading');
-  const [agents, setAgents] = useState<TradingAgentDef[]>(INITIAL_TAURIC_AGENTS);
   const [groups, setGroups] = useState<AgentGroupDef[]>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -509,24 +356,32 @@ export function AgentsSidebarView({
 
   // Set single admin for workspace
   const handleSetAdmin = (targetAgentId: string) => {
-    setAgents((prev) =>
-      prev.map((a) => ({
-        ...a,
-        isAdmin: a.id === targetAgentId,
-      })),
-    );
+    setAgentOverrides((prev) => {
+      const next: Record<string, Partial<TradingAgentDef>> = { ...prev };
+      for (const a of serverAgents) {
+        next[a.id] = { ...(next[a.id] || {}), isAdmin: a.id === targetAgentId };
+      }
+      return next;
+    });
   };
 
   // Pin / Unpin agent
   const handleTogglePin = (targetAgentId: string) => {
-    setAgents((prev) =>
-      prev.map((a) => (a.id === targetAgentId ? { ...a, isPinned: !a.isPinned } : a)),
-    );
+    setAgentOverrides((prev) => {
+      const current = agents.find((a) => a.id === targetAgentId);
+      return {
+        ...prev,
+        [targetAgentId]: { ...(prev[targetAgentId] || {}), isPinned: !current?.isPinned },
+      };
+    });
   };
 
   // Delete agent
   const handleDeleteAgent = (targetAgentId: string) => {
-    setAgents((prev) => prev.filter((a) => a.id !== targetAgentId));
+    setAgentOverrides((prev) => ({
+      ...prev,
+      [targetAgentId]: { ...(prev[targetAgentId] || {}), isArchived: true },
+    }));
   };
 
   // Toggle archive group
@@ -865,7 +720,32 @@ export function AgentsSidebarView({
 
             {!isAgentsCollapsed && (
               <div className="space-y-1 mt-1">
-                {sortedAgents.map((bot) => {
+                {isAgentsLoading ? (
+                  <div className="p-2 space-y-2">
+                    {[1, 2, 3, 4, 5, 6].map((i) => (
+                      <div key={i} className="flex items-center gap-3 px-3 py-2 rounded-2xl animate-pulse bg-zinc-100/50">
+                        <div className="size-8 rounded-full bg-zinc-200 shrink-0" />
+                        <div className="flex-1 space-y-1.5">
+                          <div className="h-3.5 bg-zinc-200 rounded w-24" />
+                          <div className="h-2.5 bg-zinc-150 rounded w-36" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : isAgentsError ? (
+                  <div className="p-4 text-center space-y-2 border border-rose-200/60 rounded-xl bg-rose-50/40 m-1">
+                    <p className="text-xs text-rose-600 font-medium">Failed to load trading agents</p>
+                    <p className="text-[11px] text-zinc-400">{String(agentsError || 'Network or server error')}</p>
+                    <button
+                      type="button"
+                      onClick={() => refetchAgents()}
+                      className="px-3 py-1 text-xs font-semibold bg-zinc-950 text-white rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : (
+                  sortedAgents.map((bot) => {
                   const isSelected = currentAgentId === bot.id;
                   return (
                     <div
@@ -993,7 +873,7 @@ export function AgentsSidebarView({
                       </div>
                     </div>
                   );
-                })}
+                }))}
               </div>
             )}
           </div>

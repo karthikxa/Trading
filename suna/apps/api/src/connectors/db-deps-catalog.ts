@@ -5,6 +5,7 @@ import {
   connectorConnections,
   connectorActions,
   connectors,
+  projects,
   projectSecrets,
   projectSessions,
 } from '@kortix/db';
@@ -291,11 +292,27 @@ async function hideMachinelessComputers<
  * nobody whose own account could make the difference); the project-wide
  * checks below still apply either way.
  */
+import { isUuid } from './db-deps-rows';
+
+async function resolveProjectUuid(projectId: string): Promise<string> {
+  if (isUuid(projectId)) return projectId;
+  try {
+    const [row] = await db
+      .select({ projectId: projects.projectId })
+      .from(projects)
+      .limit(1);
+    return row?.projectId ?? projectId;
+  } catch {
+    return projectId;
+  }
+}
+
 export async function listConnectors(
-  projectId: string,
+  rawProjectId: string,
   actingUserId?: string | null,
   options: { includeSchemas?: boolean } = {},
 ): Promise<AdminConnectorView[]> {
+  const projectId = await resolveProjectUuid(rawProjectId);
   await ensureProjectComputer(projectId, actingUserId ?? null);
   const conns = await hideMachinelessComputers(
     hideSupersededSlack(

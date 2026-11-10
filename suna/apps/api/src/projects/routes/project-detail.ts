@@ -126,9 +126,10 @@ export function registerProjectDetailRoutes(): void {
       },
     }),
     async (c) => {
-      const projectId = c.req.param('projectId');
-      const loaded = await loadProjectForUser(c, projectId, 'read');
+      const rawProjectId = c.req.param('projectId');
+      const loaded = await loadProjectForUser(c, rawProjectId, 'read');
       if (!loaded) return c.json({ error: 'Not found' }, 404);
+      const projectId = loaded.row.projectId;
       await assertAgentSessionWorkspaceAllowsRepository(c, loaded.row.accountId, projectId);
       // A page view: serve the warm git mirror, refresh it behind the response.
       allowStaleMirrorReads();

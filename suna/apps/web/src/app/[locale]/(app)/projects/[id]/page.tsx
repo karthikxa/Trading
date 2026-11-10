@@ -51,7 +51,7 @@ import AgentProfileHub from '@/features/markets/AgentProfileHub';
 import BotComputerPanel from '@/features/markets/BotComputerPanel';
 import BotEditDrawer from '@/features/markets/BotEditDrawer';
 import { BotAvatar } from '@/features/markets/BotAvatar';
-import { TAURIC_TRADING_AGENTS, type TradingAgentDef } from '@kortix/ui/workspace/sidebar/trading-agents-nav';
+import { useTradingAgents, type TradingAgentDef } from '@kortix/ui/workspace/sidebar/trading-agents-nav';
 
 import { promptFromSearchParams } from './prompt-from-search-params';
 
@@ -187,6 +187,7 @@ export default function ProjectIndexPage() {
   const { data: accountState } = useAccountState({ accountId: projectAccountId });
   const openUpgradeDialog = useUpgradeDialogStore((s) => s.openUpgradeDialog);
   const beforeSend = useProjectSendGate(projectId);
+  const { data: tradingAgents = [] } = useTradingAgents();
 
   useEffect(() => {
     if (!isBillingEnabled() || !accountState || !projectAccountId) return;
@@ -236,7 +237,7 @@ export default function ProjectIndexPage() {
         {/* ========================================================================= */}
         {activeView === 'chat' && (() => {
           const selectedAgentId = searchParams.get('agentId');
-          const selectedAgent = TAURIC_TRADING_AGENTS.find((a) => a.id === selectedAgentId) || null;
+          const selectedAgent = tradingAgents.find((a) => a.id === selectedAgentId) || null;
           const isAdminAgent = selectedAgent?.isAdmin || selectedAgent?.id === 'portfolio_manager';
 
           return (

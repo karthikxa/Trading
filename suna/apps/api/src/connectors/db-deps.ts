@@ -106,7 +106,7 @@ import {
   resolveSecretBindingAdmin,
   resolveSecretReader,
 } from './db-deps-principal';
-import { connectorConnected } from './db-deps-rows';
+import { connectorConnected, isUuid } from './db-deps-rows';
 
 export {
   composioConnectionMetadata,
@@ -124,6 +124,19 @@ export {
   composioConnectionIsNoAuth,
 } from './db-deps-rows';
 
+async function resolveProjectUuid(projectId: string): Promise<string> {
+  if (isUuid(projectId)) return projectId;
+  try {
+    const [row] = await db
+      .select({ projectId: projects.projectId })
+      .from(projects)
+      .limit(1);
+    return row?.projectId ?? projectId;
+  } catch {
+    return projectId;
+  }
+}
+
 export const dbConnectorRouterDeps: ConnectorRouterDeps = {
   attachmentStore: connectorAttachmentStore,
   resolvePrincipal,
@@ -138,30 +151,39 @@ export const dbConnectorRouterDeps: ConnectorRouterDeps = {
   listConnectors,
   // The manual "Sync" button re-pulls catalogs unconditionally (force) — the
   // user is explicitly asking to refresh, e.g. an MCP server gained new tools.
-  syncConnectors: (projectId, accountId) => {
+  syncConnectors: async (rawProjectId, accountId) => {
+    const projectId = await resolveProjectUuid(rawProjectId);
     invalidateProjectMirror(projectId);
     return syncProjectConnectors(projectId, accountId, { force: true });
   },
-  createConnector: async (projectId, accountId, draft) =>
-    (await createComputerConnector(projectId, accountId, draft)) ??
-    upsertConnectorInManifest(projectId, accountId, draft as unknown as ConnectorDraft),
-  deleteConnector: async (projectId, slug) =>
-    (await deleteComputerConnectorProfile(projectId, slug)) ??
-    deleteConnectorFromManifest(projectId, slug),
-  setConnectorCredential: (projectId, slug, input) =>
-    setConnectorCredentialShared(projectId, slug, input),
+  createConnector: async (rawProjectId, accountId, draft) => {
+    const projectId = await resolveProjectUuid(rawProjectId);
+    return (
+      (await createComputerConnector(projectId, accountId, draft)) ??
+      upsertConnectorInManifest(projectId, accountId, draft as unknown as ConnectorDraft)
+    );
+  },
+  deleteConnector: async (rawProjectId, slug) => {
+    const projectId = await resolveProjectUuid(rawProjectId);
+    return (
+      (await deleteComputerConnectorProfile(projectId, slug)) ??
+      deleteConnectorFromManifest(projectId, slug)
+    );
+  },
+  setConnectorCredential: async (rawProjectId, slug, input) => {
+    const projectId = await resolveProjectUuid(rawProjectId);
+    return setConnectorCredentialShared(projectId, slug, input);
+  },
   setConnectorSecretBinding,
   resolveSecretBindingAdmin,
-  deleteConnectorCredential: async (projectId, slug) => {
+  deleteConnectorCredential: async (rawProjectId, slug) => {
+    const projectId = await resolveProjectUuid(rawProjectId);
     const [row] = await db
       .select({ connectorId: connectors.connectorId })
       .from(connectors)
       .where(and(eq(connectors.projectId, projectId), eq(connectors.slug, slug)))
       .limit(1);
     if (!row) return { ok: false as const, error: 'connector not found', status: 404 };
-    // The connector-level strategy gate is gone: the shared credential is a
-    // project-wide credential on every connector, and this route already runs
-    // behind project.connector.write.
     await deleteCredential(row.connectorId, null);
     return { ok: true as const };
   },
@@ -785,15 +807,26 @@ export const dbConnectorRouterDeps: ConnectorRouterDeps = {
     }
     return `${(config.FRONTEND_URL || 'http://localhost:3000').replace(/\/+$/, '')}/projects/${projectId}/admin/connectors?${query}`;
   },
-  listConnectorIdentities: async (projectId) =>
-    (
+  listConnectorIdentities: async (rawProjectId) => {
+    let projectId = rawProjectId;
+    if (!isUuid(projectId)) {
+      try {
+        const [p] = await db.select({ projectId: projects.projectId }).from(projects).limit(1);
+        if (p?.projectId) projectId = p.projectId;
+        else return [];
+      } catch {
+        return [];
+      }
+    }
+    return (
       await db
         .select({ slug: connectors.slug, provider: connectors.providerType, config: connectors.config })
         .from(connectors)
         .where(eq(connectors.projectId, projectId))
         // The oldest profile of a way is the one an install answers as `existing`.
         .orderBy(asc(connectors.createdAt), asc(connectors.slug))
-    ).map((row) => ({ slug: row.slug, identity: connectorIdentity({ provider: row.provider, ...(row.config as Record<string, string>) }) })),
+    ).map((row) => ({ slug: row.slug, identity: connectorIdentity({ provider: row.provider, ...(row.config as Record<string, string>) }) }));
+  },
   discoverConnectorTools: (variant) => catalogTools(variant),
   getDiscoverConnector: (id) => kortixMcpCatalog.detail(id),
   getProjectPolicies: getProjectPoliciesFromManifest,

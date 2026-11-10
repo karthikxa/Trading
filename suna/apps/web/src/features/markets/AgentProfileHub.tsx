@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { TAURIC_TRADING_AGENTS, type TradingAgentDef } from '@kortix/ui/workspace/sidebar/trading-agents-nav';
+import React, { useState, useEffect } from 'react';
+import { useTradingAgents, type TradingAgentDef } from '@kortix/ui/workspace/sidebar/trading-agents-nav';
 import { BotAvatar, type BotShape, type BotExpression } from '@/features/markets/BotAvatar';
 import { Bot, CheckCircle2, Cpu, GitBranch, Play, Save, Sparkles, ArrowRight, ShieldAlert, Sliders, Palette, Smile } from 'lucide-react';
 import { cn } from '@kortix/ui';
@@ -58,7 +58,19 @@ const AVAILABLE_COLORS = [
 ];
 
 export default function AgentProfileHub({ agentId, projectId, onOpenChat }: AgentProfileHubProps) {
-  const currentAgent = TAURIC_TRADING_AGENTS.find((a) => a.id === agentId) || TAURIC_TRADING_AGENTS[0];
+  const { data: tradingAgents = [] } = useTradingAgents();
+  const currentAgent = tradingAgents.find((a) => a.id === agentId) || tradingAgents[0] || {
+    id: 'portfolio_manager',
+    name: 'Portfolio Manager',
+    role: 'Capital Allocation & Swarm Lead',
+    group: 'Execution' as const,
+    shape: 'circle' as BotShape,
+    color: '#8B5CF6',
+    expression: 'attentive' as BotExpression,
+    lastAction: 'Directs swarm capital allocation',
+    time: 'Active',
+    description: 'Lead Portfolio Manager and Workspace Administrator.',
+  };
 
   // Bot Appearance state (customizable like reference image 1 & 2)
   const [shape, setShape] = useState<BotShape>(currentAgent.shape);
@@ -133,7 +145,7 @@ Analyze data with point-in-time integrity, identify non-consensus alpha, debate 
           {/* All 12 Agents Quick Bar with Bot Avatars */}
           <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] pt-1">
             <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider shrink-0 mr-1">All 12 Bots:</span>
-            {TAURIC_TRADING_AGENTS.map((a) => {
+            {tradingAgents.map((a) => {
               const isSelected = a.id === currentAgent.id;
               return (
                 <a
@@ -324,7 +336,7 @@ Analyze data with point-in-time integrity, identify non-consensus alpha, debate 
                   <span className="text-[10px] text-zinc-400 font-mono">Stage 1</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[11.5px]">
-                  {TAURIC_TRADING_AGENTS.filter(a => a.group === 'Analysts').map(a => (
+                  {tradingAgents.filter(a => a.group === 'Analysts').map(a => (
                     <div
                       key={a.id}
                       className={cn(
@@ -352,7 +364,7 @@ Analyze data with point-in-time integrity, identify non-consensus alpha, debate 
                   <span className="text-[10px] text-zinc-400 font-mono">Stage 2</span>
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-[11.5px]">
-                  {TAURIC_TRADING_AGENTS.filter(a => a.group === 'Researchers' || a.group === 'Management').map(a => (
+                  {tradingAgents.filter(a => a.group === 'Researchers' || a.group === 'Management').map(a => (
                     <div
                       key={a.id}
                       className={cn(
@@ -380,7 +392,7 @@ Analyze data with point-in-time integrity, identify non-consensus alpha, debate 
                   <span className="text-[10px] text-zinc-400 font-mono">Stage 3</span>
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-[11.5px]">
-                  {TAURIC_TRADING_AGENTS.filter(a => a.group === 'Risk Management').map(a => (
+                  {tradingAgents.filter(a => a.group === 'Risk Management').map(a => (
                     <div
                       key={a.id}
                       className={cn(
@@ -408,7 +420,7 @@ Analyze data with point-in-time integrity, identify non-consensus alpha, debate 
                   <span className="text-[10px] text-zinc-400 font-mono">Stage 4</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[11.5px]">
-                  {TAURIC_TRADING_AGENTS.filter(a => a.group === 'Execution').map(a => (
+                  {tradingAgents.filter(a => a.group === 'Execution').map(a => (
                     <div
                       key={a.id}
                       className={cn(

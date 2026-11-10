@@ -8,8 +8,8 @@ import { useTranslations } from '../../../i18n';
 import { useEffect, useMemo } from 'react';
 import { BotAvatar } from '../../../workspace/sidebar/bot-avatar';
 import {
-  INITIAL_TAURIC_AGENTS,
   OverlappingAvatars,
+  useTradingAgents,
 } from '../../../workspace/sidebar/trading-agents-nav';
 
 import { useFileSearch } from '../hooks/use-file-search';
@@ -110,6 +110,7 @@ function rowTitle(row: MenuRow): string {
 }
 
 function RowIcon({ row }: { row: MenuRow }) {
+  const { data: serverAgents = [] } = useTradingAgents();
   if (row.kind === 'agent') {
     const cleanLabel = (row.label || '').replace(/^@\s*/, '').toLowerCase().trim();
     const cleanValue = (row.value || '').replace(/^agent-/, '').toLowerCase().trim();
@@ -147,7 +148,7 @@ function RowIcon({ row }: { row: MenuRow }) {
     }
 
     // Tauric Swarm Agent by id or name
-    const tauricBot = INITIAL_TAURIC_AGENTS.find(
+    const tauricBot = serverAgents.find(
       (b) =>
         b.id.toLowerCase() === cleanValue ||
         b.name.toLowerCase() === cleanLabel ||

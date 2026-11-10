@@ -10,17 +10,28 @@ import { projects } from '@kortix/db';
 import { eq } from 'drizzle-orm';
 import { db } from '../shared/db';
 import { resolveFeatureFlag, type FeatureFlagKey } from './registry';
+import { isUuid } from '../connectors/db-deps-rows';
 
 /** Effective per-project state for one flag. Unknown project ⇒ false. */
 export async function projectFeatureFlagEnabled(
   projectId: string,
   key: FeatureFlagKey,
 ): Promise<boolean> {
-  const [row] = await db
-    .select({ metadata: projects.metadata })
-    .from(projects)
-    .where(eq(projects.projectId, projectId))
-    .limit(1);
-  if (!row) return false;
-  return resolveFeatureFlag(row.metadata, key);
+  try {
+    const [row] = isUuid(projectId)
+      ? await db
+          .select({ metadata: projects.metadata })
+          .from(projects)
+          .where(eq(projects.projectId, projectId))
+          .limit(1)
+      : await db
+          .select({ metadata: projects.metadata })
+          .from(projects)
+          .where(eq(projects.slug, projectId))
+          .limit(1);
+    if (!row) return false;
+    return resolveFeatureFlag(row.metadata, key);
+  } catch {
+    return false;
+  }
 }

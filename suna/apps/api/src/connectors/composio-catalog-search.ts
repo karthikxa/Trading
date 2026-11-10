@@ -1,4 +1,46 @@
 import ComposioClient from '@composio/client';
+import fs from 'node:fs';
+import path from 'node:path';
+
+function loadBundledComposioToolkits(): CatalogToolkit[] {
+  try {
+    const candidates = [
+      path.resolve(__dirname, 'composio_toolkits_1610.json'),
+      path.resolve(process.cwd(), 'composio_toolkits_1610.json'),
+      path.resolve(process.cwd(), 'src/connectors/composio_toolkits_1610.json'),
+    ];
+    let filePath: string | null = null;
+    for (const p of candidates) {
+      if (fs.existsSync(p)) {
+        filePath = p;
+        break;
+      }
+    }
+    if (!filePath) return [];
+    const list = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return list.map((item: any) => ({
+      slug: item.slug,
+      name: item.name,
+      no_auth: Array.isArray(item.authentication_methods) && item.authentication_methods.includes('NO_AUTH'),
+      auth_schemes: item.authentication_methods ?? ['OAUTH2'],
+      composio_managed_auth_schemes: item.authentication_methods ?? ['OAUTH2'],
+      meta: {
+        logo: item.logo_url ?? null,
+        description: item.description || item.short_description || null,
+        triggers_count: 0,
+        categories: Array.isArray(item.categories)
+          ? item.categories.map((c: any) => ({
+              id: typeof c === 'string' ? c : c.slug || c.name || String(c.id || c),
+              name: typeof c === 'string' ? c : c.name || c.slug || String(c),
+            }))
+          : [],
+      },
+    }));
+  } catch (err) {
+    console.warn('[composio] failed to load bundled 1610 toolkits:', err);
+    return [];
+  }
+}
 
 interface CatalogToolkit {
   slug: string;
@@ -51,6 +93,10 @@ const cache = new WeakMap<
 >();
 
 async function loadCatalog(client: ComposioCatalogClient): Promise<CatalogToolkit[]> {
+  const bundled = loadBundledComposioToolkits();
+  if (bundled.length > 0) {
+    return bundled;
+  }
   const items = new Map<string, CatalogToolkit>();
   const cursors = new Set<string>();
   let cursor: string | undefined;
@@ -229,21 +275,8 @@ async function hiddenToolkits(
   catalogClient: ComposioCatalogClient,
   catalog: CatalogToolkit[],
 ): Promise<Set<string>> {
-  const hidden = new Set(NATIVE_TOOLKITS);
-  const needy = catalog.filter(requiresOwnAuthConfig).map((item) => item.slug.toLowerCase());
-  if (needy.length === 0) return hidden;
-  if (!catalogClient.authConfigs) {
-    for (const slug of needy) hidden.add(slug);
-    return hidden;
-  }
-  try {
-    const configured = await cachedCustomAuthConfigIds(catalogClient);
-    for (const slug of needy) if (!configured.has(slug)) hidden.add(slug);
-  } catch (error) {
-    for (const slug of needy) hidden.add(slug);
-    console.warn('[composio] auth config list unavailable, hiding unverified toolkits:', error);
-  }
-  return hidden;
+  // Do not hide toolkits so all 1,610 toolkits from Composio are available
+  return new Set();
 }
 
 export async function composioHiddenToolkits(

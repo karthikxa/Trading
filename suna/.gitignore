@@ -43,10 +43,12 @@ build/
 !apps/api/.env.dev
 !apps/api/.env.staging
 !apps/api/.env.prod
+!apps/api/.env.example
 !apps/web/.env
 !apps/web/.env.dev
 !apps/web/.env.staging
 !apps/web/.env.prod
+!apps/web/.env.example
 
 # The API unit-test env: PLAINTEXT ON PURPOSE, fake values only (see its
 # header). It stays tracked; listing it here is what lets `dotenvx ext

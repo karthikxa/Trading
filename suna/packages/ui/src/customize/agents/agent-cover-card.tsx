@@ -6,7 +6,7 @@ import { UiLink as Link } from '../../providers/ui-provider';
 import { AgentMarkGlyph, agentMarkVars } from '../../internal/components/agent-mark';
 import { cn } from '../../internal/lib/utils';
 import { BotAvatar } from '../../workspace/sidebar/bot-avatar';
-import { INITIAL_TAURIC_AGENTS } from '../../workspace/sidebar/trading-agents-nav';
+import { useTradingAgents } from '../../workspace/sidebar/use-trading-agents';
 
 /**
  * An Agents-page card led by the agent's Grok-style animated avatar.
@@ -35,8 +35,9 @@ export function AgentCoverCard({
    *  card's link, never inside it: a button may not sit in a link. */
   action?: ReactNode;
 }) {
+  const { data: tradingAgents = [] } = useTradingAgents();
   const titleStr = typeof title === 'string' ? title : '';
-  const matchingBot = INITIAL_TAURIC_AGENTS.find(
+  const matchingBot = tradingAgents.find(
     (b) =>
       b.id === slug ||
       (slug === 'neutral_risk' && (b.id === 'trader_agent' || b.name === 'Invoice Collector')) ||

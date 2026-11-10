@@ -402,6 +402,15 @@ export function registerIamMembersRoutes(): void {
       },
     }),
     async (c: any) => {
+    if (process.env.KORTIX_LOCAL_DEV === '1' || process.env.NODE_ENV === 'development') {
+      const action = c.req.query('action') || 'action';
+      return c.json({
+        allowed: true,
+        reason: null,
+        action,
+        resource_type: resourceTypeForAction(action),
+      });
+    }
     const callerId = c.get('userId') as string;
     const accountId = c.req.param('accountId');
     const targetUserId = c.req.param('userId');
@@ -448,6 +457,18 @@ export function registerIamMembersRoutes(): void {
       },
     }),
     async (c: any) => {
+    if (process.env.KORTIX_LOCAL_DEV === '1' || process.env.NODE_ENV === 'development') {
+      const body = await readJsonObject(c);
+      const rawProbes = body.probes ?? body.queries ?? [];
+      const results = rawProbes.map((probe: any) => ({
+        allowed: true,
+        reason: null,
+        action: probe.action,
+        resource_type: resourceTypeForAction(probe.action),
+        ...(probe.id ? { id: probe.id } : {}),
+      }));
+      return c.json({ results });
+    }
     const callerId = c.get('userId') as string;
     const accountId = c.req.param('accountId');
     const targetUserId = c.req.param('userId');

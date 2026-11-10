@@ -1,5 +1,7 @@
 # Zed — AI-Powered Trading Terminal
 
+> **Note:** Kronos, Laya, `models/`, `kronos_model/`, and `laya/` are archived and out of scope. The active platform is the Kortix monorepo in `suna/`.
+
 <div align="center">
 
 ### TradingView-grade charting with embedded Kronos + Laya AI prediction engine

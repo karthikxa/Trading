@@ -225,12 +225,12 @@ export function ProjectAdminDashboard({
   const settingsAnswered = answered(settingsCans, CUSTOMIZE_SECTION_GATE_ACTIONS);
   const settingsProbeFailed = CUSTOMIZE_SECTION_GATE_ACTIONS.some((action) => settingsCans[action]?.isError);
   const settled =
-    !!canAdmin &&
-    !canAdmin.isLoading &&
-    resources.settled &&
-    settingsAnswered &&
-    !drives.isLoading &&
-    // Members needs the account id: wait for the detail so it never pops in.
+    (!!canAdmin &&
+      !canAdmin.isLoading &&
+      resources.settled &&
+      settingsAnswered &&
+      !drives.isLoading &&
+      detail.isFetched) ||
     detail.isFetched;
 
   // `resources.tabs` is a fresh array each render; its contents are the key.

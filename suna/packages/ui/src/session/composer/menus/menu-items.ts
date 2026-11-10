@@ -135,34 +135,6 @@ export function buildMentionSections({
     }
   }
 
-  // Tauric Swarm Agents
-  const TAURIC_SWARM_NAMES = [
-    { id: 'portfolio_manager', name: 'Chief of Staff', role: 'Capital Allocation & Swarm Lead' },
-    { id: 'ea_agent', name: 'EA', role: 'Executive & Workflow Automation' },
-    { id: 'fundamentals_analyst', name: 'Inbox Manager', role: 'Financials & Intrinsic Value' },
-    { id: 'market_analyst', name: 'Sales Outbound', role: 'Technicals & Price Momentum' },
-    { id: 'news_analyst', name: 'Talent Scout', role: 'Global Wire & Headlines' },
-    { id: 'bull_researcher', name: 'Growth Marketer', role: 'Growth Catalyst Identification' },
-    { id: 'sentiment_analyst', name: 'Customer Support', role: 'Social & Institutional Flow' },
-    { id: 'conservative_risk', name: 'Expense Manager', role: 'Capital Preservation & Tail Hedge' },
-    { id: 'neutral_risk', name: 'Invoice Collector', role: 'Collections & Cashflow Ops' },
-    { id: 'bear_researcher', name: 'Bear Researcher', role: 'Downside Scenarios & Vulnerabilities' },
-    { id: 'research_manager', name: 'Research Manager', role: 'Debate Synthesis & Consensus' },
-    { id: 'aggressive_risk', name: 'Aggressive Risk Debator', role: 'Alpha Maximization' },
-  ];
-
-  for (const bot of TAURIC_SWARM_NAMES) {
-    if (bot.name.toLowerCase().includes(q) || bot.role.toLowerCase().includes(q)) {
-      agentRows.push({
-        index: index++,
-        kind: 'agent',
-        label: bot.name,
-        value: bot.id,
-        description: bot.role,
-      });
-    }
-  }
-
   for (const a of agents) {
     if (!(a.name || '').toLowerCase().includes(q)) continue;
     if (agentRows.some((r) => r.label.toLowerCase() === (a.name || '').toLowerCase())) continue;

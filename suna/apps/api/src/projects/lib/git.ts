@@ -1,4 +1,5 @@
 import { config } from '../../config';
+import { isUuid } from '../../shared/validate';
 import { validateAccountToken } from '../../repositories/account-tokens';
 import { validateSecretKey } from '../../repositories/api-keys';
 import { isAccountToken, isKortixToken } from '../../shared/crypto';
@@ -368,6 +369,7 @@ function gitConnectionMemoKey(projectId: string): string {
  * same request still sees the new row.
  */
 export async function getProjectGitConnection(projectId: string): Promise<ProjectGitConnectionRow | null> {
+  if (!isUuid(projectId)) return null;
   return requestMemo(gitConnectionMemoKey(projectId), async () => {
     const [row] = await db
       .select()
