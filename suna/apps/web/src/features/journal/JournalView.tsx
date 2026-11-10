@@ -13,6 +13,7 @@ import {
   getJournalTrades,
   saveJournalTrade,
   deleteJournalTrade,
+  getLocalTrades,
 } from './storage';
 import { TradingCalendar } from './TradingCalendar';
 import { MonthlySummaryCard } from './MonthlySummaryCard';
@@ -29,8 +30,8 @@ interface JournalViewProps {
 }
 
 export default function JournalView({ projectId }: JournalViewProps) {
-  const [trades, setTrades] = useState<JournalTrade[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [trades, setTrades] = useState<JournalTrade[]>(() => getLocalTrades());
+  const [isLoading, setIsLoading] = useState(false);
 
   // Calendar Date: Default to February 2026 matching reference images
   const [currentYear, setCurrentYear] = useState(2026);
@@ -51,14 +52,13 @@ export default function JournalView({ projectId }: JournalViewProps) {
   useEffect(() => {
     let isMounted = true;
     async function loadData() {
-      setIsLoading(true);
       try {
         const loaded = await getJournalTrades(projectId);
-        if (isMounted) setTrades(loaded);
+        if (isMounted && Array.isArray(loaded) && loaded.length > 0) {
+          setTrades(loaded);
+        }
       } catch (err) {
         console.error('Failed to load journal trades:', err);
-      } finally {
-        if (isMounted) setIsLoading(false);
       }
     }
     loadData();

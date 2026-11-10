@@ -213,7 +213,7 @@ export function AddTradeView({ onBack, onSave, initialDate }: AddTradeViewProps)
     if (!file) return;
     setIsUploading(type);
     try {
-      const publicUrl = await uploadChartImage(file);
+      const publicUrl = await uploadChartImage(file, type);
       if (type === 'htf') setChartHtf(publicUrl);
       if (type === 'mtf') setChartMtf(publicUrl);
       if (type === 'ltf') setChartLtf(publicUrl);

@@ -1,8 +1,25 @@
-import { createClient } from '@/lib/supabase/client';
+import {
+  getTradingJournalTrades,
+  saveTradingJournalTrade,
+  deleteTradingJournalTrade as deleteBackendTrade,
+} from '@kortix/sdk';
 import { JournalTrade } from './types';
 import { INITIAL_MOCK_TRADES } from './mockData';
 
 const LOCAL_STORAGE_KEY = 'kortix_trading_journal_trades_v2';
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function generateUuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 // Convert DB snake_case row to TS camelCase JournalTrade
 function rowToTrade(row: any): JournalTrade {
@@ -10,20 +27,20 @@ function rowToTrade(row: any): JournalTrade {
     id: row.id,
     projectId: row.project_id || undefined,
     userId: row.user_id || undefined,
-    entryDate: row.entry_date,
+    entryDate: typeof row.entry_date === 'string' ? row.entry_date.split('T')[0] : row.entry_date,
     entryTime: row.entry_time || '00:00',
-    exitDate: row.exit_date || undefined,
+    exitDate: typeof row.exit_date === 'string' ? row.exit_date.split('T')[0] : (row.exit_date || undefined),
     exitTime: row.exit_time || undefined,
     instrument: row.instrument,
     direction: row.direction,
     lots: Number(row.lots) || 1,
     entryPrice: Number(row.entry_price) || 0,
     exitPrice: Number(row.exit_price) || 0,
-    stopLoss: row.stop_loss !== null ? Number(row.stop_loss) : null,
-    takeProfit: row.take_profit !== null ? Number(row.take_profit) : null,
+    stopLoss: row.stop_loss !== null && row.stop_loss !== undefined ? Number(row.stop_loss) : null,
+    takeProfit: row.take_profit !== null && row.take_profit !== undefined ? Number(row.take_profit) : null,
     pnl: Number(row.pnl) || 0,
-    riskR: row.risk_r !== null ? Number(row.risk_r) : null,
-    returnR: row.return_r !== null ? Number(row.return_r) : null,
+    riskR: row.risk_r !== null && row.risk_r !== undefined ? Number(row.risk_r) : null,
+    returnR: row.return_r !== null && row.return_r !== undefined ? Number(row.return_r) : null,
     swap: Number(row.swap) || 0,
     commission: Number(row.commission) || 0,
     followedPlan: row.followed_plan !== false,
@@ -48,8 +65,9 @@ function rowToTrade(row: any): JournalTrade {
 
 // Convert TS camelCase JournalTrade to DB snake_case row
 function tradeToRow(trade: Partial<JournalTrade>, projectId?: string) {
+  const tradeId = trade.id && UUID_REGEX.test(trade.id) ? trade.id : generateUuid();
   return {
-    ...(trade.id ? { id: trade.id } : {}),
+    id: tradeId,
     project_id: projectId || trade.projectId || null,
     entry_date: trade.entryDate || new Date().toISOString().split('T')[0],
     entry_time: trade.entryTime || '09:30',
@@ -80,14 +98,13 @@ function tradeToRow(trade: Partial<JournalTrade>, projectId?: string) {
     chart_ltf: trade.chartLtf || null,
     session: trade.session || 'London',
     duration: trade.duration || null,
-    split_orders: trade.splitOrders ? JSON.stringify(trade.splitOrders) : '[]',
+    split_orders: trade.splitOrders || [],
     source: trade.source || 'manual',
-    updated_at: new Date().toISOString(),
   };
 }
 
 // Local storage fallback helpers
-function getLocalTrades(): JournalTrade[] {
+export function getLocalTrades(): JournalTrade[] {
   if (typeof window === 'undefined') return INITIAL_MOCK_TRADES;
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -112,40 +129,34 @@ function saveLocalTrades(trades: JournalTrade[]) {
 }
 
 /**
- * Fetch all trades for project, with Supabase first and LocalStorage fallback
+ * Fetch all trades for project, with Backend API first and LocalStorage fallback
  */
 export async function getJournalTrades(projectId?: string): Promise<JournalTrade[]> {
   try {
-    const supabase = createClient();
-    // Query table if available
-    const { data, error } = await supabase
-      .schema('trading')
-      .from('journal_trades')
-      .select('*')
-      .order('entry_date', { ascending: false });
-
-    if (!error && data && data.length > 0) {
-      const dbTrades = data.map(rowToTrade);
+    const rows = await getTradingJournalTrades(projectId);
+    if (Array.isArray(rows) && rows.length > 0) {
+      const dbTrades = rows.map(rowToTrade);
       saveLocalTrades(dbTrades);
       return dbTrades;
     }
   } catch (err) {
-    // Silent fallback to local storage
+    // Graceful fallback to local storage
+    console.warn('[journal] backend fetch failed, using local trades cache:', err);
   }
 
   return getLocalTrades();
 }
 
 /**
- * Save / Create trade into Supabase and LocalStorage
+ * Save / Create trade into Backend API and LocalStorage
  */
 export async function saveJournalTrade(
   trade: Partial<JournalTrade>,
   projectId?: string
 ): Promise<JournalTrade> {
-  const newId = trade.id || `trade-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const assignedId = trade.id && UUID_REGEX.test(trade.id) ? trade.id : generateUuid();
   const fullTrade: JournalTrade = {
-    id: newId,
+    id: assignedId,
     projectId,
     entryDate: trade.entryDate || new Date().toISOString().split('T')[0],
     entryTime: trade.entryTime || '09:30',
@@ -178,43 +189,46 @@ export async function saveJournalTrade(
     duration: trade.duration || '15m',
     splitOrders: trade.splitOrders,
     source: trade.source || 'manual',
-    createdAt: new Date().toISOString(),
+    createdAt: trade.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
 
   // 1. Save to local storage immediately
   const localList = getLocalTrades();
-  const existingIdx = localList.findIndex((t) => t.id === newId);
+  const existingIdx = localList.findIndex((t) => t.id === assignedId);
   const updatedList =
     existingIdx >= 0
       ? localList.map((t, idx) => (idx === existingIdx ? fullTrade : t))
       : [fullTrade, ...localList];
   saveLocalTrades(updatedList);
 
-  // 2. Sync to Supabase
+  // 2. Sync to Backend API
   try {
-    const supabase = createClient();
-    const row = tradeToRow(fullTrade, projectId);
-    await supabase.schema('trading').from('journal_trades').upsert(row);
+    const rowPayload = tradeToRow(fullTrade, projectId);
+    const savedRow = await saveTradingJournalTrade(rowPayload);
+    if (savedRow && savedRow.id) {
+      return rowToTrade(savedRow);
+    }
   } catch (err) {
-    // Silent local fallback
+    console.warn('[journal] backend trade save failed, retained in local storage:', err);
   }
 
   return fullTrade;
 }
 
 /**
- * Delete a trade from Supabase and LocalStorage
+ * Delete a trade from Backend API and LocalStorage
  */
 export async function deleteJournalTrade(tradeId: string): Promise<boolean> {
   const localList = getLocalTrades().filter((t) => t.id !== tradeId);
   saveLocalTrades(localList);
 
   try {
-    const supabase = createClient();
-    await supabase.schema('trading').from('journal_trades').delete().eq('id', tradeId);
+    if (UUID_REGEX.test(tradeId)) {
+      await deleteBackendTrade(tradeId);
+    }
   } catch (err) {
-    // Silent local fallback
+    console.warn('[journal] backend trade delete failed:', err);
   }
 
   return true;
@@ -222,7 +236,7 @@ export async function deleteJournalTrade(tradeId: string): Promise<boolean> {
 
 /**
  * Upload Chart Image (HTF, MTF, LTF)
- * Stores via FileReader Data URI with Supabase storage bucket fallback.
+ * Stores via FileReader Data URI
  */
 export async function uploadChartImage(
   file: File,
@@ -235,28 +249,5 @@ export async function uploadChartImage(
     reader.readAsDataURL(file);
   });
 
-  const base64Url = await base64Promise;
-
-  try {
-    const supabase = createClient();
-    const fileExt = file.name.split('.').pop() || 'png';
-    const filePath = `${timeframe}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${fileExt}`;
-
-    const { data, error } = await supabase.storage
-      .from('journal-charts')
-      .upload(filePath, file, { cacheControl: '3600', upsert: true });
-
-    if (!error && data?.path) {
-      const { data: pubData } = supabase.storage
-        .from('journal-charts')
-        .getPublicUrl(data.path);
-      if (pubData?.publicUrl) {
-        return pubData.publicUrl;
-      }
-    }
-  } catch (err) {
-    // Fall back to clean data URL
-  }
-
-  return base64Url;
+  return await base64Promise;
 }

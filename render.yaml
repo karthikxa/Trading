@@ -23,7 +23,7 @@ services:
     name: kortix-trading
     runtime: node
     rootDir: suna
-    plan: starter # 512 MB, always on. Use `free` for zero cost (15-min idle spin-down).
+    plan: free # 512 MB, zero cost (15-min idle spin-down). Target <=400 MB RSS.
     autoDeploy: true
     # 200, unauthenticated, and exercises the full Next -> API proxy chain.
     healthCheckPath: /v1/auth/client-config
@@ -31,13 +31,15 @@ services:
       # pnpm 8.11.0 = suna/package.json packageManager + pnpm-lock lockfileVersion 6.0
       npm i -g pnpm@8.11.0
       pnpm install --frozen-lockfile
-      # web build: Supabase env validation, wasm/emoji prep, fumadocs gen, next build
+      # web build: Supabase env validation, wasm/emoji prep, fumadocs gen, next build (max heap 400MB for 512MB RAM container)
+      export NODE_OPTIONS="--max-old-space-size=400"
       pnpm --filter Kortix-Computer-Frontend build
       # API runtime (bun) lands in ~/.bun
       curl -fsSL https://bun.sh/install | bash
     startCommand: |
       set -e
       export PATH="$HOME/.bun/bin:$PATH"
+      export NODE_OPTIONS="--max-old-space-size=400"
       # API first; env comes from the Render dashboard, `--no-env-file` skips
       # any stray .env the image might carry.
       ( cd apps/api && bun --no-env-file --max-http-header-size=65536 run src/index.ts > /tmp/kortix-api.log 2>&1 & )
@@ -49,6 +51,8 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=400"
       # Secrets stay in the Render dashboard; `sync: false` prompts on apply.
       - key: DATABASE_URL # Supabase pooler URL (…pooler.supabase.com:5432/postgres)
         sync: false

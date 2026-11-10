@@ -214,3 +214,170 @@ tradingApp.post('/chat', async (c: Context<AppEnv>) => {
     return jsonError(c, 500, `chat: ${String(e).slice(0, 200)}`);
   }
 });
+
+tradingApp.get('/journal', async (c: Context<AppEnv>) => {
+  const projectId = c.req.query('projectId') ?? null;
+  const limitRaw = Number(c.req.query('limit') ?? '200');
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 200;
+
+  try {
+    const rows = await db.execute(sql`
+      select *
+      from trading.journal_trades
+      where ${projectId ? sql`project_id = ${projectId} or project_id is null` : sql`true`}
+      order by entry_date desc, coalesce(entry_time, '00:00') desc
+      limit ${limit}
+    `);
+    return c.json({ trades: resultRows<Record<string, unknown>>(rows) });
+  } catch (e) {
+    return jsonError(c, 500, `journal get: ${String(e).slice(0, 200)}`);
+  }
+});
+
+tradingApp.post('/journal', async (c: Context<AppEnv>) => {
+  const body = (await c.req.json().catch(() => null)) as Record<string, any> | null;
+  if (!body) return jsonError(c, 400, 'JSON body required');
+
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const id = typeof body.id === 'string' && uuidRegex.test(body.id) ? body.id : crypto.randomUUID();
+
+  const projectId =
+    typeof body.project_id === 'string'
+      ? body.project_id
+      : typeof body.projectId === 'string'
+        ? body.projectId
+        : null;
+  const entryDate = body.entry_date || body.entryDate || new Date().toISOString().split('T')[0];
+  const entryTime = body.entry_time || body.entryTime || '09:30';
+  const exitDate = body.exit_date || body.exitDate || null;
+  const exitTime = body.exit_time || body.exitTime || null;
+  const instrument = String(body.instrument || 'EURUSD').toUpperCase();
+  const direction = body.direction || 'Buy';
+  const lots = Number(body.lots) || 1;
+  const entryPrice = Number(body.entry_price ?? body.entryPrice ?? 0);
+  const exitPrice = Number(body.exit_price ?? body.exitPrice ?? 0);
+  const stopLoss =
+    body.stop_loss !== null && body.stopLoss !== null
+      ? Number(body.stop_loss ?? body.stopLoss) || null
+      : null;
+  const takeProfit =
+    body.take_profit !== null && body.takeProfit !== null
+      ? Number(body.take_profit ?? body.takeProfit) || null
+      : null;
+  const pnl = Number(body.pnl ?? 0);
+  const riskR =
+    body.risk_r !== null && body.riskR !== null
+      ? Number(body.risk_r ?? body.riskR) || null
+      : null;
+  const returnR =
+    body.return_r !== null && body.returnR !== null
+      ? Number(body.return_r ?? body.returnR) || null
+      : null;
+  const swap = Number(body.swap ?? 0);
+  const commission = Number(body.commission ?? 0);
+  const followedPlan = body.followed_plan !== false && body.followedPlan !== false;
+  const planName = String(body.plan_name || body.planName || 'A+ Setup Checklist');
+  const confluences = Array.isArray(body.confluences) ? body.confluences : [];
+  const tradeManagement = body.trade_management || body.tradeManagement || null;
+  const mistakes = Array.isArray(body.mistakes) ? body.mistakes : [];
+  const entryEmotion = body.entry_emotion || body.entryEmotion || null;
+  const exitEmotion = body.exit_emotion || body.exitEmotion || null;
+  const notes = body.notes || null;
+  const chartHtf = body.chart_htf || body.chartHtf || null;
+  const chartMtf = body.chart_mtf || body.chartMtf || null;
+  const chartLtf = body.chart_ltf || body.chartLtf || null;
+  const session = body.session || 'London';
+  const duration = body.duration || '15m';
+  const splitOrders = body.split_orders
+    ? JSON.stringify(body.split_orders)
+    : body.splitOrders
+      ? JSON.stringify(body.splitOrders)
+      : '[]';
+  const source = body.source || 'manual';
+
+  const confluencesSql = confluences.length > 0
+    ? sql`ARRAY[${sql.join(confluences.map((c) => sql`${c}`), sql`, `)}]::text[]`
+    : sql`ARRAY[]::text[]`;
+  const mistakesSql = mistakes.length > 0
+    ? sql`ARRAY[${sql.join(mistakes.map((m) => sql`${m}`), sql`, `)}]::text[]`
+    : sql`ARRAY[]::text[]`;
+
+  try {
+    const rows = await db.execute(sql`
+      insert into trading.journal_trades (
+        id, project_id, entry_date, entry_time, exit_date, exit_time,
+        instrument, direction, lots, entry_price, exit_price,
+        stop_loss, take_profit, pnl, risk_r, return_r, swap, commission,
+        followed_plan, plan_name, confluences, trade_management, mistakes,
+        entry_emotion, exit_emotion, notes, chart_htf, chart_mtf, chart_ltf,
+        session, duration, split_orders, source, updated_at
+      ) values (
+        ${id}, ${projectId}, ${entryDate}, ${entryTime}, ${exitDate}, ${exitTime},
+        ${instrument}, ${direction}, ${lots}, ${entryPrice}, ${exitPrice},
+        ${stopLoss}, ${takeProfit}, ${pnl}, ${riskR}, ${returnR}, ${swap}, ${commission},
+        ${followedPlan}, ${planName}, ${confluencesSql}, ${tradeManagement}, ${mistakesSql},
+        ${entryEmotion}, ${exitEmotion}, ${notes}, ${chartHtf}, ${chartMtf}, ${chartLtf},
+        ${session}, ${duration}, ${splitOrders}::jsonb, ${source}, now()
+      )
+      on conflict (id) do update set
+        project_id = excluded.project_id,
+        entry_date = excluded.entry_date,
+        entry_time = excluded.entry_time,
+        exit_date = excluded.exit_date,
+        exit_time = excluded.exit_time,
+        instrument = excluded.instrument,
+        direction = excluded.direction,
+        lots = excluded.lots,
+        entry_price = excluded.entry_price,
+        exit_price = excluded.exit_price,
+        stop_loss = excluded.stop_loss,
+        take_profit = excluded.take_profit,
+        pnl = excluded.pnl,
+        risk_r = excluded.risk_r,
+        return_r = excluded.return_r,
+        swap = excluded.swap,
+        commission = excluded.commission,
+        followed_plan = excluded.followed_plan,
+        plan_name = excluded.plan_name,
+        confluences = excluded.confluences,
+        trade_management = excluded.trade_management,
+        mistakes = excluded.mistakes,
+        entry_emotion = excluded.entry_emotion,
+        exit_emotion = excluded.exit_emotion,
+        notes = excluded.notes,
+        chart_htf = excluded.chart_htf,
+        chart_mtf = excluded.chart_mtf,
+        chart_ltf = excluded.chart_ltf,
+        session = excluded.session,
+        duration = excluded.duration,
+        split_orders = excluded.split_orders,
+        source = excluded.source,
+        updated_at = now()
+      returning *
+    `);
+    const created = resultRows<Record<string, unknown>>(rows)[0];
+    return c.json({ trade: created });
+  } catch (e) {
+    return jsonError(c, 500, `journal save: ${String(e).slice(0, 200)}`);
+  }
+});
+
+tradingApp.delete('/journal/:id', async (c: Context<AppEnv>) => {
+  const id = c.req.param('id') ?? '';
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!id || !uuidRegex.test(id)) return jsonError(c, 400, 'Valid UUID required');
+
+  try {
+    const rows = await db.execute(sql`
+      delete from trading.journal_trades
+      where id = ${id}
+      returning id
+    `);
+    if (!resultRows<{ id: string }>(rows).length) {
+      return jsonError(c, 404, `Trade not found: ${id}`);
+    }
+    return c.json({ deleted: true, id });
+  } catch (e) {
+    return jsonError(c, 500, `journal delete: ${String(e).slice(0, 200)}`);
+  }
+});
