@@ -63,12 +63,23 @@ interface StockTabItem {
   name: string;
 }
 
+export const CANONICAL_TRADING_PROJECT_ID = 'b0000000-0000-0000-0000-000000000001';
+
 export default function ProjectIndexPage() {
   const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
-  const { id: projectId } = useParams<{ id: string }>();
+  const { id: rawProjectId } = useParams<{ id: string }>();
+  const projectId = rawProjectId === 'proj-trading' ? CANONICAL_TRADING_PROJECT_ID : rawProjectId;
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+
+  // Cleanly replace URL if visiting via legacy slug
+  useEffect(() => {
+    if (rawProjectId === 'proj-trading') {
+      const q = searchParams.toString();
+      router.replace(`/projects/${CANONICAL_TRADING_PROJECT_ID}${q ? `?${q}` : ''}`);
+    }
+  }, [rawProjectId, searchParams, router]);
 
   // Active view management: 'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent' | 'journal'
   const queryTab = searchParams.get('tab');
@@ -277,7 +288,7 @@ export default function ProjectIndexPage() {
                 )}
 
                 <div className="flex-1 flex flex-col justify-center min-h-0">
-                  <ProjectHome projectId={projectId} beforeSend={beforeSend} onboarding>
+                  <ProjectHome projectId={projectId} beforeSend={beforeSend}>
                     {/* Quick suggestion prompt chips below the centered composer */}
                     <div className="flex flex-wrap items-center justify-center gap-2 pt-2 pb-6">
                       {[

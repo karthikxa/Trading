@@ -97,7 +97,9 @@ if (typeof window !== 'undefined') {
       msg.includes('_replaceScript') ||
       msg.includes('embed-widget') ||
       msg.includes('Failed to fetch') ||
-      msg.includes('ERR_CONNECTION_RESET')
+      msg.includes('ERR_CONNECTION_RESET') ||
+      msg.includes('contentWindow') ||
+      msg.includes('Cannot listen to the event')
     );
   };
 

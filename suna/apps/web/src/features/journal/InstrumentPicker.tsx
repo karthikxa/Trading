@@ -108,7 +108,7 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
         <div className="flex items-center gap-2 overflow-hidden">
           <TradingPairIcon symbol={value || 'EURUSD'} size="sm" />
           <div className="flex items-baseline gap-1.5 truncate">
-            <span className="font-bold text-xs text-zinc-950 font-mono">
+            <span className="font-bold text-xs text-zinc-950 font-sans">
               {value || 'Select symbol'}
             </span>
             {selectedItem && (
@@ -197,7 +197,7 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
                       <TradingPairIcon symbol={item.symbol} size="sm" />
                       <div className="flex flex-col min-w-0">
                         <div className="flex items-center gap-1.5">
-                          <span className="font-bold text-xs text-zinc-950 font-mono">
+                          <span className="font-bold text-xs text-zinc-950 font-sans">
                             {item.symbol}
                           </span>
                           <span className="text-[10px] text-zinc-400 font-normal truncate">

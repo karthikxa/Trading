@@ -215,6 +215,32 @@ tradingApp.post('/chat', async (c: Context<AppEnv>) => {
   }
 });
 
+function nullableTrimmedText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function finiteNumberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function positiveNumberOrNull(value: unknown): number | null {
+  const num = finiteNumberOrNull(value);
+  return num !== null && num > 0 ? num : null;
+}
+
+function finiteNumberOr(value: unknown, fallback: number): number {
+  if (value === null || value === undefined || value === '') return fallback;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+const VALID_DIRECTIONS = new Set(['Buy', 'Sell', 'Long', 'Short']);
+const VALID_SOURCES = new Set(['manual', 'auto']);
+
 tradingApp.get('/journal', async (c: Context<AppEnv>) => {
   const projectId = c.req.query('projectId') ?? null;
   const limitRaw = Number(c.req.query('limit') ?? '200');
@@ -225,7 +251,7 @@ tradingApp.get('/journal', async (c: Context<AppEnv>) => {
       select *
       from trading.journal_trades
       where ${projectId ? sql`project_id = ${projectId} or project_id is null` : sql`true`}
-      order by entry_date desc, coalesce(entry_time, '00:00') desc
+      order by entry_date desc, coalesce(entry_time, '00:00') desc, created_at desc
       limit ${limit}
     `);
     return c.json({ trades: resultRows<Record<string, unknown>>(rows) });
@@ -239,61 +265,63 @@ tradingApp.post('/journal', async (c: Context<AppEnv>) => {
   if (!body) return jsonError(c, 400, 'JSON body required');
 
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
   const id = typeof body.id === 'string' && uuidRegex.test(body.id) ? body.id : crypto.randomUUID();
 
   const projectId =
-    typeof body.project_id === 'string'
-      ? body.project_id
-      : typeof body.projectId === 'string'
-        ? body.projectId
-        : null;
-  const entryDate = body.entry_date || body.entryDate || new Date().toISOString().split('T')[0];
-  const entryTime = body.entry_time || body.entryTime || '09:30';
-  const exitDate = body.exit_date || body.exitDate || null;
-  const exitTime = body.exit_time || body.exitTime || null;
-  const instrument = String(body.instrument || 'EURUSD').toUpperCase();
-  const direction = body.direction || 'Buy';
-  const lots = Number(body.lots) || 1;
-  const entryPrice = Number(body.entry_price ?? body.entryPrice ?? 0);
-  const exitPrice = Number(body.exit_price ?? body.exitPrice ?? 0);
-  const stopLoss =
-    body.stop_loss !== null && body.stopLoss !== null
-      ? Number(body.stop_loss ?? body.stopLoss) || null
+    nullableTrimmedText(body.project_id) ?? nullableTrimmedText(body.projectId);
+  const rawEntryDate = String(body.entry_date || body.entryDate || '').split('T')[0];
+  const entryDate = dateRegex.test(rawEntryDate)
+    ? rawEntryDate
+    : new Date().toISOString().split('T')[0];
+  const entryTime = nullableTrimmedText(body.entry_time ?? body.entryTime) ?? '09:30';
+  const rawExitDate = body.exit_date || body.exitDate;
+  const exitDate =
+    typeof rawExitDate === 'string' && dateRegex.test(rawExitDate.split('T')[0])
+      ? rawExitDate.split('T')[0]
       : null;
-  const takeProfit =
-    body.take_profit !== null && body.takeProfit !== null
-      ? Number(body.take_profit ?? body.takeProfit) || null
-      : null;
-  const pnl = Number(body.pnl ?? 0);
-  const riskR =
-    body.risk_r !== null && body.riskR !== null
-      ? Number(body.risk_r ?? body.riskR) || null
-      : null;
-  const returnR =
-    body.return_r !== null && body.returnR !== null
-      ? Number(body.return_r ?? body.returnR) || null
-      : null;
-  const swap = Number(body.swap ?? 0);
-  const commission = Number(body.commission ?? 0);
-  const followedPlan = body.followed_plan !== false && body.followedPlan !== false;
-  const planName = String(body.plan_name || body.planName || 'A+ Setup Checklist');
-  const confluences = Array.isArray(body.confluences) ? body.confluences : [];
-  const tradeManagement = body.trade_management || body.tradeManagement || null;
-  const mistakes = Array.isArray(body.mistakes) ? body.mistakes : [];
-  const entryEmotion = body.entry_emotion || body.entryEmotion || null;
-  const exitEmotion = body.exit_emotion || body.exitEmotion || null;
-  const notes = body.notes || null;
-  const chartHtf = body.chart_htf || body.chartHtf || null;
-  const chartMtf = body.chart_mtf || body.chartMtf || null;
-  const chartLtf = body.chart_ltf || body.chartLtf || null;
-  const session = body.session || 'London';
-  const duration = body.duration || '15m';
-  const splitOrders = body.split_orders
-    ? JSON.stringify(body.split_orders)
-    : body.splitOrders
-      ? JSON.stringify(body.splitOrders)
-      : '[]';
-  const source = body.source || 'manual';
+  const exitTime = nullableTrimmedText(body.exit_time ?? body.exitTime);
+  const instrument = String(body.instrument || 'EURUSD').trim().toUpperCase();
+  if (!instrument) return jsonError(c, 400, 'instrument is required');
+
+  const rawDirection = String(body.direction || 'Buy');
+  const direction = VALID_DIRECTIONS.has(rawDirection) ? rawDirection : 'Buy';
+  const lots = Math.max(0, finiteNumberOr(body.lots, 0));
+  const entryPrice = finiteNumberOr(body.entry_price ?? body.entryPrice, 0);
+  const exitPrice = finiteNumberOr(body.exit_price ?? body.exitPrice, 0);
+  const stopLoss = positiveNumberOrNull(body.stop_loss ?? body.stopLoss);
+  const takeProfit = positiveNumberOrNull(body.take_profit ?? body.takeProfit);
+  const pnl = finiteNumberOr(body.pnl, 0);
+  const riskR = finiteNumberOrNull(body.risk_r ?? body.riskR);
+  const returnR = finiteNumberOrNull(body.return_r ?? body.returnR);
+  const swap = finiteNumberOr(body.swap, 0);
+  const commission = finiteNumberOr(body.commission, 0);
+  const rawFollowed = body.followed_plan ?? body.followedPlan;
+  const followedPlan = rawFollowed === undefined || rawFollowed === null ? true : Boolean(rawFollowed);
+  const planName = nullableTrimmedText(body.plan_name ?? body.planName);
+  const confluences = Array.isArray(body.confluences)
+    ? body.confluences.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    : [];
+  const tradeManagement = nullableTrimmedText(body.trade_management ?? body.tradeManagement);
+  const mistakes = Array.isArray(body.mistakes)
+    ? body.mistakes.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    : [];
+  const entryEmotion = nullableTrimmedText(body.entry_emotion ?? body.entryEmotion);
+  const exitEmotion = nullableTrimmedText(body.exit_emotion ?? body.exitEmotion);
+  const notes = typeof body.notes === 'string' && body.notes.trim().length > 0 ? body.notes : null;
+  const chartHtf = nullableTrimmedText(body.chart_htf ?? body.chartHtf);
+  const chartMtf = nullableTrimmedText(body.chart_mtf ?? body.chartMtf);
+  const chartLtf = nullableTrimmedText(body.chart_ltf ?? body.chartLtf);
+  const session = nullableTrimmedText(body.session) ?? 'London';
+  const duration = nullableTrimmedText(body.duration);
+  const splitOrdersArr = Array.isArray(body.split_orders)
+    ? body.split_orders
+    : Array.isArray(body.splitOrders)
+      ? body.splitOrders
+      : [];
+  const splitOrders = JSON.stringify(splitOrdersArr);
+  const rawSource = String(body.source || 'manual');
+  const source = VALID_SOURCES.has(rawSource) ? rawSource : 'manual';
 
   const confluencesSql = confluences.length > 0
     ? sql`ARRAY[${sql.join(confluences.map((c) => sql`${c}`), sql`, `)}]::text[]`

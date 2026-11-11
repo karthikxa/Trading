@@ -20,7 +20,7 @@
 # sum exceeds the target — a premature cap trades availability for megabytes.
 services:
   - type: web
-    name: kortix-trading
+    name: zed-workspace
     runtime: node
     rootDir: suna
     plan: free # 512 MB, zero cost (15-min idle spin-down). Target <=400 MB RSS.

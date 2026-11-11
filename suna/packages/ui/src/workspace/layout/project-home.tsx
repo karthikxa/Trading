@@ -3,7 +3,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { hubTarget } from '../../internal/stores/account-panel-store';
 import { useTranslations } from '../../i18n';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ComposerChatInput, type ComposerOptions } from '../../session/composer/composer-chat-input';
 import { ComposerDropZone } from '../../session/composer/composer-drop-zone';

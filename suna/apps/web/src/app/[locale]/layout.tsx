@@ -330,13 +330,6 @@ export default async function RootLayout({
           dangerouslySetInnerHTML={{ __html: safeJsonForHtml(SITE_JSON_LD) }}
         />
 
-        {/* TradingView Mini Chart Web Component */}
-        <script
-          type="module"
-          src="https://widgets.tradingview-widget.com/w/en/tv-mini-chart.js"
-          async
-        />
-
       </head>
 
       {/* suppressHydrationWarning silences Grammarly et al. injecting

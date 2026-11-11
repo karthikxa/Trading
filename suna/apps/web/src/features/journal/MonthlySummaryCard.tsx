@@ -7,45 +7,56 @@ import { Badge } from '@/components/ui/badge';
 
 interface MonthlySummaryCardProps {
   trades: JournalTrade[];
+  monthLabel?: string;
 }
 
-export function MonthlySummaryCard({ trades }: MonthlySummaryCardProps) {
+export function MonthlySummaryCard({ trades, monthLabel }: MonthlySummaryCardProps) {
   const totalTrades = trades.length;
   const wins = trades.filter((t) => t.pnl > 0);
   const losses = trades.filter((t) => t.pnl < 0);
   const winCount = wins.length;
   const lossCount = losses.length;
 
-  const winRate = totalTrades > 0 ? (winCount / totalTrades) * 100 : 29.9;
+  const winRate = totalTrades > 0 ? (winCount / totalTrades) * 100 : 0;
   const totalWinPnl = wins.reduce((acc, t) => acc + t.pnl, 0);
   const totalLossPnl = losses.reduce((acc, t) => acc + t.pnl, 0);
 
-  const avgWin = winCount > 0 ? totalWinPnl / winCount : 203582.37;
-  const avgLoss = lossCount > 0 ? totalLossPnl / lossCount : -53271.04;
+  const avgWin = winCount > 0 ? totalWinPnl / winCount : 0;
+  const avgLoss = lossCount > 0 ? totalLossPnl / lossCount : 0;
 
-  const bestTrade = trades.length > 0 ? Math.max(...trades.map((t) => t.pnl)) : 2000000.0;
-  const worstTrade = trades.length > 0 ? Math.min(...trades.map((t) => t.pnl)) : -890400.69;
+  const bestTrade = totalTrades > 0 ? Math.max(...trades.map((t) => t.pnl)) : 0;
+  const worstTrade = totalTrades > 0 ? Math.min(...trades.map((t) => t.pnl)) : 0;
 
-  // Expectancy R
-  const avgR = 0.12;
+  // Expectancy R from real return_r (only defined when totalTrades > 0)
+  const avgR =
+    totalTrades > 0
+      ? trades.reduce((acc, t) => acc + (t.returnR ?? 0), 0) / totalTrades
+      : 0;
 
-  // R Distribution counts
+  // Contiguous 5-bucket R-multiple distribution covering all values (-Infinity to +Infinity)
   const buckets = [
-    { label: '<-2R', count: 3 },
-    { label: '-1R to 0', count: 20 },
-    { label: '0 to 1R', count: 22 },
-    { label: '1R to 2R', count: 16 },
-    { label: '>2R', count: 6 },
+    { label: '<-1R', count: trades.filter((t) => (t.returnR ?? 0) < -1).length },
+    { label: '-1R to 0', count: trades.filter((t) => (t.returnR ?? 0) >= -1 && (t.returnR ?? 0) < 0).length },
+    { label: '0 to 1R', count: trades.filter((t) => (t.returnR ?? 0) >= 0 && (t.returnR ?? 0) < 1).length },
+    { label: '1R to 2R', count: trades.filter((t) => (t.returnR ?? 0) >= 1 && (t.returnR ?? 0) < 2).length },
+    { label: '>=2R', count: trades.filter((t) => (t.returnR ?? 0) >= 2).length },
   ];
 
   const maxCount = Math.max(...buckets.map((b) => b.count), 1);
 
   const formatCurrency = (val: number) => {
-    const sign = val >= 0 ? '+' : '-';
+    if (val === 0) return '$0.00';
+    const sign = val > 0 ? '+' : '-';
     return `${sign}$${Math.abs(val).toLocaleString('en-US', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`;
+  };
+
+  const pnlColorClass = (val: number) => {
+    if (val > 0) return 'text-emerald-600';
+    if (val < 0) return 'text-rose-600';
+    return 'text-zinc-600';
   };
 
   return (
@@ -53,7 +64,7 @@ export function MonthlySummaryCard({ trades }: MonthlySummaryCardProps) {
       <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
         <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Monthly Summary</h2>
         <Badge variant="secondary" className="font-sans text-xs font-medium text-zinc-600 bg-zinc-100/90 border border-zinc-200/80 px-2.5 py-0.5 rounded-lg tracking-normal">
-          Performance Metrics
+          {monthLabel || 'Performance Metrics'}
         </Badge>
       </div>
 
@@ -62,17 +73,27 @@ export function MonthlySummaryCard({ trades }: MonthlySummaryCardProps) {
         <div className="md:col-span-7 flex flex-col justify-end h-48 pt-2">
           <div className="flex items-end justify-between gap-3 h-36 px-2 border-b border-zinc-200/80 pb-2">
             {buckets.map((b) => {
-              const heightPct = Math.max(14, Math.round((b.count / maxCount) * 100));
+              const heightPct = b.count > 0 ? Math.max(16, Math.round((b.count / maxCount) * 100)) : 4;
               return (
-                <div key={b.label} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group">
-                  <span className="text-[10px] font-mono text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity font-semibold">
+                <div
+                  key={b.label}
+                  className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group"
+                  title={`${b.label}: ${b.count} ${b.count === 1 ? 'trade' : 'trades'}`}
+                >
+                  <span
+                    className={`text-[10px] font-sans tabular-nums font-semibold transition-opacity ${
+                      b.count > 0 ? 'text-zinc-600 opacity-100' : 'text-zinc-400 opacity-0 group-hover:opacity-100'
+                    }`}
+                  >
                     {b.count}
                   </span>
                   <div
                     style={{ height: `${heightPct}%` }}
-                    className="w-full max-w-[44px] rounded-t-lg bg-zinc-950 hover:bg-zinc-800 transition-all shadow-2xs"
+                    className={`w-full max-w-[44px] rounded-t-lg transition-all shadow-2xs ${
+                      b.count > 0 ? 'bg-zinc-950 hover:bg-zinc-800' : 'bg-zinc-200/80'
+                    }`}
                   />
-                  <span className="text-[11px] text-zinc-600 font-sans font-medium tracking-normal truncate max-w-[55px] text-center">
+                  <span className="text-[11px] text-zinc-600 font-sans font-medium tracking-normal truncate max-w-[58px] text-center">
                     {b.label}
                   </span>
                 </div>
@@ -90,33 +111,64 @@ export function MonthlySummaryCard({ trades }: MonthlySummaryCardProps) {
           <div className="space-y-2 text-xs">
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
               <span className="text-zinc-500 font-normal">Expectancy</span>
-              <span className="font-mono font-medium text-zinc-900">+{avgR.toFixed(2)}R</span>
+              {totalTrades > 0 ? (
+                <span className={`font-sans tabular-nums font-medium ${pnlColorClass(avgR)}`}>
+                  {avgR > 0 ? '+' : ''}
+                  {avgR.toFixed(2)}R
+                </span>
+              ) : (
+                <span className="font-sans tabular-nums font-medium text-zinc-400">—</span>
+              )}
             </div>
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
               <span className="text-zinc-500 font-normal">Win rate</span>
-              <span className="font-mono font-medium text-zinc-900">{winRate.toFixed(1)}%</span>
+              {totalTrades > 0 ? (
+                <span className="font-sans tabular-nums font-medium text-zinc-900">{winRate.toFixed(1)}%</span>
+              ) : (
+                <span className="font-sans tabular-nums font-medium text-zinc-400">—</span>
+              )}
             </div>
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
               <span className="text-zinc-500 font-normal">Avg Win</span>
-              <span className="font-mono font-medium text-emerald-600">{formatCurrency(avgWin)}</span>
+              {winCount > 0 ? (
+                <span className="font-sans tabular-nums font-medium text-emerald-600">{formatCurrency(avgWin)}</span>
+              ) : (
+                <span className="font-sans tabular-nums font-medium text-zinc-400">—</span>
+              )}
             </div>
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
               <span className="text-zinc-500 font-normal">Avg Loss</span>
-              <span className="font-mono font-medium text-rose-600">{formatCurrency(avgLoss)}</span>
+              {lossCount > 0 ? (
+                <span className="font-sans tabular-nums font-medium text-rose-600">{formatCurrency(avgLoss)}</span>
+              ) : (
+                <span className="font-sans tabular-nums font-medium text-zinc-400">—</span>
+              )}
             </div>
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
               <span className="text-zinc-500 font-normal">Best trade</span>
-              <span className="font-mono font-medium text-emerald-600">{formatCurrency(bestTrade)}</span>
+              {totalTrades > 0 ? (
+                <span className={`font-sans tabular-nums font-medium ${pnlColorClass(bestTrade)}`}>
+                  {formatCurrency(bestTrade)}
+                </span>
+              ) : (
+                <span className="font-sans tabular-nums font-medium text-zinc-400">—</span>
+              )}
             </div>
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
               <span className="text-zinc-500 font-normal">Worst trade</span>
-              <span className="font-mono font-medium text-rose-600">{formatCurrency(worstTrade)}</span>
+              {totalTrades > 0 ? (
+                <span className={`font-sans tabular-nums font-medium ${pnlColorClass(worstTrade)}`}>
+                  {formatCurrency(worstTrade)}
+                </span>
+              ) : (
+                <span className="font-sans tabular-nums font-medium text-zinc-400">—</span>
+              )}
             </div>
             <div className="flex items-center justify-between py-1.5 pt-2">
               <span className="text-zinc-500 font-normal">Total trades</span>
               <div className="text-right">
-                <span className="font-mono font-medium text-zinc-800 mr-2">{totalTrades}</span>
-                <span className="text-[10px] font-mono text-zinc-400">
+                <span className="font-sans tabular-nums font-medium text-zinc-800 mr-2">{totalTrades}</span>
+                <span className="text-[10px] font-sans tabular-nums text-zinc-400">
                   {winCount}W:{lossCount}L
                 </span>
               </div>

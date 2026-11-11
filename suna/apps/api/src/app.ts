@@ -73,6 +73,16 @@ export { app };
 
 installHttpMiddleware(app);
 
+// Canonical project UUID for Trading workspace: rewrite legacy/slug url paths to UUID
+const CANONICAL_TRADING_PROJECT_UUID = 'b0000000-0000-0000-0000-000000000001';
+app.use('*', async (c, next) => {
+  if (c.req.url.includes('/proj-trading')) {
+    const newUrl = c.req.url.replaceAll('/proj-trading', `/${CANONICAL_TRADING_PROJECT_UUID}`);
+    return app.fetch(new Request(newUrl, c.req.raw));
+  }
+  await next();
+});
+
 for (const path of ['/.well-known/security.txt', '/robots.txt', '/sitemap.xml']) {
   app.get(path, (c) => wellKnownResponse(c.req.path) ?? c.notFound());
 }

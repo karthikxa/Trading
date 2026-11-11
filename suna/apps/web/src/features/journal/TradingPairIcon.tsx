@@ -224,7 +224,7 @@ function getCurrencyBadge(code: string, size = 18) {
       return (
         <div
           style={{ width: size, height: size }}
-          className="rounded-full bg-zinc-800 text-white font-mono text-[8px] font-bold flex items-center justify-center"
+          className="rounded-full bg-zinc-800 text-white font-sans text-[8px] font-bold flex items-center justify-center"
         >
           {code.slice(0, 2)}
         </div>

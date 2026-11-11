@@ -1,19 +1,13 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import {
-  Plus,
-  BookOpen,
-  PanelRightClose,
-  PanelRightOpen,
-  Loader2,
-} from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { CurrencyMode, JournalTrade } from './types';
 import {
   getJournalTrades,
   saveJournalTrade,
   deleteJournalTrade,
   getLocalTrades,
+  sortJournalTrades,
 } from './storage';
 import { TradingCalendar } from './TradingCalendar';
 import { MonthlySummaryCard } from './MonthlySummaryCard';
@@ -21,32 +15,67 @@ import { WeeklyBreakdownCard } from './WeeklyBreakdownCard';
 import { DayDetailsDrawer } from './DayDetailsDrawer';
 import { AddTradeView } from './AddTradeView';
 import { TradeDetailView } from './TradeDetailView';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Group, GroupSeparator } from '@/components/ui/group';
 
 interface JournalViewProps {
   projectId?: string;
 }
 
 export default function JournalView({ projectId }: JournalViewProps) {
-  const [trades, setTrades] = useState<JournalTrade[]>(() => getLocalTrades());
-  const [isLoading, setIsLoading] = useState(false);
+  const [trades, setTrades] = useState<JournalTrade[]>(() =>
+    sortJournalTrades(getLocalTrades())
+  );
 
-  // Calendar Date: Default to February 2026 matching reference images
-  const [currentYear, setCurrentYear] = useState(2026);
-  const [currentMonth, setCurrentMonth] = useState(1); // 1 = February (0-indexed)
+  // Calendar Date: Default to current date for production daily use
+  const [currentYear, setCurrentYear] = useState(() => new Date().getFullYear());
+  const [currentMonth, setCurrentMonth] = useState(() => new Date().getMonth());
 
-  // Selected date for side drawer
-  const [selectedDate, setSelectedDate] = useState<string>('2026-02-12');
+  // Selected date for side drawer: formatted YYYY-MM-DD
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const now = new Date();
+    const yr = now.getFullYear();
+    const mo = String(now.getMonth() + 1).padStart(2, '0');
+    const da = String(now.getDate()).padStart(2, '0');
+    return `${yr}-${mo}-${da}`;
+  });
   const [drawerOpen, setDrawerOpen] = useState(true);
 
   // View state: 'calendar' | 'add' | 'detail'
   const [viewMode, setViewMode] = useState<'calendar' | 'add' | 'detail'>('calendar');
   const [activeTrade, setActiveTrade] = useState<JournalTrade | null>(null);
+  // Trade being edited (pre-fills AddTradeView)
+  const [editingTrade, setEditingTrade] = useState<JournalTrade | null>(null);
 
   // Currency Mode: '$' | '%' | 'R'
   const [currencyMode, setCurrencyMode] = useState<CurrencyMode>('$');
+
+  const handledDeepLinkRef = useRef(false);
+
+  const syncCalendarToDate = useCallback((dateStr?: string) => {
+    if (!dateStr) return;
+    const parts = dateStr.split('-');
+    if (parts.length !== 3) return;
+    const yr = Number(parts[0]);
+    const mo = Number(parts[1]) - 1;
+    if (Number.isFinite(yr) && Number.isFinite(mo) && mo >= 0 && mo <= 11) {
+      setCurrentYear(yr);
+      setCurrentMonth(mo);
+    }
+  }, []);
+
+  const syncTradeUrlParam = useCallback((tradeId: string | null) => {
+    if (typeof window === 'undefined') return;
+    try {
+      const url = new URL(window.location.href);
+      if (tradeId) {
+        url.searchParams.set('trade', tradeId);
+      } else {
+        url.searchParams.delete('trade');
+      }
+      window.history.replaceState(null, '', url.toString());
+    } catch {
+      // Ignore history errors in restricted environments
+    }
+  }, []);
 
   // Load trades on mount
   useEffect(() => {
@@ -54,8 +83,8 @@ export default function JournalView({ projectId }: JournalViewProps) {
     async function loadData() {
       try {
         const loaded = await getJournalTrades(projectId);
-        if (isMounted && Array.isArray(loaded) && loaded.length > 0) {
-          setTrades(loaded);
+        if (isMounted && Array.isArray(loaded)) {
+          setTrades(sortJournalTrades(loaded));
         }
       } catch (err) {
         console.error('Failed to load journal trades:', err);
@@ -66,6 +95,26 @@ export default function JournalView({ projectId }: JournalViewProps) {
       isMounted = false;
     };
   }, [projectId]);
+
+  // Open ?trade=<id> deep-link if present once trades are available
+  useEffect(() => {
+    if (handledDeepLinkRef.current || typeof window === 'undefined') return;
+    const targetId = new URLSearchParams(window.location.search).get('trade');
+    if (!targetId) {
+      handledDeepLinkRef.current = true;
+      return;
+    }
+    const found = trades.find((t) => t.id === targetId);
+    if (found) {
+      handledDeepLinkRef.current = true;
+      setActiveTrade(found);
+      if (found.entryDate) {
+        setSelectedDate(found.entryDate);
+        syncCalendarToDate(found.entryDate);
+      }
+      setViewMode('detail');
+    }
+  }, [trades, syncCalendarToDate]);
 
   // Handlers for month navigation
   const handlePrevMonth = () => {
@@ -87,8 +136,18 @@ export default function JournalView({ projectId }: JournalViewProps) {
   };
 
   const handleJumpThisMonth = () => {
-    setCurrentYear(2026);
-    setCurrentMonth(1); // February
+    const now = new Date();
+    setCurrentYear(now.getFullYear());
+    setCurrentMonth(now.getMonth());
+    const yr = now.getFullYear();
+    const mo = String(now.getMonth() + 1).padStart(2, '0');
+    const da = String(now.getDate()).padStart(2, '0');
+    setSelectedDate(`${yr}-${mo}-${da}`);
+  };
+
+  const handleSelectYearMonth = (year: number, month: number) => {
+    setCurrentYear(year);
+    setCurrentMonth(month);
   };
 
   // Day selection from Calendar
@@ -101,12 +160,15 @@ export default function JournalView({ projectId }: JournalViewProps) {
   const handleOpenTradeDetail = (trade: JournalTrade) => {
     setActiveTrade(trade);
     setViewMode('detail');
+    syncTradeUrlParam(trade.id);
   };
 
   // Open "Add Manual Trade" form
   const handleOpenAddTrade = (dateStr?: string) => {
     if (dateStr) setSelectedDate(dateStr);
+    setEditingTrade(null);
     setViewMode('add');
+    syncTradeUrlParam(null);
   };
 
   // Save Trade handler
@@ -114,191 +176,165 @@ export default function JournalView({ projectId }: JournalViewProps) {
     const saved = await saveJournalTrade(tradeData, projectId);
     setTrades((prev) => {
       const idx = prev.findIndex((t) => t.id === saved.id);
-      if (idx >= 0) {
-        const copy = [...prev];
-        copy[idx] = saved;
-        return copy;
-      }
-      return [saved, ...prev];
+      const next = idx >= 0 ? prev.map((t, i) => (i === idx ? saved : t)) : [saved, ...prev];
+      return sortJournalTrades(next);
     });
-    setSelectedDate(saved.entryDate);
-    setViewMode('calendar');
+    if (saved.entryDate) {
+      setSelectedDate(saved.entryDate);
+      syncCalendarToDate(saved.entryDate);
+    }
+    // If we were editing an existing trade, go back to its detail view
+    if (editingTrade) {
+      setActiveTrade(saved);
+      setEditingTrade(null);
+      setViewMode('detail');
+      syncTradeUrlParam(saved.id);
+    } else {
+      setActiveTrade(null);
+      setViewMode('calendar');
+      syncTradeUrlParam(null);
+    }
   };
 
   // Delete Trade handler
   const handleDeleteTrade = async (tradeId: string) => {
     await deleteJournalTrade(tradeId);
     setTrades((prev) => prev.filter((t) => t.id !== tradeId));
+    setActiveTrade(null);
+    setEditingTrade(null);
     setViewMode('calendar');
+    syncTradeUrlParam(null);
   };
 
   // Selected date trades
-  const selectedDateTrades = trades.filter((t) => t.entryDate === selectedDate);
+  const selectedDateTrades = useMemo(
+    () => trades.filter((t) => t.entryDate === selectedDate),
+    [trades, selectedDate]
+  );
+
+  // Active month trades and label for MonthlySummary & WeeklyBreakdown
+  const monthLabel = useMemo(
+    () =>
+      new Date(currentYear, currentMonth, 1).toLocaleDateString('en-US', {
+        month: 'long',
+        year: 'numeric',
+      }),
+    [currentYear, currentMonth]
+  );
+
+  const monthTrades = useMemo(() => {
+    const prefix = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-`;
+    return trades.filter((t) => t.entryDate?.startsWith(prefix));
+  }, [trades, currentYear, currentMonth]);
 
   return (
     <div className="flex flex-col h-full w-full overflow-hidden bg-[#fafafa] text-zinc-950 font-sans">
       {/* ========================================================================= */}
-      {/* 1. TOP HEADER BAR (Strict COSS UI Components)                             */}
-      {/* ========================================================================= */}
-      <header className="px-6 py-3.5 border-b border-zinc-200/90 bg-white shadow-2xs flex items-center justify-between shrink-0 select-none">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-xl font-bold text-zinc-950 tracking-tight">Journal</h1>
-          <p className="text-xs text-zinc-400 hidden sm:block font-normal">
-            Review your trades, emotions, and patterns to build consistency and self-awareness.
-          </p>
-        </div>
-
-        {/* Header Right Actions */}
-        <div className="flex items-center gap-2.5">
-          {/* Currency / Mode toggle ($ | % | R) using COSS Group */}
-          <Group aria-label="Currency and return mode">
-            <Button
-              type="button"
-              variant={currencyMode === '$' ? 'default' : 'ghost'}
-              size="xs"
-              onClick={() => setCurrencyMode('$')}
-              className={`font-mono text-xs px-2.5 h-7 rounded-sm transition-colors ${
-                currencyMode === '$'
-                  ? 'bg-zinc-950 text-white shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-950'
-              }`}
-            >
-              $
-            </Button>
-            <GroupSeparator />
-            <Button
-              type="button"
-              variant={currencyMode === '%' ? 'default' : 'ghost'}
-              size="xs"
-              onClick={() => setCurrencyMode('%')}
-              className={`font-mono text-xs px-2.5 h-7 rounded-sm transition-colors ${
-                currencyMode === '%'
-                  ? 'bg-zinc-950 text-white shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-950'
-              }`}
-            >
-              %
-            </Button>
-            <GroupSeparator />
-            <Button
-              type="button"
-              variant={currencyMode === 'R' ? 'default' : 'ghost'}
-              size="xs"
-              onClick={() => setCurrencyMode('R')}
-              className={`font-mono text-xs px-2.5 h-7 rounded-sm transition-colors ${
-                currencyMode === 'R'
-                  ? 'bg-zinc-950 text-white shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-950'
-              }`}
-            >
-              R
-            </Button>
-          </Group>
-
-          {/* Add Trade Button: Boxy (not curved), with text "+ Add Trade" */}
-          <Button
-            type="button"
-            variant="default"
-            size="sm"
-            onClick={() => handleOpenAddTrade(selectedDate)}
-            className="bg-zinc-950 hover:bg-zinc-800 text-white font-medium shadow-xs gap-1.5 h-8 px-3.5 rounded-md cursor-pointer"
-          >
-            <Plus className="size-3.5" />
-            <span>Add Trade</span>
-          </Button>
-
-          {/* Toggle Right Drawer using COSS Button */}
-          {viewMode === 'calendar' && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setDrawerOpen((prev) => !prev)}
-              className="h-8 w-8 p-0 rounded-md border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-700 shadow-2xs"
-              title={drawerOpen ? 'Collapse side panel' : 'Expand side panel'}
-            >
-              {drawerOpen ? (
-                <PanelRightClose className="size-4" />
-              ) : (
-                <PanelRightOpen className="size-4" />
-              )}
-            </Button>
-          )}
-        </div>
-      </header>
-
-      {/* ========================================================================= */}
-      {/* 2. BODY CONTENT (CALENDAR | ADD | DETAIL)                                 */}
+      {/* BODY CONTENT (CALENDAR | ADD | DETAIL)                                    */}
       {/* ========================================================================= */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* Main Work Area */}
-        <main className="flex-1 overflow-y-auto px-6 py-6 sm:px-8 sm:py-8 min-w-0 w-full">
-          {isLoading ? (
-            <div className="h-full flex flex-col items-center justify-center gap-3 text-zinc-400">
-              <Loader2 className="size-6 animate-spin text-zinc-950" />
-              <span className="text-xs font-medium">Loading trade journal...</span>
-            </div>
-          ) : viewMode === 'add' ? (
-            /* ==================== VIEW 2: ADD TRADE ==================== */
+        {viewMode === 'add' ? (
+          /* ==================== VIEW 2: ADD TRADE ==================== */
+          <main className="flex-1 overflow-y-auto px-6 py-6 sm:px-8 sm:py-8 min-w-0 w-full">
             <AddTradeView
-              onBack={() => setViewMode('calendar')}
+              key={editingTrade ? editingTrade.id : 'new'}
+              onBack={() => {
+                // If editing, go back to detail view; else back to calendar
+                if (editingTrade && activeTrade) {
+                  setEditingTrade(null);
+                  setViewMode('detail');
+                  syncTradeUrlParam(activeTrade.id);
+                } else {
+                  setEditingTrade(null);
+                  setViewMode('calendar');
+                  syncTradeUrlParam(null);
+                }
+              }}
               onSave={handleSaveTrade}
               initialDate={selectedDate}
+              editTrade={editingTrade}
             />
-          ) : viewMode === 'detail' && activeTrade ? (
-            /* ==================== VIEW 4 & 5: TRADE DETAIL ==================== */
+          </main>
+        ) : viewMode === 'detail' && activeTrade ? (
+          /* ==================== VIEW 4 & 5: TRADE DETAIL ==================== */
+          <main className="flex-1 overflow-y-auto px-6 py-6 sm:px-8 sm:py-8 min-w-0 w-full">
             <TradeDetailView
               trade={activeTrade}
               allTrades={trades}
-              onBack={() => setViewMode('calendar')}
+              onBack={() => {
+                setViewMode('calendar');
+                syncTradeUrlParam(null);
+              }}
               onDelete={handleDeleteTrade}
               onEdit={(t) => {
                 setActiveTrade(t);
+                setEditingTrade(t);
                 setViewMode('add');
+                syncTradeUrlParam(null);
               }}
-              onNavigateTrade={(next) => setActiveTrade(next)}
+              onNavigateTrade={(next) => {
+                setActiveTrade(next);
+                if (next.entryDate) {
+                  setSelectedDate(next.entryDate);
+                  syncCalendarToDate(next.entryDate);
+                }
+                syncTradeUrlParam(next.id);
+              }}
             />
-          ) : (
-            /* ==================== VIEW 1: BIG CALENDAR & SUMMARY ==================== */
-            <div className="flex flex-col gap-8 w-full">
-              {/* Big Monthly Calendar with Boxes */}
-              <TradingCalendar
-                currentYear={currentYear}
-                currentMonth={currentMonth}
-                trades={trades}
-                selectedDate={selectedDate}
-                currencyMode={currencyMode}
-                onSelectDate={handleSelectDate}
-                onPrevMonth={handlePrevMonth}
-                onNextMonth={handleNextMonth}
-                onJumpThisMonth={handleJumpThisMonth}
-              />
+          </main>
+        ) : (
+          /* ==================== VIEW 1: BIG CALENDAR & SIDEBAR (LOAD AT SAME TIME) ==================== */
+          <>
+            <main className="flex-1 overflow-y-auto px-6 py-6 sm:px-8 sm:py-8 min-w-0 w-full">
+              <div className="flex flex-col gap-8 w-full">
+                {/* Big Monthly Calendar with Boxes */}
+                <TradingCalendar
+                  currentYear={currentYear}
+                  currentMonth={currentMonth}
+                  trades={trades}
+                  selectedDate={selectedDate}
+                  currencyMode={currencyMode}
+                  drawerOpen={drawerOpen}
+                  onSelectDate={handleSelectDate}
+                  onPrevMonth={handlePrevMonth}
+                  onNextMonth={handleNextMonth}
+                  onJumpThisMonth={handleJumpThisMonth}
+                  onSelectYearMonth={handleSelectYearMonth}
+                  onCurrencyModeChange={setCurrencyMode}
+                  onAddTrade={() => handleOpenAddTrade(selectedDate)}
+                  onToggleDrawer={() => setDrawerOpen((prev) => !prev)}
+                />
 
-              {/* Bottom Cards: Monthly Summary & Weekly Breakdown */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-                <div className="lg:col-span-7">
-                  <MonthlySummaryCard trades={trades} />
-                </div>
-                <div className="lg:col-span-5">
-                  <WeeklyBreakdownCard trades={trades} />
+                {/* Bottom Cards: Monthly Summary & Weekly Breakdown */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+                  <div className="lg:col-span-7">
+                    <MonthlySummaryCard trades={monthTrades} monthLabel={monthLabel} />
+                  </div>
+                  <div className="lg:col-span-5">
+                    <WeeklyBreakdownCard
+                      trades={monthTrades}
+                      currentYear={currentYear}
+                      currentMonth={currentMonth}
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
-        </main>
+            </main>
 
-        {/* ========================================================================= */}
-        {/* 3. SIDE-OVER DRAWER (VIEW 3: DAY DETAILS)                                 */}
-        {/* ========================================================================= */}
-        {viewMode === 'calendar' && drawerOpen && (
-          <DayDetailsDrawer
-            date={selectedDate}
-            trades={selectedDateTrades}
-            onClose={() => setDrawerOpen(false)}
-            onSelectTrade={handleOpenTradeDetail}
-            onChangeDate={(newDate) => setSelectedDate(newDate)}
-            onAddTradeForDate={(dt) => handleOpenAddTrade(dt)}
-          />
+            {/* Sidebar drawer loads in tandem with calendar */}
+            {drawerOpen && (
+              <DayDetailsDrawer
+                date={selectedDate}
+                trades={selectedDateTrades}
+                onClose={() => setDrawerOpen(false)}
+                onSelectTrade={handleOpenTradeDetail}
+                onChangeDate={(newDate) => {
+                  setSelectedDate(newDate);
+                  syncCalendarToDate(newDate);
+                }}
+              />
+            )}
+          </>
         )}
       </div>
     </div>

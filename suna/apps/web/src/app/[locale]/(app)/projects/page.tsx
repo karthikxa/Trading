@@ -10,5 +10,5 @@ export default async function ProjectsPage({ searchParams }: { searchParams?: Pr
     const { ProjectSelector } = await import('@/features/workspace/project-selector/project-selector');
     return <ProjectSelector />;
   }
-  redirect('/projects/proj-trading');
+  redirect('/projects/b0000000-0000-0000-0000-000000000001');
 }

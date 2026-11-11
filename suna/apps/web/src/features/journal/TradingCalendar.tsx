@@ -1,15 +1,22 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Calendar as CalendarIcon,
+  Plus,
 } from 'lucide-react';
 import { CurrencyMode, JournalTrade } from './types';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
+import { Group, GroupSeparator } from '@/components/ui/group';
+import { Calendar } from '@/components/ui/calendar';
+import { Popover, PopoverPopup, PopoverTrigger } from '@/components/ui/popover';
+import { formatIsoDate, parseIsoDate } from './JournalDateTimeFields';
+import { RightPanelGlyph } from './DayDetailsDrawer';
 
 interface TradingCalendarProps {
   currentYear: number;
@@ -17,10 +24,15 @@ interface TradingCalendarProps {
   trades: JournalTrade[];
   selectedDate: string | null;
   currencyMode: CurrencyMode;
+  drawerOpen: boolean;
   onSelectDate: (date: string) => void;
   onPrevMonth: () => void;
   onNextMonth: () => void;
   onJumpThisMonth: () => void;
+  onSelectYearMonth: (year: number, month: number) => void;
+  onCurrencyModeChange: (mode: CurrencyMode) => void;
+  onAddTrade: () => void;
+  onToggleDrawer: () => void;
 }
 
 // Local date string formatter without timezone shifting
@@ -34,15 +46,29 @@ export function TradingCalendar({
   trades,
   selectedDate,
   currencyMode,
+  drawerOpen,
   onSelectDate,
   onPrevMonth,
   onNextMonth,
   onJumpThisMonth,
+  onSelectYearMonth,
+  onCurrencyModeChange,
+  onAddTrade,
+  onToggleDrawer,
 }: TradingCalendarProps) {
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+
   const monthName = new Date(currentYear, currentMonth, 1).toLocaleDateString(
     'en-US',
     { month: 'long', year: 'numeric' }
   );
+
+  const calendarMonthDate = useMemo(
+    () => new Date(currentYear, currentMonth, 1),
+    [currentYear, currentMonth]
+  );
+
+  const selectedDateObj = useMemo(() => parseIsoDate(selectedDate), [selectedDate]);
 
   const now = new Date();
   const todayStr = formatDateKey(now.getFullYear(), now.getMonth(), now.getDate());
@@ -135,8 +161,8 @@ export function TradingCalendar({
       {/* ========================================================================= */}
       {/* CALENDAR CONTROLS BAR (COSS UI Components)                                */}
       {/* ========================================================================= */}
-      <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-zinc-200/80 bg-white">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 border-b border-zinc-200/80 bg-white">
+        <div className="flex items-center gap-1.5">
           <Button
             type="button"
             variant="outline"
@@ -157,21 +183,131 @@ export function TradingCalendar({
           >
             <ChevronRight className="size-4" />
           </Button>
-          <h2 className="text-sm sm:text-base font-bold text-zinc-950 ml-1.5 tracking-tight flex items-center gap-2">
-            <CalendarIcon className="size-4 text-zinc-500" />
-            {monthName}
-          </h2>
+
+          <Popover open={monthPickerOpen} onOpenChange={setMonthPickerOpen}>
+            <PopoverTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label="Open calendar date picker"
+                  className="ml-1 inline-flex h-8 items-center gap-2 rounded-lg px-2.5 text-sm sm:text-base font-bold text-zinc-950 tracking-tight hover:bg-zinc-100/90 data-[popup-open]:bg-zinc-100 transition-colors cursor-pointer"
+                >
+                  <CalendarIcon className="size-4 text-zinc-500 shrink-0" />
+                  <span>{monthName}</span>
+                  <ChevronDown className="size-3.5 text-zinc-400 shrink-0" />
+                </button>
+              }
+            />
+            <PopoverPopup align="start" sideOffset={8} className="p-2.5 w-auto">
+              <Calendar
+                mode="single"
+                captionLayout="dropdown-buttons"
+                month={calendarMonthDate}
+                onMonthChange={(nextMonth) => {
+                  onSelectYearMonth(nextMonth.getFullYear(), nextMonth.getMonth());
+                }}
+                selected={selectedDateObj}
+                onSelect={(day) => {
+                  if (day) {
+                    onSelectYearMonth(day.getFullYear(), day.getMonth());
+                    onSelectDate(formatIsoDate(day));
+                    setMonthPickerOpen(false);
+                  }
+                }}
+                initialFocus
+              />
+              <div className="mt-1.5 pt-2 border-t border-zinc-100 flex items-center justify-between px-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onJumpThisMonth();
+                    setMonthPickerOpen(false);
+                  }}
+                  className="text-[11px] font-semibold text-zinc-600 hover:text-zinc-950 px-2 py-1 rounded-md hover:bg-zinc-100 transition-colors cursor-pointer"
+                >
+                  Today
+                </button>
+                <span className="text-[11px] text-zinc-400">Pick month or date</span>
+              </div>
+            </PopoverPopup>
+          </Popover>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={onJumpThisMonth}
-            className="h-8 px-3 rounded-xl bg-white hover:bg-zinc-50 text-zinc-800 font-semibold border-zinc-200 shadow-2xs cursor-pointer"
+            className="h-8 px-3 rounded-lg bg-white hover:bg-zinc-50 text-zinc-800 font-semibold border-zinc-200 shadow-2xs cursor-pointer"
           >
             This Month
+          </Button>
+
+          <Group aria-label="Currency and return mode">
+            <Button
+              type="button"
+              variant={currencyMode === '$' ? 'default' : 'ghost'}
+              size="xs"
+              onClick={() => onCurrencyModeChange('$')}
+              className={`font-sans tabular-nums text-xs px-2.5 h-7 rounded-sm transition-colors ${
+                currencyMode === '$'
+                  ? 'bg-zinc-950 text-white shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-950'
+              }`}
+            >
+              $
+            </Button>
+            <GroupSeparator />
+            <Button
+              type="button"
+              variant={currencyMode === '%' ? 'default' : 'ghost'}
+              size="xs"
+              onClick={() => onCurrencyModeChange('%')}
+              className={`font-sans tabular-nums text-xs px-2.5 h-7 rounded-sm transition-colors ${
+                currencyMode === '%'
+                  ? 'bg-zinc-950 text-white shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-950'
+              }`}
+            >
+              %
+            </Button>
+            <GroupSeparator />
+            <Button
+              type="button"
+              variant={currencyMode === 'R' ? 'default' : 'ghost'}
+              size="xs"
+              onClick={() => onCurrencyModeChange('R')}
+              className={`font-sans tabular-nums text-xs px-2.5 h-7 rounded-sm transition-colors ${
+                currencyMode === 'R'
+                  ? 'bg-zinc-950 text-white shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-950'
+              }`}
+            >
+              R
+            </Button>
+          </Group>
+
+          <Button
+            type="button"
+            variant="default"
+            size="sm"
+            onClick={onAddTrade}
+            className="bg-zinc-950 hover:bg-zinc-800 text-white font-medium shadow-xs gap-1.5 h-8 px-3 rounded-lg cursor-pointer"
+          >
+            <Plus className="size-3.5" />
+            <span>Add Trade</span>
+          </Button>
+
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onToggleDrawer}
+            className="h-8 w-8 p-0 rounded-lg border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-700 shadow-2xs cursor-pointer"
+            title={drawerOpen ? 'Collapse side panel' : 'Expand side panel'}
+          >
+            <RightPanelGlyph className="size-4" />
           </Button>
         </div>
       </div>
@@ -224,7 +360,7 @@ export function TradingCalendar({
                 {/* Day Number and Today badge */}
                 <div className="flex items-center justify-between">
                   <span
-                    className={`text-xs font-mono font-normal ${
+                    className={`text-xs font-sans tabular-nums font-normal ${
                       cell.isCurrentMonth ? 'text-zinc-600' : 'text-zinc-400'
                     }`}
                   >
@@ -245,7 +381,7 @@ export function TradingCalendar({
                       {dayTrades.length} {dayTrades.length === 1 ? 'Trade' : 'Trades'}
                     </span>
                     <span
-                      className={`text-xs sm:text-[13px] font-mono font-normal tracking-tight truncate ${
+                      className={`text-xs sm:text-[13px] font-sans tabular-nums font-normal tracking-tight truncate ${
                         isProfitable ? 'text-emerald-600' : 'text-rose-600'
                       }`}
                     >

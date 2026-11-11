@@ -145,7 +145,7 @@ export async function supabaseAuth(c: Context, next: Next) {
   }
 }
 
-const DEV_USER_ID = '00000000-0000-0000-0000-000000000001';
+const DEV_USER_ID = '1dc72198-0f05-40e0-80b0-490f72abd5af';
 const DEV_USER_EMAIL = 'dev@kortix.local';
 
 async function resolveSupabaseAuth(c: Context, next: Next) {

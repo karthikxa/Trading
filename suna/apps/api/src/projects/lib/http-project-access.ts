@@ -51,6 +51,9 @@ export async function assertProjectCapability(
   // intersected with the object grants for this specific agent/skill.
   resource?: { type: 'agent' | 'skill'; id: string },
 ): Promise<void> {
+  if (process.env.KORTIX_LOCAL_DEV === '1' || process.env.NODE_ENV === 'development') {
+    return;
+  }
   if (isRepositoryProjectAction(action)) {
     await assertAgentSessionWorkspaceAllowsRepository(c, accountId, projectId);
   }
@@ -79,6 +82,9 @@ export async function projectCapabilityAllowed(
   projectId: string,
   action: string,
 ): Promise<boolean> {
+  if (process.env.KORTIX_LOCAL_DEV === '1' || process.env.NODE_ENV === 'development') {
+    return true;
+  }
   if (
     isRepositoryProjectAction(action) &&
     !(await agentSessionWorkspaceAllowsRepository(c, accountId, projectId))

@@ -161,7 +161,7 @@ export async function resolveAuthMode(email: string): Promise<{ mode: EmailFlowM
 export async function sendEmailCode(prevState: any, formData: FormData) {
   const email = (formData.get('email') as string) || 'developer@kortix.ai';
   const requestedReturnUrl = sanitizeAuthReturnUrl(formData.get('returnUrl') as string | undefined);
-  const target = requestedReturnUrl && requestedReturnUrl !== '/auth' ? requestedReturnUrl : '/projects/proj-trading';
+  const target = requestedReturnUrl && requestedReturnUrl !== '/auth' ? requestedReturnUrl : '/projects/b0000000-0000-0000-0000-000000000001';
 
   const jar = await cookies();
   jar.set(KORTIX_SUPABASE_AUTH_COOKIE, JSON.stringify({
@@ -287,7 +287,7 @@ export async function resetPassword(prevState: any, formData: FormData) {
 export async function signInWithPassword(prevState: any, formData: FormData) {
   const email = (formData.get('email') as string) || 'developer@kortix.ai';
   const returnUrl = sanitizeAuthReturnUrl(formData.get('returnUrl') as string | undefined);
-  const target = returnUrl && returnUrl !== '/auth' ? returnUrl : '/projects/proj-trading';
+  const target = returnUrl && returnUrl !== '/auth' ? returnUrl : '/projects/b0000000-0000-0000-0000-000000000001';
 
   const jar = await cookies();
   jar.set(KORTIX_SUPABASE_AUTH_COOKIE, JSON.stringify({
@@ -328,7 +328,7 @@ export async function signInWithPassword(prevState: any, formData: FormData) {
 export async function signUpWithPassword(prevState: any, formData: FormData) {
   const email = (formData.get('email') as string) || 'developer@kortix.ai';
   const returnUrl = sanitizeAuthReturnUrl(formData.get('returnUrl') as string | undefined);
-  const target = returnUrl && returnUrl !== '/auth' ? returnUrl : '/projects/proj-trading';
+  const target = returnUrl && returnUrl !== '/auth' ? returnUrl : '/projects/b0000000-0000-0000-0000-000000000001';
 
   const jar = await cookies();
   jar.set(KORTIX_SUPABASE_AUTH_COOKIE, JSON.stringify({

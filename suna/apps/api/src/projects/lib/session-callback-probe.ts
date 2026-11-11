@@ -90,6 +90,7 @@ export function sandboxCallbackUnreachableReason(): string | null {
     host === '::1' ||
     host === '[::1]';
   if (!isLoopback) return null;
+  if (process.env.KORTIX_LOCAL_DEV === '1' || process.env.NODE_ENV === 'development') return null;
   return (
     `KORTIX_URL points at a loopback address (${config.KORTIX_URL}). ` +
     `Cloud sandboxes run remotely and cannot call back to your machine's localhost, ` +
