@@ -58,6 +58,29 @@ export async function saveTradingJournalTrade(trade: Record<string, unknown>): P
   return data.trade;
 }
 
+export interface TradingJournalUploadResponse {
+  url: string;
+  path: string;
+}
+
+/**
+ * Upload a chart screenshot (HTF/MTF/LTF) to POST /v1/trading/journal/upload
+ * backed by the Supabase Storage `journal-charts` bucket.
+ */
+export async function uploadTradingJournalChart(
+  file: File,
+  timeframe: 'htf' | 'mtf' | 'ltf' = 'htf',
+): Promise<string> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('timeframe', timeframe);
+  const res = await backendApi.upload<TradingJournalUploadResponse>('/trading/journal/upload', formData, {
+    showErrors: false,
+  });
+  const data = unwrap(res, 'Failed to upload chart screenshot');
+  return data.url;
+}
+
 /**
  * Delete trade from DELETE /v1/trading/journal/:id.
  */

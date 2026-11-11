@@ -2,6 +2,7 @@ import {
   getTradingJournalTrades,
   saveTradingJournalTrade,
   deleteTradingJournalTrade as deleteBackendTrade,
+  uploadTradingJournalChart,
 } from '@kortix/sdk';
 import { Direction, JournalTrade } from './types';
 
@@ -473,66 +474,79 @@ export function saveDayNote(date: string, note: string): void {
   }
 }
 
+async function optimizeLargeChartFile(file: File): Promise<File> {
+  if (file.size <= 8 * 1024 * 1024 || file.type === 'image/svg+xml' || typeof document === 'undefined') {
+    return file;
+  }
+
+  return await new Promise<File>((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const MAX_DIM = 3840;
+        let { width, height } = img;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          const scale = Math.min(MAX_DIM / width, MAX_DIM / height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(file);
+          return;
+        }
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => {
+            if (blob && blob.size < file.size) {
+              const baseName = file.name.replace(/\.[^.]+$/, '') || 'chart';
+              resolve(new File([blob], `${baseName}.webp`, { type: 'image/webp' }));
+            } else {
+              resolve(file);
+            }
+          },
+          'image/webp',
+          0.95
+        );
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(file);
+    };
+    img.src = objectUrl;
+  });
+}
+
 /**
- * Upload Chart Image (HTF, MTF, LTF)
- * Validates image type and compresses large screenshots into crisp WebP/JPEG Data URI
- * to prevent localStorage quota exhaustion and oversized DB payloads.
+ * Upload Chart Image (HTF, MTF, LTF) directly to Supabase Storage (`journal-charts`)
+ * via `/v1/trading/journal/upload`, keeping Postgres rows compact and images CDN-backed.
  */
 export async function uploadChartImage(
   file: File,
-  _timeframe: 'htf' | 'mtf' | 'ltf'
+  timeframe: 'htf' | 'mtf' | 'ltf'
 ): Promise<string> {
   if (!file.type.startsWith('image/')) {
-    throw new Error('Please upload a valid image file (PNG, JPG, WebP).');
+    throw new Error('Please upload a valid image file (PNG, JPG, WebP, GIF).');
+  }
+  const ALLOWED_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif']);
+  if (!ALLOWED_TYPES.has(file.type.toLowerCase())) {
+    throw new Error('Supported formats are PNG, JPEG, WebP, and GIF.');
   }
   const MAX_RAW_SIZE = 15 * 1024 * 1024; // 15MB sanity limit
   if (file.size > MAX_RAW_SIZE) {
     throw new Error('Image exceeds 15MB maximum upload limit.');
   }
 
-  const rawDataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error('Failed to read image file.'));
-    reader.readAsDataURL(file);
-  });
-
-  // Preserve exact original resolution & crispness (zero lossy compression up to 8MB)
-  if (file.size <= 8 * 1024 * 1024 || file.type === 'image/svg+xml' || typeof document === 'undefined') {
-    return rawDataUrl;
-  }
-
-  return await new Promise<string>((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const MAX_DIM = 3840;
-      let { width, height } = img;
-      if (width > MAX_DIM || height > MAX_DIM) {
-        const scale = Math.min(MAX_DIM / width, MAX_DIM / height);
-        width = Math.round(width * scale);
-        height = Math.round(height * scale);
-      }
-
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        resolve(rawDataUrl);
-        return;
-      }
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0, width, height);
-      const compressed = canvas.toDataURL('image/webp', 0.95);
-      if (compressed.startsWith('data:image/webp') && compressed.length < rawDataUrl.length) {
-        resolve(compressed);
-      } else {
-        const png = canvas.toDataURL('image/png');
-        resolve(png.length < rawDataUrl.length ? png : rawDataUrl);
-      }
-    };
-    img.onerror = () => resolve(rawDataUrl);
-    img.src = rawDataUrl;
-  });
+  const readyFile = await optimizeLargeChartFile(file);
+  return await uploadTradingJournalChart(readyFile, timeframe);
 }

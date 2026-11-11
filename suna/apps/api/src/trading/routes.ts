@@ -16,6 +16,7 @@ import type { Context } from 'hono';
 import { sql } from 'drizzle-orm';
 import type { AppEnv } from '../types';
 import { db } from '../shared/db';
+import { getSupabase, toPublicStorageUrl } from '../shared/supabase';
 import { listAgents, chatWithAgent, runSwarmAnalysis, type SwarmRunReport } from './swarm';
 import type { SwarmAgentRow } from './swarm';
 
@@ -390,6 +391,84 @@ tradingApp.post('/journal', async (c: Context<AppEnv>) => {
   }
 });
 
+const ALLOWED_CHART_MIME_TO_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+};
+const VALID_CHART_TIMEFRAMES = new Set(['htf', 'mtf', 'ltf', 'chart']);
+const MAX_JOURNAL_CHART_BYTES = 15 * 1024 * 1024;
+const JOURNAL_CHARTS_BUCKET = 'journal-charts';
+
+function extractJournalChartStoragePath(url: unknown): string | null {
+  if (typeof url !== 'string' || !url.startsWith('http')) return null;
+  const marker = `/storage/v1/object/public/${JOURNAL_CHARTS_BUCKET}/`;
+  const idx = url.indexOf(marker);
+  if (idx === -1) return null;
+  const rawPath = url.slice(idx + marker.length).split('?')[0];
+  try {
+    return decodeURIComponent(rawPath);
+  } catch {
+    return rawPath || null;
+  }
+}
+
+tradingApp.post('/journal/upload', async (c: Context<AppEnv>) => {
+  try {
+    const formData = await c.req.formData().catch(() => null);
+    if (!formData) return jsonError(c, 400, 'multipart form-data required');
+
+    const fileEntry = formData.get('file');
+    if (!(fileEntry instanceof Blob)) {
+      return jsonError(c, 400, 'Image file field "file" is required');
+    }
+    if (fileEntry.size <= 0) {
+      return jsonError(c, 400, 'Uploaded image is empty');
+    }
+    if (fileEntry.size > MAX_JOURNAL_CHART_BYTES) {
+      return jsonError(c, 400, 'Image exceeds 15MB maximum upload limit');
+    }
+
+    const mime = (fileEntry.type || '').toLowerCase().trim();
+    const ext = ALLOWED_CHART_MIME_TO_EXT[mime];
+    if (!ext) {
+      return jsonError(c, 400, 'Unsupported image type — expected PNG, JPEG, WebP, or GIF');
+    }
+
+    const tfRaw = String(formData.get('timeframe') || 'chart').toLowerCase().trim();
+    const timeframe = VALID_CHART_TIMEFRAMES.has(tfRaw) ? tfRaw : 'chart';
+    const userId = String(c.get('userId') || 'trader').replace(/[^a-zA-Z0-9_-]/g, '');
+    const objectPath = `${userId || 'trader'}/${timeframe}/${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${ext}`;
+
+    const supabase = getSupabase();
+    const bytes = await fileEntry.arrayBuffer();
+    const { error: uploadError } = await supabase.storage
+      .from(JOURNAL_CHARTS_BUCKET)
+      .upload(objectPath, bytes, {
+        contentType: mime,
+        cacheControl: '31536000',
+        upsert: false,
+      });
+
+    if (uploadError) {
+      return jsonError(c, 500, `journal chart upload: ${uploadError.message.slice(0, 200)}`);
+    }
+
+    const { data: pub } = supabase.storage
+      .from(JOURNAL_CHARTS_BUCKET)
+      .getPublicUrl(objectPath);
+
+    return c.json({
+      url: toPublicStorageUrl(pub.publicUrl),
+      path: objectPath,
+    });
+  } catch (e) {
+    return jsonError(c, 500, `journal upload: ${String(e).slice(0, 200)}`);
+  }
+});
+
 tradingApp.delete('/journal/:id', async (c: Context<AppEnv>) => {
   const id = c.req.param('id') ?? '';
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -399,11 +478,29 @@ tradingApp.delete('/journal/:id', async (c: Context<AppEnv>) => {
     const rows = await db.execute(sql`
       delete from trading.journal_trades
       where id = ${id}
-      returning id
+      returning id, chart_htf, chart_mtf, chart_ltf
     `);
-    if (!resultRows<{ id: string }>(rows).length) {
+    const deletedRows = resultRows<{
+      id: string;
+      chart_htf?: string | null;
+      chart_mtf?: string | null;
+      chart_ltf?: string | null;
+    }>(rows);
+    if (!deletedRows.length) {
       return jsonError(c, 404, `Trade not found: ${id}`);
     }
+
+    const removed = deletedRows[0];
+    const storagePaths = [removed.chart_htf, removed.chart_mtf, removed.chart_ltf]
+      .map(extractJournalChartStoragePath)
+      .filter((p): p is string => Boolean(p));
+    if (storagePaths.length > 0) {
+      void getSupabase()
+        .storage.from(JOURNAL_CHARTS_BUCKET)
+        .remove(storagePaths)
+        .catch(() => undefined);
+    }
+
     return c.json({ deleted: true, id });
   } catch (e) {
     return jsonError(c, 500, `journal delete: ${String(e).slice(0, 200)}`);

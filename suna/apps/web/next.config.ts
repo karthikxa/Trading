@@ -1370,7 +1370,12 @@ const withNextIntl = createNextIntlPlugin('./src/i18n/request.ts');
 export default function config(phase: string) {
   ensureBlumeDocsBuilt(phase);
 
-  return withSentryConfig(withBetterStack(withMDX(withNextIntl(nextConfig()))), {
+  const baseConfig = withMDX(withNextIntl(nextConfig()));
+  const wrappedWithLogs = (process.env.LOGTAIL_SOURCE_TOKEN || process.env.NEXT_PUBLIC_LOGTAIL_SOURCE_TOKEN)
+    ? withBetterStack(baseConfig)
+    : baseConfig;
+
+  return withSentryConfig(wrappedWithLogs, {
     // Suppresses source map uploading logs during build
     silent: true,
 
