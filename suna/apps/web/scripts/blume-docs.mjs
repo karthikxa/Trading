@@ -102,7 +102,11 @@ export function buildBlumeDocs() {
   }
   try {
     if (isPublicDocsUpToDate()) return;
-    execFileSync('npx', ['blume', 'build'], { cwd: WEB_ROOT, stdio: 'inherit' });
+    execFileSync('npx', ['blume', 'build'], {
+      cwd: WEB_ROOT,
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+    });
     fs.rmSync(PUBLIC_DOCS, { recursive: true, force: true });
     fs.mkdirSync(PUBLIC_DOCS, { recursive: true });
     fs.cpSync(DIST, PUBLIC_DOCS, { recursive: true });
