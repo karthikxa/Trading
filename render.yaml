@@ -13,9 +13,9 @@ services:
     healthCheckPath: /v1/health
     buildCommand: >-
       (command -v bun >/dev/null 2>&1 || (export BUN_INSTALL="$PWD/.bun" && curl -fsSL https://bun.sh/install | bash)) &&
-      (command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@10) &&
-      pnpm install --frozen-lockfile &&
-      NODE_OPTIONS="--max-old-space-size=400" NEXT_TELEMETRY_DISABLED=1 pnpm --filter Kortix-Computer-Frontend build &&
+      (command -v pnpm >/dev/null 2>&1 || corepack enable || npm install -g pnpm@10) &&
+      pnpm install --frozen-lockfile --prod=false &&
+      NODE_OPTIONS="--max-old-space-size=2048" RAYON_NUM_THREADS=2 TOKIO_WORKER_THREADS=2 UV_THREADPOOL_SIZE=2 MALLOC_ARENA_MAX=2 KORTIX_TURBOPACK_EVICTION=full NEXT_TELEMETRY_DISABLED=1 pnpm --filter Kortix-Computer-Frontend build &&
       mkdir -p apps/web/.next/standalone/apps/web/.next apps/web/.next/standalone/apps/web/public &&
       cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static &&
       cp -R apps/web/public/. apps/web/.next/standalone/apps/web/public/

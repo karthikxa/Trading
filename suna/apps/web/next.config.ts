@@ -416,6 +416,7 @@ const nextConfig = (): NextConfig => ({
 
   // Performance optimizations
   experimental: {
+    ...(process.env.RENDER ? { cpus: 1, memoryBasedWorkersCount: true } : {}),
     // Next 16 gives a dynamic page segment a client-cache TTL of 0, so every
     // navigation to a route under `projects/[id]/layout.tsx` (which awaits
     // cookies(), making the whole subtree dynamic) discards the segment and
