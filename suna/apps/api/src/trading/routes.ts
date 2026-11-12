@@ -402,6 +402,70 @@ const VALID_CHART_TIMEFRAMES = new Set(['htf', 'mtf', 'ltf', 'chart']);
 const MAX_JOURNAL_CHART_BYTES = 15 * 1024 * 1024;
 const JOURNAL_CHARTS_BUCKET = 'journal-charts';
 
+export const tradingChartsPublicApp = new OpenAPIHono<AppEnv>();
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+let chartsTableReadyPromise: Promise<void> | null = null;
+
+async function ensureJournalChartsTable(): Promise<void> {
+  if (!chartsTableReadyPromise) {
+    chartsTableReadyPromise = db
+      .execute(sql`
+        create table if not exists trading.journal_charts (
+          id uuid primary key,
+          user_id text not null,
+          timeframe text not null,
+          mime_type text not null,
+          data bytea not null,
+          created_at timestamptz not null default now()
+        )
+      `)
+      .then(() => undefined)
+      .catch((err) => {
+        chartsTableReadyPromise = null;
+        throw err;
+      });
+  }
+  await chartsTableReadyPromise;
+}
+
+function extractJournalChartPgId(url: unknown): string | null {
+  if (typeof url !== 'string') return null;
+  const marker = '/v1/trading-charts/';
+  const idx = url.indexOf(marker);
+  if (idx === -1) return null;
+  const candidate = url.slice(idx + marker.length).split('?')[0]?.trim() || '';
+  return UUID_REGEX.test(candidate) ? candidate : null;
+}
+
+tradingChartsPublicApp.get('/:id', async (c: Context<AppEnv>) => {
+  const id = (c.req.param('id') ?? '').trim();
+  if (!UUID_REGEX.test(id)) return jsonError(c, 400, 'Valid UUID required');
+  try {
+    await ensureJournalChartsTable();
+    const res = await db.execute(sql`
+      select mime_type, encode(data, 'base64') as data_b64
+      from trading.journal_charts
+      where id = ${id}::uuid
+      limit 1
+    `);
+    const rows = resultRows<{ mime_type: string; data_b64: string }>(res);
+    if (!rows.length || !rows[0].data_b64) {
+      return jsonError(c, 404, 'Chart image not found');
+    }
+    const buf = Buffer.from(rows[0].data_b64, 'base64');
+    return new Response(buf, {
+      status: 200,
+      headers: {
+        'Content-Type': rows[0].mime_type || 'image/png',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      },
+    });
+  } catch (e) {
+    return jsonError(c, 500, `journal chart fetch: ${String(e).slice(0, 200)}`);
+  }
+});
+
 function extractJournalChartStoragePath(url: unknown): string | null {
   if (typeof url !== 'string' || !url.startsWith('http')) return null;
   const marker = `/storage/v1/object/public/${JOURNAL_CHARTS_BUCKET}/`;
@@ -444,16 +508,49 @@ tradingApp.post('/journal/upload', async (c: Context<AppEnv>) => {
 
     const supabase = getSupabase();
     const bytes = await fileEntry.arrayBuffer();
-    const { error: uploadError } = await supabase.storage
-      .from(JOURNAL_CHARTS_BUCKET)
-      .upload(objectPath, bytes, {
-        contentType: mime,
-        cacheControl: '31536000',
-        upsert: false,
-      });
+    let uploadError: { message: string } | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+      const res = await supabase.storage
+        .from(JOURNAL_CHARTS_BUCKET)
+        .upload(objectPath, bytes, {
+          contentType: mime,
+          cacheControl: '31536000',
+          upsert: attempt > 0,
+        });
+      uploadError = res.error;
+      if (!uploadError) break;
+      const msg = uploadError.message.toLowerCase();
+      const transient =
+        msg.includes('internal server error') ||
+        msg.includes('too many connections') ||
+        msg.includes('connection to the database') ||
+        msg.includes('timed out') ||
+        msg.includes('timeout') ||
+        msg.includes('429') ||
+        msg.includes('502') ||
+        msg.includes('503') ||
+        msg.includes('504') ||
+        msg.includes('500') ||
+        msg.includes('fetch failed');
+      if (!transient) break;
+    }
 
     if (uploadError) {
-      return jsonError(c, 500, `journal chart upload: ${uploadError.message.slice(0, 200)}`);
+      // Fallback to PostgreSQL BYTEA storage when Supabase's Storage API pooler rejects connections (429/5xx)
+      await ensureJournalChartsTable();
+      const chartId = crypto.randomUUID();
+      const b64 = Buffer.from(bytes).toString('base64');
+      await db.execute(sql`
+        insert into trading.journal_charts (id, user_id, timeframe, mime_type, data)
+        values (${chartId}::uuid, ${userId || 'trader'}, ${timeframe}, ${mime}, decode(${b64}, 'base64'))
+      `);
+      return c.json({
+        url: `/v1/trading-charts/${chartId}`,
+        path: `pg:${chartId}`,
+      });
     }
 
     const { data: pub } = supabase.storage
@@ -498,6 +595,15 @@ tradingApp.delete('/journal/:id', async (c: Context<AppEnv>) => {
       void getSupabase()
         .storage.from(JOURNAL_CHARTS_BUCKET)
         .remove(storagePaths)
+        .catch(() => undefined);
+    }
+
+    const pgChartIds = [removed.chart_htf, removed.chart_mtf, removed.chart_ltf]
+      .map(extractJournalChartPgId)
+      .filter((p): p is string => Boolean(p));
+    for (const pgId of pgChartIds) {
+      void db
+        .execute(sql`delete from trading.journal_charts where id = ${pgId}::uuid`)
         .catch(() => undefined);
     }
 

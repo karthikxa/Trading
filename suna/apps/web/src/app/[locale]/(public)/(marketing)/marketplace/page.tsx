@@ -7,7 +7,10 @@ import { loadMarketplaceExploreData } from '@/lib/marketplace-public';
 import { socialMetadata } from '@/lib/seo/metadata';
 import { CANONICAL_ORIGIN } from '@kortix/ui/internal/lib/site-metadata';
 
-export const revalidate = 3600;
+// RootLayout calls `connection()` in non-Vercel builds, so every route under
+// app/[locale] renders dynamically per request; match [company]/[...item]/page.tsx
+// and opt out of build-time ISR prerendering.
+export const dynamic = 'force-dynamic';
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations('hardcodedUi.i18nComplete');

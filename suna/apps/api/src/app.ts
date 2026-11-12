@@ -180,8 +180,9 @@ app.route('/v1/drives', drivesApp); // personal, agent and company drives + thei
 // FreeLLMAPI gateway surfaces (/v1/models, /v1/chat/completions, /v1/messages).
 // supabaseAuth guards /v1/trading; the gateway routes carry their own master
 // key or JWT check (master key default: see config FLM_MASTER_KEY).
-import { tradingApp } from './trading/routes';
+import { tradingApp, tradingChartsPublicApp } from './trading/routes';
 import { tradingGatewayApp } from './trading/gateway';
+app.route('/v1/trading-charts', tradingChartsPublicApp);
 app.use('/v1/trading', supabaseAuth);
 app.use('/v1/trading/*', supabaseAuth);
 app.route('/v1/trading', tradingApp);
