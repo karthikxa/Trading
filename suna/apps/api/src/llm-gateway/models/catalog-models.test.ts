@@ -1,0 +1,267 @@
+import { describe, expect, test } from 'bun:test';
+import type { Catalog } from '@kortix/llm-catalog';
+
+import { gatewayCodexModels, gatewayModelCatalog, gatewayModelsAll } from './catalog-models';
+import { CODEX_SEED_MODEL_IDS } from './codex-models';
+import { TEST_MANAGED_LINEUP } from '../../__tests__/fixtures/managed-lineup';
+import { __setManagedLineupForTest } from './managed-models';
+import { servedManagedModels } from './served-managed-models';
+
+// The lineup Platinum Inference would list (scripts/test.env sets the Platinum key).
+__setManagedLineupForTest(TEST_MANAGED_LINEUP);
+const SERVED = servedManagedModels();
+
+// The sandbox agent server injects this catalog into OpenCode verbatim and does NO
+// client-side limit backfill — so the gateway MUST guarantee a usable context window
+// on every served model, or OpenCode can't size conversations and a long session
+// pins at 100% context. These tests lock that server-side guarantee.
+//
+// The managed lineup and its prices are owned by Platinum Inference. This file
+// owns the mapping from a lineup entry to the served record.
+describe('gatewayModelCatalog — served catalog', () => {
+  const full = gatewayModelCatalog('proj');
+
+  // OpenCode (provider.ts) reads image support ONLY from `modalities.input`
+  // and replaces image parts with "ERROR: Cannot read image" when it is
+  // missing; the thinking control is built ONLY from effort values. Both come
+  // from Platinum's model list.
+  test('every served vision model advertises image input and a thinking control', () => {
+    for (const managed of SERVED.filter((m) => m.vision)) {
+      const served = full[managed.id]!;
+      expect(served.modalities?.input, managed.id).toContain('image');
+      const effort = served.reasoning_options?.find((o) => o.type === 'effort');
+      expect(effort?.values?.length ?? 0, managed.id).toBeGreaterThan(0);
+    }
+  });
+
+  test('serves managed DeepSeek V4.1 with vision, tools, and a context limit', () => {
+    expect(full['deepseek-v4.1-flash']).toMatchObject({
+      name: 'DeepSeek V4.1 Flash',
+      provider: 'kortix',
+      attachment: true,
+      tool_call: true,
+      temperature: true,
+      limit: { context: 1_000_000, output: 65_536 },
+      cost: { input: 0.15, output: 0.6, cache_read: 0.003 },
+    });
+  });
+
+  test.each(SERVED.map((model) => [model.id, model] as const))(
+    '%s is served under Kortix with Platinum\'s vision, limit, and price',
+    (id, model) => {
+      const pricing = model.pricing;
+      expect(full[id]).toMatchObject({
+        name: model.name,
+        provider: 'kortix',
+        attachment: model.vision,
+        limit: model.limit,
+      });
+      // Exact: an extra or renamed price field fails.
+      expect(full[id]?.cost).toEqual({
+        input: pricing.inputPerMillion,
+        output: pricing.outputPerMillion,
+        ...(pricing.cachedInputPerMillion != null ? { cache_read: pricing.cachedInputPerMillion } : {}),
+      });
+    },
+  );
+
+  test('a served limit is never invented: present means a positive context from the source', () => {
+    const bad = Object.entries(full)
+      .filter(([, m]) => m.limit && !(typeof m.limit.context === 'number' && m.limit.context > 0))
+      .map(([id]) => id);
+    expect(bad).toEqual([]);
+    expect(Object.values(full).filter((m) => m.limit).length).toBeGreaterThan(0);
+  });
+
+  test('synthetic auto is absent, and an anonymous caller sees exactly the served managed ids', () => {
+    expect(full.auto).toBeUndefined();
+    expect(Object.keys(gatewayModelCatalog(undefined)).sort()).toEqual(
+      SERVED.map((model) => model.id).sort(),
+    );
+  });
+
+  // The capabilities come from the OpenAI catalog record: every one rejects a
+  // client temperature; only some take the `none` effort.
+  const EFFORT = ['low', 'medium', 'high', 'xhigh', 'max'];
+  test.each([
+    ['codex/gpt-6-astra', 'GPT-6 Astra (ChatGPT)', EFFORT],
+    ['codex/gpt-6-sol', 'GPT-6 Sol (ChatGPT)', ['none', ...EFFORT]],
+    ['codex/gpt-6-luna', 'GPT-6 Luna (ChatGPT)', ['none', ...EFFORT]],
+    ['codex/gpt-5.6-sol', 'GPT-5.6 Sol (ChatGPT)', ['none', ...EFFORT]],
+  ])('project catalog advertises %s through the ChatGPT subscription', (id, name, effort) => {
+    expect(full[id]).toMatchObject({
+      name,
+      provider: 'codex',
+      reasoning: true,
+      tool_call: true,
+      attachment: true,
+      temperature: false,
+      limit: { context: 1_050_000, input: 922_000, output: 128_000 },
+    });
+    expect(full[id]?.reasoning_options).toContainEqual({ type: 'effort', values: effort });
+  });
+
+  test('BYOK Anthropic serves Claude Opus 5.5 from the bundled record', () => {
+    expect(full['anthropic/claude-opus-5-5']).toMatchObject({
+      name: 'Claude Opus 5.5',
+      provider: 'anthropic',
+      released: '2026-09-22',
+      release_date: '2026-09-22',
+      family: 'claude-opus',
+      temperature: false,
+      limit: { context: 1_000_000, output: 128_000 },
+      cost: { input: 4, output: 20, cache_read: 0.2, cache_write: 5 },
+    });
+  });
+
+  test('native OpenCode Zen free models are not served by the gateway catalog', () => {
+    for (const id of ['deepseek-v4-flash-free', 'mimo-v2.5-free', 'big-pickle']) {
+      expect(full[`opencode/${id}`], `opencode/${id}`).toBeUndefined();
+    }
+  });
+
+  // Regression coverage for the "every provider shows as Kortix" picker bug:
+  // every served model MUST carry the REAL upstream provider id explicitly,
+  // never leaving the client to string-split the wire model id (fragile —
+  // see model-selector.tsx's pickerGroupId / use-model-store.ts's subProviderOf).
+  test('every served model carries an explicit `provider` field', () => {
+    // BYOK catalog entries brand as their real upstream provider.
+    expect(full['anthropic/claude-opus-4-8']?.provider).toBe('anthropic');
+    // Managed models brand as `kortix`.
+    expect(full['deepseek-v4.1-flash']?.provider).toBe('kortix');
+    expect(full['glm-5.3-flash']?.provider).toBe('kortix');
+    // Codex (ChatGPT subscription) models brand as their own `codex` provider,
+    // distinct from the raw `openai` BYOK provider.
+    expect(full['codex/gpt-5.6-sol']?.provider).toBe('codex');
+
+    const missingProvider = Object.entries(full)
+      .filter(([, m]) => typeof m.provider !== 'string' || m.provider.length === 0)
+      .map(([id]) => id);
+    expect(missingProvider).toEqual([]);
+  });
+
+  test('each catalog shape is built once per runtime-catalog revision, not per call', () => {
+    expect(gatewayModelCatalog('proj')).toBe(full);
+    const free = gatewayModelCatalog('proj', { freeManagedOnly: true });
+    expect(gatewayModelCatalog('proj', { freeManagedOnly: true })).toBe(free);
+  });
+});
+
+// Every models.dev field the runtime reads must reach OpenCode unchanged.
+// Regressions: description/open_weights/last_updated were dropped before the
+// served shape (PR #5010 review), and a `budget_tokens`-only reasoning entry
+// (mainline Claude) used to vanish.
+describe('served catalog field passthrough', () => {
+  const [codexId] = CODEX_SEED_MODEL_IDS;
+  const enriched = {
+    released: '2026-01-02',
+    family: 'synthetic',
+    reasoning: true,
+    reasoning_options: [{ type: 'budget_tokens', min: 1024 }],
+    tool_call: true,
+    attachment: true,
+    temperature: false,
+    structured_output: true,
+    knowledge: '2025-12',
+    modalities: { input: ['text', 'image'], output: ['text'] },
+    cost: { input: 1, output: 2, cache_read: 0.1, cache_write: 1.25 },
+    description: 'A synthetic model.',
+    open_weights: false,
+    last_updated: '2026-01-03',
+    limit: { context: 100_000, input: 90_000, output: 8_000 },
+  };
+  const catalog = {
+    source: 'synthetic',
+    fetched_at: '2026-01-01T00:00:00.000Z',
+    provider_count: 2,
+    model_count: 3,
+    providers: [
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        models: [
+          { id: 'enriched', name: 'Enriched', ...enriched },
+          { id: 'bare', name: 'Bare', limit: { context: 0, output: 0 } },
+        ],
+      },
+      { id: 'openai', name: 'OpenAI', models: [{ id: codexId!, name: 'Codex Base', ...enriched }] },
+    ],
+  } as unknown as Catalog;
+  const { released, family, ...capabilities } = enriched;
+
+  test('a BYOK record carries every enriched field verbatim', () => {
+    expect(gatewayModelsAll(catalog)['anthropic/enriched']).toEqual({
+      name: 'Enriched',
+      provider: 'anthropic',
+      provider_name: 'Anthropic',
+      released,
+      release_date: released,
+      family,
+      ...capabilities,
+    });
+  });
+
+  test('a BYOK record without enriched capabilities gets permissive defaults and no invented window', () => {
+    expect(gatewayModelsAll(catalog)['anthropic/bare']).toEqual({
+      name: 'Bare',
+      provider: 'anthropic',
+      provider_name: 'Anthropic',
+      released: undefined,
+      release_date: undefined,
+      family: undefined,
+      reasoning: true,
+      tool_call: true,
+      attachment: false,
+      temperature: false,
+    });
+  });
+
+  test('a ChatGPT subscription model serves the backend window from Codex models.json', () => {
+    const limit = gatewayCodexModels(catalog, [codexId], { [codexId]: 272_000 })[`codex/${codexId}`]!.limit;
+    expect(limit!.context).toBe(272_000);
+    expect(limit!.output).toBeLessThanOrEqual(272_000);
+    // The public API's `input` (a larger prompt budget) does not apply to the ChatGPT backend.
+    expect(limit!.input).toBeUndefined();
+  });
+
+  test('a ChatGPT subscription record carries the openai record fields verbatim', () => {
+    expect(gatewayCodexModels(catalog)[`codex/${codexId}`]).toEqual({
+      name: 'Codex Base (ChatGPT)',
+      provider: 'codex',
+      released,
+      release_date: released,
+      family,
+      ...capabilities,
+    });
+  });
+});
+
+describe('gatewayModelCatalog — free-tier visibility', () => {
+  const freeFull = gatewayModelCatalog('proj', { freeManagedOnly: true });
+
+  // Managed ids are bare; every BYOK and codex id carries a provider prefix.
+  // Free tier sees no managed model, the platform default included.
+  test('free tier sees no managed model', () => {
+    expect(Object.keys(freeFull).filter((id) => !id.includes('/'))).toEqual([]);
+  });
+
+  test('free tier still sees BYOK catalog models (own connected keys work)', () => {
+    expect(freeFull['anthropic/claude-opus-4-8']).toBeDefined();
+  });
+
+  test('anonymous + free-only = nothing', () => {
+    const freeOnly = gatewayModelCatalog(undefined, { freeManagedOnly: true });
+    expect(Object.keys(freeOnly)).toEqual([]);
+  });
+});
+
+describe('ChatGPT subscription pricing', () => {
+  test('subscription rows retain the published model price context', () => {
+    const models = gatewayModelCatalog('proj');
+    const subscription = models['codex/gpt-5.6-sol']!;
+    const api = models['openai/gpt-5.6-sol']!;
+    expect(subscription.cost).toEqual(api.cost);
+    expect(subscription.cost!.input).toBeGreaterThan(0);
+    expect(subscription.limit!.context).toBeGreaterThan(0);
+  });
+});

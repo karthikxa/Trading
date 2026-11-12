@@ -23,14 +23,14 @@ scripts/push_to_github.py
 .gev-cache/
 .gev-logs/
 
-data/
+/data/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 
 # Local hosted-project selection
 .copilotkit/
-models/
+/models/
 
 # Scratch & dump files
 tradingview_*_dump_*.json

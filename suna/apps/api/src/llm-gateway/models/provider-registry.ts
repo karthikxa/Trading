@@ -1,0 +1,107 @@
+import { type ProviderKind, providerKindForNpm } from '@kortix/llm-gateway';
+import { type Catalog, primaryAuthEnvVars } from '@kortix/llm-catalog';
+import { runtimeModelCatalog } from './runtime-catalog';
+
+const BASE_URL_FALLBACKS: Record<string, string> = {
+  openai: 'https://api.openai.com/v1',
+  groq: 'https://api.groq.com/openai/v1',
+  'x-ai': 'https://api.x.ai/v1',
+  xai: 'https://api.x.ai/v1',
+  mistral: 'https://api.mistral.ai/v1',
+  deepseek: 'https://api.deepseek.com/v1',
+  perplexity: 'https://api.perplexity.ai',
+  cerebras: 'https://api.cerebras.ai/v1',
+  vercel: 'https://ai-gateway.vercel.sh/v1',
+  v0: 'https://api.v0.dev/v1',
+  deepinfra: 'https://api.deepinfra.com/v1/openai',
+  togetherai: 'https://api.together.xyz/v1',
+};
+
+const ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
+const OPENAI_NPM = '@ai-sdk/openai';
+
+// The project-secret name a BYOK Bedrock user connects their long-lived Bedrock
+// API key under. Matches the AWS SDK's own env var (models.dev lists it in the
+// amazon-bedrock provider's `env`), and the bedrock transport sends it as
+// `Authorization: Bearer <key>`. Deliberately NOT the SigV4 access-key/secret
+// pair (env[0]/env[1] on the catalog provider) — the bearer-token API key is
+// the single-secret, self-generatable credential this path is built around.
+const BEDROCK_BYOK_ENV_VAR = 'AWS_BEARER_TOKEN_BEDROCK';
+
+// Bedrock has no single static baseUrl to publish here. The runtime endpoint
+// uses the project's own AWS_REGION secret, never deployment config. This
+// function has no project context, so it publishes the envVar/kind only.
+// It cannot resolve a final baseUrl for Bedrock. Instead,
+// resolveCandidates.ts (which DOES have `principal.projectId`) resolves the
+// project's own AWS_REGION secret and builds the regional endpoint per-request.
+// A discriminated union (rather than an optional `baseUrl` on one shape) lets
+// every OTHER caller narrow `kind !== 'bedrock'` and use `baseUrl` as a plain
+// `string` with no assertion.
+// `npm` is the models.dev `npm` field (verbatim) — it selects the AI SDK
+// provider package under the 'ai-sdk' transport engine; ignored by the native
+// transports.
+export type CatalogUpstream =
+  | { kind: 'bedrock'; envVar: string; npm?: string }
+  | { kind: Exclude<ProviderKind, 'bedrock'>; envVar: string; baseUrl: string; npm?: string };
+
+/**
+ * Resolve provider transport metadata from the API-owned runtime catalog. With
+ * a `modelId`, models.dev's per-model `provider` override wins: OpenCode Go
+ * serves MiniMax on `@ai-sdk/anthropic` and Grok on `@ai-sdk/openai` under the
+ * same `api` base as its chat-completions models.
+ */
+export function resolveCatalogUpstream(
+  providerId: string,
+  modelId?: string,
+  catalog: Catalog = runtimeModelCatalog.snapshot(),
+): CatalogUpstream | null {
+  const provider = catalog.providers.find((candidate) => candidate.id === providerId);
+  if (!provider) return null;
+
+  // Google's Gemini API accepts OpenAI chat-completions requests with an API
+  // key. Use the same primary key name as the Models connect control.
+  if (providerId === 'google') {
+    return {
+      kind: 'openai-compat',
+      envVar: 'GOOGLE_GENERATIVE_AI_API_KEY',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      npm: provider.npm ?? undefined,
+    };
+  }
+
+  const override = modelId ? provider.models.find((model) => model.id === modelId)?.provider : undefined;
+  const npm = override?.npm ?? provider.npm ?? undefined;
+  let kind = providerKindForNpm(npm);
+  if (!kind) return null;
+  // `@ai-sdk/openai` on a model of a non-OpenAI provider means the Responses
+  // API: OpenCode builds these models with `sdk.responses()`. Only the AI SDK
+  // engine speaks it; the direct path posts `/chat/completions`.
+  if (override?.npm === OPENAI_NPM && provider.npm !== OPENAI_NPM) kind = 'openai-responses';
+
+  // Bedrock is a standalone BYOK provider (NOT the cloud-only managed/credits
+  // path): a project connects its OWN Bedrock API key. models.dev carries no
+  // `api` base for it (the real endpoint is region-derived, per-project — see
+  // the CatalogUpstream doc comment above) and its `env[0]` is the SigV4
+  // access-key id, not the bearer token the transport uses — so envVar is
+  // resolved explicitly here rather than falling through to the generic
+  // single-key path below.
+  if (kind === 'bedrock') {
+    return { envVar: BEDROCK_BYOK_ENV_VAR, kind, npm };
+  }
+
+  // Prefer the catalog provider's own `api` base URL when it publishes one:
+  // several anthropic-TRANSPORT providers are third-party Anthropic-compatible
+  // endpoints (kimi-for-coding → https://api.kimi.com/coding/v1, the MiniMax
+  // coding plans → api.minimax[i].com/anthropic/v1, …), and keying the override
+  // off `kind` sent their users' keys to api.anthropic.com, where they 401.
+  // The catalog's own `anthropic` entry carries no `api` field, so the
+  // hardcoded endpoint remains as the fallback for exactly that case.
+  const baseUrl = override?.api || provider.api ||
+    (kind === 'anthropic' ? ANTHROPIC_BASE_URL : BASE_URL_FALLBACKS[providerId]);
+  // The same key name the connect form writes: a provider sharing a models.dev
+  // env var with another reads its own name (providerAuthRequirement).
+  const envVar = primaryAuthEnvVars(provider)[0];
+  if (!baseUrl || !envVar) return null;
+
+  return { baseUrl, envVar, kind, npm };
+}

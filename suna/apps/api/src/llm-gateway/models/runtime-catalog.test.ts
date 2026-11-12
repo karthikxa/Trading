@@ -1,0 +1,243 @@
+import { describe, expect, test } from 'bun:test';
+
+import type { Catalog } from '@kortix/llm-catalog';
+import { createRuntimeModelCatalog } from './runtime-catalog';
+
+const seed: Catalog = {
+  source: 'bundled-test',
+  fetched_at: '2026-01-01T00:00:00.000Z',
+  provider_count: 1,
+  model_count: 1,
+  providers: [{
+    id: 'seed-provider',
+    name: 'Seed Provider',
+    env: ['SEED_API_KEY'],
+    api: 'https://seed.test/v1',
+    npm: '@ai-sdk/openai-compatible',
+    models: [{ id: 'seed-model', name: 'Seed Model' }],
+  }],
+};
+
+describe('runtime model catalog', () => {
+  test('refreshes the catalog from the configured API and atomically replaces the seed', async () => {
+    const catalog = createRuntimeModelCatalog({
+      seed,
+      sourceUrl: 'https://catalog.test/api.json',
+      fetchImpl: async () => new Response(JSON.stringify({
+        live: {
+          id: 'live',
+          name: 'Live Provider',
+          env: ['LIVE_API_KEY'],
+          api: 'https://live.test/v1',
+          npm: '@ai-sdk/openai-compatible',
+          models: {
+            'live-model': {
+              id: 'live-model',
+              name: 'Live Model',
+              release_date: '2026-07-01',
+              reasoning: true,
+              tool_call: true,
+              attachment: false,
+              temperature: true,
+              limit: { context: 128_000, output: 16_000 },
+            },
+          },
+        },
+      }), { status: 200 }),
+    });
+
+    expect(catalog.status().source).toBe('seed');
+    expect(await catalog.refresh()).toBe(true);
+    expect(catalog.status()).toMatchObject({
+      source: 'api',
+      sourceUrl: 'https://catalog.test/api.json',
+      // The live provider plus Platinum, which is not on models.dev and is kept on every refresh.
+      providerCount: 2,
+      modelCount: 1,
+    });
+    expect(catalog.snapshot().providers.map((p) => p.id)).toContain('platinum');
+    expect(catalog.snapshot().providers[0]?.models[0]).toMatchObject({
+      id: 'live-model',
+      released: '2026-07-01',
+      reasoning: true,
+      limit: { context: 128_000, output: 16_000 },
+    });
+  });
+
+  // The live refresh path (normalizeCatalog) must mirror the SAME field set as
+  // the baked-snapshot enrich script (apps/web/scripts/
+  // enrich-llm-catalog-capabilities.ts) — a live/baked shape drift silently
+  // loses data for whichever path a deployment happens to be serving from.
+  test('mirrors the full enriched field set from a live models.dev-shaped response', async () => {
+    const catalog = createRuntimeModelCatalog({
+      seed,
+      sourceUrl: 'https://catalog.test/api.json',
+      fetchImpl: async () => new Response(JSON.stringify({
+        anthropic: {
+          id: 'anthropic',
+          name: 'Anthropic',
+          env: ['ANTHROPIC_API_KEY'],
+          api: 'https://api.anthropic.com/v1',
+          npm: '@ai-sdk/anthropic',
+          models: {
+            'claude-opus-4-8': {
+              id: 'claude-opus-4-8',
+              name: 'Claude Opus 4.8',
+              description: 'Top Claude Opus tier',
+              release_date: '2026-05-28',
+              last_updated: '2026-05-28',
+              reasoning: true,
+              reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high'] }],
+              tool_call: true,
+              attachment: true,
+              temperature: false,
+              structured_output: true,
+              interleaved: true,
+              open_weights: false,
+              knowledge: '2026-01',
+              family: 'claude-opus',
+              modalities: { input: ['text', 'image'], output: ['text'] },
+              limit: { context: 1_000_000, input: 900_000, output: 128_000 },
+              cost: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
+              provider: { npm: '@ai-sdk/anthropic', api: 'https://override.test/v1' },
+            },
+          },
+        },
+      }), { status: 200 }),
+    });
+
+    expect(await catalog.refresh()).toBe(true);
+    const model = catalog.snapshot().providers[0]?.models[0];
+    expect(model).toMatchObject({
+      id: 'claude-opus-4-8',
+      description: 'Top Claude Opus tier',
+      last_updated: '2026-05-28',
+      structured_output: true,
+      interleaved: true,
+      open_weights: false,
+      knowledge: '2026-01',
+      family: 'claude-opus',
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      limit: { context: 1_000_000, input: 900_000, output: 128_000 },
+      cost: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
+      reasoning_options: [{ type: 'effort', values: ['low', 'medium', 'high'] }],
+      provider: { npm: '@ai-sdk/anthropic', api: 'https://override.test/v1' },
+    });
+  });
+
+  // models.dev marks retired entries `status: "deprecated"`; opencode hides
+  // those in the sandbox. The pre-runtime picker source reads this route, so
+  // the field must survive or the two pickers disagree (dev 2026-08-25: 29
+  // vs 7 free Zen models).
+  test('`status` passes through from models.dev', async () => {
+    const catalog = createRuntimeModelCatalog({
+      seed,
+      sourceUrl: 'https://catalog.test/api.json',
+      fetchImpl: async () => new Response(JSON.stringify({
+        opencode: {
+          id: 'opencode',
+          name: 'OpenCode Zen',
+          env: ['OPENCODE_API_KEY'],
+          models: {
+            'glm-5-free': { id: 'glm-5-free', name: 'GLM 5 Free', status: 'deprecated' },
+            'hy3-free': { id: 'hy3-free', name: 'Hy3 Free' },
+          },
+        },
+      }), { status: 200 }),
+    });
+    expect(await catalog.refresh()).toBe(true);
+    const models = catalog.snapshot().providers[0]?.models ?? [];
+    expect(models.find((m) => m.id === 'glm-5-free')?.status).toBe('deprecated');
+    expect(models.find((m) => m.id === 'hy3-free')?.status).toBeUndefined();
+  });
+
+  // MUST-FIX regression (adversarial review of PR #5010): the live refresh
+  // path and the baked-snapshot enrich script must never diverge in SHAPE.
+  // The live path once kept a `budget_tokens` entry (mainline Claude's only
+  // shape) while the baked path dropped it. The baked half is proven in
+  // packages/llm-catalog catalog-field-fidelity.test.ts.
+  test('a budget_tokens reasoning_options entry survives the live path verbatim', async () => {
+    const catalog = createRuntimeModelCatalog({
+      seed,
+      sourceUrl: 'https://catalog.test/api.json',
+      fetchImpl: async () => new Response(JSON.stringify({
+        anthropic: {
+          id: 'anthropic',
+          name: 'Anthropic',
+          env: ['ANTHROPIC_API_KEY'],
+          models: {
+            'claude-haiku-4-5': {
+              id: 'claude-haiku-4-5',
+              name: 'Claude Haiku 4.5',
+              reasoning: true,
+              reasoning_options: [{ type: 'budget_tokens', min: 1024 }],
+              temperature: true,
+            },
+          },
+        },
+      }), { status: 200 }),
+    });
+
+    expect(await catalog.refresh()).toBe(true);
+    const model = catalog.snapshot().providers[0]?.models[0];
+    expect(model?.reasoning_options).toEqual([{ type: 'budget_tokens', min: 1024 }]);
+  });
+
+  // The ChatGPT-plan lineup comes from the Codex CLI's models.json, never a
+  // hand-kept list (prod 2026-10-01 lacked gpt-6.1-sol and still offered the
+  // retired gpt-5.4).
+  test('refreshes the codex lineup: listed slugs only, Codex priority order', async () => {
+    const catalog = createRuntimeModelCatalog({
+      seed,
+      codexSeed: ['gpt-5.4'],
+      sourceUrl: 'https://catalog.test/api.json',
+      codexSourceUrl: 'https://codex.test/models.json',
+      fetchImpl: async (url) =>
+        url === 'https://codex.test/models.json'
+          ? Response.json({
+              models: [
+                { slug: 'gpt-6-sol', visibility: 'list', priority: 3 },
+                { slug: 'codex-auto-review', visibility: 'hide', priority: 43 },
+                { slug: 'gpt-6.1-sol', visibility: 'list', priority: 1 },
+                { slug: '../../etc', visibility: 'list', priority: 2 },
+              ],
+            })
+          : new Response('down', { status: 503 }),
+    });
+
+    expect(catalog.codexModelIds()).toEqual(['gpt-5.4']);
+    expect(await catalog.refresh()).toBe(false); // models.dev is down; codex is independent
+    expect(catalog.codexModelIds()).toEqual(['gpt-6.1-sol', 'gpt-6-sol']);
+    expect(catalog.status().revision).toBe(1);
+  });
+
+  test('keeps the last known codex lineup when the source fails or changes shape', async () => {
+    let body: unknown = { models: [{ slug: 'gpt-6.1-sol', visibility: 'list' }] };
+    const catalog = createRuntimeModelCatalog({
+      seed,
+      codexSeed: ['gpt-5.4'],
+      codexSourceUrl: 'https://codex.test/models.json',
+      fetchImpl: async (url) =>
+        url === 'https://codex.test/models.json' ? Response.json(body) : new Response('down', { status: 503 }),
+    });
+    await catalog.refresh();
+    expect(catalog.codexModelIds()).toEqual(['gpt-6.1-sol']);
+    for (body of [{ models: [] }, { lineup: [] }, null]) {
+      await catalog.refresh();
+      expect(catalog.codexModelIds()).toEqual(['gpt-6.1-sol']);
+    }
+    expect(catalog.status().revision).toBe(1);
+  });
+
+  test('keeps the last known catalog when the API is unavailable', async () => {
+    const catalog = createRuntimeModelCatalog({
+      seed,
+      sourceUrl: 'https://catalog.test/api.json',
+      fetchImpl: async () => new Response('down', { status: 503 }),
+    });
+
+    expect(await catalog.refresh()).toBe(false);
+    expect(catalog.snapshot()).toBe(seed);
+    expect(catalog.status()).toMatchObject({ source: 'seed', lastError: 'HTTP 503' });
+  });
+});

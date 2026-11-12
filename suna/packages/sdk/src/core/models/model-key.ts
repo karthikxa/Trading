@@ -1,0 +1,54 @@
+/** A model's identity in the composer: provider + model id. */
+export type ModelKey = {
+  providerID: string;
+  modelID: string;
+  /**
+   * The REAL upstream provider a `kortix`-gateway model resolves against
+   * ('anthropic', 'openai', 'codex', 'kortix', ...) — see `FlatModel.provider`
+   * (model-flatten.ts). When present, `subProviderOf` uses it directly instead
+   * of parsing `modelID`, so connection-gating never depends on the wire id
+   * happening to be namespaced `<provider>/<model>`. Optional so every
+   * existing caller (which only ever had `providerID`/`modelID`) keeps
+   * compiling unchanged.
+   */
+  provider?: string;
+};
+
+// ── Gateway wire-model ⟷ ModelKey conversion ───────────────────────────────
+// The LLM gateway identifies a model by its "wire model" — what opencode sends
+// as `body.model`. Under the kortix gateway provider that is just the modelID
+// (a bare managed id like 'glm-5.3-flash', or a BYOK 'provider/model'). A direct
+// provider model uses 'provider/model'.
+export function modelKeyToWire(model: ModelKey): string {
+  if (model.providerID === 'kortix' || model.providerID === 'opencode') return model.modelID;
+  return `${model.providerID}/${model.modelID}`;
+}
+
+/**
+ * The provider of Claude subscription models: `claude-agent/<id>` runs through
+ * Claude Code on the session user's own Claude plan, never through the gateway.
+ */
+export const CLAUDE_AGENT_PROVIDER_ID = 'claude-agent';
+
+export function wireToModelKey(wire: string): ModelKey {
+  // A Claude subscription model keeps its own provider.
+  if (wire.startsWith(`${CLAUDE_AGENT_PROVIDER_ID}/`)) {
+    return { providerID: CLAUDE_AGENT_PROVIDER_ID, modelID: wire.slice(CLAUDE_AGENT_PROVIDER_ID.length + 1) };
+  }
+  // Managed (bare) and BYOK ('provider/model') both live under the kortix
+  // provider in the picker namespace, so the modelID carries the full wire id.
+  return { providerID: 'kortix', modelID: wire };
+}
+
+/**
+ * A STORED model ref (a session pin, a channel binding, a trigger, an agent's
+ * `model`) as the picker's `ModelKey`. The ref is a gateway wire id;
+ * `kortix/<wire>` (the form a session pin keeps) and `<wire>` name the same
+ * model under `kortix`.
+ *
+ * @param _gatewayEnabled Deprecated and ignored: the LLM gateway is the only
+ *   model path for every project. Removed in the next major.
+ */
+export function modelRefToKey(ref: string, _gatewayEnabled?: boolean): ModelKey {
+  return wireToModelKey(ref.startsWith('kortix/') ? ref.slice('kortix/'.length) : ref);
+}

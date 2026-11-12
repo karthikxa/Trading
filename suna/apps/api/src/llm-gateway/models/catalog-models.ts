@@ -1,0 +1,331 @@
+import {
+  type Catalog,
+  type CatalogCost,
+  type CatalogModalities,
+  type CatalogModel,
+  type CatalogReasoningOption,
+  catalogModelForWireModel as catalogModelForWireModelCanonical,
+} from '@kortix/llm-catalog';
+import { resolveCatalogUpstream } from './provider-registry';
+import { runtimeModelCatalog } from './runtime-catalog';
+import { getRuntimeManagedModel, managedLineupRevision, type ManagedModel } from './managed-models';
+import { servedManagedModels } from './served-managed-models';
+
+// The real upstream provider id for the ChatGPT-subscription lineup served
+// under `codex/<id>` — kept as one named constant so this file, the sandbox
+// agent server, and the web picker can never drift on the string.
+const CODEX_PROVIDER_ID = 'codex';
+// The real upstream "provider" for every Kortix-managed model.
+const KORTIX_PROVIDER_ID = 'kortix';
+
+interface GatewayModel {
+  name: string;
+  released?: string | null;
+  release_date?: string | null;
+  family?: string;
+  // The REAL upstream provider this model resolves against ('anthropic',
+  // 'openai', 'codex', 'kortix', ...). Every model here is registered under
+  // the single synthetic `kortix` opencode provider (see the sandbox agent
+  // server's `buildKortixProvider`) — this is the one field a client can
+  // group/brand by without parsing `<provider>/<model>` out of the wire id.
+  // See packages/ui/src/session/models/model-selector.tsx's `pickerGroupId`.
+  provider?: string;
+  // The provider's display name from models.dev ("OpenCode Go"). Clients label
+  // a BYOK group with it instead of the synthetic `kortix` provider's name.
+  provider_name?: string;
+  reasoning?: boolean;
+  // Present iff the model exposes a tunable reasoning-effort knob — the
+  // chat runtime's PRIORITY field for offering an effort control without a
+  // second catalog round trip. Same shape as `CatalogReasoningOption`.
+  reasoning_options?: CatalogReasoningOption[];
+  tool_call?: boolean;
+  attachment?: boolean;
+  temperature?: boolean;
+  structured_output?: boolean;
+  // Training data cutoff (models.dev's free-text field, e.g. "2026-02-16").
+  knowledge?: string;
+  modalities?: CatalogModalities;
+  limit?: { context?: number; input?: number; output?: number };
+  cost?: CatalogCost;
+  // Free-text blurb models.dev publishes for the model. Threaded through
+  // alongside the rest of the enriched field set — was previously dropped
+  // between LlmProviderModel (the web catalog) and this served shape.
+  description?: string;
+  // True when the model's weights are publicly released (open-weights) vs.
+  // closed API-only. models.dev's `open_weights` field, mirrored verbatim.
+  open_weights?: boolean;
+  // When models.dev last refreshed this model's own entry.
+  last_updated?: string;
+}
+
+function modelsById(catalog: Catalog): Map<string, CatalogModel> {
+  const byId = new Map<string, CatalogModel>();
+  for (const provider of catalog.providers) {
+    for (const model of provider.models) byId.set(`${provider.id}/${model.id}`, model);
+  }
+  return byId;
+}
+
+function humanize(id: string): string {
+  const tail = id.split('/').pop() ?? id;
+  return tail.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function codexName(id: string): string {
+  if (!id.startsWith('gpt-')) return humanize(id);
+  return id
+    .split('-')
+    .map((part, index) =>
+      index === 0 ? 'GPT' : index >= 2 ? `${part[0]?.toUpperCase()}${part.slice(1)}` : part,
+    )
+    .join('-');
+}
+
+// A model's limits exactly as models.dev reports them: each positive field
+// passes through on its own, and an unknown one stays unset. A model with no
+// known window gets no `limit`; the harness then sizes it (pi, OpenCode).
+function servedLimit(limit?: { context?: number; input?: number; output?: number }) {
+  const out: { context?: number; input?: number; output?: number } = {};
+  for (const key of ['context', 'input', 'output'] as const) {
+    const value = limit?.[key];
+    if (typeof value === 'number' && value > 0) out[key] = value;
+  }
+  return out.context ? { limit: out } : {};
+}
+
+// Capability flags for a served model. models.dev is the single source of truth:
+// an enriched catalog entry (capabilities present) is used verbatim; a model
+// models.dev doesn't carry falls back to permissive legacy defaults so it isn't
+// crippled. See apps/web/scripts/enrich-llm-catalog-capabilities.ts.
+//
+// Carries the FULL useful capability set through to the served catalog — not
+// just the booleans transports need. `reasoning_options` is the PRIORITY field
+// (the chat runtime's effort control reads it straight off the served model,
+// no second catalog lookup); `cost`/`modalities`/`structured_output`/
+// `knowledge` ride along so nothing #4995/#5002-adjacent UI needs is dropped
+// between models.dev and opencode's registered model dict.
+function capabilitiesOf(model: CatalogModel | undefined): Omit<GatewayModel, 'name' | 'provider'> {
+  if (model && model.attachment !== undefined) {
+    return {
+      reasoning: !!model.reasoning,
+      ...(model.reasoning_options?.length ? { reasoning_options: model.reasoning_options } : {}),
+      tool_call: !!model.tool_call,
+      attachment: !!model.attachment,
+      temperature: !!model.temperature,
+      ...(typeof model.structured_output === 'boolean'
+        ? { structured_output: model.structured_output }
+        : {}),
+      ...(typeof model.knowledge === 'string' ? { knowledge: model.knowledge } : {}),
+      ...(model.modalities ? { modalities: model.modalities } : {}),
+      ...(model.cost ? { cost: model.cost } : {}),
+      ...(typeof model.description === 'string' ? { description: model.description } : {}),
+      ...(typeof model.open_weights === 'boolean' ? { open_weights: model.open_weights } : {}),
+      ...(typeof model.last_updated === 'string' ? { last_updated: model.last_updated } : {}),
+      ...servedLimit(model.limit),
+    };
+  }
+  return {
+    reasoning: true,
+    tool_call: true,
+    attachment: false,
+    temperature: false,
+  };
+}
+
+// Model-level capability lookup for descriptor-building code (BYOK resolution),
+// as opposed to the list-shaped `gatewayModelsAll` above which serves the
+// models API. Single source of truth for "does this model reject a
+// non-default temperature / is it a reasoning model" so transports never need
+// to hardcode a model-id list — see UpstreamDescriptor.reasoning/temperature.
+export function capabilitiesForModel(
+  providerId: string,
+  modelId: string,
+  catalog: Catalog = runtimeModelCatalog.snapshot(),
+): { reasoning: boolean; temperature: boolean } {
+  const provider = catalog.providers.find((p) => p.id === providerId);
+  const model = provider?.models.find((m) => m.id === modelId);
+  const caps = capabilitiesOf(model);
+  return { reasoning: !!caps.reasoning, temperature: !!caps.temperature };
+}
+
+// The full catalog capability record (reasoning_options, temperature,
+// limit.output, ...) for a gateway WIRE model id — the lookup
+// `@kortix/llm-catalog`'s generation-controls capability functions
+// (`generationControlCapabilities`/`clampGenerationConfig`) need but
+// `capabilitiesForModel` above doesn't carry (it only ever returned the two
+// booleans transports needed). Used by the generation-controls UI's
+// server-side clamp (routing/resolve-route.ts) so a configured per-model
+// default is never sent to a model that can't honor it, whether it's a BYOK
+// catalog entry, a `codex/<id>`, or a managed slug.
+//
+// The wire-id → CatalogModel resolution itself lives in @kortix/llm-catalog
+// (the single source of truth, reachable by the standalone gateway transport
+// too); this is a thin wrapper that only supplies the LIVE models.dev snapshot
+// as the catalog default, so the host-side clamp sees fresh capabilities.
+export const catalogModelForWireModel = (
+  wireModel: string,
+  catalog: Catalog = runtimeModelCatalog.snapshot(),
+): CatalogModel | undefined => {
+  // A bare id is a managed model: its record is what Platinum Inference says.
+  if (!wireModel.includes('/')) {
+    const managed = getRuntimeManagedModel(wireModel);
+    return managed ? managedCatalogModel(managed) : undefined;
+  }
+  return catalogModelForWireModelCanonical(wireModel, catalog);
+};
+
+/** The catalog lists `image` among the model's output modalities (models.dev). */
+export const hasImageOutput = (wireModel: string): boolean =>
+  catalogModelForWireModel(wireModel)?.modalities?.output?.includes('image') === true;
+
+function managedCatalogModel(m: ManagedModel): CatalogModel {
+  return {
+    id: m.id,
+    name: m.name,
+    reasoning: !!m.reasoningOptions?.length,
+    tool_call: true,
+    temperature: true,
+    attachment: m.vision,
+    modalities: { input: m.vision ? ['text', 'image'] : ['text'], output: ['text'] },
+    ...(m.reasoningOptions ? { reasoning_options: m.reasoningOptions } : {}),
+    limit: m.limit,
+  };
+}
+
+/** One Platinum Inference model as a served catalog entry, under `provider`. */
+export function platinumGatewayModel(m: ManagedModel, provider: string, providerName?: string): GatewayModel {
+  return {
+    ...capabilitiesOf(managedCatalogModel(m)),
+    name: m.name,
+    provider,
+    ...(providerName ? { provider_name: providerName } : {}),
+    limit: m.limit,
+    cost: {
+      input: m.pricing.inputPerMillion,
+      output: m.pricing.outputPerMillion,
+      ...(m.pricing.cachedInputPerMillion != null ? { cache_read: m.pricing.cachedInputPerMillion } : {}),
+    },
+  };
+}
+
+/** The served managed lineup as catalog entries: every field comes from Platinum Inference. */
+export function managedModels(): Record<string, GatewayModel> {
+  const out: Record<string, GatewayModel> = {};
+  for (const m of servedManagedModels()) out[m.id] = platinumGatewayModel(m, KORTIX_PROVIDER_ID);
+  return out;
+}
+
+export function gatewayModelsAll(
+  catalog: Catalog = runtimeModelCatalog.snapshot(),
+): Record<string, GatewayModel> {
+  const out: Record<string, GatewayModel> = {};
+  for (const provider of catalog.providers) {
+    if (provider.id === 'opencode') continue;
+    if (!resolveCatalogUpstream(provider.id)) continue;
+    for (const model of provider.models) {
+      // BYOK models ARE catalog entries — capabilities come straight from models.dev.
+      // `provider` is the REAL upstream id (e.g. "anthropic") — every model here
+      // is registered under the single synthetic `kortix` opencode provider, so
+      // this is what the picker groups/brands by instead of parsing the wire id.
+      out[`${provider.id}/${model.id}`] = {
+        name: model.name,
+        provider: provider.id,
+        provider_name: provider.name,
+        released: model.released,
+        release_date: model.released,
+        family: (model as { family?: string }).family,
+        ...capabilitiesOf(model),
+      };
+    }
+  }
+  return out;
+}
+
+export function gatewayCodexModels(
+  catalog: Catalog = runtimeModelCatalog.snapshot(),
+  codexIds: readonly string[] = runtimeModelCatalog.codexModelIds(),
+  codexWindows: Readonly<Record<string, number>> = runtimeModelCatalog.codexContextWindows(),
+): Record<string, GatewayModel> {
+  const out: Record<string, GatewayModel> = {};
+  const catalogModelById = modelsById(catalog);
+  for (const id of codexIds) {
+    const model = catalogModelById.get(`openai/${id}`);
+    out[`codex/${id}`] = {
+      name: `${model?.name ?? codexName(id)} (ChatGPT)`,
+      // Codex is a ChatGPT subscription, not the raw `openai` BYOK provider —
+      // brand/group it as its own 'codex' provider (matches the picker's
+      // SUBSCRIPTION_PROVIDER_ID convention in use-model-store.ts).
+      provider: CODEX_PROVIDER_ID,
+      released: model?.released,
+      release_date: model?.released,
+      family: (model as { family?: string } | undefined)?.family,
+      // Derive from models.dev; default to GPT-5.x's profile (reasoning, tools,
+      // vision) for any id models.dev doesn't list yet.
+      reasoning: model?.reasoning ?? true,
+      ...(model?.reasoning_options?.length ? { reasoning_options: model.reasoning_options } : {}),
+      tool_call: model?.tool_call ?? true,
+      attachment: model?.attachment ?? true,
+      temperature: model?.temperature ?? false,
+      ...(typeof model?.structured_output === 'boolean'
+        ? { structured_output: model.structured_output }
+        : {}),
+      ...(typeof model?.knowledge === 'string' ? { knowledge: model.knowledge } : {}),
+      ...(model?.modalities ? { modalities: model.modalities } : {}),
+      ...(model?.cost ? { cost: model.cost } : {}),
+      ...(typeof model?.description === 'string' ? { description: model.description } : {}),
+      ...(typeof model?.open_weights === 'boolean' ? { open_weights: model.open_weights } : {}),
+      ...(typeof model?.last_updated === 'string' ? { last_updated: model.last_updated } : {}),
+      // The ChatGPT backend's window (Codex models.json), not the public API's.
+      ...servedLimit(codexWindows[id]
+        ? { context: codexWindows[id], output: Math.min(model?.limit?.output ?? codexWindows[id]!, codexWindows[id]!) }
+        : model?.limit),
+    };
+  }
+  return out;
+}
+
+// Runtime catalog shapes are rebuilt once per atomic API refresh revision, not
+// once per request. The bundled snapshot is only the initial/last-known fallback.
+// The managed lineup refreshes too (managedLineupRevision): either revision moving rebuilds.
+const EMPTY_CATALOG: Record<string, GatewayModel> = {};
+let cachedRevision = -1;
+let cachedManagedRevision = -1;
+let cachedManaged: Record<string, GatewayModel> = {};
+let cachedByokAndCodex: Record<string, GatewayModel> = {};
+let cachedFullCatalog: Record<string, GatewayModel> = {};
+
+function refreshedCatalogs(): {
+  managed: Record<string, GatewayModel>;
+  byokAndCodex: Record<string, GatewayModel>;
+  full: Record<string, GatewayModel>;
+} {
+  const revision = runtimeModelCatalog.status().revision;
+  const managedRevision = managedLineupRevision();
+  if (revision !== cachedRevision) {
+    const catalog = runtimeModelCatalog.snapshot();
+    cachedByokAndCodex = {
+      ...gatewayModelsAll(catalog),
+      ...gatewayCodexModels(catalog),
+    };
+  }
+  if (managedRevision !== cachedManagedRevision) cachedManaged = managedModels();
+  if (revision !== cachedRevision || managedRevision !== cachedManagedRevision) {
+    cachedFullCatalog = { ...cachedManaged, ...cachedByokAndCodex };
+    cachedRevision = revision;
+    cachedManagedRevision = managedRevision;
+  }
+  return { managed: cachedManaged, byokAndCodex: cachedByokAndCodex, full: cachedFullCatalog };
+}
+
+// `projectId` gates BYOK/codex visibility (anonymous callers see managed only).
+// `freeManagedOnly` (an account without the managed-models entitlement, e.g.
+// the Free plan) gets no Kortix-managed model at all: only its own connected
+// provider keys and ChatGPT subscription.
+export function gatewayModelCatalog(
+  projectId: string | undefined,
+  opts?: { freeManagedOnly?: boolean },
+): Record<string, GatewayModel> {
+  const catalogs = refreshedCatalogs();
+  if (opts?.freeManagedOnly) return projectId ? catalogs.byokAndCodex : EMPTY_CATALOG;
+  return projectId ? catalogs.full : catalogs.managed;
+}
