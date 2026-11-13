@@ -10,6 +10,11 @@ const LOCAL_STORAGE_KEY = 'kortix_trading_journal_trades_v2';
 const DAY_NOTES_STORAGE_KEY = 'kortix_trading_journal_day_notes_v1';
 const PENDING_SYNC_KEY = 'kortix_trading_journal_pending_sync_v1';
 
+// Fast in-memory cache for sub-millisecond instant retrieval
+let cachedTradesInMemory: JournalTrade[] | null = null;
+let cachedDayNotes: Record<string, string> | null = null;
+let inFlightGetTradesPromise: Promise<JournalTrade[]> | null = null;
+
 interface PendingSyncState {
   upserts: Record<string, Record<string, unknown>>;
   deletes: string[];
@@ -279,20 +284,25 @@ export function sortJournalTrades(trades: JournalTrade[]): JournalTrade[] {
   });
 }
 
-// Local storage fallback helpers
+// Local storage fallback helpers (with sub-millisecond in-memory cache)
 export function getLocalTrades(): JournalTrade[] {
+  if (cachedTradesInMemory && cachedTradesInMemory.length >= 0) {
+    return cachedTradesInMemory;
+  }
   if (typeof window === 'undefined') return [];
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? sortJournalTrades(parsed) : [];
+    cachedTradesInMemory = Array.isArray(parsed) ? sortJournalTrades(parsed) : [];
+    return cachedTradesInMemory;
   } catch {
     return [];
   }
 }
 
 function saveLocalTrades(trades: JournalTrade[]) {
+  cachedTradesInMemory = trades;
   if (typeof window === 'undefined') return;
   try {
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(trades));
@@ -314,54 +324,65 @@ function saveLocalTrades(trades: JournalTrade[]) {
 
 /**
  * Fetch all trades for project, flushing any pending instant mutations first
+ * Uses single-flight deduplication and instantaneous memory cache
  */
 export async function getJournalTrades(projectId?: string): Promise<JournalTrade[]> {
-  try {
-    // Replay any queued optimistic saves/deletes from an immediate reload before reading DB
-    const pending = getPendingSync();
-    if (pending.deletes.length > 0 || Object.keys(pending.upserts).length > 0) {
-      await Promise.allSettled([
-        ...pending.deletes.map(async (id) => {
-          if (UUID_REGEX.test(id)) {
-            await deleteBackendTrade(id);
-          }
-          clearPendingDelete(id);
-        }),
-        ...Object.entries(pending.upserts).map(async ([id, row]) => {
-          const savedRow = await saveTradingJournalTrade(row);
-          if (savedRow && savedRow.id) {
-            clearPendingUpsert(id);
-          }
-        }),
-      ]);
-    }
-
-    const rows = await getTradingJournalTrades(projectId);
-    if (Array.isArray(rows)) {
-      const remaining = getPendingSync();
-      const deletedSet = new Set(remaining.deletes);
-      const dbMap = new Map<string, JournalTrade>();
-      rows.forEach((r) => {
-        const t = rowToTrade(r);
-        if (!deletedSet.has(t.id)) {
-          dbMap.set(t.id, t);
-        }
-      });
-      // Re-apply any offline/still-pending upserts on top
-      for (const [id, pendingRow] of Object.entries(remaining.upserts)) {
-        if (!deletedSet.has(id)) {
-          dbMap.set(id, rowToTrade(pendingRow));
-        }
-      }
-      const merged = sortJournalTrades(Array.from(dbMap.values()));
-      saveLocalTrades(merged);
-      return merged;
-    }
-  } catch (err) {
-    console.warn('[journal] backend fetch failed, using local trades cache:', err);
+  if (inFlightGetTradesPromise) {
+    return inFlightGetTradesPromise;
   }
 
-  return getLocalTrades();
+  inFlightGetTradesPromise = (async () => {
+    try {
+      // Replay any queued optimistic saves/deletes concurrently
+      const pending = getPendingSync();
+      if (pending.deletes.length > 0 || Object.keys(pending.upserts).length > 0) {
+        void Promise.allSettled([
+          ...pending.deletes.map(async (id) => {
+            if (UUID_REGEX.test(id)) {
+              await deleteBackendTrade(id);
+            }
+            clearPendingDelete(id);
+          }),
+          ...Object.entries(pending.upserts).map(async ([id, row]) => {
+            const savedRow = await saveTradingJournalTrade(row);
+            if (savedRow && savedRow.id) {
+              clearPendingUpsert(id);
+            }
+          }),
+        ]);
+      }
+
+      const rows = await getTradingJournalTrades(projectId);
+      if (Array.isArray(rows)) {
+        const remaining = getPendingSync();
+        const deletedSet = new Set(remaining.deletes);
+        const dbMap = new Map<string, JournalTrade>();
+        rows.forEach((r) => {
+          const t = rowToTrade(r);
+          if (!deletedSet.has(t.id)) {
+            dbMap.set(t.id, t);
+          }
+        });
+        // Re-apply any offline/still-pending upserts on top
+        for (const [id, pendingRow] of Object.entries(remaining.upserts)) {
+          if (!deletedSet.has(id)) {
+            dbMap.set(id, rowToTrade(pendingRow));
+          }
+        }
+        const merged = sortJournalTrades(Array.from(dbMap.values()));
+        saveLocalTrades(merged);
+        return merged;
+      }
+    } catch (err) {
+      console.warn('[journal] backend fetch failed, using local trades cache:', err);
+    }
+
+    return getLocalTrades();
+  })().finally(() => {
+    inFlightGetTradesPromise = null;
+  });
+
+  return inFlightGetTradesPromise;
 }
 
 /**
@@ -444,31 +465,34 @@ export async function deleteJournalTrade(tradeId: string): Promise<boolean> {
 }
 
 /**
- * Per-date daily journal notes persisted locally
+ * Per-date daily journal notes persisted locally (with sub-millisecond memory caching)
  */
 export function getDayNote(date: string): string {
   if (typeof window === 'undefined' || !date) return '';
-  try {
-    const raw = localStorage.getItem(DAY_NOTES_STORAGE_KEY);
-    if (!raw) return '';
-    const map = JSON.parse(raw) as Record<string, string>;
-    return typeof map[date] === 'string' ? map[date] : '';
-  } catch {
-    return '';
+  if (!cachedDayNotes) {
+    try {
+      const raw = localStorage.getItem(DAY_NOTES_STORAGE_KEY);
+      cachedDayNotes = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    } catch {
+      cachedDayNotes = {};
+    }
   }
+  return typeof cachedDayNotes[date] === 'string' ? cachedDayNotes[date] : '';
 }
 
 export function saveDayNote(date: string, note: string): void {
   if (typeof window === 'undefined' || !date) return;
+  if (!cachedDayNotes) {
+    getDayNote(date);
+  }
+  if (!cachedDayNotes) cachedDayNotes = {};
+  if (note.trim()) {
+    cachedDayNotes[date] = note;
+  } else {
+    delete cachedDayNotes[date];
+  }
   try {
-    const raw = localStorage.getItem(DAY_NOTES_STORAGE_KEY);
-    const map = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-    if (note.trim()) {
-      map[date] = note;
-    } else {
-      delete map[date];
-    }
-    localStorage.setItem(DAY_NOTES_STORAGE_KEY, JSON.stringify(map));
+    localStorage.setItem(DAY_NOTES_STORAGE_KEY, JSON.stringify(cachedDayNotes));
   } catch (err) {
     console.error('Failed to save day note:', err);
   }

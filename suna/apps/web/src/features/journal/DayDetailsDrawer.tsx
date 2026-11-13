@@ -58,6 +58,8 @@ function CheckCircleFilled({ className = 'size-3.5' }: { className?: string }) {
   );
 }
 
+const GUARDRAIL_PILLARS = ['Structure', 'Orderflow & POI', 'Execution', 'Session & Time'];
+
 interface DayDetailsDrawerProps {
   date: string; // YYYY-MM-DD
   trades: JournalTrade[];
@@ -169,8 +171,21 @@ export function DayDetailsDrawer({
       if (Array.isArray(t.mistakes)) {
         t.mistakes.forEach((m) => {
           if (m && m.trim() && m.toLowerCase() !== 'none') {
+            const cleanM = m.trim();
+            const isPillarMistake = GUARDRAIL_PILLARS.some(
+              (p) =>
+                cleanM === p ||
+                cleanM === `Missing ${p}` ||
+                cleanM.toLowerCase() === p.toLowerCase() ||
+                cleanM.toLowerCase() === `missing ${p.toLowerCase()}`
+            );
+            // If the user provided entry confluences (custom or standard) or followed plan,
+            // do not flag missing generic pillars as guardrail violations
+            if (isPillarMistake && (t.followedPlan || (t.confluences && t.confluences.length > 0))) {
+              return;
+            }
             list.push({
-              mistake: m.trim(),
+              mistake: cleanM,
               instrument: t.instrument,
               time: t.entryTime,
             });
@@ -231,9 +246,9 @@ export function DayDetailsDrawer({
   };
 
   return (
-    <aside className="w-full sm:w-[380px] md:w-[410px] shrink-0 border-l border-zinc-200/90 bg-white flex flex-col h-full shadow-lg font-sans z-20 select-none">
+    <aside className="w-full sm:w-[360px] md:w-[380px] shrink-0 border-l border-zinc-200 bg-white flex flex-col h-full font-sans z-20 select-none shadow-none">
       {/* 1. DRAWER TOP BAR */}
-      <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-100 bg-white">
+      <div className="flex items-center justify-between px-5 h-[53px] border-b border-zinc-200/80 bg-white shrink-0">
         <div className="flex items-center gap-1.5 text-zinc-700">
           <button
             type="button"
@@ -278,7 +293,7 @@ export function DayDetailsDrawer({
       </div>
 
       {/* 2. DRAWER BODY */}
-      <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4">
+      <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-4 [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-zinc-200 hover:[&::-webkit-scrollbar-thumb]:bg-zinc-300 [&::-webkit-scrollbar-track]:bg-transparent">
         {/* Net Daily P&L */}
         <div className="flex flex-col gap-0.5">
           <div

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ArrowLeft,
   Upload,
@@ -13,6 +13,7 @@ import {
   Eye,
   Trash2,
   Clock,
+  Loader2,
 } from 'lucide-react';
 import { Direction, JournalTrade } from './types';
 import { uploadChartImage } from './storage';
@@ -113,6 +114,15 @@ function isGuardrailMistake(m: string): boolean {
   return GUARDRAIL_PILLARS.some(
     (p) => m === p || m === `Missing ${p}` || m.startsWith('[guardrail]') || m.startsWith('Guardrail:')
   );
+}
+
+function inferConfluencePillar(c: string): 'structure' | 'orderflow' | 'execution' | 'session' | null {
+  const lower = c.toLowerCase();
+  if (lower.match(/session|london|ny|new york|asia|killzone|timing|overlap|open|close|news|time/)) return 'session';
+  if (lower.match(/structure|bos|choch|trend|range|swing|high|low|hl|lh|hh|ll|ms|shift|break/)) return 'structure';
+  if (lower.match(/orderflow|flow|poi|fvg|fair value|order block|ob|liquidity|sweep|imbalance|mitigation|breaker|discount|premium|equilibrium|rejection/)) return 'orderflow';
+  if (lower.match(/exec|entry|trigger|confirmation|retest|limit|market|candle|wick|pinbar|tap|scale|fill/)) return 'execution';
+  return null;
 }
 
 /** Contract size per 1.0 lot depending on asset class */
@@ -345,6 +355,8 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
   const [planName, setPlanName] = useState(editTrade?.planName || '');
   const [confluences, setConfluences] = useState<string[]>(editTrade?.confluences || []);
   const [customConfluence, setCustomConfluence] = useState('');
+  const [activeConfluenceTab, setActiveConfluenceTab] = useState<'structure' | 'orderflow' | 'execution' | 'session'>('structure');
+  const [customCategoryMap, setCustomCategoryMap] = useState<Record<string, 'structure' | 'orderflow' | 'execution' | 'session'>>({});
   const [tradeManagement, setTradeManagement] = useState(editTrade?.tradeManagement || '');
   const [mistakes, setMistakes] = useState<string[]>(
     editTrade?.mistakes?.filter((m) => m && m.toLowerCase() !== 'none' && !isGuardrailMistake(m)) || []
@@ -359,25 +371,50 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
   const [chartMtf, setChartMtf] = useState<string | null>(editTrade?.chartMtf || null);
   const [chartLtf, setChartLtf] = useState<string | null>(editTrade?.chartLtf || null);
   const [isUploading, setIsUploading] = useState<string | null>(null);
+  const inFlightUploadsRef = useRef<{ htf?: Promise<string>; mtf?: Promise<string>; ltf?: Promise<string> }>({});
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
 
-  // Guardrail pillar status (used for green tab dots & saved guardrail violations)
-  const hasStructure = confluences.some((c) => CONFLUENCE_CATEGORIES.structure.includes(c));
-  const hasOrderflow = confluences.some((c) => CONFLUENCE_CATEGORIES.orderflow.includes(c));
-  const hasExecution = confluences.some((c) => CONFLUENCE_CATEGORIES.execution.includes(c));
-  const hasSession = confluences.some((c) => CONFLUENCE_CATEGORIES.session.includes(c));
+  // Guardrail pillar status: check standard list, custom user categorization, & smart keywords
+  const hasStructure = confluences.some(
+    (c) =>
+      CONFLUENCE_CATEGORIES.structure.includes(c) ||
+      customCategoryMap[c] === 'structure' ||
+      inferConfluencePillar(c) === 'structure'
+  );
+  const hasOrderflow = confluences.some(
+    (c) =>
+      CONFLUENCE_CATEGORIES.orderflow.includes(c) ||
+      customCategoryMap[c] === 'orderflow' ||
+      inferConfluencePillar(c) === 'orderflow'
+  );
+  const hasExecution = confluences.some(
+    (c) =>
+      CONFLUENCE_CATEGORIES.execution.includes(c) ||
+      customCategoryMap[c] === 'execution' ||
+      inferConfluencePillar(c) === 'execution'
+  );
+  const hasSession = confluences.some(
+    (c) =>
+      CONFLUENCE_CATEGORIES.session.includes(c) ||
+      customCategoryMap[c] === 'session' ||
+      inferConfluencePillar(c) === 'session'
+  );
 
+  // If the trader followed their plan or entered confluences, do not synthesize guardrail violations
   const missingConfluences = React.useMemo(() => {
+    if (followedPlan || confluences.length > 0) {
+      return [];
+    }
     const list: string[] = [];
     if (!hasStructure) list.push('Structure');
     if (!hasOrderflow) list.push('Orderflow & POI');
     if (!hasExecution) list.push('Execution');
     if (!hasSession) list.push('Session & Time');
     return list;
-  }, [hasStructure, hasOrderflow, hasExecution, hasSession]);
+  }, [followedPlan, confluences.length, hasStructure, hasOrderflow, hasExecution, hasSession]);
 
   const liveDuration = React.useMemo(
     () => calculateTradeDuration(entryDate, entryTime, exitDate, exitTime),
@@ -429,6 +466,10 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
     if (!clean) return;
     if (!confluences.includes(clean)) {
       setConfluences((prev) => [...prev, clean]);
+      setCustomCategoryMap((prev) => ({
+        ...prev,
+        [clean]: activeConfluenceTab,
+      }));
     }
     setCustomConfluence('');
   };
@@ -448,7 +489,7 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
     setCustomMistake('');
   };
 
-  const handleFileUpload = async (
+  const handleFileUpload = (
     e: React.ChangeEvent<HTMLInputElement>,
     type: 'htf' | 'mtf' | 'ltf'
   ) => {
@@ -457,24 +498,53 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
     e.target.value = '';
     if (!file) return;
 
+    // Instant local preview (<5ms)
+    const objectUrl = URL.createObjectURL(file);
+    if (type === 'htf') setChartHtf(objectUrl);
+    if (type === 'mtf') setChartMtf(objectUrl);
+    if (type === 'ltf') setChartLtf(objectUrl);
+
     setUploadError(null);
     setIsUploading(type);
-    try {
-      const publicUrl = await uploadChartImage(file, type);
-      if (type === 'htf') setChartHtf(publicUrl);
-      if (type === 'mtf') setChartMtf(publicUrl);
-      if (type === 'ltf') setChartLtf(publicUrl);
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : 'Failed to process image.');
-    } finally {
-      setIsUploading(null);
-    }
+
+    const uploadPromise = uploadChartImage(file, type)
+      .then((publicUrl) => {
+        if (type === 'htf') setChartHtf(publicUrl);
+        if (type === 'mtf') setChartMtf(publicUrl);
+        if (type === 'ltf') setChartLtf(publicUrl);
+        return publicUrl;
+      })
+      .catch((err) => {
+        setUploadError(err instanceof Error ? err.message : 'Failed to process image.');
+        throw err;
+      })
+      .finally(() => {
+        delete inFlightUploadsRef.current[type];
+        setIsUploading((curr) => (curr === type ? null : curr));
+      });
+
+    inFlightUploadsRef.current[type] = uploadPromise;
   };
 
   const handleSave = async () => {
     setSaveError(null);
     setIsSaving(true);
     try {
+      // Settle any in-flight background uploads before saving
+      let finalHtf = chartHtf;
+      let finalMtf = chartMtf;
+      let finalLtf = chartLtf;
+
+      if (inFlightUploadsRef.current.htf) {
+        try { finalHtf = await inFlightUploadsRef.current.htf; } catch {}
+      }
+      if (inFlightUploadsRef.current.mtf) {
+        try { finalMtf = await inFlightUploadsRef.current.mtf; } catch {}
+      }
+      if (inFlightUploadsRef.current.ltf) {
+        try { finalLtf = await inFlightUploadsRef.current.ltf; } catch {}
+      }
+
       const ep = parseFloat(entryPrice) || 0;
       const xp = parseFloat(exitPrice) || 0;
       const sl = parseFloat(stopLoss) || 0;
@@ -518,7 +588,22 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
       }
       if (Object.is(finalPnl, -0)) finalPnl = 0;
 
-      const allMistakes = Array.from(new Set([...mistakes, ...missingConfluences]));
+      // User-logged genuine mistakes only — never pollute with synthetic guardrail pillars
+      const allMistakes = Array.from(
+        new Set(
+          mistakes.filter(
+            (m) =>
+              m &&
+              m.toLowerCase() !== 'none' &&
+              !isGuardrailMistake(m)
+          )
+        )
+      );
+
+      // Only if user explicitly violated plan and selected zero confluences can missingConfluences be considered
+      if (!followedPlan && confluences.length === 0 && missingConfluences.length > 0) {
+        allMistakes.push(...missingConfluences);
+      }
 
       await onSave({
         ...(editTrade ? { id: editTrade.id } : {}),
@@ -546,9 +631,9 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
         entryEmotion,
         exitEmotion,
         notes,
-        chartHtf: chartHtf || undefined,
-        chartMtf: chartMtf || undefined,
-        chartLtf: chartLtf || undefined,
+        chartHtf: finalHtf || undefined,
+        chartMtf: finalMtf || undefined,
+        chartLtf: finalLtf || undefined,
         session,
         duration: liveDuration || editTrade?.duration || '',
         splitOrders: editTrade?.splitOrders,
@@ -574,6 +659,8 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
     onClear: () => void;
   }) {
     const labelText = `Upload ${type.toUpperCase()}`;
+    const isCurrentlyUploading = isUploading === type;
+
     return (
       <div className="flex flex-col gap-2">
         <span className="text-xs font-semibold text-zinc-700">{title}</span>
@@ -584,6 +671,11 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
               alt={`${type.toUpperCase()} Chart`}
               className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
             />
+            {isCurrentlyUploading && (
+              <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-xs text-white rounded-full p-1.5 shadow-xs flex items-center justify-center pointer-events-none">
+                <Loader2 className="size-3.5 animate-spin text-white" />
+              </div>
+            )}
             <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2.5">
               <button
                 type="button"
@@ -611,9 +703,13 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
               className="hidden"
               onChange={(e) => handleFileUpload(e, type)}
             />
-            <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-2" />
+            {isCurrentlyUploading ? (
+              <Loader2 className="size-5 text-zinc-950 animate-spin mb-2" />
+            ) : (
+              <Upload className="size-5 text-zinc-400 group-hover:text-zinc-950 transition-colors mb-2" />
+            )}
             <span className="text-xs font-semibold text-zinc-700 group-hover:text-zinc-950">
-              {isUploading === type ? 'Processing...' : labelText}
+              {labelText}
             </span>
             <span className="text-[10px] text-zinc-400 mt-0.5">Click to browse</span>
           </label>
@@ -646,7 +742,7 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
             variant="default"
             size="sm"
             onClick={handleSave}
-            disabled={isSaving || isUploading !== null}
+            disabled={isSaving}
             className="bg-zinc-950 text-white hover:bg-zinc-800 font-semibold shadow-xs h-8.5 px-5"
           >
             {isSaving ? 'Saving...' : isEditMode ? 'Update Trade' : 'Save Trade'}
@@ -1132,7 +1228,11 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
               </Badge>
             </div>
 
-            <Tabs defaultValue="structure" className="w-full">
+            <Tabs
+              value={activeConfluenceTab}
+              onValueChange={(val) => setActiveConfluenceTab(val as any)}
+              className="w-full"
+            >
               <TabsList size="sm" variant="default" className="w-full overflow-x-auto flex p-1 rounded-xl bg-zinc-100/90 border border-zinc-200/80">
                 <TabsTab value="structure" className="font-sans text-xs font-semibold tracking-normal py-1.5 gap-1.5">
                   <span>Structure</span>

@@ -24,7 +24,7 @@ interface TradingCalendarProps {
   trades: JournalTrade[];
   selectedDate: string | null;
   currencyMode: CurrencyMode;
-  drawerOpen: boolean;
+  drawerOpen?: boolean;
   onSelectDate: (date: string) => void;
   onPrevMonth: () => void;
   onNextMonth: () => void;
@@ -32,7 +32,7 @@ interface TradingCalendarProps {
   onSelectYearMonth: (year: number, month: number) => void;
   onCurrencyModeChange: (mode: CurrencyMode) => void;
   onAddTrade: () => void;
-  onToggleDrawer: () => void;
+  onToggleDrawer?: () => void;
 }
 
 // Local date string formatter without timezone shifting
@@ -297,17 +297,6 @@ export function TradingCalendar({
           >
             <Plus className="size-3.5" />
             <span>Add Trade</span>
-          </Button>
-
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onToggleDrawer}
-            className="h-8 w-8 p-0 rounded-lg border-zinc-200 bg-white hover:bg-zinc-100 text-zinc-700 shadow-2xs cursor-pointer"
-            title={drawerOpen ? 'Collapse side panel' : 'Expand side panel'}
-          >
-            <RightPanelGlyph className="size-4" />
           </Button>
         </div>
       </div>
