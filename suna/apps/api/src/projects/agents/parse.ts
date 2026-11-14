@@ -3,10 +3,12 @@ import { logger } from '../../lib/logger';
 import { PROJECT_ACTIONS, VALID_ACTIONS } from '../../iam/actions';
 import type { GitBackedProject, MirrorRefresh } from '../git';
 import {
+  AGENT_MODES_V2,
   DEPRECATED_KORTIX_PERMISSION_ALIASES,
   resolveGrantSet,
   SLUG_RE,
   resolveProjectRepository,
+  type AgentModeV2,
   type GrantSetV2,
 } from '@kortix/manifest-schema';
 import { readAgentBlockV2 } from '../lib/agent-config-v2';
@@ -185,6 +187,11 @@ function parseAgentEntry(name: string, block: unknown, filename: string): ParseO
   const row = block as Record<string, unknown>;
   // Only a literal `false` disables (the validator rejects any other value).
   const enabled = row.enabled !== false;
+  // Absent mode = `all` (manifest-schema default). An unknown value is dropped
+  // so the gate cannot be disabled by a spelling the schema would reject; the
+  // validator already reports it.
+  const rawMode = typeof row.mode === 'string' ? row.mode.trim().toLowerCase() : '';
+  const mode = (AGENT_MODES_V2 as readonly string[]).includes(rawMode) ? (rawMode as AgentModeV2) : undefined;
   const model = typeof row.model === 'string' ? row.model : null;
   const sandbox = typeof row.sandbox === 'string' && row.sandbox.trim() ? row.sandbox.trim() : null;
   const repository = resolveProjectRepository(row);
@@ -222,6 +229,7 @@ function parseAgentEntry(name: string, block: unknown, filename: string): ParseO
       name,
       path: `${filename}#agents.${name}`,
       enabled,
+      mode,
       connectors: toGrantSet(connectorsResolved),
       connectorsRequired,
       ...(policySets ? { policySets } : {}),

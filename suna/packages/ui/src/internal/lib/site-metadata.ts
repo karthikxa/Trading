@@ -10,11 +10,11 @@
 export const CANONICAL_ORIGIN = 'https://kortix.com';
 
 export const siteMetadata = {
-  name: 'Kortix CompanyOS',
-  title: 'Kortix CompanyOS – the open-source operating system for your company',
+  name: 'Zed AI',
+  title: 'Zed AI – Autonomous Trading & Multi-Agent Intelligence',
   description:
-    'Open-source CompanyOS: your agents, skills, memory, and connectors in one repo you own. Any model. Self-host or cloud.',
+    'Zed AI: Autonomous Trading terminal with multi-agent intelligence, live markets, and portfolio management.',
   url: CANONICAL_ORIGIN,
   keywords:
-    'Kortix, Kortix CompanyOS, CompanyOS, open-source CompanyOS, company operating system, what is a CompanyOS, open-source alternative to Claude Cowork, ChatGPT Work alternative, company as a git repo, agents skills and memory as files, shared AI agents, scoped access, self-hosted AI agents, connect 3000 tools, agent orchestration, AI-native company, AI operations',
+    'Zed AI, Autonomous Trading, AI Trading terminal, multi-agent intelligence, trading agents, live markets, portfolio management, stock analysis, crypto trading, forex trading',
 };

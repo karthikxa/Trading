@@ -3,7 +3,7 @@
 import React, { memo, useState, useEffect } from 'react';
 import useTradingViewWidget from './useTradingViewWidget';
 import { cn } from '@kortix/ui';
-import { Maximize2, Minimize2, Loader2 } from 'lucide-react';
+import { ArrowsOut, ArrowsIn } from '@phosphor-icons/react';
 
 interface TradingViewWidgetProps {
   scriptUrl: string;
@@ -57,8 +57,8 @@ const TradingViewWidget = ({
       )}
       <div
         className={cn(
-          'relative w-full overflow-hidden rounded-xl border border-zinc-200/80 bg-white transition-all',
-          isExpanded && 'fixed inset-4 z-50 shadow-2xl rounded-2xl',
+          'relative w-full overflow-hidden bg-card transition-all',
+          isExpanded && 'fixed inset-4 z-50 shadow-2xl rounded-2xl border border-border/80',
           className,
         )}
         style={isExpanded ? undefined : { height, minHeight: `${height}px` }}
@@ -68,13 +68,13 @@ const TradingViewWidget = ({
             type="button"
             onClick={() => setIsExpanded(!isExpanded)}
             className={cn(
-              'absolute top-3 right-3 z-10 p-2 rounded-lg bg-white/90 shadow-sm border border-zinc-200/80 hover:bg-zinc-100 transition-colors cursor-pointer',
+              'absolute top-3 right-3 z-10 p-2 rounded-lg bg-card/90 shadow-2xs border border-border/70 hover:bg-muted transition-colors cursor-pointer',
               !isExpanded && 'opacity-0 hover:opacity-100 focus-visible:opacity-100',
             )}
             aria-label={isExpanded ? 'Exit full screen' : 'Full screen'}
             title={isExpanded ? 'Exit full screen (Esc)' : 'Full screen'}
           >
-            {isExpanded ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+            {isExpanded ? <ArrowsIn className="size-4" /> : <ArrowsOut className="size-4" />}
           </button>
         )}
         <div

@@ -1,0 +1,227 @@
+# yaml-language-server: $schema=https://kortix.com/schema/kortix.schema.json
+#
+# Tauric Trading Desk: one roster for the Trading project.
+#
+# The manifest is the runtime source of truth. `portfolio_manager` is the Chief
+# of Staff and the only launchable agent. It owns the only session and the only
+# computer. The eleven specialists are `mode: subagent`; the Chief calls each one
+# with `session: "same"`, so they run inside the Chief's session with no second
+# sandbox, no desktop, no skills, no connectors and no tools.
+#
+# Do not add a second roster. `trading.agents` and `trading.agent_groups` are
+# frozen legacy tables. The Kortix agents page and `useVisibleAgents` read this
+# file, not that database.
+
+project:
+  name: "Tauric Trading Desk"
+  description: "A Chief of Staff with one live computer, and eleven trading specialists that run inside the Chief's session."
+
+# My Kortix is off: the Chief is the only primary agent in the picker.
+builtin_agents:
+  my_kortix: false
+
+default_agent: portfolio_manager
+
+# The one shared skill. It holds the desk protocol, the decision schema, the
+# risk policy and the bops-to-Kortix architecture map.
+skills:
+  trading-desk: skills/trading-desk
+
+agents:
+  portfolio_manager:
+    description: "Chief of Staff. Owns the desk's only session and computer, gathers the brief, calls every specialist with session: same, and returns one capital decision."
+    mode: primary
+    prompt_file: agents/portfolio-manager.md
+    tools: all
+    skills: all
+    subagents:
+      - technical_analyst
+      - fundamentals_analyst
+      - news_analyst
+      - sentiment_analyst
+      - growth_analyst
+      - macro_analyst
+      - bull_researcher
+      - bear_researcher
+      - risk_manager
+      - trader_agent
+      - ea
+    # The Chief owns connector, app and secret access for the whole desk.
+    # Specialists get none and receive data through the Chief's prompt.
+    connectors: all
+    apps: all
+    secrets: none
+    kortix_permissions:
+      - project.read
+      - project.file.read
+      - project.file.write
+      - project.gitops.push
+    workspace:
+      project_repository: true
+
+  technical_analyst:
+    description: "Reads price, moving averages, RSI, MACD, volume and volatility. Returns a signal, a confidence and a short technical note. No tools."
+    mode: subagent
+    prompt_file: agents/technical-analyst.md
+    tools: none
+    skills: none
+    subagents: none
+    connectors: none
+    apps: none
+    secrets: none
+    kortix_permissions: none
+
+  fundamentals_analyst:
+    description: "Judges valuation, earnings power and business quality from the supplied brief. Returns a signal, a confidence and a short valuation note. No tools."
+    mode: subagent
+    prompt_file: agents/fundamentals-analyst.md
+    tools: none
+    skills: none
+    subagents: none
+    connectors: none
+    apps: none
+    secrets: none
+    kortix_permissions: none
+
+  news_analyst:
+    description: "Weighs headlines and wire items in the supplied brief and names the event that changes the thesis. Returns a signal, a confidence and a short note. No tools."
+    mode: subagent
+    prompt_file: agents/news-analyst.md
+    tools: none
+    skills: none
+    subagents: none
+    connectors: none
+    apps: none
+    secrets: none
+    kortix_permissions: none
+
+  sentiment_analyst:
+    description: "Reads positioning and crowd behaviour from price, volume and headline tone. Returns a signal, a confidence and a short note. No tools."
+    mode: subagent
+    prompt_file: agents/sentiment-analyst.md
+    tools: none
+    skills: none
+    subagents: none
+    connectors: none
+    apps: none
+    secrets: none
+    kortix_permissions: none
+
+  growth_analyst:
+    description: "Identifies growth catalysts in momentum, volume and headlines. Returns a signal, a confidence and a short note. No tools."
+    mode: subagent
+    prompt_file: agents/growth-analyst.md
+    tools: none
+    skills: none
+    subagents: none
+    connectors: none
+    apps: none
+    secrets: none
+    kortix_permissions: none
+
+  macro_analyst:
+    description: "Frames the rates and volatility regime around one name and says when macro must not override the tape. Returns a signal, a confidence and a short note. No tools."
+    mode: subagent
+    prompt_file: agents/macro-analyst.md
+    tools: none
+    skills: none
+    subagents: none
+    connectors: none
+    apps: none
+    secrets: none
+    kortix_permissions: none
+
+  bull_researcher:
+    description: "Builds the strongest honest long case from the analyst reports. Returns an argument and a confidence. No tools."
+    mode: subagent
+    prompt_file: agents/bull-researcher.md
+    tools: none
+    skills: none
+    subagents: none
+    connectors: none
+    apps: none
+    secrets: none
+    kortix_permissions: none
+
+  bear_researcher:
+    description: "Builds the strongest honest short and risk case from the analyst reports. Returns an argument and a confidence. No tools."
+    mode: subagent
+    prompt_file: agents/bear-researcher.md
+    tools: none
+    skills: none
+    subagents: none
+    connectors: none
+    apps: none
+    secrets: none
+    kortix_permissions: none
+
+  risk_manager:
+    description: "Risk gate. Challenges every actionable decision for drawdown, volatility and headline exposure, and vetoes only for concrete tail risk. No tools."
+    mode: subagent
+    prompt_file: agents/risk-manager.md
+    tools: none
+    skills: none
+    subagents: none
+    connectors: none
+    apps: none
+    secrets: none
+    kortix_permissions: none
+
+  trader_agent:
+    description: "Turns an approved committee decision into an execution plan with entry approach, staging and invalidation. No tools."
+    mode: subagent
+    prompt_file: agents/trader-agent.md
+    tools: none
+    skills: none
+    subagents: none
+    connectors: none
+    apps: none
+    secrets: none
+    kortix_permissions: none
+
+  ea:
+    description: "Desk automation and note taker. Summarises a completed desk run in fifty words or fewer. No tools."
+    mode: subagent
+    prompt_file: agents/ea.md
+    tools: none
+    skills: none
+    subagents: none
+    connectors: none
+    apps: none
+    secrets: none
+    kortix_permissions: none
+
+# bops routines -> Kortix triggers. Both reuse the Chief's long-lived session,
+# so the schedule wakes the same computer the person talks to.
+triggers:
+  - slug: premarket-brief
+    name: Pre-market brief
+    on: { cron: "0 0 13 * * 1-5", timezone: UTC }
+    run:
+      agent: portfolio_manager
+      session: reuse
+      prompt: >-
+        Run the pre-market desk brief. Gather the overnight price, volume,
+        headline and macro data for the watchlist. Call the four default
+        analysts, then bull_researcher and bear_researcher, then risk_manager.
+        Use session: "same" for every specialist call. Return the committee
+        decision as JSON. Do not place an order. If a decision is actionable,
+        ask the user for explicit approval first.
+
+  - slug: weekly-desk-review
+    name: Weekly desk review
+    on: { cron: "0 0 21 * * 5", timezone: UTC }
+    run:
+      agent: portfolio_manager
+      session: reuse
+      prompt: >-
+        Run the weekly desk review. Read this week's sessions and the journal
+        view. Call ea with session: "same" to summarise the week. Report the
+        hit rate, the largest drawdown, every risk veto and every decision that
+        lacked a recorded outcome. Do not edit journal rows.
+
+# A connector-held call waits four hours for a person's decision. The desk
+# policy is stricter: no order, payment or external write runs on an inferred
+# approval, even when a connector policy would allow it.
+approvals:
+  ttl: 4h

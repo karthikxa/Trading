@@ -58,6 +58,10 @@ import { removeProfileAvatar } from './profile-avatar';
 import { useLocale, useTranslations } from '@/i18n/use-translations';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useAuth } from '@/features/providers/auth-provider';
+import { JournalDatePicker, normalizeToIsoDate } from '@/features/journal/JournalDateTimeFields';
+import { getLocalTrades } from '@/features/journal/storage';
 
 import { Avatar, AvatarFallback, AvatarImage } from '@kortix/ui/avatar';
 import { Button } from '@kortix/ui/button';
@@ -325,6 +329,118 @@ export function ProfileTabView({
       ...copyOverrides.organizations,
     },
   };
+
+  const { user } = useAuth();
+
+  const [currentCapital, setCurrentCapital] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('kortix_trading_starting_capital');
+        if (saved) {
+          const val = parseFloat(saved);
+          if (!isNaN(val) && val > 0) return val;
+        }
+      } catch {}
+    }
+    return 100000;
+  });
+
+  const [totalJournalPnl, setTotalJournalPnl] = useState<number>(0);
+
+  useEffect(() => {
+    const updateMetrics = () => {
+      try {
+        const trades = getLocalTrades();
+        const pnl = trades.reduce((acc, t) => acc + (t.pnl ?? 0), 0);
+        setTotalJournalPnl(pnl);
+
+        const savedCapital = localStorage.getItem('kortix_trading_starting_capital');
+        if (savedCapital) {
+          const val = parseFloat(savedCapital);
+          if (!isNaN(val) && val > 0) setCurrentCapital(val);
+        }
+      } catch {}
+    };
+    updateMetrics();
+    window.addEventListener('trading-journal-updated', updateMetrics);
+    window.addEventListener('trading-goal-updated', updateMetrics);
+    return () => {
+      window.removeEventListener('trading-journal-updated', updateMetrics);
+      window.removeEventListener('trading-goal-updated', updateMetrics);
+    };
+  }, []);
+
+  const currentBalance = currentCapital + totalJournalPnl;
+
+  const [tradingGoal, setTradingGoal] = useState<{ targetAmount: number; targetDate: string }>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('kortix_trading_goal_v1');
+        if (saved) return JSON.parse(saved);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    return { targetAmount: 125000, targetDate: '2026-12-31' };
+  });
+
+  const [isEditingGoal, setIsEditingGoal] = useState(false);
+  const [totalMoneyDraft, setTotalMoneyDraft] = useState(String(currentCapital));
+  const [goalAmountDraft, setGoalAmountDraft] = useState(String(tradingGoal.targetAmount));
+  const [goalDateDraft, setGoalDateDraft] = useState(tradingGoal.targetDate);
+
+  const goalPercent = Math.max(0, (currentBalance / (tradingGoal.targetAmount || 1)) * 100);
+  const remainingAmount = Math.max(0, tradingGoal.targetAmount - currentBalance);
+
+  const formattedDeadline = useMemo(() => {
+    const iso = normalizeToIsoDate(tradingGoal.targetDate);
+    try {
+      const parts = iso.split('-');
+      if (parts.length === 3) {
+        const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+        if (!Number.isNaN(d.getTime())) {
+          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+      }
+    } catch {
+      // fallback
+    }
+    return tradingGoal.targetDate || 'Dec 31, 2026';
+  }, [tradingGoal.targetDate]);
+
+  const startEditGoal = () => {
+    setTotalMoneyDraft(String(currentCapital));
+    setGoalAmountDraft(String(tradingGoal.targetAmount));
+    setGoalDateDraft(normalizeToIsoDate(tradingGoal.targetDate || '2026-12-31'));
+    setIsEditingGoal(true);
+  };
+
+  const handleSaveGoal = () => {
+    const targetNum = parseFloat(goalAmountDraft);
+    if (isNaN(targetNum) || targetNum <= 0) {
+      errorToast('Please enter a valid target amount');
+      return;
+    }
+    const capitalNum = parseFloat(totalMoneyDraft);
+    if (isNaN(capitalNum) || capitalNum <= 0) {
+      errorToast('Please enter a valid balance amount');
+      return;
+    }
+
+    const updatedGoal = { targetAmount: targetNum, targetDate: normalizeToIsoDate(goalDateDraft) };
+    setTradingGoal(updatedGoal);
+    setCurrentCapital(capitalNum);
+
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('kortix_trading_starting_capital', String(capitalNum));
+      localStorage.setItem('kortix_trading_goal_v1', JSON.stringify(updatedGoal));
+      window.dispatchEvent(new Event('trading-goal-updated'));
+      window.dispatchEvent(new Event('trading-journal-updated'));
+      window.dispatchEvent(new Event('storage'));
+    }
+    setIsEditingGoal(false);
+    successToast('Goals and total money updated successfully');
+  };
   // The right-hand control of the Delete-account row, and the line under its
   // label. Four states, one row — an errored status check, an unavailable or
   // an already-scheduled deletion changes what the row SAYS and what its
@@ -436,6 +552,191 @@ export function ProfileTabView({
           ) : null}
         </SettingsRow>
       </SettingsRowGroup>
+
+      {/* Goals */}
+      <section className="space-y-3 font-sans">
+        <div className="flex items-center justify-between">
+          <SettingsSubsectionHeader title="Goals" />
+          {!isEditingGoal && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={startEditGoal}
+              className="cursor-pointer font-sans text-xs h-7 px-2.5"
+            >
+              Edit Goal
+            </Button>
+          )}
+        </div>
+        <SettingsRowGroup>
+          {isEditingGoal ? (
+            <div className="p-4 space-y-4 bg-muted/20">
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="goal-current-capital" className="text-xs font-medium text-foreground font-sans">
+                    Total Money We Have ($)
+                  </Label>
+                  <Input
+                    id="goal-current-capital"
+                    type="number"
+                    step="any"
+                    value={totalMoneyDraft}
+                    onChange={(e) => setTotalMoneyDraft(e.target.value)}
+                    placeholder="100000.00"
+                    className="h-9 text-sm font-sans"
+                  />
+                  <p className="text-[11px] text-muted-foreground font-sans">
+                    Base starting portfolio capital synced with Overview and Live Trade Logs
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="goal-target-amount" className="text-xs font-medium text-foreground font-sans">
+                    Target Money ($)
+                  </Label>
+                  <Input
+                    id="goal-target-amount"
+                    type="number"
+                    step="any"
+                    value={goalAmountDraft}
+                    onChange={(e) => setGoalAmountDraft(e.target.value)}
+                    placeholder="125000"
+                    className="h-9 text-sm font-sans"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="goal-target-date" className="text-xs font-medium text-foreground font-sans">
+                    Target Date
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="goal-target-date"
+                      type="date"
+                      value={normalizeToIsoDate(goalDateDraft)}
+                      onChange={(e) => setGoalDateDraft(e.target.value)}
+                      className="h-9 text-sm font-sans flex-1"
+                    />
+                    <JournalDatePicker
+                      value={goalDateDraft}
+                      onChange={(nextDate) => setGoalDateDraft(nextDate)}
+                      className="h-9 w-auto px-2.5"
+                      ariaLabel="Pick date with calendar"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/40">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setTotalMoneyDraft(String(currentCapital));
+                    setGoalAmountDraft(String(tradingGoal.targetAmount));
+                    setGoalDateDraft(tradingGoal.targetDate);
+                    setIsEditingGoal(false);
+                  }}
+                  className="h-7 text-xs font-sans cursor-pointer"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleSaveGoal}
+                  className="h-7 text-xs font-sans cursor-pointer"
+                >
+                  Save
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <SettingsRow
+                label="Total Money We Have"
+                description="Live portfolio balance synced across Overview KPI cards and Journal trades"
+              >
+                <div className="flex items-center gap-2.5 my-auto">
+                  <span className="text-sm font-medium tabular-nums text-foreground font-sans">
+                    ${currentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </SettingsRow>
+              <SettingsRow
+                label="Target Money"
+                description={`Target: $${tradingGoal.targetAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Current balance: $${currentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              >
+                <div className="flex flex-col items-end gap-1.5 my-auto">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-normal tabular-nums text-foreground font-sans">
+                      {remainingAmount > 0
+                        ? `$${remainingAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} remaining`
+                        : `${(goalPercent - 100).toFixed(1)}% above target`}
+                    </span>
+                  </div>
+                  <div className="w-48 h-1.5 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className="bg-emerald-500 h-full rounded-full transition-all duration-500"
+                      style={{ width: `${Math.min(100, Math.max(0, goalPercent))}%` }}
+                    />
+                  </div>
+                </div>
+              </SettingsRow>
+              <SettingsRow
+                label="Target Date"
+                description="Target deadline to achieve your portfolio growth goal"
+              >
+                <div className="flex items-center gap-2.5 my-auto">
+                  <span className="text-sm font-normal text-foreground font-sans">
+                    {formattedDeadline}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={startEditGoal}
+                    className="cursor-pointer font-sans text-xs h-7 px-2"
+                  >
+                    Edit
+                  </Button>
+                </div>
+              </SettingsRow>
+            </>
+          )}
+        </SettingsRowGroup>
+      </section>
+
+      {/* User Authentication & Cloud Sync */}
+      <section className="space-y-3 font-sans">
+        <SettingsSubsectionHeader title="User Authentication" />
+        <SettingsRowGroup>
+          <SettingsRow
+            label="Signed-in Account"
+            description={user?.email ? `Authenticated as ${user.email}` : 'Signed in as Local Guest Trader'}
+          >
+            <div className="flex items-center gap-2 my-auto">
+              {user?.id === 'usr_local_trader' ? (
+                <Button asChild variant="outline" size="sm" className="h-7 text-xs font-sans cursor-pointer">
+                  <Link href="/auth">
+                    Sign In / Register
+                  </Link>
+                </Button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    Active Session
+                  </span>
+                  <Button asChild variant="ghost" size="sm" className="h-7 text-xs font-sans cursor-pointer">
+                    <Link href="/auth">
+                      Switch User
+                    </Link>
+                  </Button>
+                </div>
+              )}
+            </div>
+          </SettingsRow>
+        </SettingsRowGroup>
+      </section>
 
       {/* Organizations — directly under the identity group, because it
           answers the same question those rows do ("who am I here") and because

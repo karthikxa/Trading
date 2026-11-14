@@ -192,14 +192,14 @@ export function HelpSubmenu({ onClose }: { onClose: () => void }) {
       // menu row runs the RSC fetch cold at click time, and that fetch degrades
       // into a full document load whenever it answers wrong — a build-id skew
       // mid-deploy, a maintenance redirect, a network blip.
-      <DropdownMenuItem key={href} asChild onClick={onClose}>
+      <DropdownMenuItem key={`${label}-${href}`} asChild onClick={onClose}>
         <Link href={href} prefetch>
           <Icon />
           {label}
         </Link>
       </DropdownMenuItem>
     ) : (
-      <DropdownMenuItem key={href} asChild>
+      <DropdownMenuItem key={`${label}-${href}`} asChild>
         <a
           href={href}
           target="_blank"

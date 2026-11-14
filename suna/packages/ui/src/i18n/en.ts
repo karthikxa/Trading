@@ -5019,7 +5019,7 @@ const catalog = {
       "textce0faee27592": "billing payment credit card subscription manage wallet tier plan limits overview spend",
       "textce18e358bf01": "Try a different term.",
       "textce1e609b7bf5": "Sandbox ports only",
-      "textce34af36d804": "Kortix CompanyOS – the open-source operating system for your company",
+      "textce34af36d804": "Zed AI – Autonomous Trading & Multi-Agent Intelligence",
       "textce4683e7013a": "Channel",
       "text68971283841a": "Subject",
       "textce49e021df99": "The session owner or a project manager can reload it.",

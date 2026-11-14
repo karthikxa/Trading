@@ -97,6 +97,7 @@ import {
   PencilSimpleIcon,
   PlusIcon,
   PuzzlePieceIcon,
+  UserIcon as User,
 } from '@phosphor-icons/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
@@ -376,10 +377,15 @@ export function WorkspaceSwitcher({ projectId }: { projectId: string }) {
 
               <HelpSubmenu onClose={() => setMenuOpen(false)} />
 
-              {/* Log out is the only row that ends something, so it gets its own
-                  group. Nothing sits below it — the last item in a menu is the
-                  one a slipped pointer lands on. */}
+              {/* User Authentication & Account Management */}
               <DropdownMenuSeparator />
+
+              <DropdownMenuItem asChild onSelect={() => setMenuOpen(false)} size="sm">
+                <Link href="/auth">
+                  <User />
+                  {user?.id === 'usr_local_trader' ? 'Sign In / Register' : 'Switch Account'}
+                </Link>
+              </DropdownMenuItem>
 
               <DropdownMenuItem onClick={openLogoutConfirm} size="sm">
                 <LogOut />

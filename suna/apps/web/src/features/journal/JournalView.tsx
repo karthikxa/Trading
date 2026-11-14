@@ -15,6 +15,10 @@ import { WeeklyBreakdownCard } from './WeeklyBreakdownCard';
 import { DayDetailsDrawer } from './DayDetailsDrawer';
 import { AddTradeView } from './AddTradeView';
 import { TradeDetailView } from './TradeDetailView';
+import { SidebarToggle } from '@kortix/ui/workspace';
+import { Button } from '@kortix/ui';
+import Hint from '@kortix/ui/hint';
+import { SidebarGlyph } from '@kortix/ui/icons';
 
 interface JournalViewProps {
   projectId?: string;
@@ -228,7 +232,25 @@ export default function JournalView({ projectId }: JournalViewProps) {
   }, [trades, currentYear, currentMonth]);
 
   return (
-    <div className="flex flex-col h-full w-full overflow-hidden bg-[#fafafa] text-zinc-950 font-sans">
+    <div className="relative flex flex-col h-full w-full overflow-hidden bg-background text-foreground font-sans">
+      <SidebarToggle placement="floating" />
+      {!drawerOpen && viewMode === 'calendar' && (
+        <div className="absolute top-[11px] right-3.5 z-30">
+          <Hint label="Open side panel">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => setDrawerOpen(true)}
+              aria-label="Open side panel"
+              title="Open side panel"
+              className="size-7 text-muted-foreground hover:text-foreground cursor-pointer"
+            >
+              <SidebarGlyph className="size-4 -scale-x-100" />
+            </Button>
+          </Hint>
+        </div>
+      )}
       {/* ========================================================================= */}
       {/* BODY CONTENT (CALENDAR | ADD | DETAIL)                                    */}
       {/* ========================================================================= */}
@@ -285,8 +307,8 @@ export default function JournalView({ projectId }: JournalViewProps) {
         ) : (
           /* ==================== VIEW 1: BIG CALENDAR & SIDEBAR (LOAD AT SAME TIME) ==================== */
           <>
-            <main className="flex-1 overflow-y-auto px-6 py-6 sm:px-8 sm:py-8 min-w-0 w-full">
-              <div className="flex flex-col gap-8 w-full">
+            <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-6 min-w-0 w-full [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+              <div className="flex flex-col gap-6 w-full max-w-full">
                 {/* Big Monthly Calendar with Boxes */}
                 <TradingCalendar
                   currentYear={currentYear}
@@ -321,7 +343,7 @@ export default function JournalView({ projectId }: JournalViewProps) {
               </div>
             </main>
 
-            {/* Sidebar drawer loads in tandem with calendar */}
+            {/* Sidebar drawer loads in tandem with calendar (Kortix docked sidebar style) */}
             {drawerOpen && (
               <DayDetailsDrawer
                 date={selectedDate}

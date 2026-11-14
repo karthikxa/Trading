@@ -9,19 +9,26 @@ interface TvScreenerProps {
   height?: number;
   market?: string;
   defaultScreen?: string;
+  screenerType?: string;
+  columns?: string;
+  screen?: string;
 }
 
 const TvScreener = ({
   height = 520,
   market = 'america',
   defaultScreen = 'most_capitalized',
+  screenerType,
+  columns,
+  screen,
 }: TvScreenerProps) => {
   const config = {
     width: '100%',
     height,
-    defaultColumn: 'overview',
-    defaultScreen,
-    market,
+    defaultColumn: columns || 'overview',
+    defaultScreen: screen || defaultScreen,
+    market: market || 'america',
+    screener_type: screenerType,
     showToolbar: true,
     colorTheme: 'light',
     locale: 'en',

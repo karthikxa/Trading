@@ -24,6 +24,18 @@ const TRADINGVIEW_KNOWN_LOGOS: Record<string, string> = {
   NFLX: 'https://s3-symbol-logo.tradingview.com/netflix.svg',
   AMD: 'https://s3-symbol-logo.tradingview.com/advanced-micro-devices.svg',
   INTC: 'https://s3-symbol-logo.tradingview.com/intel.svg',
+
+  // ETFs & Indices
+  SPY: 'https://s3-symbol-logo.tradingview.com/indices/s-and-p-500.svg',
+  SPX: 'https://s3-symbol-logo.tradingview.com/indices/s-and-p-500.svg',
+  INX: 'https://s3-symbol-logo.tradingview.com/indices/s-and-p-500.svg',
+  QQQ: 'https://s3-symbol-logo.tradingview.com/indices/nasdaq-100.svg',
+  NDX: 'https://s3-symbol-logo.tradingview.com/indices/nasdaq-100.svg',
+  DIA: 'https://s3-symbol-logo.tradingview.com/indices/dow-30.svg',
+  DJI: 'https://s3-symbol-logo.tradingview.com/indices/dow-30.svg',
+  IWM: 'https://s3-symbol-logo.tradingview.com/indices/russell-2000.svg',
+
+  // Crypto
   BTC: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCBTC.svg',
   BTCUSD: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCBTC.svg',
   BTCUSDT: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCBTC.svg',
@@ -33,6 +45,31 @@ const TRADINGVIEW_KNOWN_LOGOS: Record<string, string> = {
   SOL: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCSOL.svg',
   SOLUSD: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCSOL.svg',
   SOLUSDT: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCSOL.svg',
+  BNB: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCBNB.svg',
+  BNBUSD: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCBNB.svg',
+  BNBUSDT: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCBNB.svg',
+  XRP: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCXRP.svg',
+  XRPUSD: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCXRP.svg',
+  XRPUSDT: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCXRP.svg',
+  DOGE: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCDOGE.svg',
+  DOGEUSD: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCDOGE.svg',
+  DOGEUSDT: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCDOGE.svg',
+  ADA: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCADA.svg',
+  ADAUSD: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCADA.svg',
+  ADAUSDT: 'https://s3-symbol-logo.tradingview.com/crypto/XTVCADA.svg',
+
+  // Forex
+  EURUSD: 'https://s3-symbol-logo.tradingview.com/country/EU.svg',
+  EURGBP: 'https://s3-symbol-logo.tradingview.com/country/EU.svg',
+  EURJPY: 'https://s3-symbol-logo.tradingview.com/country/EU.svg',
+  GBPUSD: 'https://s3-symbol-logo.tradingview.com/country/GB.svg',
+  GBPJPY: 'https://s3-symbol-logo.tradingview.com/country/GB.svg',
+  USDJPY: 'https://s3-symbol-logo.tradingview.com/country/JP.svg',
+  AUDUSD: 'https://s3-symbol-logo.tradingview.com/country/AU.svg',
+  USDCAD: 'https://s3-symbol-logo.tradingview.com/country/CA.svg',
+  USDCHF: 'https://s3-symbol-logo.tradingview.com/country/CH.svg',
+
+  // India
   RELIANCE: 'https://s3-symbol-logo.tradingview.com/reliance.svg',
   HDFCBANK: 'https://s3-symbol-logo.tradingview.com/hdfc-bank.svg',
   ICICIBANK: 'https://s3-symbol-logo.tradingview.com/icici-bank.svg',
@@ -219,12 +256,14 @@ export function StockSymbolIcon({
     return (
       <div
         className={cn(
-          'flex items-center justify-center rounded-full bg-[#e82127] text-white font-bold shrink-0 shadow-2xs',
+          'flex items-center justify-center rounded-full bg-[#e82127] text-white shrink-0 shadow-2xs p-1.5',
           sizeClasses,
           className,
         )}
       >
-        <span className="font-serif">T</span>
+        <svg viewBox="0 0 100 100" className="size-full fill-white">
+          <path d="M50 20c7.8 0 24.3 1.8 32.4 6.8l2.6-7.8C75.2 14.5 59.8 13 50 13c-9.8 0-25.2 1.5-35 6l2.6 7.8c8.1-5 24.6-6.8 32.4-6.8zm0 17.5c11.6 0 24.8 3.5 32 8.7l4.8-13.8C76 26.6 62.8 24 50 24s-26 2.6-36.8 8.4l4.8 13.8c7.2-5.2 20.4-8.7 32-8.7zm-6.2 13h12.4v36.5h-12.4z" />
+        </svg>
       </div>
     );
   }
@@ -233,12 +272,42 @@ export function StockSymbolIcon({
     return (
       <div
         className={cn(
-          'flex items-center justify-center rounded-full bg-[#76b900] text-white font-bold shrink-0 shadow-2xs',
+          'flex items-center justify-center rounded-full bg-black text-[#76b900] shrink-0 shadow-2xs p-1.5',
           sizeClasses,
           className,
         )}
       >
-        <span className="font-mono text-[9px]">NV</span>
+        <svg viewBox="0 0 24 24" className="size-full fill-[#76b900]">
+          <path d="M7.74 7.64c.54-.34 1.15-.6 1.78-.79V5.1c-.97.23-1.89.62-2.74 1.14l.96 1.4zm0 8.72l-.96 1.4c.85.52 1.77.91 2.74 1.14v-1.75c-.63-.19-1.24-.45-1.78-.79zm7.04-10.84v1.86c2.72.63 4.8 3.07 4.8 5.98 0 2.91-2.08 5.35-4.8 5.98v1.86c3.74-.68 6.55-3.93 6.55-7.84s-2.81-7.16-6.55-7.84zm-3.03 2.11v8.74c1.88-.47 3.29-2.18 3.29-4.37s-1.41-3.9-3.29-4.37z" />
+        </svg>
+      </div>
+    );
+  }
+
+  if (cleanSym === 'SPY' || cleanSym === 'SPX') {
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full bg-[#1b365d] text-white shrink-0 shadow-2xs p-1 font-bold',
+          sizeClasses,
+          className,
+        )}
+      >
+        <span className="text-[9px] font-sans tracking-tighter">S&P</span>
+      </div>
+    );
+  }
+
+  if (cleanSym === 'QQQ' || cleanSym === 'NDX') {
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full bg-[#0052cc] text-white shrink-0 shadow-2xs p-1 font-bold',
+          sizeClasses,
+          className,
+        )}
+      >
+        <span className="text-[9px] font-sans tracking-tighter">100</span>
       </div>
     );
   }

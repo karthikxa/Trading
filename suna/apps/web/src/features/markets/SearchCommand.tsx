@@ -6,6 +6,7 @@ import { Loader2, Search, X } from 'lucide-react';
 import { searchTradingViewSymbols } from './tradingview.actions';
 import type { TvSymbolResult } from './types';
 import { cn } from '@kortix/ui';
+import { StockSymbolIcon } from './StockSymbolIcon';
 
 const OPEN_SEARCH_EVENT = 'open-search';
 
@@ -26,17 +27,17 @@ export const SearchButton = ({
     type="button"
     onClick={openSearch}
     className={cn(
-      'inline-flex items-center gap-2.5 rounded-xl bg-zinc-950 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-black transition-all cursor-pointer font-sans',
+      'inline-flex items-center gap-2.5 h-9 px-3.5 rounded-xl border border-border/60 bg-muted/50 hover:bg-muted/80 text-sm font-normal text-muted-foreground hover:text-foreground transition-all shadow-2xs cursor-pointer font-sans',
       className,
     )}
   >
-    <Search className="size-4 text-zinc-300" />
+    <Search className="size-4 text-foreground/80 shrink-0" />
     {children ? (
       children
     ) : (
       <>
-        <span>Search stocks...</span>
-        <kbd className="ml-2 rounded-md bg-white/20 px-1.5 py-0.5 text-[10px] font-mono text-white">
+        <span className="font-sans text-sm font-normal text-foreground/90">Search stocks</span>
+        <kbd className="hidden sm:inline-block ml-3 rounded-md bg-background px-1.5 py-0.5 text-[10.5px] font-medium text-muted-foreground border border-border/50">
           ⌘K
         </kbd>
       </>
@@ -256,139 +257,6 @@ const CATEGORY_PRESETS: Record<string, TradingViewModalItem[]> = {
   ],
 };
 
-// Helper to render official TradingView style circular badge
-function renderTvCircularBadge(item: TradingViewModalItem) {
-  const sym = (item.symbol || '').toUpperCase();
-  const type = (item.type || '').toLowerCase();
-
-  // NIFTY 50 badge: Dark navy circle with white "50"
-  if (sym === 'NIFTY') {
-    return (
-      <div className="size-8.5 rounded-full bg-[#14204b] flex items-center justify-center shrink-0 text-white font-bold text-[13px] tracking-tight">
-        50
-      </div>
-    );
-  }
-
-  // BANKNIFTY badge: Navy blue circle with bank temple icon
-  if (sym.includes('BANKNIFTY')) {
-    return (
-      <div className="size-8.5 rounded-full bg-[#1b2f6b] flex items-center justify-center shrink-0 text-white">
-        <svg className="size-4" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 2L2 7v2h20V7L12 2zm-8 8v8h2v-8H4zm5 0v8h2v-8H9zm5 0v8h2v-8h-2zm5 0v8h2v-8h-2zM2 20v2h20v-2H2z" />
-        </svg>
-      </div>
-    );
-  }
-
-  // SENSEX badge: Light blue circle with "BSE"
-  if (sym.includes('SENSEX')) {
-    return (
-      <div className="size-8.5 rounded-full bg-[#2b82d9] flex items-center justify-center shrink-0 text-white font-bold text-[10px]">
-        BSE
-      </div>
-    );
-  }
-
-  // Gold / Metals: Golden yellow circle with gold bars icon
-  if (sym.includes('GOLD') || sym.includes('XAU') || sym.includes('SILVER') || sym.includes('XAG')) {
-    return (
-      <div className="size-8.5 rounded-full bg-[#e5a01c] flex items-center justify-center shrink-0 text-white">
-        <svg className="size-4.5" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M5 14h14l-2 5H7l-2-5zm3-8h8l2 5H6l2-5zm7.5 13l1.5-3.5L18.5 19h-3zM5.5 19l1.5-3.5L5.5 19z" />
-        </svg>
-      </div>
-    );
-  }
-
-  // Crude Oil: Dark charcoal/black circle with white oil droplet
-  if (sym.includes('OIL') || sym.includes('CRUDE') || sym.includes('CL')) {
-    return (
-      <div className="size-8.5 rounded-full bg-[#1a1a1a] flex items-center justify-center shrink-0 text-white">
-        <svg className="size-4.5" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z" />
-        </svg>
-      </div>
-    );
-  }
-
-  // Crypto: Bitcoin or coin badge
-  if (type.includes('crypto') || sym.includes('BTC') || sym.includes('ETH') || sym.includes('SOL')) {
-    return (
-      <div className="size-8.5 rounded-full bg-[#f7931a] flex items-center justify-center shrink-0 text-white font-bold text-[14px]">
-        ₿
-      </div>
-    );
-  }
-
-  // Default: Colored initial circle
-  return (
-    <div className="size-8.5 rounded-full bg-zinc-800 flex items-center justify-center shrink-0 text-white font-bold text-[12px] uppercase">
-      {sym.slice(0, 2)}
-    </div>
-  );
-}
-
-// Helper to render official TradingView style circular exchange logo on the right
-function renderTvExchangeLogo(exchange: string) {
-  const ex = (exchange || '').toUpperCase();
-
-  if (ex.includes('NSE')) {
-    // NSE orange circular logo
-    return (
-      <div className="size-4.5 rounded-full bg-[#ea580c] flex items-center justify-center shrink-0 text-white text-[8px] font-bold">
-        ✹
-      </div>
-    );
-  }
-  if (ex.includes('BSE')) {
-    // BSE blue circular logo
-    return (
-      <div className="size-4.5 rounded-full bg-[#2563eb] flex items-center justify-center shrink-0 text-white text-[7px] font-bold">
-        BSE
-      </div>
-    );
-  }
-  if (ex.includes('OANDA')) {
-    // OANDA dark navy wave logo
-    return (
-      <div className="size-4.5 rounded-full bg-[#0f172a] flex items-center justify-center shrink-0 text-white text-[9px]">
-        〰
-      </div>
-    );
-  }
-  if (ex.includes('FOREXCOM')) {
-    // FOREX.COM green logo
-    return (
-      <div className="size-4.5 rounded-full bg-[#16a34a] flex items-center justify-center shrink-0 text-white text-[9px] font-bold">
-        €
-      </div>
-    );
-  }
-  if (ex.includes('FXCM')) {
-    // FXCM blue circular logo
-    return (
-      <div className="size-4.5 rounded-full bg-[#1d4ed8] flex items-center justify-center shrink-0 text-white text-[8px] font-bold">
-        2
-      </div>
-    );
-  }
-  if (ex.includes('MCX')) {
-    // MCX red/blue logo
-    return (
-      <div className="size-4.5 rounded-full bg-[#dc2626] flex items-center justify-center shrink-0 text-white text-[6px] font-black">
-        MCX
-      </div>
-    );
-  }
-  // Default TradingView logo ("17") inside black circle
-  return (
-    <div className="size-4.5 rounded-full bg-black flex items-center justify-center shrink-0 text-white text-[7.5px] font-black tracking-tighter">
-      17
-    </div>
-  );
-}
-
 export default function SearchCommand({
   onSelectSymbol,
 }: {
@@ -533,8 +401,8 @@ export default function SearchCommand({
           <DialogDescription>Search worldwide symbols, ISIN, or CUSIP</DialogDescription>
         </DialogHeader>
 
-        {/* ============ HEADER SEARCH INPUT (Spacious & Clean) ============ */}
-        <div className="flex items-center gap-3 px-4.5 pt-4 pb-3 bg-white">
+        {/* Search Input Bar */}
+        <div className="flex items-center gap-3 px-4.5 pt-4 pb-3 border-b border-zinc-200/80 bg-white">
           <Search className="size-5 text-zinc-400 shrink-0 stroke-[2.2]" />
           <input
             ref={inputRef}
@@ -542,8 +410,9 @@ export default function SearchCommand({
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Symbol, ISIN, or CUSIP"
-            className="flex-1 bg-transparent text-[16px] font-normal text-zinc-900 placeholder:text-zinc-400 outline-none font-sans"
+            placeholder="Search stocks..."
+            className="flex-1 bg-transparent text-[15px] font-normal text-zinc-900 placeholder:text-zinc-400 outline-none font-sans"
+            autoFocus
           />
           {searchTerm && (
             <button
@@ -555,20 +424,18 @@ export default function SearchCommand({
               <X className="size-4" />
             </button>
           )}
-
-          {/* Clean Close Button (Replaces overlapping wrong button) */}
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors cursor-pointer"
+            className="p-1 rounded-lg text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors cursor-pointer"
             title="Close (Esc)"
           >
-            <X className="size-5" />
+            <X className="size-4" />
           </button>
         </div>
 
-        {/* ============ CATEGORY FILTER PILLS (Matching Image 2) ============ */}
-        <div className="flex items-center gap-1 overflow-x-auto px-4 pb-3 bg-white [scrollbar-width:none]">
+        {/* Category Filter Pills */}
+        <div className="flex items-center gap-1 overflow-x-auto px-4 py-2.5 bg-zinc-50/70 border-b border-zinc-200/60 [scrollbar-width:none]">
           {TV_CATEGORIES.map((cat) => {
             const active = category === cat.value;
             return (
@@ -577,10 +444,10 @@ export default function SearchCommand({
                 type="button"
                 onClick={() => setCategory(cat.value)}
                 className={cn(
-                  'rounded-full px-3.5 py-1 text-[13px] font-medium transition-all shrink-0 cursor-pointer font-sans',
+                  'rounded-full px-3 py-1 text-[12.5px] font-medium transition-all shrink-0 cursor-pointer font-sans',
                   active
-                    ? 'bg-black text-white font-semibold'
-                    : 'text-zinc-600 hover:bg-zinc-100 hover:text-black',
+                    ? 'bg-black text-white font-semibold shadow-xs'
+                    : 'text-zinc-600 hover:bg-zinc-200/60 hover:text-black',
                 )}
               >
                 {cat.label}
@@ -589,90 +456,102 @@ export default function SearchCommand({
           })}
         </div>
 
-        {/* ============ DIVIDER ============ */}
-        <div className="h-px w-full bg-zinc-100" />
+            {/* Divider */}
+            <div className="h-px w-full bg-zinc-100" />
 
-        {/* ============ RESULTS LIST (Exact Layout from Image 2) ============ */}
-        <div
-          ref={listRef}
-          className="max-h-[64vh] min-h-[460px] overflow-y-auto divide-y divide-zinc-100/60 font-sans"
-        >
-          {loading && (
-            <div className="flex items-center justify-center py-12 text-zinc-400 gap-2">
-              <Loader2 className="size-5 animate-spin text-zinc-500" />
-              <span className="text-xs font-medium">Searching symbols...</span>
-            </div>
-          )}
+            {/* Results List with Authentic TradingView CDN Logos */}
+            <div
+              ref={listRef}
+              className="max-h-[60vh] min-h-[440px] overflow-y-auto divide-y divide-zinc-100/70 font-sans"
+            >
+              {loading && (
+                <div className="flex items-center justify-center py-16 text-zinc-400 gap-2">
+                  <Loader2 className="size-5 animate-spin text-zinc-500" />
+                  <span className="text-xs font-medium">Searching live TradingView symbols...</span>
+                </div>
+              )}
 
-          {!loading && symbols.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-20 text-center text-zinc-400">
-              <p className="text-sm font-semibold text-zinc-700">No symbols found</p>
-              <p className="text-xs text-zinc-400 mt-0.5">Try searching another ticker or category</p>
-            </div>
-          )}
+              {!loading && symbols.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-20 text-center text-zinc-400">
+                  <p className="text-sm font-semibold text-zinc-700">No symbols found</p>
+                  <p className="text-xs text-zinc-400 mt-0.5">Try searching another ticker or category</p>
+                </div>
+              )}
 
-          {!loading &&
-            symbols.map((item, idx) => {
-              const displaySymbol = (item.symbol || '').replace(/<[^>]*>/g, '');
-              const displayDesc = (item.description || '').replace(/<[^>]*>/g, '');
-              const isSelected = selectedIndex === idx;
+              {!loading &&
+                symbols.map((item, idx) => {
+                  const displaySymbol = (item.symbol || '').replace(/<[^>]*>/g, '');
+                  const displayDesc = (item.description || '').replace(/<[^>]*>/g, '');
+                  const isSelected = selectedIndex === idx;
 
-              return (
-                <div
-                  key={`${displaySymbol}-${item.exchange}-${idx}`}
-                  data-search-row
-                  onClick={() => handleSelect(item)}
-                  onMouseEnter={() => setSelectedIndex(idx)}
-                  className={cn(
-                    'flex items-center justify-between px-4 py-2.5 cursor-pointer transition-colors select-none',
-                    isSelected ? 'bg-zinc-100/80' : 'hover:bg-zinc-50/80',
-                  )}
-                >
-                  {/* Left Column: Circular Badge + Symbol + Subtitle */}
-                  <div className="flex items-center gap-3.5 min-w-0 pr-4">
-                    {renderTvCircularBadge(item)}
+                  return (
+                    <div
+                      key={`${displaySymbol}-${item.exchange}-${idx}`}
+                      data-search-row
+                      onClick={() => handleSelect(item)}
+                      onMouseEnter={() => setSelectedIndex(idx)}
+                      className={cn(
+                        'flex items-center justify-between px-4 py-2.5 cursor-pointer transition-colors select-none',
+                        isSelected ? 'bg-zinc-100/90' : 'hover:bg-zinc-50/80',
+                      )}
+                    >
+                      {/* Left: Real TradingView CDN Logo + Symbol Name + Description */}
+                      <div className="flex items-center gap-3 min-w-0 pr-4">
+                        <StockSymbolIcon
+                          symbol={displaySymbol}
+                          type={item.type}
+                          logoid={item.logoid}
+                          size="md"
+                        />
 
-                    <div className="min-w-0">
-                      {/* Line 1: Symbol Name + Flag */}
-                      <div className="flex items-center gap-1.5 leading-tight">
-                        <span className="font-bold text-[14px] text-zinc-950 font-sans tracking-tight">
-                          {displaySymbol}
-                        </span>
-                        {item.isIndia && <span className="text-[12px]">🇮🇳</span>}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 leading-tight">
+                            <span className="font-bold text-[14px] text-zinc-950 font-sans tracking-tight">
+                              {displaySymbol}
+                            </span>
+                            {item.isIndia && <span className="text-[12px]">🇮🇳</span>}
+                          </div>
+
+                          <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                            <span className="truncate text-[12px] text-zinc-500 font-normal">
+                              {displayDesc || displaySymbol}
+                            </span>
+                            {item.badge && (
+                              <span className="rounded-[4px] bg-zinc-200/70 px-1.5 py-0.2 text-[9.5px] font-bold uppercase tracking-wider text-zinc-600 shrink-0">
+                                {item.badge}
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </div>
 
-                      {/* Line 2: Description + Grey Badge */}
-                      <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
-                        <span className="truncate text-[12px] text-zinc-500 font-normal">
-                          {displayDesc || displaySymbol}
+                      {/* Right: Exchange + Source Logo / Pill */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-sans text-[12px] font-semibold text-zinc-600">
+                          {item.exchange}
                         </span>
-                        {item.badge && (
-                          <span className="rounded-[4px] bg-zinc-200/70 px-1.5 py-0.2 text-[9.5px] font-bold uppercase tracking-wider text-zinc-600 shrink-0">
-                            {item.badge}
+
+                        {item.multiSource && (
+                          <span className="font-sans text-[11px] font-medium text-zinc-500 bg-zinc-100 px-1.5 py-0.5 rounded">
+                            {item.multiSource}
                           </span>
                         )}
+
+                        {item.sourceLogoid ? (
+                          <img
+                            src={`https://s3-symbol-logo.tradingview.com/${item.sourceLogoid}.svg`}
+                            alt={item.exchange}
+                            className="size-4.5 rounded-full object-contain shrink-0 border border-zinc-200/60 bg-zinc-50"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        ) : null}
                       </div>
                     </div>
-                  </div>
-
-                  {/* Right Column: Exchange + Multi-source (+8 ∨) + Exchange Logo */}
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="font-sans text-[12px] font-semibold text-zinc-600">
-                      {item.exchange}
-                    </span>
-
-                    {item.multiSource && (
-                      <span className="font-sans text-[11px] font-medium text-zinc-500 bg-zinc-100 px-1.5 py-0.5 rounded">
-                        {item.multiSource}
-                      </span>
-                    )}
-
-                    {renderTvExchangeLogo(item.exchange)}
-                  </div>
-                </div>
-              );
-            })}
-        </div>
+                  );
+                })}
+            </div>
       </DialogContent>
     </Dialog>
   );

@@ -52,7 +52,6 @@ if (typeof window !== 'undefined') {
   const originalOpen = window.open;
   window.open = function (url?: string | URL, target?: string, features?: string) {
     if (typeof url === 'string' && (url.includes('tradingview.com') || url.includes('tradingview-widget.com'))) {
-      // Extract symbol from URL e.g. https://www.tradingview.com/symbols/NASDAQ-AAPL/ or ?symbol=AAPL
       const symbolMatch = url.match(/\/symbols\/([^/?#]+)/i) || url.match(/[?&]symbol=([^&#]+)/i);
       if (symbolMatch && symbolMatch[1]) {
         const extracted = decodeURIComponent(symbolMatch[1]).replace(/-/g, ':');
@@ -62,7 +61,7 @@ if (typeof window !== 'undefined') {
           }),
         );
       }
-      return null; // Block external navigation to tradingview.com
+      return null;
     }
     return originalOpen.call(window, url, target, features);
   };
@@ -106,7 +105,7 @@ if (typeof window !== 'undefined') {
   const prevOnError = window.onerror;
   window.onerror = function (msg, url, line, col, error) {
     if (typeof msg === 'string' && suppressTvError(msg)) {
-      return true; // Suppress
+      return true;
     }
     return prevOnError ? prevOnError(msg, url, line, col, error) : false;
   };
@@ -125,7 +124,7 @@ if (typeof window !== 'undefined') {
   );
 }
 
-// Global queue to stagger initial script insertions to prevent CDN burst
+// Global queue to stagger initial script insertions to prevent CDN burst / ERR_CONNECTION_RESET
 let scriptLoadQueue: (() => void)[] = [];
 let isQueueRunning = false;
 
@@ -143,7 +142,7 @@ function processQueue() {
   setTimeout(() => {
     isQueueRunning = false;
     processQueue();
-  }, 50);
+  }, 250);
 }
 
 function queueWidgetScript(mountFn: () => void) {
@@ -154,16 +153,41 @@ function queueWidgetScript(mountFn: () => void) {
 const useTradingViewWidget = (
   scriptUrl: string,
   config: Record<string, unknown>,
-  _lazy: boolean = false,
+  lazy: boolean = false,
 ) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const serializedConfig = JSON.stringify(config);
+  const [inView, setInView] = useState(!lazy);
 
   useEffect(() => {
+    if (!lazy || inView) return;
     const container = containerRef.current;
     if (!container || typeof window === 'undefined') return;
 
-    // Check if identical widget is already mounted
+    if (!('IntersectionObserver' in window)) {
+      setInView(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setInView(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '300px' }
+    );
+
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [lazy, inView]);
+
+  useEffect(() => {
+    if (!inView) return;
+    const container = containerRef.current;
+    if (!container || typeof window === 'undefined') return;
+
     const existingScript = container.querySelector('script');
     if (
       existingScript &&
@@ -181,13 +205,16 @@ const useTradingViewWidget = (
     widgetDiv.style.height = '100%';
     container.appendChild(widgetDiv);
 
-    const script = document.createElement('script');
-    script.src = scriptUrl;
-    script.async = true;
-    script.type = 'text/javascript';
-    script.text = serializedConfig;
-    container.appendChild(script);
-  }, [scriptUrl, serializedConfig]);
+    queueWidgetScript(() => {
+      if (!container) return;
+      const script = document.createElement('script');
+      script.src = scriptUrl;
+      script.async = true;
+      script.type = 'text/javascript';
+      script.text = serializedConfig;
+      container.appendChild(script);
+    });
+  }, [inView, scriptUrl, serializedConfig]);
 
   return containerRef;
 };

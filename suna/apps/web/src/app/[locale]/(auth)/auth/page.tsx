@@ -19,6 +19,7 @@ import { useTranslations } from '@/i18n/use-translations';
 import { EyeIcon as Eye, EyeSlashIcon as EyeOff } from '@phosphor-icons/react';
 import { m, useReducedMotion } from 'motion/react';
 import Link from 'next/link';
+import Script from 'next/script';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { type FormEvent, Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { EmailLinkStep } from './email-link-step';
@@ -1196,7 +1197,8 @@ function AuthCardForm({
         )}
 
         <form onSubmit={handleEntryContinue} className="space-y-5" data-hydrate-guard>
-          <script
+          <Script
+            id="entry-hydration-guard"
             // biome-ignore lint/security/noDangerouslySetInnerHtml: an inline bootstrap script — it must execute at parse time, before React hydrates; the root layout ships the same class of inline script
             dangerouslySetInnerHTML={{ __html: ENTRY_HYDRATION_GUARD }}
           />
@@ -1357,7 +1359,8 @@ function AuthContent() {
   const refusedForMobileSso = !!mobileSsoEmail && !!user && !isSsoIdentityOf(user, mobileSsoEmail);
   const [mobileSsoCleared, setMobileSsoCleared] = useState(false);
   const hasClearedForMobileSso = useRef(false);
-  const trustedUser = !!user && !sessionExpired && !forceForm && !refusedForMobileSso;
+  const isRealUser = !!user && user.id !== 'usr_local_trader';
+  const trustedUser = isRealUser && !sessionExpired && !forceForm && !refusedForMobileSso;
 
   // A failed sign-out says so, ONCE, on the document it lands on. The
   // sign-out ends on a document load to `/auth`, so `runSignOut` cannot raise

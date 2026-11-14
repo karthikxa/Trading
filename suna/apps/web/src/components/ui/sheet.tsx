@@ -64,14 +64,23 @@ SheetClose.displayName = 'SheetClose';
 export interface SheetPopupProps extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
   side?: 'top' | 'right' | 'bottom' | 'left';
   showCloseButton?: boolean;
+  overlayClassName?: string;
+  hideOverlay?: boolean;
 }
 
 export const SheetPopup = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   SheetPopupProps
->(({ className, children, side = 'right', showCloseButton = true, ...props }, ref) => (
+>(({ className, children, side = 'right', showCloseButton = true, overlayClassName, hideOverlay = false, ...props }, ref) => (
   <DialogPrimitive.Portal>
-    <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 duration-200" />
+    {!hideOverlay && (
+      <DialogPrimitive.Overlay
+        className={cn(
+          'fixed inset-0 z-50 bg-black/10 duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+          overlayClassName,
+        )}
+      />
+    )}
     <DialogPrimitive.Content
       ref={ref}
       className={cn(

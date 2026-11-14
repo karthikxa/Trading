@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, type FormEvent } from 'react';
 import { BotAvatar, type BotShape, type BotExpression } from './BotAvatar';
-import { Download } from 'lucide-react';
+import { Download, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Field, FieldLabel } from '@/components/ui/field';
 import { Form } from '@/components/ui/form';
@@ -28,8 +28,9 @@ export interface TradingAgentDef {
   shape: BotShape;
   color: string;
   expression: BotExpression;
-  lastAction: string;
-  time: string;
+  lastAction?: string;
+  time?: string;
+  status?: string;
   description: string;
   directives?: string;
   isAdmin?: boolean;
@@ -39,6 +40,7 @@ export interface TradingAgentDef {
 interface BotEditDrawerProps {
   isOpen: boolean;
   agent: TradingAgentDef | null;
+  mode?: 'docked' | 'modal';
   onClose: () => void;
   onSave: (updated: TradingAgentDef) => void;
 }
@@ -88,7 +90,13 @@ const COLORS = [
   '#F5F5F4', // Light
 ];
 
-export default function BotEditDrawer({ isOpen, agent, onClose, onSave }: BotEditDrawerProps) {
+export default function BotEditDrawer({
+  isOpen,
+  agent,
+  mode = 'docked',
+  onClose,
+  onSave,
+}: BotEditDrawerProps) {
   const [name, setName] = useState(agent?.name || '');
   const [role, setRole] = useState(agent?.role || '');
   const [shape, setShape] = useState<BotShape>(agent?.shape || 'circle');
@@ -113,7 +121,7 @@ export default function BotEditDrawer({ isOpen, agent, onClose, onSave }: BotEdi
     if (!agent) return;
 
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, 200));
 
     const updated: TradingAgentDef = {
       ...agent,
@@ -159,9 +167,173 @@ export default function BotEditDrawer({ isOpen, agent, onClose, onSave }: BotEdi
     link.click();
   };
 
+  if (!isOpen || !agent) return null;
+
+  const formFields = (
+    <div className="grid gap-4">
+      {/* Live Moving Avatar Preview */}
+      <div className="flex flex-col items-center justify-center p-5 bg-zinc-50/80 rounded-2xl border border-zinc-200/70 gap-3 select-none">
+        <BotAvatar
+          shape={shape}
+          color={color}
+          expression={expression}
+          size={110}
+          isAnimated={true}
+        />
+        <button
+          type="button"
+          onClick={exportAsPng}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-black text-white text-xs font-semibold shadow-2xs transition-colors cursor-pointer outline-none focus:outline-none"
+        >
+          <Download className="size-3.5" />
+          <span>Export as PNG</span>
+        </button>
+      </div>
+
+      {/* Name Field */}
+      <Field name="name">
+        <FieldLabel>Bot Name</FieldLabel>
+        <Input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Chief of Staff"
+          required
+        />
+      </Field>
+
+      {/* Specialized Role Field */}
+      <Field name="role">
+        <FieldLabel>Specialized Role</FieldLabel>
+        <Input
+          value={role}
+          onChange={(e) => setRole(e.target.value)}
+          placeholder="e.g. Technicals & Price Momentum"
+          required
+        />
+      </Field>
+
+      {/* Directives Textarea */}
+      <Field name="directives">
+        <FieldLabel>Directives & System Instructions</FieldLabel>
+        <Textarea
+          value={directives}
+          onChange={(e) => setDirectives(e.target.value)}
+          placeholder="Type your trading directives and strategy rules here..."
+          rows={3}
+        />
+      </Field>
+
+      {/* Shape Selector */}
+      <Field name="shape">
+        <FieldLabel>Shape</FieldLabel>
+        <div className="grid grid-cols-4 gap-2 pt-0.5">
+          {SHAPES.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => setShape(s.id)}
+              className={cn(
+                'flex flex-col items-center gap-1 p-2 rounded-xl border text-[11px] font-medium transition-all cursor-pointer outline-none focus:outline-none',
+                shape === s.id
+                  ? 'border-zinc-400 bg-zinc-100/90 text-zinc-950 font-semibold shadow-2xs'
+                  : 'border-zinc-200/80 text-zinc-500 hover:border-zinc-300 hover:bg-zinc-50',
+              )}
+            >
+              <BotAvatar shape={s.id} color={color} size={28} isAnimated={false} />
+              <span className="truncate">{s.label}</span>
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      {/* Expression Selector */}
+      <Field name="expression">
+        <FieldLabel>Expression</FieldLabel>
+        <div className="grid grid-cols-4 gap-2 pt-0.5 max-h-44 overflow-y-auto [scrollbar-width:thin] p-1 border border-zinc-100 rounded-xl bg-zinc-50/50">
+          {EXPRESSIONS.map((expr) => (
+            <button
+              key={expr.id}
+              type="button"
+              onClick={() => setExpression(expr.id)}
+              className={cn(
+                'flex flex-col items-center gap-1 p-1.5 rounded-xl border text-[10px] font-medium transition-all cursor-pointer outline-none focus:outline-none',
+                expression === expr.id
+                  ? 'border-zinc-400 bg-white text-zinc-950 font-semibold shadow-2xs'
+                  : 'border-transparent text-zinc-500 hover:border-zinc-200 hover:bg-white/80',
+              )}
+            >
+              <BotAvatar shape={shape} color={color} expression={expr.id} size={24} isAnimated={false} />
+              <span className="truncate">{expr.label}</span>
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      {/* Color Palette */}
+      <Field name="color">
+        <FieldLabel>Colour</FieldLabel>
+        <div className="flex items-center gap-2 flex-wrap pt-0.5">
+          {COLORS.map((c) => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => setColor(c)}
+              style={{ backgroundColor: c }}
+              className={cn(
+                'size-7 rounded-full transition-transform cursor-pointer outline-none focus:outline-none',
+                color === c
+                  ? 'ring-2 ring-zinc-400 ring-offset-2 scale-110 shadow-xs'
+                  : 'hover:scale-105 border border-black/10',
+              )}
+              title={c}
+            />
+          ))}
+        </div>
+      </Field>
+    </div>
+  );
+
+  if (mode === 'docked') {
+    return (
+      <aside className="w-full sm:w-[420px] md:w-[440px] shrink-0 border-l border-zinc-200/90 bg-white text-zinc-950 flex flex-col h-full z-20 font-sans shadow-none overflow-hidden select-none animate-in slide-in-from-right-4 duration-200">
+        <div className="flex items-center justify-between p-4 border-b border-zinc-100 bg-zinc-50/70 shrink-0">
+          <div>
+            <h3 className="text-sm font-bold text-zinc-950">Edit Bot Identity</h3>
+            <p className="text-[11px] text-zinc-500">
+              Customize name, role, avatar, shape, and trading directives.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-full p-1 text-zinc-400 hover:text-zinc-900 hover:bg-zinc-200/60 transition-colors cursor-pointer"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <form className="flex-1 overflow-y-auto p-4 space-y-4" onSubmit={handleSubmit}>
+          {formFields}
+          <div className="flex justify-end gap-2 pt-4 border-t border-zinc-100">
+            <Button type="button" variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button disabled={loading} type="submit" className="bg-zinc-950 text-white hover:bg-zinc-800 cursor-pointer">
+              {loading ? 'Saving...' : 'Save'}
+            </Button>
+          </div>
+        </form>
+      </aside>
+    );
+  }
+
   return (
     <Sheet open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <SheetPopup className="sm:max-w-md w-full bg-white border-l border-zinc-200/90 shadow-2xl outline-none focus:outline-none ring-0">
+      <SheetPopup
+        overlayClassName="bg-transparent pointer-events-auto"
+        className="sm:max-w-md w-full bg-white border-l border-zinc-200/90 shadow-2xl outline-none focus:outline-none ring-0"
+      >
         <SheetHeader>
           <SheetTitle>Edit Bot Identity</SheetTitle>
           <SheetDescription>
@@ -171,132 +343,14 @@ export default function BotEditDrawer({ isOpen, agent, onClose, onSave }: BotEdi
 
         <Form className="contents" onSubmit={handleSubmit}>
           <SheetPanel className="grid gap-4">
-            {/* Live Moving Avatar Preview */}
-            <div className="flex flex-col items-center justify-center p-5 bg-zinc-50/80 rounded-2xl border border-zinc-200/70 gap-3 select-none">
-              <BotAvatar
-                shape={shape}
-                color={color}
-                expression={expression}
-                size={110}
-                isAnimated={true}
-              />
-              <button
-                type="button"
-                onClick={exportAsPng}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-black text-white text-xs font-semibold shadow-2xs transition-colors cursor-pointer outline-none focus:outline-none"
-              >
-                <Download className="size-3.5" />
-                <span>Export as PNG</span>
-              </button>
-            </div>
-
-            {/* Name Field */}
-            <Field name="name">
-              <FieldLabel>Bot Name</FieldLabel>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Chief of Staff"
-                required
-              />
-            </Field>
-
-            {/* Specialized Role Field */}
-            <Field name="role">
-              <FieldLabel>Specialized Role</FieldLabel>
-              <Input
-                value={role}
-                onChange={(e) => setRole(e.target.value)}
-                placeholder="e.g. Technicals & Price Momentum"
-                required
-              />
-            </Field>
-
-            {/* Directives Textarea */}
-            <Field name="directives">
-              <FieldLabel>Directives & System Instructions</FieldLabel>
-              <Textarea
-                value={directives}
-                onChange={(e) => setDirectives(e.target.value)}
-                placeholder="Type your trading directives and strategy rules here..."
-                rows={3}
-              />
-            </Field>
-
-            {/* Shape Selector */}
-            <Field name="shape">
-              <FieldLabel>Shape</FieldLabel>
-              <div className="grid grid-cols-4 gap-2 pt-0.5">
-                {SHAPES.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => setShape(s.id)}
-                    className={cn(
-                      'flex flex-col items-center gap-1 p-2 rounded-xl border text-[11px] font-medium transition-all cursor-pointer outline-none focus:outline-none',
-                      shape === s.id
-                        ? 'border-zinc-400 bg-zinc-100/90 text-zinc-950 font-semibold shadow-2xs'
-                        : 'border-zinc-200/80 text-zinc-500 hover:border-zinc-300 hover:bg-zinc-50',
-                    )}
-                  >
-                    <BotAvatar shape={s.id} color={color} size={28} isAnimated={false} />
-                    <span className="truncate">{s.label}</span>
-                  </button>
-                ))}
-              </div>
-            </Field>
-
-            {/* Expression Selector */}
-            <Field name="expression">
-              <FieldLabel>Expression</FieldLabel>
-              <div className="grid grid-cols-4 gap-2 pt-0.5 max-h-44 overflow-y-auto [scrollbar-width:thin] p-1 border border-zinc-100 rounded-xl bg-zinc-50/50">
-                {EXPRESSIONS.map((expr) => (
-                  <button
-                    key={expr.id}
-                    type="button"
-                    onClick={() => setExpression(expr.id)}
-                    className={cn(
-                      'flex flex-col items-center gap-1 p-1.5 rounded-xl border text-[10px] font-medium transition-all cursor-pointer outline-none focus:outline-none',
-                      expression === expr.id
-                        ? 'border-zinc-400 bg-white text-zinc-950 font-semibold shadow-2xs'
-                        : 'border-transparent text-zinc-500 hover:border-zinc-200 hover:bg-white/80',
-                    )}
-                  >
-                    <BotAvatar shape={shape} color={color} expression={expr.id} size={24} isAnimated={false} />
-                    <span className="truncate">{expr.label}</span>
-                  </button>
-                ))}
-              </div>
-            </Field>
-
-            {/* Color Palette */}
-            <Field name="color">
-              <FieldLabel>Colour</FieldLabel>
-              <div className="flex items-center gap-2 flex-wrap pt-0.5">
-                {COLORS.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setColor(c)}
-                    style={{ backgroundColor: c }}
-                    className={cn(
-                      'size-7 rounded-full transition-transform cursor-pointer outline-none focus:outline-none',
-                      color === c
-                        ? 'ring-2 ring-zinc-400 ring-offset-2 scale-110 shadow-xs'
-                        : 'hover:scale-105 border border-black/10',
-                    )}
-                    title={c}
-                  />
-                ))}
-              </div>
-            </Field>
+            {formFields}
           </SheetPanel>
 
           <SheetFooter>
             <SheetClose render={<Button variant="ghost" />}>
               Cancel
             </SheetClose>
-            <Button disabled={loading} type="submit">
+            <Button disabled={loading} type="submit" className="bg-zinc-950 text-white hover:bg-zinc-800 cursor-pointer">
               {loading ? 'Saving...' : 'Save'}
             </Button>
           </SheetFooter>

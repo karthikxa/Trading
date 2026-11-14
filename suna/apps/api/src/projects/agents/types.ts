@@ -1,4 +1,4 @@
-import type { ManifestIssue } from '@kortix/manifest-schema';
+import type { AgentModeV2, ManifestIssue } from '@kortix/manifest-schema';
 import type { BuiltinAgentKey } from '@kortix/shared';
 
 export { MANIFEST_FILENAME } from '@kortix/manifest-schema';
@@ -13,6 +13,9 @@ export interface AgentSpec {
   path: string;
   /** False: the agent cannot start a session (`enabled: false`, or a validation error on its block). */
   enabled: boolean;
+  /** The manifest's `mode`. Absent = `all` (the schema default). `subagent` is
+   *  never launchable: it runs only inside its caller's session. */
+  mode?: AgentModeV2;
   /** Which connectors (by slug) this agent may use. `[]` = none (default). */
   connectors: GrantSet;
   /** Connectors that must resolve before the session starts. */

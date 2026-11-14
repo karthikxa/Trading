@@ -3,6 +3,7 @@
 import { uiRoutes } from '../../lib/routes';
 import { Button } from '../../primitives/button';
 import Hint from '../../primitives/hint';
+import { Kbd, KbdGroup } from '../../primitives/kbd';
 import {
   Sidebar,
   SidebarContent,
@@ -43,6 +44,7 @@ import {
   MagnifyingGlassIcon,
   NavigationArrowIcon,
   ChartLineUp,
+  TrendUp,
   PushPin,
   Eye,
   Notebook,
@@ -52,7 +54,7 @@ import {
   AppWindow,
   PlugsConnectedIcon,
 } from '@phosphor-icons/react';
-import { UiLink as Link } from '../../providers/ui-provider';
+import { UiLink as Link, useUiSearchParams } from '../../providers/ui-provider';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { SidebarBalanceWarning } from './footer/project-balance-warning';
 import { SidebarUpgradeButton } from './footer/project-upgrade-button';
@@ -61,6 +63,27 @@ import { Close } from '../../icons/close';
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
 const modSymbol = isMac ? '⌘' : 'Ctrl';
+
+const KortixPinIcon = ({ className }: { className?: string }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 24 24"
+    fill="white"
+    stroke="currentColor"
+    strokeWidth={2.4}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={cn('inline-block -rotate-45 transition-transform', className)}
+  >
+    <line x1="12" y1="17" x2="12" y2="22" stroke="currentColor" strokeWidth={2.4} />
+    <path
+      d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1v3.76a2 2 0 0 1-.89 1.66l-1.78.9A2 2 0 0 0 5 15.24Z"
+      fill="white"
+      stroke="currentColor"
+      strokeWidth={2.4}
+    />
+  </svg>
+);
 
 export function ProjectSidebar({
   projectId,
@@ -90,8 +113,17 @@ export function ProjectSidebar({
   // Mounted outside <Sidebar>: the mobile sheet unmounts its content on close.
   const [computerConnectOpen, setComputerConnectOpen] = useState(false);
   const [connectMcpOpen, setConnectMcpOpen] = useState(false);
-  const [sidebarMode, setSidebarMode] = useState<'main' | 'agents'>('main');
-  const [isPinned, setIsPinned] = useState(true);
+
+  const [sidebarView, setSidebarView] = useState<'main' | 'agents'>('main');
+
+  const searchParams = useUiSearchParams();
+  const currentTab = searchParams.get('tab');
+
+  useEffect(() => {
+    if (currentTab === 'overview' || currentTab === 'watchlist' || currentTab === 'journal' || currentTab === 'spec' || currentTab === 'chart') {
+      setSidebarView('main');
+    }
+  }, [currentTab]);
 
   const accountId = useBillingAccountId();
   // Channels replace New session and the session list (fail-closed: off until the project answers).
@@ -160,7 +192,7 @@ export function ProjectSidebar({
     // The New agent modal mounts beside <Sidebar>, outside the mobile sheet.
     <NewAgentModalProvider projectId={projectId}>
       <Sidebar
-        collapsible={isPinned ? 'none' : 'offcanvas'}
+        collapsible="offcanvas"
         variant="inset"
         // No background here. This className lands on the sidebar CONTAINER —
         // the square positioning box — while the visible card is the rounded
@@ -168,17 +200,17 @@ export function ProjectSidebar({
         // square fill behind the flyout card and it showed at all four corners.
         className="[scrollbar-width:'none'] [-ms-overflow-style:'none'] [&::-webkit-scrollbar]:hidden"
       >
-        {sidebarMode === 'agents' ? (
+        {sidebarView === 'agents' ? (
           <AgentsSidebarView
             projectId={projectId}
-            onBackToMainSidebar={() => setSidebarMode('main')}
+            onBackToMainSidebar={() => setSidebarView('main')}
           />
         ) : (
           <>
             <SidebarHeader
-              className="kx-project-sidebar-header space-y-2"
-              data-peek={peek ? '' : undefined}
-            >
+          className="kx-project-sidebar-header space-y-2"
+          data-peek={peek ? '' : undefined}
+        >
               <div
                 className={cn(
                   'flex w-full items-center gap-1',
@@ -206,23 +238,27 @@ export function ProjectSidebar({
                       <Close />
                     </Button>
                   )}
-                  {/* Desktop fixed/collapsible pin toggle */}
+                  {/* Desktop sidebar close / collapse toggle */}
                   {!isMobile && !peek && (
                     <Hint
                       side="bottom"
                       label={
                         <span className="flex items-center gap-1.5">
-                          {isPinned ? 'Sidebar: Fixed (click to make collapsible)' : 'Sidebar: Collapsible (click to pin)'}
+                          {t('collapse')}
+                          <KbdGroup>
+                            <Kbd>{modSymbol}</Kbd>
+                            <Kbd>B</Kbd>
+                          </KbdGroup>
                         </span>
                       }
                     >
                       <Button
                         type="button"
-                        aria-label={isPinned ? 'Fixed' : 'Collapsible'}
+                        aria-label={t('collapse')}
                         variant="ghost"
                         size="icon"
-                        onClick={() => setIsPinned((prev) => !prev)}
-                        className={cn('shrink-0 cursor-pointer', isPinned ? 'text-zinc-950 font-bold' : 'text-zinc-400')}
+                        onClick={toggleSidebar}
+                        className="shrink-0 cursor-pointer text-zinc-400 hover:text-zinc-950 dark:hover:text-zinc-100"
                       >
                         <PanelLeft className="cn-rtl-flip" />
                       </Button>
@@ -242,19 +278,6 @@ export function ProjectSidebar({
               <div className="flex h-full min-h-0 flex-col space-y-2">
                 <SidebarGroup className="py-0">
                   <SidebarMenu>
-                    {/* Dedicated Search stocks menu item above New session */}
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        onClick={handleOpenStockSearch}
-                        className="group/menu-button text-sidebar-foreground relative cursor-pointer"
-                      >
-                        <span className="shrink-0">
-                          <MagnifyingGlassIcon className="size-4" />
-                        </span>
-                        <span>Search stocks</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-
                     {channels ? null : (
                       <SidebarMenuItem>
                         {creatingSession ? (
@@ -278,14 +301,31 @@ export function ProjectSidebar({
                       </SidebarMenuItem>
                     )}
 
+                    {/* Dedicated Chart menu item below New session */}
                     <SidebarMenuItem>
                       <SidebarMenuButton
                         asChild
-                        className="group/menu-button text-sidebar-foreground relative cursor-pointer"
+                        isActive={currentTab === 'chart'}
+                        className="group/menu-button text-sidebar-foreground relative cursor-pointer font-sans"
+                      >
+                        <Link href={`/projects/${projectId}?tab=chart`}>
+                          <span className="shrink-0">
+                            <ChartLineUp className="size-4" />
+                          </span>
+                          <span>Chart</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={currentTab === 'overview'}
+                        className="group/menu-button text-sidebar-foreground relative cursor-pointer font-sans"
                       >
                         <Link href={`/projects/${projectId}?tab=overview`}>
                           <span className="shrink-0">
-                            <ChartLineUp className="size-4" />
+                            <TrendUp className="size-4" />
                           </span>
                           <span>Overview</span>
                         </Link>
@@ -295,11 +335,12 @@ export function ProjectSidebar({
                     <SidebarMenuItem>
                       <SidebarMenuButton
                         asChild
+                        isActive={currentTab === 'watchlist'}
                         className="group/menu-button text-sidebar-foreground relative cursor-pointer"
                       >
                         <Link href={`/projects/${projectId}?tab=watchlist`}>
                           <span className="shrink-0">
-                            <PushPin className="size-4" />
+                            <KortixPinIcon className="size-4" />
                           </span>
                           <span>Watchlist</span>
                         </Link>
@@ -309,6 +350,7 @@ export function ProjectSidebar({
                     <SidebarMenuItem>
                       <SidebarMenuButton
                         asChild
+                        isActive={currentTab === 'journal'}
                         className="group/menu-button text-sidebar-foreground relative cursor-pointer"
                       >
                         <Link href={`/projects/${projectId}?tab=journal`}>
@@ -323,6 +365,7 @@ export function ProjectSidebar({
                     <SidebarMenuItem>
                       <SidebarMenuButton
                         asChild
+                        isActive={currentTab === 'spec'}
                         className="group/menu-button text-sidebar-foreground relative cursor-pointer"
                       >
                         <Link href={`/projects/${projectId}?tab=spec`}>
@@ -337,7 +380,7 @@ export function ProjectSidebar({
                     {/* TauricResearch / TradingAgents Multi-Agent Team */}
                     <TradingAgentsSidebarNav
                       projectId={projectId}
-                      onOpenAgentsSidebar={() => setSidebarMode('agents')}
+                      onOpenAgentsSidebar={() => setSidebarView('agents')}
                     />
 
               {/* Connectors (Gmail, GitHub, Slack, Notion, Google Drive, Composio) */}

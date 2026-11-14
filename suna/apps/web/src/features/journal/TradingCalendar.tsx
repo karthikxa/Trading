@@ -17,6 +17,7 @@ import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverPopup, PopoverTrigger } from '@/components/ui/popover';
 import { formatIsoDate, parseIsoDate } from './JournalDateTimeFields';
 import { RightPanelGlyph } from './DayDetailsDrawer';
+import { cn } from '@kortix/ui/lib/utils';
 
 interface TradingCalendarProps {
   currentYear: number;

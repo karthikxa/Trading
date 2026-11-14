@@ -16,12 +16,11 @@ export interface WatchlistEntry {
 const STORAGE_KEY = 'kortix_watchlist_items';
 
 const DEFAULT_WATCHLIST: WatchlistEntry[] = [
-  { symbol: 'AAPL', name: 'Apple Inc.', exchange: 'NASDAQ', type: 'stock', price: 235.4, change: 1.85, changePercent: 0.79, addedAt: new Date().toISOString() },
-  { symbol: 'NVDA', name: 'NVIDIA Corporation', exchange: 'NASDAQ', type: 'stock', price: 141.2, change: 3.42, changePercent: 2.48, addedAt: new Date().toISOString() },
-  { symbol: 'TSLA', name: 'Tesla, Inc.', exchange: 'NASDAQ', type: 'stock', price: 254.1, change: -2.15, changePercent: -0.84, addedAt: new Date().toISOString() },
-  { symbol: 'EURUSD', name: 'Euro / U.S. Dollar', exchange: 'FOREXCOM', type: 'forex', price: 1.1196, change: 0.006, changePercent: 0.54, addedAt: new Date().toISOString() },
-  { symbol: 'XAUUSD', name: 'Gold / U.S. Dollar', exchange: 'OANDA', type: 'commodity', price: 2912.4, change: 14.2, changePercent: 0.49, addedAt: new Date().toISOString() },
   { symbol: 'BTCUSD', name: 'Bitcoin / U.S. Dollar', exchange: 'CRYPTO', type: 'crypto', price: 74500.0, change: -242.0, changePercent: -0.32, addedAt: new Date().toISOString() },
+  { symbol: 'EURUSD', name: 'Euro / U.S. Dollar', exchange: 'FOREXCOM', type: 'forex', price: 1.1196, change: 0.006, changePercent: 0.54, addedAt: new Date().toISOString() },
+  { symbol: 'TSLA', name: 'Tesla, Inc.', exchange: 'NASDAQ', type: 'stock', price: 254.1, change: -2.15, changePercent: -0.84, addedAt: new Date().toISOString() },
+  { symbol: 'NVDA', name: 'NVIDIA Corporation', exchange: 'NASDAQ', type: 'stock', price: 141.2, change: 3.42, changePercent: 2.48, addedAt: new Date().toISOString() },
+  { symbol: 'AAPL', name: 'Apple Inc.', exchange: 'NASDAQ', type: 'stock', price: 235.4, change: 1.85, changePercent: 0.79, addedAt: new Date().toISOString() },
 ];
 
 let hasSyncedSupabase = false;
@@ -34,7 +33,9 @@ export function getStoredWatchlist(): WatchlistEntry[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        items = parsed;
+        // Strip SPY and QQQ if user removed them or if left from prior session
+        items = parsed.filter((i) => i.symbol !== 'SPY' && i.symbol !== 'QQQ');
+        if (items.length === 0) items = DEFAULT_WATCHLIST;
       }
     } else {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_WATCHLIST));

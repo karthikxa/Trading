@@ -114,21 +114,21 @@ export function resolveTradingViewSymbol(raw: string, companyName?: string): Res
     return { rawSymbol: raw, cleanSymbol: sym, exchange: ex, fullSymbol: full, assetType: 'commodity', isCorporateStock: false, name: companyName || clean };
   }
 
-  // 4. Crypto
+  // 4. Forex (check before crypto generic endsWith USD)
+  if (clean === 'USDINR') {
+    return { rawSymbol: raw, cleanSymbol: 'USDINR', exchange: 'FX_IDC', fullSymbol: 'FX_IDC:USDINR', assetType: 'forex', isCorporateStock: false, name: 'USD to INR' };
+  }
+  if (FOREX_PAIRS.has(clean)) {
+    return { rawSymbol: raw, cleanSymbol: clean, exchange: 'FX', fullSymbol: `FX:${clean}`, assetType: 'forex', isCorporateStock: false, name: companyName || clean };
+  }
+
+  // 5. Crypto
   if (CRYPTO_COINS.has(clean)) {
     const sym = `${clean}USDT`;
     return { rawSymbol: raw, cleanSymbol: sym, exchange: 'BINANCE', fullSymbol: `BINANCE:${sym}`, assetType: 'crypto', isCorporateStock: false, name: companyName || `${clean}/USDT` };
   }
   if (clean.endsWith('USDT') || (clean.endsWith('USD') && clean.length <= 7 && !clean.startsWith('USD'))) {
     return { rawSymbol: raw, cleanSymbol: clean, exchange: 'BINANCE', fullSymbol: `BINANCE:${clean}`, assetType: 'crypto', isCorporateStock: false, name: companyName || clean };
-  }
-
-  // 5. Forex
-  if (clean === 'USDINR') {
-    return { rawSymbol: raw, cleanSymbol: 'USDINR', exchange: 'FX_IDC', fullSymbol: 'FX_IDC:USDINR', assetType: 'forex', isCorporateStock: false, name: 'USD to INR' };
-  }
-  if (FOREX_PAIRS.has(clean)) {
-    return { rawSymbol: raw, cleanSymbol: clean, exchange: 'FX', fullSymbol: `FX:${clean}`, assetType: 'forex', isCorporateStock: false, name: companyName || clean };
   }
 
   // 6. Indian Top Stocks

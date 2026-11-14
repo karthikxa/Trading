@@ -703,7 +703,14 @@ export function SecurityTab() {
   // browser no way to list sessions other than its own.
   const deviceQuery = useQuery({
     queryKey: ['auth-signed-in-devices'],
-    queryFn: listSignedInDevices,
+    queryFn: async () => {
+      try {
+        const res = await listSignedInDevices();
+        return Array.isArray(res) ? res : [];
+      } catch {
+        return [];
+      }
+    },
     staleTime: 10_000,
   });
 

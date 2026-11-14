@@ -71,7 +71,10 @@ export const OPENCODE_BUILTIN_AGENT_NAMES: ReadonlySet<string> = new Set([
  *     launchable only when declared.
  *   - A project with no per-agent governance (no specs, no parse errors) keeps
  *     the runtime roster as the authority, unchanged.
- *   - Otherwise the name must be a declared, enabled spec. A manifest that
+ *   - Otherwise the name must be a declared, enabled spec with a mode that can
+ *     start a session (`primary` or `all`, or no `mode`). A `mode: subagent`
+ *     agent never starts one: it runs inside its caller's session, so a second
+ *     session would boot a second computer for one lens. A manifest that
  *     failed to parse proves nothing and answers `false`.
  *
  * Pure. Exported for tests and for the sandbox proxy.
@@ -91,7 +94,7 @@ export function isLaunchableAgentName(agentName: string, loaded: LoadedAgents): 
   const compiledOff = (OPENCODE_BUILTIN_AGENTS_V3 as readonly string[]).includes(name);
   if (OPENCODE_BUILTIN_AGENT_NAMES.has(name) && !compiledOff) return true;
   if (loaded.specs.length === 0 && loaded.errors.length === 0) return true;
-  return loaded.specs.some((s) => s.name === name && s.enabled);
+  return loaded.specs.some((s) => s.name === name && s.enabled && s.mode !== 'subagent');
 }
 
 /**

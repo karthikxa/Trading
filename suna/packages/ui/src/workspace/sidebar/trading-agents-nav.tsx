@@ -24,6 +24,9 @@ import { UiLink as Link } from '../../providers/ui-provider';
 import {
   SidebarMenuItem,
   SidebarMenuButton,
+  SidebarMenuSub,
+  SidebarMenuSubItem,
+  SidebarMenuSubButton,
 } from '../../primitives/sidebar';
 import {
   DropdownMenu,
@@ -43,6 +46,7 @@ import {
   BreadcrumbSeparator,
 } from '../../primitives/breadcrumb';
 import { Button } from '../../primitives/button';
+import { ButtonGroup, ButtonGroupSeparator } from '../../primitives/button-group';
 import {
   Dialog,
   DialogClose,
@@ -253,10 +257,17 @@ export function TradingAgentsSidebarNav({
   projectId: string;
   onOpenAgentsSidebar?: () => void;
 }) {
+  const searchParams = useUiSearchParams();
+  const currentTab = searchParams.get('tab');
+  const isActive = currentTab === 'chat' || currentTab === 'agent';
+
   return (
     <SidebarMenuItem>
       <SidebarMenuButton
-        onClick={() => onOpenAgentsSidebar?.()}
+        onClick={() => {
+          onOpenAgentsSidebar?.();
+        }}
+        isActive={isActive}
         className="group/menu-button text-sidebar-foreground relative cursor-pointer font-sans"
       >
         <span className="shrink-0 flex items-center justify-center">
@@ -442,6 +453,25 @@ export function AgentsSidebarView({
     window.dispatchEvent(new CustomEvent('open-bot-edit-drawer', { detail: agent }));
   };
 
+  const handleOpenCreateAgent = () => {
+    const newAgent: TradingAgentDef = {
+      id: `agent-custom-${Date.now()}`,
+      name: 'Custom Agent',
+      role: 'Trading Specialist',
+      group: 'Analysts',
+      shape: 'circle',
+      color: '#10B981',
+      expression: 'attentive',
+      status: 'idle',
+      description: 'Custom AI trading agent identity',
+      timeText: 'Just now',
+      chatPreview: 'Ready for market analysis',
+      lastAction: 'Ready for market analysis',
+      time: 'Just now',
+    };
+    window.dispatchEvent(new CustomEvent('open-bot-edit-drawer', { detail: newAgent }));
+  };
+
   // Sort pinned agents first
   const sortedAgents = [...agents].sort((a, b) => {
     if (a.isPinned && !b.isPinned) return -1;
@@ -453,437 +483,354 @@ export function AgentsSidebarView({
 
   return (
     <div className="flex flex-col h-full w-full bg-sidebar text-sidebar-foreground font-sans select-none overflow-hidden">
-      {/* Top Header: Menu > Agents & New Team Button (No Trading Swarm, with Coss Button) */}
-      <div className="p-3 border-b border-sidebar-border bg-sidebar shrink-0 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 font-semibold text-[13px]">
-          <button
-            type="button"
-            onClick={onBackToMainSidebar}
-            className="text-zinc-500 hover:text-zinc-950 transition-colors cursor-pointer outline-none focus:outline-none"
-            title="Return to Menu"
-          >
-            Menu
-          </button>
-          <CaretRight className="size-3 text-zinc-400 shrink-0" />
-          <span className="text-zinc-950 font-semibold">Agents</span>
-        </div>
-
-        {/* New Team Button using Coss / Kortix Button component */}
-        <Button
-          size="sm"
-          onClick={() => setShowAddWorkspaceModal(true)}
-          className="h-7 px-3 text-xs font-semibold rounded-lg bg-zinc-950 text-white hover:bg-zinc-800 transition-colors shadow-2xs cursor-pointer flex items-center gap-1.5 font-sans outline-none focus:outline-none focus-visible:outline-none ring-0"
-        >
-          <Plus className="size-3.5" />
-          <span>New Team</span>
-        </Button>
-      </div>
-
-      {/* Workspace Subheader Info: Trading ⌵ toggle on Left, 3-dots on Right */}
-      <div className="px-3 py-2 bg-sidebar/50 border-b border-sidebar-border/60 flex items-center justify-between text-xs">
-        {/* Workspace Collapse/Expand Toggle: Trading ⌵ */}
-        <button
-          type="button"
-          onClick={() => setIsWorkspaceCollapsed((prev) => !prev)}
-          className="flex items-center gap-1.5 text-[13px] font-semibold text-zinc-900 hover:text-zinc-950 px-1.5 py-1 rounded-lg hover:bg-zinc-100 transition-colors cursor-pointer outline-none focus:outline-none"
-          title={isWorkspaceCollapsed ? 'Expand workspace' : 'Collapse workspace'}
-        >
-          <span>{activeWorkspace.name}</span>
-          {isWorkspaceCollapsed ? (
-            <CaretRight className="size-3 text-zinc-500 shrink-0 transition-transform duration-150" />
-          ) : (
-            <CaretDown className="size-3 text-zinc-500 shrink-0 transition-transform duration-150" />
-          )}
-        </button>
-
-        {/* Workspace 3-Dots Action: Switch, Rename, Create Group, Delete */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="p-1 rounded-md text-zinc-500 hover:text-zinc-950 hover:bg-zinc-100 transition-colors cursor-pointer outline-none focus:outline-none"
-              title="Workspace options"
-            >
-              <DotsThree weight="bold" className="size-4" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            className="w-48 p-1.5 rounded-2xl bg-white text-zinc-900 border border-zinc-200/90 shadow-xl font-sans z-50 animate-in fade-in zoom-in-95 duration-100"
-          >
-            <DropdownMenuLabel className="px-2 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-              Workspaces
-            </DropdownMenuLabel>
-            {workspaces.map((ws) => (
-              <DropdownMenuItem
-                key={ws.id}
-                onClick={() => setActiveWorkspaceId(ws.id)}
-                className={cn(
-                  'flex items-center justify-between px-2.5 py-1.5 rounded-xl text-xs cursor-pointer hover:bg-zinc-100 transition-colors',
-                  ws.id === activeWorkspaceId && 'bg-zinc-100 font-semibold text-zinc-950',
-                )}
+      {/* Clean Header: Breadcrumb (Menu > Agents) on Left, Coss ButtonGroup (+ New Agent and 3-dots Menu) on Right */}
+      <div className="px-3 py-2.5 border-b border-sidebar-border bg-sidebar shrink-0 flex items-center justify-between text-xs">
+        <Breadcrumb className="min-w-0">
+          <BreadcrumbList className="gap-1 text-xs">
+            <BreadcrumbItem>
+              <button
+                type="button"
+                onClick={() => {
+                  onBackToMainSidebar();
+                  router.push(`/projects/${projectId}`);
+                }}
+                className="hover:text-zinc-950 dark:hover:text-white text-zinc-500 font-medium transition-colors cursor-pointer"
+                title="Back to main menu"
               >
-                <span>{ws.name}</span>
-                {ws.id === activeWorkspaceId && <CheckCircle className="size-3.5 text-zinc-950" />}
+                Menu
+              </button>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator className="text-zinc-400">
+              <CaretRight className="size-3 text-zinc-400" />
+            </BreadcrumbSeparator>
+            <BreadcrumbItem>
+              <BreadcrumbPage className="font-semibold text-zinc-950 dark:text-white text-sm tracking-tight">
+                Agents
+              </BreadcrumbPage>
+            </BreadcrumbItem>
+          </BreadcrumbList>
+        </Breadcrumb>
+
+        {/* Right side: Coss UI Group with black box button with white font: + New Agent and 3-dots Menu */}
+        <ButtonGroup className="border border-zinc-900 rounded-lg overflow-hidden bg-zinc-950 text-white shadow-xs">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={handleOpenCreateAgent}
+            className="h-7 px-2.5 text-xs font-semibold gap-1.5 bg-zinc-950 hover:bg-zinc-800 text-white rounded-none cursor-pointer border-0 transition-colors"
+            title="Create New Agent"
+          >
+            <Plus className="size-3 text-white" weight="bold" />
+            <span className="text-white font-medium">New Agent</span>
+          </Button>
+
+          <ButtonGroupSeparator className="bg-zinc-800" />
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 p-0 bg-zinc-950 hover:bg-zinc-800 text-zinc-300 hover:text-white rounded-none cursor-pointer border-0 transition-colors"
+                title="More Actions"
+              >
+                <DotsThreeVertical weight="bold" className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              className="w-44 p-1.5 rounded-2xl bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-200/90 dark:border-zinc-800 shadow-xl font-sans z-50 animate-in fade-in zoom-in-95 duration-100"
+            >
+              <DropdownMenuItem
+                onClick={() => setShowCreateGroupModal(true)}
+                className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer text-zinc-700 dark:text-zinc-300 transition-colors"
+              >
+                <Users className="size-4 text-zinc-500" />
+                <span>Create Group</span>
               </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator className="my-1 bg-zinc-100" />
-            <DropdownMenuItem
-              onClick={() => {
-                setRenameValue(activeWorkspace.name);
-                setShowRenameModal(true);
-              }}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-xs font-medium hover:bg-zinc-100 cursor-pointer text-zinc-700 transition-colors"
-            >
-              <PencilSimple className="size-3.5 text-zinc-500" />
-              <span>Rename</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => {
-                setShowCreateGroupModal(true);
-              }}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-xs font-medium hover:bg-zinc-100 cursor-pointer text-zinc-700 transition-colors"
-            >
-              <Users className="size-3.5 text-zinc-500" />
-              <span>Create Group</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => {
-                if (workspaces.length > 1) {
-                  setWorkspaces((prev) => prev.filter((w) => w.id !== activeWorkspaceId));
-                  setActiveWorkspaceId(workspaces[0].id);
-                }
-              }}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-xs font-medium hover:bg-red-50 text-red-600 cursor-pointer transition-colors"
-            >
-              <Trash className="size-3.5 text-red-500" />
-              <span className="text-red-600">Delete</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+              <DropdownMenuItem
+                onClick={handleOpenCreateAgent}
+                className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer text-zinc-700 dark:text-zinc-300 transition-colors"
+              >
+                <Plus className="size-4 text-zinc-500" />
+                <span>Create Agent</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </ButtonGroup>
       </div>
 
-      {/* Main Workspace Body with Sub-Dropdowns: Groups & Agents */}
-      {!isWorkspaceCollapsed ? (
-        <div className="flex-1 p-2 space-y-2 overflow-y-auto [scrollbar-width:thin]">
-          {/* Sub-dropdown 1: ⌄ Groups */}
-          <div>
+      {/* Main Workspace Body: Unified Grok bot style list (No AGENTS or GROUPS headers!) */}
+      <div className="flex-1 p-2 space-y-1 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+        {isAgentsLoading ? (
+          <div className="p-1 space-y-2">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div key={i} className="flex items-center gap-3 px-3 py-2.5 rounded-2xl animate-pulse bg-zinc-100/50 dark:bg-zinc-800/40">
+                <div className="size-9 rounded-full bg-zinc-200 dark:bg-zinc-700 shrink-0" />
+                <div className="flex-1 space-y-1.5">
+                  <div className="h-3.5 bg-zinc-200 dark:bg-zinc-700 rounded w-24" />
+                  <div className="h-2.5 bg-zinc-150 dark:bg-zinc-700/60 rounded w-36" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : isAgentsError ? (
+          <div className="p-4 text-center space-y-2 border border-rose-200/60 rounded-xl bg-rose-50/40 m-1">
+            <p className="text-xs text-rose-600 font-medium">Failed to load trading agents</p>
+            <p className="text-[11px] text-zinc-400">{String(agentsError || 'Network or server error')}</p>
             <button
               type="button"
-              onClick={() => setIsGroupsCollapsed((prev) => !prev)}
-              className="w-full flex items-center justify-between px-2 py-1 text-xs font-medium text-zinc-500 hover:text-zinc-800 transition-colors rounded-lg cursor-pointer outline-none focus:outline-none"
+              onClick={() => refetchAgents()}
+              className="px-3 py-1 text-xs font-semibold bg-zinc-950 text-white rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer"
             >
-              <div className="flex items-center gap-1.5">
-                {isGroupsCollapsed ? (
-                  <CaretRight className="size-3 text-zinc-400" />
-                ) : (
-                  <CaretDown className="size-3 text-zinc-400" />
-                )}
-                <span className="text-[12px] font-medium tracking-tight">Groups</span>
-              </div>
-              <span className="text-[11px] text-zinc-400 font-normal">{groups.length}</span>
+              Retry
             </button>
+          </div>
+        ) : (
+          <>
+            {/* Bots rendered in Grok style: Name & Time on top, Shimmering Status or Chat text below */}
+            {sortedAgents.map((bot) => {
+              const isSelected = currentAgentId === bot.id;
+              return (
+                <div
+                  key={bot.id}
+                  data-agent-id={bot.id}
+                  onClick={() => handleOpenAgentChat(bot)}
+                  className={cn(
+                    'group relative flex items-center gap-3 px-3 py-2.5 rounded-2xl cursor-pointer transition-all select-none',
+                    isSelected
+                      ? 'bg-zinc-100/90 dark:bg-zinc-800 text-zinc-950 dark:text-white font-medium border border-zinc-200/90 dark:border-zinc-700 shadow-2xs'
+                      : 'hover:bg-zinc-50/80 dark:hover:bg-zinc-800/40 text-zinc-800 dark:text-zinc-200 border border-transparent',
+                  )}
+                >
+                  {/* Living Animated Bot Avatar */}
+                  <BotAvatar
+                    shape={bot.shape}
+                    color={bot.color}
+                    expression={bot.expression}
+                    size={34}
+                    isAnimated={true}
+                  />
 
-            {!isGroupsCollapsed && (
-              <div className="space-y-1 mt-1">
-                {groups.map((group) => {
-                  const isSelected = currentGroupId === group.id;
-                  return (
-                    <div
-                      key={group.id}
-                      onClick={() => handleOpenGroupChat(group)}
-                      className={cn(
-                        'group relative flex items-center gap-3 px-3 py-2 rounded-2xl text-xs cursor-pointer transition-all border select-none',
-                        isSelected
-                          ? 'bg-zinc-100/90 text-zinc-950 font-medium border-transparent shadow-2xs'
-                          : 'hover:bg-zinc-100/60 text-zinc-800 border-transparent',
-                      )}
-                    >
-                      {/* 3-Bot Overlapping Avatars Cluster (Offsite crew style) */}
-                      <OverlappingAvatars agentIds={group.agentIds} allAgents={agents} size={32} />
+                  <div className="flex flex-col min-w-0 flex-1 gap-0.5">
+                    {/* Top Row: Name on Left, Time text on Right */}
+                    <div className="flex items-center justify-between gap-1.5 leading-tight">
+                      <span className={cn(
+                        'font-medium text-sm truncate font-sans tracking-tight',
+                        isSelected ? 'text-zinc-950 dark:text-white font-semibold' : 'text-zinc-900 dark:text-zinc-100',
+                      )}>
+                        {bot.name}
+                      </span>
 
-                      <div className="flex flex-col min-w-0 flex-1 gap-0.5">
-                        <div className="flex items-center justify-between gap-1.5">
-                          <span className="font-medium text-sm truncate text-zinc-900 leading-tight font-sans tracking-normal">
-                            {group.name}
-                          </span>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {group.isArchived && (
-                              <Archive className="size-3 text-zinc-400 shrink-0" />
-                            )}
-                            <span className="text-[11px] font-normal text-zinc-400 shrink-0">
-                              {group.time}
-                            </span>
+                      <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+                        {bot.isPinned && (
+                          <PushPin className="size-3 text-zinc-400 fill-zinc-400 shrink-0" />
+                        )}
+                        <span className="text-xs font-normal shrink-0 text-zinc-400">
+                          {bot.timeText || bot.time || '10:15 AM'}
+                        </span>
 
-                            {/* 3-Dot Action Menu for Groups (Visible on hover) */}
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <button
-                                  type="button"
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="p-1 rounded-md text-zinc-800 hover:text-zinc-950 hover:bg-zinc-200/80 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity cursor-pointer shrink-0 outline-none focus:outline-none"
-                                  title="Group Options"
-                                >
-                                  <DotsThreeVertical weight="bold" className="size-4 text-zinc-900" />
-                                </button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent
-                                align="end"
-                                side="right"
-                                className="w-44 p-1.5 rounded-2xl bg-white text-zinc-900 border border-zinc-200/90 shadow-xl font-sans z-50 animate-in fade-in zoom-in-95 duration-100"
-                              >
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedGroupToEdit(group);
-                                    setRenameGroupValue(group.name);
-                                    setShowRenameGroupModal(true);
-                                  }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 cursor-pointer text-zinc-700 transition-colors"
-                                >
-                                  <PencilSimple className="size-4 text-zinc-500 shrink-0" />
-                                  <span>Rename</span>
-                                </DropdownMenuItem>
-
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedGroupToEdit(group);
-                                    setModifyGroupName(group.name);
-                                    setModifyGroupDesc(group.description || '');
-                                    setModifyGroupAgentIds([...group.agentIds]);
-                                    setShowModifyGroupModal(true);
-                                  }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 cursor-pointer text-zinc-700 transition-colors"
-                                >
-                                  <Users className="size-4 text-zinc-500 shrink-0" />
-                                  <span>Modify</span>
-                                </DropdownMenuItem>
-
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleToggleArchiveGroup(group.id);
-                                  }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 cursor-pointer text-zinc-700 transition-colors"
-                                >
-                                  <Archive className="size-4 text-zinc-500 shrink-0" />
-                                  <span>{group.isArchived ? 'Unarchive' : 'Archive'}</span>
-                                </DropdownMenuItem>
-
-                                <DropdownMenuSeparator className="my-1 bg-zinc-100" />
-
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDeleteGroup(group.id);
-                                  }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-red-50 text-red-600 cursor-pointer transition-colors"
-                                >
-                                  <Trash className="size-4 text-red-500 shrink-0" />
-                                  <span className="text-red-600 font-medium">Delete</span>
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between gap-1.5">
-                          <span className="text-[11.5px] text-zinc-400 truncate leading-snug flex-1">
-                            {group.description || group.lastAction}
-                          </span>
-                        </div>
+                        {/* 3-Dot Action Menu (Only visible on hover) */}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={(e) => e.stopPropagation()}
+                              className={cn(
+                                'p-0.5 rounded-md opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity cursor-pointer shrink-0 outline-none focus:outline-none',
+                                isSelected ? 'text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/80' : 'text-zinc-400 hover:text-zinc-950 hover:bg-zinc-200/80',
+                              )}
+                              title="Agent Options"
+                            >
+                              <DotsThreeVertical weight="bold" className="size-3.5" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            align="end"
+                            side="right"
+                            className="w-48 p-1.5 rounded-2xl bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-200/90 dark:border-zinc-800 shadow-xl font-sans z-50 animate-in fade-in zoom-in-95 duration-100"
+                          >
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSetAdmin(bot.id);
+                              }}
+                              className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold hover:bg-amber-50 dark:hover:bg-amber-950/30 cursor-pointer text-amber-600 transition-colors"
+                            >
+                              <ShieldCheck className="size-4 text-amber-500 shrink-0" weight="bold" />
+                              <span className="text-amber-600 font-medium">Make Admin</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenEditDrawer(bot);
+                              }}
+                              className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer text-zinc-700 dark:text-zinc-300 transition-colors"
+                            >
+                              <PencilSimple className="size-4 text-zinc-500 shrink-0" />
+                              <span>Edit Identity</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTogglePin(bot.id);
+                              }}
+                              className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer text-zinc-700 dark:text-zinc-300 transition-colors"
+                            >
+                              <PushPin className="size-4 text-zinc-500 shrink-0" />
+                              <span>{bot.isPinned ? 'Unpin' : 'Pin'}</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator className="my-1 bg-zinc-100 dark:bg-zinc-800" />
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteAgent(bot.id);
+                              }}
+                              className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-red-50 dark:hover:bg-red-950/30 text-red-600 cursor-pointer transition-colors"
+                            >
+                              <Trash className="size-4 text-red-500 shrink-0" />
+                              <span className="text-red-600 font-medium">Delete</span>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
 
-          {/* Sub-dropdown 2: ⌄ Agents */}
-          <div>
-            <button
-              type="button"
-              onClick={() => setIsAgentsCollapsed((prev) => !prev)}
-              className="w-full flex items-center justify-between px-2 py-1 text-xs font-medium text-zinc-500 hover:text-zinc-800 transition-colors rounded-lg cursor-pointer outline-none focus:outline-none"
-            >
-              <div className="flex items-center gap-1.5">
-                {isAgentsCollapsed ? (
-                  <CaretRight className="size-3 text-zinc-400" />
-                ) : (
-                  <CaretDown className="size-3 text-zinc-400" />
-                )}
-                <span className="text-[12px] font-medium tracking-tight">Agents</span>
-              </div>
-              <span className="text-[11px] text-zinc-400 font-normal">{sortedAgents.length}</span>
-            </button>
-
-            {!isAgentsCollapsed && (
-              <div className="space-y-1 mt-1">
-                {isAgentsLoading ? (
-                  <div className="p-2 space-y-2">
-                    {[1, 2, 3, 4, 5, 6].map((i) => (
-                      <div key={i} className="flex items-center gap-3 px-3 py-2 rounded-2xl animate-pulse bg-zinc-100/50">
-                        <div className="size-8 rounded-full bg-zinc-200 shrink-0" />
-                        <div className="flex-1 space-y-1.5">
-                          <div className="h-3.5 bg-zinc-200 rounded w-24" />
-                          <div className="h-2.5 bg-zinc-150 rounded w-36" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : isAgentsError ? (
-                  <div className="p-4 text-center space-y-2 border border-rose-200/60 rounded-xl bg-rose-50/40 m-1">
-                    <p className="text-xs text-rose-600 font-medium">Failed to load trading agents</p>
-                    <p className="text-[11px] text-zinc-400">{String(agentsError || 'Network or server error')}</p>
-                    <button
-                      type="button"
-                      onClick={() => refetchAgents()}
-                      className="px-3 py-1 text-xs font-semibold bg-zinc-950 text-white rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer"
-                    >
-                      Retry
-                    </button>
-                  </div>
-                ) : (
-                  sortedAgents.map((bot) => {
-                  const isSelected = currentAgentId === bot.id;
-                  return (
-                    <div
-                      key={bot.id}
-                      onClick={() => handleOpenAgentChat(bot)}
-                      className={cn(
-                        'group relative flex items-center gap-3 px-3 py-2 rounded-2xl text-xs cursor-pointer transition-all border select-none',
-                        isSelected
-                          ? 'bg-zinc-100/90 text-zinc-950 font-medium border-transparent shadow-2xs'
-                          : 'hover:bg-zinc-100/60 text-zinc-800 border-transparent',
+                    {/* Bottom Row: NO dot! Shimmering status for typing/waiting for approval, or Chat text */}
+                    <div className="flex items-center justify-between gap-1.5 leading-snug">
+                      {bot.status === 'typing' ? (
+                        <p className="shimmer text-xs text-muted-foreground truncate font-medium">
+                          Typing&hellip;
+                        </p>
+                      ) : bot.status === 'waiting for approval' ? (
+                        <p className="shimmer text-xs text-muted-foreground truncate font-medium">
+                          Waiting for approval&hellip;
+                        </p>
+                      ) : (
+                        <p className={cn(
+                          'text-xs truncate font-normal leading-snug',
+                          isSelected ? 'text-zinc-600 dark:text-zinc-300' : 'text-zinc-400 dark:text-zinc-400',
+                        )}>
+                          {bot.chatPreview || bot.lastAction || 'synced workspace pipeline and updated watchlist...'}
+                        </p>
                       )}
-                    >
-                      {/* Bot Living Avatar */}
-                      <BotAvatar
-                        shape={bot.shape}
-                        color={bot.color}
-                        expression={bot.expression}
-                        size={32}
-                        isAnimated={true}
-                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
 
-                      <div className="flex flex-col min-w-0 flex-1 gap-0.5">
-                        {/* Top Row: Name on Left (Light font), Time + Pin + 3-dots on Right */}
-                        <div className="flex items-center justify-between gap-1.5">
-                          <span className="font-medium text-sm truncate text-zinc-900 leading-tight font-sans tracking-normal">
-                            {bot.name}
-                          </span>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {bot.isPinned && (
-                              <PushPin className="size-3 text-zinc-400 fill-zinc-400 shrink-0" />
-                            )}
-                            <span className="text-[11px] font-normal text-zinc-400">
-                              {bot.time}
-                            </span>
+            {/* Groups (e.g. Offsite crew) rendered directly in the same list */}
+            {groups.map((group) => {
+              const isSelected = currentGroupId === group.id;
+              return (
+                <div
+                  key={group.id}
+                  onClick={() => handleOpenGroupChat(group)}
+                  className={cn(
+                    'group relative flex items-center gap-3 px-3 py-2.5 rounded-2xl cursor-pointer transition-all select-none',
+                    isSelected
+                      ? 'bg-zinc-100/90 dark:bg-zinc-800 text-zinc-950 dark:text-white font-medium border border-zinc-200/90 dark:border-zinc-700 shadow-2xs'
+                      : 'hover:bg-zinc-50/80 dark:hover:bg-zinc-800/40 text-zinc-800 dark:text-zinc-200 border border-transparent',
+                  )}
+                >
+                  {/* 3-Bot Overlapping Avatars Cluster (Offsite crew style) */}
+                  <OverlappingAvatars agentIds={group.agentIds} allAgents={agents} size={34} />
 
-                            {/* 3-Dot Action Menu (Only visible on hover over this bot) */}
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <button
-                                  type="button"
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="p-1 rounded-md text-zinc-800 hover:text-zinc-950 hover:bg-zinc-200/80 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity cursor-pointer shrink-0 outline-none focus:outline-none"
-                                  title="Agent Options"
-                                >
-                                  <DotsThreeVertical weight="bold" className="size-4 text-zinc-900" />
-                                </button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent
-                                align="end"
-                                side="right"
-                                className="w-48 p-1.5 rounded-2xl bg-white text-zinc-900 border border-zinc-200/90 shadow-xl font-sans z-50 animate-in fade-in zoom-in-95 duration-100"
-                              >
-                                {/* Option 1: Make Admin (Amber Shield + Text) */}
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleSetAdmin(bot.id);
-                                  }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold hover:bg-amber-50 cursor-pointer text-amber-600 transition-colors"
-                                >
-                                  <ShieldCheck className="size-4 text-amber-500 shrink-0" weight="bold" />
-                                  <span className="text-amber-600 font-medium">Make Admin</span>
-                                </DropdownMenuItem>
+                  <div className="flex flex-col min-w-0 flex-1 gap-0.5">
+                    {/* Top Row: Group Name on Left, Time text on Right */}
+                    <div className="flex items-center justify-between gap-1.5 leading-tight">
+                      <span className={cn(
+                        'font-medium text-sm truncate font-sans tracking-tight',
+                        isSelected ? 'text-zinc-950 dark:text-white font-semibold' : 'text-zinc-900 dark:text-zinc-100',
+                      )}>
+                        {group.name}
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+                        <span className="text-xs font-normal shrink-0 text-zinc-400">
+                          {group.time || '11:20 AM'}
+                        </span>
 
-                                {/* Option 2: Edit Identity (Pencil) */}
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleOpenEditDrawer(bot);
-                                  }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 cursor-pointer text-zinc-700 transition-colors"
-                                >
-                                  <PencilSimple className="size-4 text-zinc-500 shrink-0" />
-                                  <span>Edit Identity</span>
-                                </DropdownMenuItem>
-
-                                {/* Option 3: Pin */}
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleTogglePin(bot.id);
-                                  }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 cursor-pointer text-zinc-700 transition-colors"
-                                >
-                                  <PushPin className="size-4 text-zinc-500 shrink-0" />
-                                  <span>{bot.isPinned ? 'Unpin' : 'Pin'}</span>
-                                </DropdownMenuItem>
-
-                                {/* Option 4: Archive */}
-                                <DropdownMenuItem
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 cursor-pointer text-zinc-700 transition-colors"
-                                >
-                                  <Archive className="size-4 text-zinc-500 shrink-0" />
-                                  <span>Archive</span>
-                                </DropdownMenuItem>
-
-                                <DropdownMenuSeparator className="my-1 bg-zinc-100" />
-
-                                {/* Option 5: Delete (Red) */}
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDeleteAgent(bot.id);
-                                  }}
-                                  className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-red-50 text-red-600 cursor-pointer transition-colors"
-                                >
-                                  <Trash className="size-4 text-red-500 shrink-0" />
-                                  <span className="text-red-600 font-medium">Delete</span>
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </div>
-                        </div>
-
-                        {/* Bottom Row: Status / Last action + optional unread blue dot */}
-                        <div className="flex items-center justify-between gap-1.5">
-                          <span className="text-[11.5px] text-zinc-400 truncate leading-snug flex-1">
-                            {bot.lastAction}
-                          </span>
-                          {bot.unread && (
-                            <span className="size-2 rounded-full bg-blue-500 shrink-0 ml-1.5" />
-                          )}
-                        </div>
+                        {/* 3-Dot Action Menu for Groups (Visible on hover) */}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={(e) => e.stopPropagation()}
+                              className={cn(
+                                'p-0.5 rounded-md opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity cursor-pointer shrink-0 outline-none focus:outline-none',
+                                isSelected ? 'text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200/80' : 'text-zinc-400 hover:text-zinc-950 hover:bg-zinc-200/80',
+                              )}
+                              title="Group Options"
+                            >
+                              <DotsThreeVertical weight="bold" className="size-3.5" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            align="end"
+                            side="right"
+                            className="w-48 p-1.5 rounded-2xl bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-200/90 dark:border-zinc-800 shadow-xl font-sans z-50 animate-in fade-in zoom-in-95 duration-100"
+                          >
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedGroupToEdit(group);
+                                setRenameGroupValue(group.name);
+                                setShowRenameGroupModal(true);
+                              }}
+                              className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer text-zinc-700 dark:text-zinc-300 transition-colors"
+                            >
+                              <PencilSimple className="size-4 text-zinc-500 shrink-0" />
+                              <span>Rename</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedGroupToEdit(group);
+                                setModifyGroupName(group.name);
+                                setModifyGroupDesc(group.description || '');
+                                setModifyGroupAgentIds([...group.agentIds]);
+                                setShowModifyGroupModal(true);
+                              }}
+                              className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer text-zinc-700 dark:text-zinc-300 transition-colors"
+                            >
+                              <Users className="size-4 text-zinc-500 shrink-0" />
+                              <span>Modify Group</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator className="my-1 bg-zinc-100 dark:bg-zinc-800" />
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteGroup(group.id);
+                              }}
+                              className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-red-50 dark:hover:bg-red-950/30 text-red-600 cursor-pointer transition-colors"
+                            >
+                              <Trash className="size-4 text-red-500 shrink-0" />
+                              <span className="text-red-600 font-medium">Delete</span>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </div>
-                  );
-                }))}
-              </div>
-            )}
-          </div>
-        </div>
-      ) : (
-        <div className="flex-1 p-6 flex flex-col items-center justify-center text-center text-zinc-400 text-xs">
-          <p className="font-medium text-zinc-600">Agents collapsed</p>
-          <p className="text-[11px] text-zinc-400 mt-1">Click {activeWorkspace.name} above to show workspace</p>
-        </div>
-      )}
+
+                    {/* Bottom Row: Chat text preview */}
+                    <div className="flex items-center justify-between gap-1.5 leading-snug">
+                      <p className={cn(
+                        'text-xs truncate font-normal leading-snug',
+                        isSelected ? 'text-zinc-600 dark:text-zinc-300' : 'text-zinc-400 dark:text-zinc-400',
+                      )}>
+                        {group.lastAction || group.description || "that leaves the pipeline. i'd spin up..."}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
+      </div>
 
       {/* Create Group Modal (Multi-agent Selection with Coss UI Dialog) */}
       <Dialog open={showCreateGroupModal} onOpenChange={setShowCreateGroupModal}>

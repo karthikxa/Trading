@@ -6,9 +6,11 @@ import { create } from 'zustand';
 interface AppsModalState {
   open: boolean;
   setOpen: (open: boolean) => void;
+  openAppsModal?: () => void;
 }
 
 export const useAppsModalStore = create<AppsModalState>((set) => ({
   open: false,
   setOpen: (open) => set({ open }),
+  openAppsModal: () => set({ open: true }),
 }));

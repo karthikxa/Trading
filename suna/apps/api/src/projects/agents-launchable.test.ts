@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { type AgentSpec, type LoadedAgents, isLaunchableAgentName } from './agents';
 
-function spec(name: string, enabled = true): AgentSpec {
+function spec(name: string, enabled = true, mode?: AgentSpec['mode']): AgentSpec {
   return {
     name,
     path: `kortix.yaml#agents.${name}`,
     enabled,
+    mode,
     connectors: 'all',
     permissions: 'all',
     env: 'all',
@@ -32,6 +33,22 @@ describe('isLaunchableAgentName', () => {
 
   test('a disabled agent is not launchable', () => {
     expect(isLaunchableAgentName('retired', governed)).toBe(false);
+  });
+
+  test('a declared subagent is NOT launchable: it only runs inside its caller session', () => {
+    // The composer filters to primary agents, and the manifest declares the
+    // specialists `mode: subagent`. A direct API/CLI create must refuse them
+    // too: a session would boot a second computer for one lens.
+    const roster: LoadedAgents = {
+      specs: [spec('chief', true, 'primary'), spec('analyst', true, 'subagent'), spec('either', true, 'all'), spec('legacy', true)],
+      errors: [],
+      defaultAgent: 'chief',
+    };
+    expect(isLaunchableAgentName('chief', roster)).toBe(true);
+    expect(isLaunchableAgentName('analyst', roster)).toBe(false);
+    expect(isLaunchableAgentName('either', roster)).toBe(true);
+    // No `mode` means `all` (manifest-schema default), never `subagent`.
+    expect(isLaunchableAgentName('legacy', roster)).toBe(true);
   });
 
   test('the default sentinel is always launchable; My Kortix unless kortix.yaml turned it off', () => {

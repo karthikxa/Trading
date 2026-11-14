@@ -134,6 +134,24 @@ describe('agents — `agents:` map', () => {
     });
   });
 
+  test('`mode` is parsed; omitted stays unset (the schema default is `all`)', () => {
+    const { specs, errors } = parseAgents(`
+  chief:
+    mode: primary
+  analyst:
+    mode: subagent
+  either:
+    mode: all
+  legacy:
+    description: "no mode"
+`, { defaultAgent: 'chief' });
+    expect(errors).toEqual([]);
+    expect(specs.find((s) => s.name === 'chief')!.mode).toBe('primary');
+    expect(specs.find((s) => s.name === 'analyst')!.mode).toBe('subagent');
+    expect(specs.find((s) => s.name === 'either')!.mode).toBe('all');
+    expect(specs.find((s) => s.name === 'legacy')!.mode).toBeUndefined();
+  });
+
   test('connectors/kortix_permissions/secrets lists resolve via resolveGrantSet; `secrets` maps onto AgentSpec.env', () => {
     const { specs, errors } = parseAgents(`
   support:

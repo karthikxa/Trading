@@ -23,7 +23,6 @@ import { parseSidebarStateCookie } from '@kortix/ui/workspace/layout/sidebar-coo
 import { useDesktopShell } from '@kortix/ui/internal/layout/sidebar-opener';
 import { openCommandPalette } from '@kortix/ui/internal/layout/open-command-palette';
 import { ProjectSidebar } from '@kortix/ui/workspace';
-import { StockTradingModal } from '@/features/trading/StockTradingModal';
 import { WorkspaceSwitcher } from '@/features/workspace/project-sidebar/workspace-switcher';
 import { SettingsPanel } from '@/features/workspace/settings/settings-panel';
 import {
@@ -281,8 +280,6 @@ export function ProjectShell({ projectId, initialSidebarOpen, children }: Projec
             <CommandPalette />
           </CommandPaletteBoundary>
 
-          <StockTradingModal />
-
           <ProjectSheelLayout>{children}</ProjectSheelLayout>
         </div>
 
@@ -361,17 +358,6 @@ const ProjectSheelLayout = ({ children }: { children: React.ReactNode }) => {
             onPointerEnter={peekEnter}
             onPointerLeave={peekLeave}
             variant="ghost"
-            // The ONE sidebar opener on the desktop shell — every view-level
-            // copy is suppressed by useShowPageSidebarOpener() so this cannot
-            // become the second control in the same corner.
-            //
-            // Placed by the band variables, not by a literal: on macOS the
-            // traffic lights are positioned by the Electron main process, so
-            // the two numbers live in different processes and used to drift
-            // (this box centered at y=26, the lights at y=30). The variables
-            // are generated from one table — see globals.css and
-            // apps/desktop-electron/src/window-chrome.js. They also carry the
-            // Win/Linux values, so there is no platform branch here.
             className={cn(TITLEBAR_CONTROL_CLASS, 'flex w-[var(--kx-titlebar-control-size)]')}
           >
             <PanelLeft className="cn-rtl-flip size-4" />

@@ -306,6 +306,7 @@ function saveLocalTrades(trades: JournalTrade[]) {
   if (typeof window === 'undefined') return;
   try {
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(trades));
+    window.dispatchEvent(new CustomEvent('trading-journal-updated', { detail: trades }));
   } catch {
     // QuotaExceededError fallback: strip large base64 chart images in localStorage cache only
     try {

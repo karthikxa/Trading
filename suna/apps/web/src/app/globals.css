@@ -739,6 +739,25 @@ html.lenis {
   }
 }
 
+.shimmer {
+  background: linear-gradient(90deg, #71717a 0%, #09090b 50%, #71717a 100%);
+  background-size: 200% auto;
+  color: transparent !important;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: text-shimmer 2.2s linear infinite;
+  display: inline-block;
+}
+
+.dark .shimmer {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.45) 0%, rgba(255, 255, 255, 1) 50%, rgba(255, 255, 255, 0.45) 100%);
+  background-size: 200% auto;
+  color: transparent !important;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: text-shimmer 2.2s linear infinite;
+}
+
 /* Pulse heartbeat animation for reasoning section Kortix icon */
 @keyframes pulse-heartbeat {
   0%,

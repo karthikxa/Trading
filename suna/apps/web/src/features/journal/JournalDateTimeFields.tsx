@@ -13,11 +13,35 @@ const QUARTER_HOUR_SLOTS: string[] = Array.from({ length: 24 * 4 }, (_, idx) => 
 });
 
 /**
- * Parse a YYYY-MM-DD string into a local Date (avoiding UTC midnight day shifts).
+ * Normalize date strings (YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY) into ISO YYYY-MM-DD.
+ */
+export function normalizeToIsoDate(raw?: string | null): string {
+  if (!raw) return '2026-12-31';
+  const trimmed = raw.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  if (/^\d{2}-\d{2}-\d{4}$/.test(trimmed)) {
+    const [d, m, y] = trimmed.split('-');
+    return `${y}-${m}-${d}`;
+  }
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) {
+    const [d, m, y] = trimmed.split('/');
+    return `${y}-${m}-${d}`;
+  }
+  const d = new Date(trimmed);
+  if (!Number.isNaN(d.getTime())) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  return '2026-12-31';
+}
+
+/**
+ * Parse a YYYY-MM-DD or DD-MM-YYYY string into a local Date (avoiding UTC midnight day shifts).
  */
 export function parseIsoDate(iso?: string | null): Date | undefined {
-  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return undefined;
-  const [y, m, d] = iso.split('-').map(Number);
+  if (!iso) return undefined;
+  const normalized = normalizeToIsoDate(iso);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return undefined;
+  const [y, m, d] = normalized.split('-').map(Number);
   const parsed = new Date(y, m - 1, d);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 }

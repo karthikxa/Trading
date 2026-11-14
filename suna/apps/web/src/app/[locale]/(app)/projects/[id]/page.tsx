@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useTranslations } from '@/i18n/use-translations';
-import { ProjectHome } from '@kortix/ui/workspace';
+import { ProjectHome, SidebarToggle } from '@kortix/ui/workspace';
 import { useAccountState } from '@kortix/ui/internal/billing/index';
 import {
   billingDialogArgs,
@@ -20,7 +20,6 @@ import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigat
 import {
   Pin,
   Search,
-  Plus,
   X,
   LineChart,
   CalendarClock,
@@ -28,26 +27,65 @@ import {
   Gauge,
   Landmark,
   Bell,
+  ArrowLeft,
 } from 'lucide-react';
 
 import MarketSwitcher from '@/features/markets/MarketSwitcher';
 import TradingViewWidget from '@/features/markets/TradingViewWidget';
-import TvMiniChart from '@/features/markets/TvMiniChart';
+import TvSymbolInfo from '@/features/markets/TvSymbolInfo';
+import TvCompanyProfile from '@/features/markets/TvCompanyProfile';
+import TvSeasonalChart from '@/features/markets/TvSeasonalChart';
+import TvTickers from '@/features/markets/TvTickers';
 import TvScreener from '@/features/markets/TvScreener';
 import TvEconomicCalendar from '@/features/markets/TvEconomicCalendar';
 import WatchlistTable from '@/features/markets/WatchlistTable';
 import TvLiveChart from '@/features/markets/TvLiveChart';
 import GodsEyeSpecView from '@/features/spec/GodsEyeSpecView';
 import JournalView from '@/features/journal/JournalView';
-import SearchCommand, { openSearch } from '@/features/markets/SearchCommand';
+import { getLocalTrades } from '@/features/journal/storage';
+import type { JournalTrade } from '@/features/journal/types';
+import SearchCommand, { openSearch, SearchButton } from '@/features/markets/SearchCommand';
 import StockSymbolIcon from '@/features/markets/StockSymbolIcon';
 import { resolveTradingViewSymbol } from '@/features/markets/symbol-resolver';
+import TradingViewSymbolPage from '@/features/markets/TradingViewSymbolPage';
+import { WallpaperBackground } from '@/components/ui/wallpaper-background';
 import { MARKETS } from '@/features/markets/markets';
 import { getStoredWatchlist, type WatchlistEntry } from '@/features/markets/watchlist.store';
 import type { MarketId } from '@/features/markets/types';
-import { cn } from '@kortix/ui';
+import {
+  cn,
+  Button,
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '@kortix/ui';
+import Hint from '@kortix/ui/hint';
+import {
+  Monitor,
+  CaretDown,
+  Plus,
+  DotsThreeVertical,
+  Users,
+  Wallet,
+  TrendUp,
+  ChartLineUp,
+  BookOpen,
+  Target,
+  MagnifyingGlass,
+  PushPin,
+} from '@phosphor-icons/react';
+import KortixPinIcon from '@/features/markets/KortixPinIcon';
+import {
+  Dialog,
+  DialogPopup,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
 import '@/features/markets/terminal.css';
-import AgentProfileHub from '@/features/markets/AgentProfileHub';
 import BotComputerPanel from '@/features/markets/BotComputerPanel';
 import BotEditDrawer from '@/features/markets/BotEditDrawer';
 import { BotAvatar } from '@/features/markets/BotAvatar';
@@ -65,6 +103,18 @@ interface StockTabItem {
 
 export const CANONICAL_TRADING_PROJECT_ID = 'b0000000-0000-0000-0000-000000000001';
 
+const DEFAULT_PORTFOLIO_MANAGER: TradingAgentDef = {
+  id: 'portfolio_manager',
+  name: 'Chief of Staff',
+  role: 'Capital Allocation & Swarm Lead',
+  group: 'Management',
+  shape: 'circle',
+  color: '#8B5CF6',
+  expression: 'attentive',
+  description: 'Lead Portfolio Manager and Workspace Administrator. Synthesizes swarm intelligence and directs execution.',
+  isAdmin: true,
+};
+
 export default function ProjectIndexPage() {
   const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
   const { id: rawProjectId } = useParams<{ id: string }>();
@@ -81,9 +131,9 @@ export default function ProjectIndexPage() {
     }
   }, [rawProjectId, searchParams, router]);
 
-  // Active view management: 'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent' | 'journal'
+  // Active view management: 'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent' | 'journal' | 'chart'
   const queryTab = searchParams.get('tab');
-  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent' | 'journal'>(
+  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent' | 'journal' | 'chart'>(
     queryTab === 'overview'
       ? 'overview'
       : queryTab === 'watchlist'
@@ -92,10 +142,31 @@ export default function ProjectIndexPage() {
           ? 'journal'
           : queryTab === 'spec'
             ? 'spec'
-            : queryTab === 'agent'
-              ? 'agent'
+            : queryTab === 'chart'
+              ? 'chart'
               : 'chat',
   );
+
+  const [tradingGoal, setTradingGoal] = useState<{ targetAmount: number; targetDate: string }>({
+    targetAmount: 125000,
+    targetDate: '2026-12-31',
+  });
+
+  useEffect(() => {
+    const loadGoal = () => {
+      try {
+        const saved = localStorage.getItem('kortix_trading_goal_v1');
+        if (saved) {
+          setTradingGoal(JSON.parse(saved));
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    loadGoal();
+    window.addEventListener('trading-goal-updated', loadGoal);
+    return () => window.removeEventListener('trading-goal-updated', loadGoal);
+  }, []);
 
   // Tabs only contain individual stocks
   const [stockTabs, setStockTabs] = useState<StockTabItem[]>([
@@ -109,6 +180,28 @@ export default function ProjectIndexPage() {
   const [selectedWatchlistStock, setSelectedWatchlistStock] = useState<string>('AAPL');
   const [editingAgent, setEditingAgent] = useState<TradingAgentDef | null>(null);
   const [showComputer, setShowComputer] = useState(true);
+  const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupAgentIds, setNewGroupAgentIds] = useState<string[]>([]);
+
+  const handleOpenCreateAgent = () => {
+    const newAgent: TradingAgentDef = {
+      id: `agent-custom-${Date.now()}`,
+      name: 'Custom Agent',
+      role: 'Trading Specialist',
+      group: 'Analysts',
+      shape: 'circle',
+      color: '#10B981',
+      expression: 'attentive',
+      status: 'idle',
+      description: 'Custom AI trading agent identity',
+      timeText: 'Just now',
+      chatPreview: 'Ready for market analysis',
+      lastAction: 'Ready for market analysis',
+      time: 'Just now',
+    };
+    setEditingAgent(newAgent);
+  };
 
   // Listen for edit agent drawer trigger
   useEffect(() => {
@@ -130,6 +223,45 @@ export default function ProjectIndexPage() {
     return () => window.removeEventListener('watchlist-updated', onWatchlistChange);
   }, []);
 
+  // Browser Back/Forward navigation listener to properly redirect to the previous page
+  useEffect(() => {
+    const handlePopState = () => {
+      const url = new URL(window.location.href);
+      const tab = url.searchParams.get('tab');
+      if (tab === 'overview') {
+        setActiveView('overview');
+      } else if (tab === 'watchlist') {
+        setActiveView('watchlist');
+      } else if (tab === 'journal') {
+        setActiveView('journal');
+      } else if (tab === 'spec') {
+        setActiveView('spec');
+      } else if (tab === 'chart') {
+        const symbol = url.searchParams.get('symbol');
+        if (symbol) {
+          setSelectedWatchlistStock(symbol);
+        }
+        setActiveView('chart');
+      } else if (tab === 'stock') {
+        const symbol = url.searchParams.get('symbol');
+        if (symbol) {
+          const tabId = `stock:${symbol}`;
+          setStockTabs((prev) => {
+            if (prev.some((t) => t.id === tabId)) return prev;
+            return [...prev, { id: tabId, symbol, name: symbol }];
+          });
+          setActiveStockTab(tabId);
+        }
+        setActiveView('stock');
+      } else {
+        setActiveView('chat');
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   // Sync view from search params
   useEffect(() => {
     if (queryTab === 'overview') {
@@ -140,12 +272,27 @@ export default function ProjectIndexPage() {
       setActiveView('journal');
     } else if (queryTab === 'spec') {
       setActiveView('spec');
-    } else if (queryTab === 'agent') {
-      setActiveView('agent');
-    } else if (queryTab === 'chat' || (!queryTab && activeView !== 'stock')) {
+    } else if (queryTab === 'chart') {
+      const symbol = searchParams.get('symbol');
+      if (symbol) {
+        setSelectedWatchlistStock(symbol);
+      }
+      setActiveView('chart');
+    } else if (queryTab === 'stock') {
+      const symbol = searchParams.get('symbol');
+      if (symbol) {
+        const tabId = `stock:${symbol}`;
+        setStockTabs((prev) => {
+          if (prev.some((t) => t.id === tabId)) return prev;
+          return [...prev, { id: tabId, symbol, name: symbol }];
+        });
+        setActiveStockTab(tabId);
+      }
+      setActiveView('stock');
+    } else {
       setActiveView('chat');
     }
-  }, [queryTab]);
+  }, [queryTab, searchParams]);
 
   // Open a stock tab
   const openStockTab = (symbolRaw: string, companyName?: string) => {
@@ -158,6 +305,7 @@ export default function ProjectIndexPage() {
     });
     setActiveStockTab(tabId);
     setActiveView('stock');
+    router.push(`/projects/${projectId}?tab=stock&symbol=${resolved.fullSymbol}`);
   };
 
   // Close tab
@@ -168,8 +316,10 @@ export default function ProjectIndexPage() {
       if (activeStockTab === tabId) {
         if (next.length > 0) {
           setActiveStockTab(next[0].id);
+          router.push(`/projects/${projectId}?tab=stock&symbol=${next[0].symbol}`);
         } else {
           setActiveView('chat');
+          router.push(`/projects/${projectId}`);
         }
       }
       return next;
@@ -199,6 +349,62 @@ export default function ProjectIndexPage() {
   const openUpgradeDialog = useUpgradeDialogStore((s) => s.openUpgradeDialog);
   const beforeSend = useProjectSendGate(projectId);
   const { data: tradingAgents = [] } = useTradingAgents();
+
+  const [journalTrades, setJournalTrades] = useState<JournalTrade[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        return getLocalTrades();
+      } catch {}
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    setJournalTrades(getLocalTrades());
+    const onJournalUpdate = () => {
+      setJournalTrades(getLocalTrades());
+    };
+    window.addEventListener('trading-journal-updated', onJournalUpdate);
+    return () => window.removeEventListener('trading-journal-updated', onJournalUpdate);
+  }, []);
+
+  const [startingCapital, setStartingCapital] = useState<number>(() => {
+    if (typeof window === 'undefined') return 100000;
+    try {
+      const saved = window.localStorage.getItem('kortix_trading_starting_capital');
+      if (saved) {
+        const val = parseFloat(saved);
+        if (!isNaN(val) && val > 0) return val;
+      }
+    } catch {}
+    return 100000;
+  });
+
+  useEffect(() => {
+    const handleGoalUpdate = () => {
+      try {
+        const savedCapital = window.localStorage.getItem('kortix_trading_starting_capital');
+        if (savedCapital) {
+          const val = parseFloat(savedCapital);
+          if (!isNaN(val) && val > 0) setStartingCapital(val);
+        }
+      } catch {}
+    };
+    window.addEventListener('trading-goal-updated', handleGoalUpdate);
+    window.addEventListener('storage', handleGoalUpdate);
+    return () => {
+      window.removeEventListener('trading-goal-updated', handleGoalUpdate);
+      window.removeEventListener('storage', handleGoalUpdate);
+    };
+  }, []);
+
+  const totalJournalTrades = journalTrades.length;
+  const winJournalTrades = journalTrades.filter((t) => (t.pnl ?? 0) > 0).length;
+  const lossJournalTrades = journalTrades.filter((t) => (t.pnl ?? 0) < 0).length;
+  const winRateJournal = totalJournalTrades > 0 ? ((winJournalTrades / totalJournalTrades) * 100).toFixed(1) : '0.0';
+  const totalJournalPnl = journalTrades.reduce((acc, t) => acc + (t.pnl ?? 0), 0);
+  const totalAccountMoney = startingCapital + totalJournalPnl;
+  const pnlPercent = ((totalJournalPnl / (startingCapital || 1)) * 100).toFixed(2);
 
   useEffect(() => {
     if (!isBillingEnabled() || !accountState || !projectAccountId) return;
@@ -239,8 +445,64 @@ export default function ProjectIndexPage() {
   const resolvedActive = resolveTradingViewSymbol(currentStockItem.symbol, currentStockItem.name);
   const activeStockSymbol = resolvedActive.cleanSymbol;
 
+  const marketTickers = useMemo(() => {
+    if (resolvedActive.assetType === 'crypto') {
+      return [
+        resolvedActive.fullSymbol,
+        'BINANCE:BTCUSDT',
+        'BINANCE:ETHUSDT',
+        'BINANCE:SOLUSDT',
+        'BINANCE:BNBUSDT',
+        'BINANCE:XRPUSDT',
+        'BINANCE:DOGEUSDT',
+        'BINANCE:ADAUSDT',
+        'BINANCE:AVAXUSDT',
+        'BINANCE:LINKUSDT',
+        'BINANCE:SUIUSDT',
+        'BITSTAMP:BTCUSD',
+        'BITSTAMP:ETHUSD',
+      ]
+        .filter((sym, idx, arr) => arr.indexOf(sym) === idx)
+        .join(',');
+    }
+
+    if (resolvedActive.assetType === 'forex') {
+      return [
+        resolvedActive.fullSymbol,
+        'FX:EURUSD',
+        'FX:GBPUSD',
+        'FX:USDJPY',
+        'FX:AUDUSD',
+        'FX:USDCAD',
+        'FX:USDCHF',
+        'FX:NZDUSD',
+        'FX:EURGBP',
+        'FX:EURJPY',
+        'FOREXCOM:SPXUSD',
+      ]
+        .filter((sym, idx, arr) => arr.indexOf(sym) === idx)
+        .join(',');
+    }
+
+    return [
+      resolvedActive.fullSymbol,
+      'FOREXCOM:SPXUSD',
+      'FOREXCOM:NSXUSD',
+      'NASDAQ:AAPL',
+      'NASDAQ:NVDA',
+      'NASDAQ:MSFT',
+      'NASDAQ:TSLA',
+      'NASDAQ:AMZN',
+      'NASDAQ:GOOGL',
+      'NASDAQ:META',
+      'NYSE:JPM',
+    ]
+      .filter((sym, idx, arr) => arr.indexOf(sym) === idx)
+      .join(',');
+  }, [resolvedActive.assetType, resolvedActive.fullSymbol]);
+
   return (
-    <div className="flex flex-col h-full w-full overflow-hidden bg-background font-sans">
+    <div className="relative flex flex-col h-full w-full overflow-hidden bg-background font-sans">
       {/* Main Workspace Body */}
       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
         {/* ========================================================================= */}
@@ -248,46 +510,89 @@ export default function ProjectIndexPage() {
         {/* ========================================================================= */}
         {activeView === 'chat' && (() => {
           const selectedAgentId = searchParams.get('agentId');
-          const selectedAgent = tradingAgents.find((a) => a.id === selectedAgentId) || null;
-          const isAdminAgent = selectedAgent?.isAdmin || selectedAgent?.id === 'portfolio_manager';
+          const selectedAgent =
+            tradingAgents.find((a) => a.id === selectedAgentId) || tradingAgents[0] || DEFAULT_PORTFOLIO_MANAGER;
 
           return (
             <div className="h-full flex flex-row overflow-hidden flex-1 min-h-0">
               {/* Left Column: Chat Area */}
               <div className="flex-1 min-w-0 flex flex-col h-full overflow-y-auto">
                 {selectedAgent && (
-                  <div className="px-6 py-3 border-b border-border/80 bg-card/60 flex items-center justify-between shrink-0 select-none">
+                  <div className="px-6 py-3 border-b border-transparent bg-transparent flex items-center justify-between shrink-0 select-none z-10">
                     <div className="flex items-center gap-3 min-w-0">
-                      <BotAvatar
-                        shape={selectedAgent.shape}
-                        color={selectedAgent.color}
-                        expression={selectedAgent.expression}
-                        size={30}
-                        isAnimated={true}
-                      />
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-bold text-foreground truncate">
-                            {selectedAgent.name}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-muted-foreground truncate">{selectedAgent.role}</p>
-                      </div>
+                      <SidebarToggle />
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            className="flex items-center gap-3 min-w-0 text-left hover:bg-muted/50 p-1 -m-1 rounded-xl transition-colors cursor-pointer group outline-none"
+                            title="Switch agent"
+                          >
+                            <BotAvatar
+                              shape={selectedAgent.shape}
+                              color={selectedAgent.color}
+                              expression={selectedAgent.expression}
+                              size={30}
+                              isAnimated={true}
+                            />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-sm font-bold text-foreground truncate">
+                                  {selectedAgent.name}
+                                </span>
+                                <CaretDown className="size-3 text-muted-foreground group-hover:text-foreground transition-colors" />
+                              </div>
+                              <p className="text-[11px] text-muted-foreground truncate">{selectedAgent.role}</p>
+                            </div>
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="w-64 max-h-80 overflow-y-auto">
+                          {tradingAgents.map((agent) => (
+                            <DropdownMenuItem
+                              key={agent.id}
+                              onClick={() => {
+                                router.push(`/projects/${projectId}?tab=chat&agentId=${agent.id}`);
+                              }}
+                              className={cn(
+                                'flex items-center gap-2.5 px-3 py-2 cursor-pointer rounded-lg',
+                                agent.id === selectedAgent.id ? 'bg-muted font-medium' : '',
+                              )}
+                            >
+                              <BotAvatar
+                                shape={agent.shape}
+                                color={agent.color}
+                                expression={agent.expression}
+                                size={22}
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-semibold text-foreground truncate">{agent.name}</p>
+                                <p className="text-[10px] text-muted-foreground truncate">{agent.role}</p>
+                              </div>
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
 
-                    {isAdminAgent && (
-                      <button
-                        type="button"
-                        onClick={() => setShowComputer((prev) => !prev)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-border bg-background hover:bg-muted text-xs font-semibold text-foreground shadow-2xs transition-colors cursor-pointer shrink-0"
-                      >
-                        <span>{showComputer ? 'Hide Computer' : 'Open Computer'}</span>
-                      </button>
-                    )}
+                    {/* Right side corner: Kortix style computer toggle button */}
+                    <div className="ml-auto flex items-center gap-2">
+                      <Hint label={showComputer ? 'Hide computer' : 'Open computer'}>
+                        <Button
+                          type="button"
+                          variant={showComputer ? 'secondary' : 'ghost'}
+                          size="icon"
+                          onClick={() => setShowComputer((prev) => !prev)}
+                          aria-label={showComputer ? 'Hide computer' : 'Open computer'}
+                          className="size-8 cursor-pointer text-muted-foreground hover:text-foreground"
+                        >
+                          <Monitor className="size-4" weight={showComputer ? 'fill' : 'regular'} />
+                        </Button>
+                      </Hint>
+                    </div>
                   </div>
                 )}
 
-                <div className="flex-1 flex flex-col justify-center min-h-0">
+                <div className="flex-1 flex flex-col justify-center min-h-0 [&_.absolute.top-2.left-2]:hidden">
                   <ProjectHome projectId={projectId} beforeSend={beforeSend}>
                     {/* Quick suggestion prompt chips below the centered composer */}
                     <div className="flex flex-wrap items-center justify-center gap-2 pt-2 pb-6">
@@ -315,11 +620,24 @@ export default function ProjectIndexPage() {
                 </div>
               </div>
 
-              {/* Right Column: Docked Bot Computer (For Admin Agent) */}
-              {selectedAgent && isAdminAgent && showComputer && (
+              {/* Right Column: Docked Bot Computer (Toggled via computer icon) */}
+              {selectedAgent && showComputer && !editingAgent && (
                 <BotComputerPanel
                   adminAgentName={selectedAgent.name}
                   onClose={() => setShowComputer(false)}
+                />
+              )}
+
+              {/* Right Column: Docked Bot Identity Editor Drawer (Proper Compression) */}
+              {editingAgent && (
+                <BotEditDrawer
+                  isOpen={true}
+                  agent={editingAgent}
+                  mode="docked"
+                  onClose={() => setEditingAgent(null)}
+                  onSave={(updated) => {
+                    setEditingAgent(null);
+                  }}
                 />
               )}
             </div>
@@ -327,170 +645,237 @@ export default function ProjectIndexPage() {
         })()}
 
         {/* ========================================================================= */}
-        {/* VIEW 2: MARKETS OVERVIEW                                                  */}
+        {/* VIEW 2: MARKETS OVERVIEW (KORTIX DESIGN SYSTEM)                            */}
         {/* ========================================================================= */}
         {activeView === 'overview' && (
-          <div className="max-w-7xl mx-auto p-4 sm:p-6 flex flex-col gap-6">
-            <header className="terminal-page-head">
-              <div>
-                <h1 className="terminal-page-title">Markets Overview</h1>
-                <p className="terminal-page-sub">
-                  {currentMarketObj.name} · open now · realtime data
-                </p>
-              </div>
-            </header>
-
-            <MarketSwitcher active={activeMarket} onChange={(m) => setActiveMarket(m)} />
-
-            {/* Index pulse */}
-            <section className="hatch">
-              <div className="hatch-head">
-                <div>
-                  <h2 className="hatch-title">Index pulse</h2>
-                  <p className="hatch-sub">Tracking ETFs via Finnhub</p>
-                </div>
-                <span className="text-xs text-zinc-400 font-medium">Delayed · refreshed hourly</span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 p-1">
-                <div
-                  onClick={() => openStockTab('AMEX:SPY', 'S&P 500')}
-                  className="hatch-card p-4 sm:p-5 flex flex-col justify-between gap-3 min-h-[124px] hover:border-zinc-300 transition-colors cursor-pointer"
-                >
-                  <div className="flex items-center gap-2 text-[13px] font-semibold text-zinc-600">
-                    <span className="flex items-center justify-center size-7 rounded-full bg-zinc-100 text-zinc-900">
-                      <LineChart className="size-4" />
-                    </span>
-                    <span className="text-zinc-900 font-bold">S&P 500</span>
-                    <span className="ml-auto text-xs font-mono font-medium text-zinc-400">SPY</span>
-                  </div>
-                  <div className="text-[25px] font-bold tracking-tight text-zinc-950 font-mono">
-                    $586.42
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-zinc-500">
-                    <span className="pulse-pill pulse-pill-up">↗ 0.37%</span>
-                    <span className="text-[11.5px]">+2.15 vs prev close</span>
-                  </div>
-                </div>
-
-                <div
-                  onClick={() => openStockTab('NASDAQ:QQQ', 'Nasdaq 100')}
-                  className="hatch-card p-4 sm:p-5 flex flex-col justify-between gap-3 min-h-[124px] hover:border-zinc-300 transition-colors cursor-pointer"
-                >
-                  <div className="flex items-center gap-2 text-[13px] font-semibold text-zinc-600">
-                    <span className="flex items-center justify-center size-7 rounded-full bg-zinc-100 text-zinc-900">
-                      <LineChart className="size-4" />
-                    </span>
-                    <span className="text-zinc-900 font-bold">Nasdaq 100</span>
-                    <span className="ml-auto text-xs font-mono font-medium text-zinc-400">QQQ</span>
-                  </div>
-                  <div className="text-[25px] font-bold tracking-tight text-zinc-950 font-mono">
-                    $498.75
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-zinc-500">
-                    <span className="pulse-pill pulse-pill-up">↗ 0.69%</span>
-                    <span className="text-[11.5px]">+3.40 vs prev close</span>
-                  </div>
-                </div>
-
-                <div
-                  onClick={() => openStockTab('AMEX:DIA', 'Dow 30')}
-                  className="hatch-card p-4 sm:p-5 flex flex-col justify-between gap-3 min-h-[124px] hover:border-zinc-300 transition-colors cursor-pointer"
-                >
-                  <div className="flex items-center gap-2 text-[13px] font-semibold text-zinc-600">
-                    <span className="flex items-center justify-center size-7 rounded-full bg-zinc-100 text-zinc-900">
-                      <LineChart className="size-4" />
-                    </span>
-                    <span className="text-zinc-900 font-bold">Dow 30</span>
-                    <span className="ml-auto text-xs font-mono font-medium text-zinc-400">DIA</span>
-                  </div>
-                  <div className="text-[25px] font-bold tracking-tight text-zinc-950 font-mono">
-                    $422.30
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-zinc-500">
-                    <span className="pulse-pill pulse-pill-down">↘ 0.20%</span>
-                    <span className="text-[11.5px]">-0.85 vs prev close</span>
-                  </div>
-                </div>
-
-                <div
-                  onClick={() => openStockTab('AMEX:IWM', 'Russell 2000')}
-                  className="hatch-card p-4 sm:p-5 flex flex-col justify-between gap-3 min-h-[124px] hover:border-zinc-300 transition-colors cursor-pointer"
-                >
-                  <div className="flex items-center gap-2 text-[13px] font-semibold text-zinc-600">
-                    <span className="flex items-center justify-center size-7 rounded-full bg-zinc-100 text-zinc-900">
-                      <LineChart className="size-4" />
-                    </span>
-                    <span className="text-zinc-900 font-bold">Russell 2000</span>
-                    <span className="ml-auto text-xs font-mono font-medium text-zinc-400">IWM</span>
-                  </div>
-                  <div className="text-[25px] font-bold tracking-tight text-zinc-950 font-mono">
-                    $221.80
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-zinc-500">
-                    <span className="pulse-pill pulse-pill-up">↗ 0.50%</span>
-                    <span className="text-[11.5px]">+1.10 vs prev close</span>
-                  </div>
+          <div id="overview-scroll-container" className="w-full h-full flex-1 p-4 sm:p-6 lg:p-8 flex flex-col gap-6 overflow-y-auto bg-background text-foreground">
+            {/* Kortix Page Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border/40 font-sans">
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-2.5">
+                  <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-foreground font-sans">
+                    Overview
+                  </h1>
                 </div>
               </div>
-            </section>
-
-            {/* Sparklines */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <section className="hatch">
-                <div className="hatch-card p-2 sm:p-3 overflow-hidden bg-white">
-                  <TradingViewWidget
-                    scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js"
-                    config={{
-                      symbol: 'AMEX:SPY',
-                      width: '100%',
-                      height: 220,
-                      locale: 'en',
-                      dateRange: '1M',
-                      colorTheme: 'light',
-                      isTransparent: true,
-                      autosize: false,
-                      largeChartUrl: '',
-                      chartOnly: false,
-                      noTimeScale: false,
-                    }}
-                    height={220}
-                  />
-                </div>
-              </section>
-
-              <section className="hatch">
-                <div className="hatch-card p-2 sm:p-3 overflow-hidden bg-white">
-                  <TradingViewWidget
-                    scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js"
-                    config={{
-                      symbol: 'NASDAQ:QQQ',
-                      width: '100%',
-                      height: 220,
-                      locale: 'en',
-                      dateRange: '1M',
-                      colorTheme: 'light',
-                      isTransparent: true,
-                      autosize: false,
-                      largeChartUrl: '',
-                      chartOnly: false,
-                      noTimeScale: false,
-                    }}
-                    height={220}
-                  />
-                </div>
-              </section>
+              <div className="flex items-center gap-2">
+                <SearchButton />
+              </div>
             </div>
+
+            {/* KPI Performance Cards Container with Selected Wallpaper */}
+            <div className="relative p-3.5 sm:p-4 rounded-2xl border border-border/70 overflow-hidden shadow-2xs">
+              <div className="absolute inset-0 pointer-events-none opacity-85 overflow-hidden">
+                <WallpaperBackground />
+              </div>
+              <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
+                {/* 1. Total Balance */}
+                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
+                      <Wallet className="size-3.5 text-muted-foreground" />
+                    </span>
+                    <span className="text-xs font-medium text-muted-foreground font-sans">Total Balance</span>
+                  </div>
+                  <div className="mt-3">
+                    <div className="text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
+                      ${totalAccountMoney.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
+                    <span className={cn(
+                      'inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-medium font-sans',
+                      totalJournalPnl > 0
+                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                        : totalJournalPnl < 0
+                          ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
+                          : 'bg-muted text-muted-foreground'
+                    )}>
+                      {totalJournalPnl > 0 ? '+' : ''}{pnlPercent}%
+                    </span>
+                  </div>
+                </div>
+
+                {/* 2. Realized PnL */}
+                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
+                      <ChartLineUp className="size-3.5 text-muted-foreground" />
+                    </span>
+                    <span className="text-xs font-medium text-muted-foreground font-sans">Realized PnL</span>
+                  </div>
+                  <div className="mt-3">
+                    <div className={cn(
+                      'text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums font-sans',
+                      totalJournalPnl > 0
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : totalJournalPnl < 0
+                          ? 'text-rose-600 dark:text-rose-400'
+                          : 'text-foreground'
+                    )}>
+                      {totalJournalPnl > 0 ? '+' : ''}${totalJournalPnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
+                    {totalJournalPnl !== 0 && (
+                      <span className={cn(
+                        'inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium font-sans',
+                        totalJournalPnl > 0
+                          ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                          : 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
+                      )}>
+                        {totalJournalPnl > 0 ? 'Profit' : 'Loss'}
+                      </span>
+                    )}
+                    <span className="font-sans">Across {totalJournalTrades} {totalJournalTrades === 1 ? 'trade' : 'trades'}</span>
+                  </div>
+                </div>
+
+                {/* 3. Win / Loss Record */}
+                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
+                      <TrendUp className="size-3.5 text-muted-foreground" />
+                    </span>
+                    <span className="text-xs font-medium text-muted-foreground font-sans">Win / Loss Record</span>
+                  </div>
+                  <div className="mt-3 flex items-baseline gap-2 font-sans">
+                    <span className="text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
+                      <span className={winJournalTrades > 0 ? 'text-emerald-600 dark:text-emerald-400 font-normal' : 'text-foreground'}>{winJournalTrades}W</span>
+                      <span className="text-muted-foreground/40 font-normal mx-1">/</span>
+                      <span className={lossJournalTrades > 0 ? 'text-rose-600 dark:text-rose-400 font-normal' : 'text-foreground'}>{lossJournalTrades}L</span>
+                    </span>
+                  </div>
+                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
+                    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium bg-muted text-foreground font-sans">
+                      {winRateJournal}% Win Rate
+                    </span>
+                  </div>
+                </div>
+
+                {/* 4. Target */}
+                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
+                      <Target className="size-3.5 text-muted-foreground" />
+                    </span>
+                    <span className="text-xs font-medium text-muted-foreground font-sans">Target</span>
+                  </div>
+                  <div className="mt-3">
+                    <div className="text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
+                      ${tradingGoal.targetAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
+                    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-sans">
+                      {totalAccountMoney > 0
+                        ? `+${(((tradingGoal.targetAmount - totalAccountMoney) / totalAccountMoney) * 100).toFixed(1)}% Goal`
+                        : '+25.0% Goal'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Pinned Watchlist Section (Clean Kortix Card) */}
+            <WatchlistTable
+              selectedSymbol={selectedWatchlistStock}
+              onSelectSymbol={(sym) => {
+                setSelectedWatchlistStock(sym);
+                openStockTab(sym);
+              }}
+            />
+
+            {/* Dynamic Mini Charts based on the first 2 top watchlist items (Image 3) */}
+            {(() => {
+              const top1 = watchlistItems[0] || { symbol: 'BTCUSD', name: 'Bitcoin / U.S. Dollar' };
+              const top2 = watchlistItems[1] || { symbol: 'EURUSD', name: 'Euro / U.S. Dollar' };
+              const resolvedTop1 = resolveTradingViewSymbol(top1.symbol, top1.name);
+              const resolvedTop2 = resolveTradingViewSymbol(top2.symbol, top2.name);
+
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-sans">
+                  <div
+                    onClick={() => openStockTab(top1.symbol, top1.name)}
+                    className="rounded-xl border border-border/70 bg-card p-4 shadow-2xs overflow-hidden cursor-pointer hover:border-border transition-colors group font-sans"
+                  >
+                    <div className="flex items-center justify-between mb-3 px-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-foreground group-hover:text-primary transition-colors font-sans">
+                          {top1.name || top1.symbol}
+                        </span>
+                        <span className="text-xs font-mono text-muted-foreground uppercase">{top1.symbol}</span>
+                      </div>
+                      <span className="text-[11px] text-muted-foreground font-mono">1M Overview</span>
+                    </div>
+                    <div className="overflow-hidden rounded-lg">
+                      <TradingViewWidget
+                        scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js"
+                        config={{
+                          symbol: resolvedTop1.fullSymbol,
+                          width: '100%',
+                          height: 220,
+                          locale: 'en',
+                          dateRange: '1M',
+                          colorTheme: 'light',
+                          isTransparent: true,
+                          autosize: false,
+                          largeChartUrl: '',
+                          chartOnly: false,
+                          noTimeScale: false,
+                        }}
+                        height={220}
+                      />
+                    </div>
+                  </div>
+
+                  <div
+                    onClick={() => openStockTab(top2.symbol, top2.name)}
+                    className="rounded-xl border border-border/70 bg-card p-4 shadow-2xs overflow-hidden cursor-pointer hover:border-border transition-colors group font-sans"
+                  >
+                    <div className="flex items-center justify-between mb-3 px-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-foreground group-hover:text-primary transition-colors font-sans">
+                          {top2.name || top2.symbol}
+                        </span>
+                        <span className="text-xs font-mono text-muted-foreground uppercase">{top2.symbol}</span>
+                      </div>
+                      <span className="text-[11px] text-muted-foreground font-mono">1M Overview</span>
+                    </div>
+                    <div className="overflow-hidden rounded-lg">
+                      <TradingViewWidget
+                        scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js"
+                        config={{
+                          symbol: resolvedTop2.fullSymbol,
+                          width: '100%',
+                          height: 220,
+                          locale: 'en',
+                          dateRange: '1M',
+                          colorTheme: 'light',
+                          isTransparent: true,
+                          autosize: false,
+                          largeChartUrl: '',
+                          chartOnly: false,
+                          noTimeScale: false,
+                        }}
+                        height={220}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Leaders & Heatmap */}
             <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-              <div className="terminal-panel">
-                <div className="terminal-panel-head">
+              <div className="rounded-xl border border-border/70 bg-card shadow-2xs overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-3.5 border-b border-border/60">
                   <div>
-                    <h2 className="terminal-panel-title">Leaders</h2>
-                    <p className="terminal-panel-sub">12-month trend by group</p>
+                    <h2 className="text-sm font-semibold text-foreground">Market Leaders</h2>
+                    <p className="text-xs text-muted-foreground">12-month performance trend across asset groups</p>
                   </div>
                 </div>
-                <div className="p-2 bg-white">
+                <div className="p-3 bg-card">
                   <TradingViewWidget
                     scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js"
                     config={{
@@ -509,14 +894,14 @@ export default function ProjectIndexPage() {
                 </div>
               </div>
 
-              <div className="terminal-panel">
-                <div className="terminal-panel-head">
+              <div className="rounded-xl border border-border/70 bg-card shadow-2xs overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-3.5 border-b border-border/60">
                   <div>
-                    <h2 className="terminal-panel-title">S&P 500 Heatmap</h2>
-                    <p className="terminal-panel-sub">Sized by market cap, colored by today's move</p>
+                    <h2 className="text-sm font-semibold text-foreground">S&P 500 Heatmap</h2>
+                    <p className="text-xs text-muted-foreground">Sized by market cap, colored by session move</p>
                   </div>
                 </div>
-                <div className="p-2 bg-white">
+                <div className="p-3 bg-card">
                   <TradingViewWidget
                     scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-stock-heatmap.js"
                     config={{
@@ -538,28 +923,28 @@ export default function ProjectIndexPage() {
             </div>
 
             {/* Screener */}
-            <div className="terminal-panel">
-              <div className="terminal-panel-head">
+            <div className="rounded-xl border border-border/70 bg-card shadow-2xs overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-3.5 border-b border-border/60">
                 <div>
-                  <h2 className="terminal-panel-title">Stock Screener</h2>
-                  <p className="terminal-panel-sub">Top global equities sorted by capitalization</p>
+                  <h2 className="text-sm font-semibold text-foreground">Global Stock Screener</h2>
+                  <p className="text-xs text-muted-foreground">Top global equities sorted by market capitalization</p>
                 </div>
               </div>
-              <div className="p-2 bg-white">
+              <div className="p-3 bg-card">
                 <TvScreener screenerType="stock" columns="overview" screen="most_capitalized" height={560} />
               </div>
             </div>
 
-            {/* Top stories (replacing Economic Map) & Economic Calendar */}
+            {/* Top stories & Economic Calendar */}
             <div className="grid gap-4 xl:grid-cols-2">
-              <div className="terminal-panel">
-                <div className="terminal-panel-head">
+              <div className="rounded-xl border border-border/70 bg-card shadow-2xs overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-3.5 border-b border-border/60">
                   <div>
-                    <h2 className="terminal-panel-title">Top stories</h2>
-                    <p className="terminal-panel-sub">Newest first</p>
+                    <h2 className="text-sm font-semibold text-foreground">Top Stories</h2>
+                    <p className="text-xs text-muted-foreground">Live market news & breaking developments</p>
                   </div>
                 </div>
-                <div className="p-2 bg-white">
+                <div className="p-3 bg-card">
                   <TradingViewWidget
                     scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-timeline.js"
                     config={{
@@ -576,14 +961,14 @@ export default function ProjectIndexPage() {
                 </div>
               </div>
 
-              <div className="terminal-panel">
-                <div className="terminal-panel-head">
+              <div className="rounded-xl border border-border/70 bg-card shadow-2xs overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-3.5 border-b border-border/60">
                   <div>
-                    <h2 className="terminal-panel-title">Economic Calendar</h2>
-                    <p className="terminal-panel-sub">Key global economic releases & announcements</p>
+                    <h2 className="text-sm font-semibold text-foreground">Economic Calendar</h2>
+                    <p className="text-xs text-muted-foreground">Key global economic releases & announcements</p>
                   </div>
                 </div>
-                <div className="p-2 bg-white">
+                <div className="p-3 bg-card">
                   <TvEconomicCalendar height={520} />
                 </div>
               </div>
@@ -592,18 +977,19 @@ export default function ProjectIndexPage() {
         )}
 
         {/* ========================================================================= */}
-        {/* VIEW 3: FULL WATCHLIST VIEW                                                */}
+        {/* VIEW 3: FULL WATCHLIST VIEW (KORTIX DESIGN SYSTEM)                         */}
         {/* ========================================================================= */}
         {activeView === 'watchlist' && (
-          <div className="max-w-7xl mx-auto p-4 sm:p-6 flex flex-col gap-6">
-            <header className="terminal-page-head">
-              <div>
-                <h1 className="terminal-page-title">Watchlist</h1>
-                <p className="terminal-page-sub">
-                  {watchlistItems.length} {watchlistItems.length === 1 ? 'symbol' : 'symbols'} tracked live
-                </p>
+          <div className="w-full h-full flex-1 p-4 sm:p-6 lg:p-8 flex flex-col gap-6 overflow-y-auto bg-background text-foreground">
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border/40 font-sans">
+              <div className="flex flex-col gap-1">
+                <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-foreground font-sans">
+                  Watchlist
+                </h1>
               </div>
-            </header>
+              <SearchButton />
+            </div>
 
             <WatchlistTable
               selectedSymbol={selectedWatchlistStock}
@@ -613,17 +999,17 @@ export default function ProjectIndexPage() {
               }}
             />
 
-            {/* Live Chart for selected stock */}
-            <div className="terminal-panel mt-2">
-              <div className="terminal-panel-head">
+            {/* Chart for selected stock */}
+            <div className="rounded-xl border border-border/70 bg-card shadow-2xs overflow-hidden mt-2 font-sans">
+              <div className="flex items-center justify-between px-5 py-3.5 border-b border-border/60">
                 <div className="flex items-center gap-2">
-                  <Pin className="size-4 text-zinc-950 fill-zinc-950" />
-                  <h2 className="terminal-panel-title">
-                    Live Chart: {selectedWatchlistStock}
+                  <ChartLineUp className="size-4 text-foreground" />
+                  <h2 className="text-sm font-semibold text-foreground font-sans">
+                    Chart
                   </h2>
                 </div>
               </div>
-              <div className="p-2 bg-white">
+              <div className="p-3 bg-card">
                 <TvLiveChart
                   symbol={selectedWatchlistStock}
                   height={560}
@@ -644,195 +1030,167 @@ export default function ProjectIndexPage() {
         {activeView === 'journal' && <JournalView projectId={projectId} />}
 
         {/* ========================================================================= */}
+        {/* VIEW: CHART (FULLSCREEN ADVANCED TRADINGVIEW CHART ALONE)                 */}
+        {/* ========================================================================= */}
+        {activeView === 'chart' && (
+          <div className="relative w-full h-full flex-1 flex flex-col overflow-hidden bg-background">
+            <TvLiveChart
+              symbol={searchParams.get('symbol') || selectedWatchlistStock || 'NASDAQ:AAPL'}
+              height="100%"
+              className="w-full h-full flex-1 !rounded-none !border-0"
+            />
+          </div>
+        )}
+
+        {/* ========================================================================= */}
         {/* VIEW 4: SINGLE-STOCK RESEARCH TERMINAL                                     */}
         {/* ========================================================================= */}
         {activeView === 'stock' && (
-          <div className="max-w-7xl mx-auto p-4 sm:p-6 flex flex-col gap-6">
-            {/* Header Shell with tv-mini-chart Web Component replacing static text/mini */}
+          <div className="w-full px-4 sm:px-6 py-4 flex flex-col gap-6">
+            {/* Header Shell */}
             <section className="hatch">
-              <div className="flex flex-col gap-4 p-4 sm:p-6 bg-white rounded-2xl border border-zinc-200/90 shadow-2xs">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-zinc-100">
-                  <div className="flex items-center gap-3">
-                    <StockSymbolIcon symbol={activeStockSymbol} size="lg" />
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h1 className="text-2xl font-bold text-zinc-950 tracking-tight">
-                          {currentStockItem.name || activeStockSymbol}
-                        </h1>
-                        <span className="rounded-md bg-zinc-100 px-2 py-0.5 text-xs font-mono font-bold text-zinc-700">
-                          {activeStockSymbol}
-                        </span>
-                      </div>
-                      <p className="text-xs text-zinc-500 mt-0.5 font-medium">
-                        {resolvedActive.cleanSymbol} · {resolvedActive.exchange} · {resolvedActive.assetType.toUpperCase()}
-                      </p>
-                    </div>
-                  </div>
+              <div className="flex flex-col gap-3 p-4 sm:p-5 bg-white rounded-2xl border border-zinc-200/90 shadow-2xs">
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    className="flex items-center gap-1.5 rounded-lg border border-zinc-200/90 bg-white px-3 py-1.5 text-xs font-medium text-zinc-900 shadow-2xs hover:bg-zinc-50 transition-colors cursor-pointer"
+                  >
+                    <Bell className="size-3.5 text-zinc-700" />
+                    <span>Set alert</span>
+                  </button>
 
-                  <div className="flex items-center gap-4">
-                    {/* Live TradingView Mini Chart Web Component (<tv-mini-chart>) */}
-                    <TvMiniChart symbol={resolvedActive.fullSymbol} width={340} height={120} />
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="flex items-center gap-1.5 rounded-xl border border-zinc-300 bg-white px-3.5 py-2 text-xs font-semibold text-zinc-900 shadow-2xs hover:bg-zinc-100 transition-colors cursor-pointer"
-                      >
-                        <Bell className="size-3.5 text-zinc-700" />
-                        <span>Set alert</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => openStockTab(activeStockSymbol, currentStockItem.name)}
-                        className="flex items-center gap-1.5 rounded-xl bg-black px-3.5 py-2 text-xs font-semibold text-white shadow-2xs hover:bg-zinc-900 transition-colors cursor-pointer"
-                      >
-                        <Pin className="size-3.5" />
-                        <span>Pin</span>
-                      </button>
-                    </div>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openStockTab(activeStockSymbol, currentStockItem?.name)}
+                    className="flex items-center justify-center size-8 rounded-lg border border-zinc-200/90 bg-white text-zinc-800 shadow-2xs hover:bg-zinc-50 transition-colors cursor-pointer"
+                    title="Pin to tabs"
+                  >
+                    <Pin className="size-3.5" />
+                  </button>
                 </div>
 
-                {/* 4 Bento stats cards */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 pt-2">
-                  <div className="flex flex-col justify-between gap-2 p-3.5 rounded-xl bg-zinc-50/70 border border-zinc-200/70">
-                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-500">
-                      <span className="flex items-center justify-center size-6 rounded-full bg-zinc-200/60 text-zinc-700">
-                        <CalendarClock className="size-3.5" />
-                      </span>
-                      <span>Open</span>
-                    </div>
-                    <div>
-                      <p className="text-[19px] font-bold tracking-tight text-zinc-950 font-mono">
-                        {activeStockSymbol === 'TSLA' ? '$393.22' : '$234.10'}
-                      </p>
-                      <p className="text-[11.5px] text-zinc-400 mt-0.5">First trade of the session</p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col justify-between gap-2 p-3.5 rounded-xl bg-zinc-50/70 border border-zinc-200/70">
-                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-500">
-                      <span className="flex items-center justify-center size-6 rounded-full bg-zinc-200/60 text-zinc-700">
-                        <MoveVertical className="size-3.5" />
-                      </span>
-                      <span>Day range</span>
-                    </div>
-                    <div>
-                      <p className="text-[19px] font-bold tracking-tight text-zinc-950 font-mono">
-                        {activeStockSymbol === 'TSLA' ? '$387.52 – $404.22' : '$233.50 – $236.20'}
-                      </p>
-                      <p className="text-[11.5px] text-zinc-400 mt-0.5">Low to high</p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col justify-between gap-2 p-3.5 rounded-xl bg-zinc-50/70 border border-zinc-200/70">
-                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-500">
-                      <span className="flex items-center justify-center size-6 rounded-full bg-zinc-200/60 text-zinc-700">
-                        <Gauge className="size-3.5" />
-                      </span>
-                      <span>Prev close</span>
-                    </div>
-                    <div>
-                      <p className="text-[19px] font-bold tracking-tight text-zinc-950 font-mono">
-                        {activeStockSymbol === 'TSLA' ? '$403.30' : '$233.55'}
-                      </p>
-                      <p className="text-[11.5px] text-zinc-400 mt-0.5">Last session</p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col justify-between gap-2 p-3.5 rounded-xl bg-zinc-50/70 border border-zinc-200/70">
-                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-500">
-                      <span className="flex items-center justify-center size-6 rounded-full bg-zinc-200/60 text-zinc-700">
-                        <Landmark className="size-3.5" />
-                      </span>
-                      <span>Market cap / Venue</span>
-                    </div>
-                    <div>
-                      <p className="text-[19px] font-bold tracking-tight text-zinc-950 font-mono">
-                        {resolvedActive.exchange}
-                      </p>
-                      <p className="text-[11.5px] text-zinc-400 mt-0.5">{resolvedActive.assetType.toUpperCase()}</p>
-                    </div>
-                  </div>
+                {/* Live TradingView Symbol Info Widget */}
+                <div className="pt-1">
+                  <TvSymbolInfo symbol={resolvedActive.fullSymbol} theme="light" />
                 </div>
               </div>
             </section>
 
+            {/* 1. Vertical Multi-Symbol Area Chart & 2. Tickers Widget (above candlestick chart) */}
+            <div className="terminal-panel">
+              <div className="p-2 bg-white">
+                <TradingViewWidget
+                  scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-symbol-overview.js"
+                  config={{
+                    symbols:
+                      resolvedActive.assetType === 'crypto'
+                        ? [
+                            [currentStockItem?.name || resolvedActive.cleanSymbol, `${resolvedActive.fullSymbol}|1D`],
+                            ['Ethereum', 'BINANCE:ETHUSDT|1D'],
+                            ['Solana', 'BINANCE:SOLUSDT|1D'],
+                          ]
+                        : resolvedActive.assetType === 'forex'
+                        ? [
+                            [currentStockItem?.name || resolvedActive.cleanSymbol, `${resolvedActive.fullSymbol}|1D`],
+                            ['Euro / US Dollar', 'FX:EURUSD|1D'],
+                            ['British Pound', 'FX:GBPUSD|1D'],
+                          ]
+                        : [
+                            [
+                              currentStockItem?.name || resolvedActive.cleanSymbol,
+                              `${resolvedActive.fullSymbol}|1D`,
+                            ],
+                            ['Google', 'GOOGL|1D'],
+                            ['Microsoft', 'MSFT|1D'],
+                          ],
+                    chartOnly: true,
+                    width: '100%',
+                    height: 500,
+                    locale: 'en',
+                    colorTheme: 'light',
+                    autosize: true,
+                    showVolume: false,
+                    showMA: false,
+                    hideDateRanges: false,
+                    hideMarketStatus: false,
+                    hideSymbolLogo: false,
+                    scalePosition: 'right',
+                    scaleMode: 'Normal',
+                    fontFamily: '-apple-system, BlinkMacSystemFont, Trebuchet MS, Roboto, Ubuntu, sans-serif',
+                    fontSize: '10',
+                    noTimeScale: false,
+                    valuesTracking: '1',
+                    changeMode: 'price-and-percent',
+                    chartType: 'area',
+                    maLineColor: '#2962FF',
+                    maLineWidth: 1,
+                    maLength: 9,
+                    headerFontSize: 'medium',
+                    lineWidth: 2,
+                    lineType: 0,
+                    dateRanges: [
+                      '1d|1',
+                      '1m|30',
+                      '3m|60',
+                      '12m|1D',
+                      '60m|1W',
+                      'all|1M',
+                    ],
+                  }}
+                  height={500}
+                />
+              </div>
+
+              {/* Tickers widget directly attached below vertical chart */}
+              <div className="p-3 border-t border-zinc-100 bg-white">
+                <TvTickers
+                  symbols={marketTickers}
+                  hideChart={true}
+                />
+              </div>
+            </div>
+
             {/* Upper Grid: Candlestick Chart + Technical Analysis Gauge */}
             <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
               <div className="terminal-panel">
-                <div className="terminal-panel-head">
-                  <div>
-                    <h2 className="terminal-panel-title">Chart ({resolvedActive.fullSymbol})</h2>
-                    <p className="terminal-panel-sub">
-                      Live from TradingView · switch interval and style in the chart
-                    </p>
-                  </div>
-                </div>
                 <div className="p-2 bg-white">
                   <TvLiveChart
                     symbol={resolvedActive.fullSymbol}
                     height={560}
+                    onExpand={() => {
+                      setSelectedWatchlistStock(resolvedActive.fullSymbol);
+                      setActiveView('chart');
+                      const targetUrl = `${pathname}?tab=chart&symbol=${encodeURIComponent(resolvedActive.fullSymbol)}`;
+                      window.history.pushState({}, '', targetUrl);
+                      router.push(targetUrl);
+                    }}
                   />
                 </div>
               </div>
 
-              <div className="flex flex-col gap-4">
-                <div className="terminal-panel">
-                  <div className="terminal-panel-head">
-                    <div>
-                      <h2 className="terminal-panel-title">Technicals</h2>
-                      <p className="terminal-panel-sub">Oscillators and moving averages, 1h</p>
-                    </div>
-                  </div>
-                  <div className="p-2 bg-white">
-                    <TradingViewWidget
-                      scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-technical-analysis.js"
-                      config={{
-                        interval: '1h',
-                        width: '100%',
-                        isTransparent: true,
-                        height: 380,
-                        symbol: resolvedActive.fullSymbol,
-                        showIntervalTabs: true,
-                        displayMode: 'single',
-                        locale: 'en',
-                        colorTheme: 'light',
-                      }}
-                      height={380}
-                    />
-                  </div>
-                </div>
-
-                <div className="terminal-panel p-4 flex flex-col justify-between bg-white">
-                  <div>
-                    <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                      {resolvedActive.isCorporateStock ? 'Dividend Yield' : 'Asset Category'}
-                    </h3>
-                    <p className="text-2xl font-bold font-mono text-zinc-950 mt-1 capitalize">
-                      {resolvedActive.isCorporateStock
-                        ? (activeStockSymbol === 'AAPL' ? '0.52%' : '—')
-                        : resolvedActive.assetType}
-                    </p>
-                  </div>
-                  <p className="text-xs text-zinc-500 mt-2">
-                    {resolvedActive.isCorporateStock
-                      ? 'Annualized payout relative to share price'
-                      : `24/7 Tick Stream via ${resolvedActive.exchange}`}
-                  </p>
+              <div className="terminal-panel">
+                <div className="p-2 bg-white h-full flex items-center justify-center">
+                  <TradingViewWidget
+                    scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-technical-analysis.js"
+                    config={{
+                      interval: '1h',
+                      width: '100%',
+                      isTransparent: true,
+                      height: 560,
+                      symbol: resolvedActive.fullSymbol,
+                      showIntervalTabs: true,
+                      displayMode: 'single',
+                      locale: 'en',
+                      colorTheme: 'light',
+                    }}
+                    height={560}
+                  />
                 </div>
               </div>
             </div>
 
             {/* Middle Row 1: Top stories timeline */}
             <div className="terminal-panel">
-              <div className="terminal-panel-head">
-                <div>
-                  <h2 className="terminal-panel-title">Top Stories</h2>
-                  <p className="terminal-panel-sub">Latest {resolvedActive.cleanSymbol} headlines via TradingView</p>
-                </div>
-              </div>
               <div className="p-2 bg-white">
                 <TradingViewWidget
                   scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-timeline.js"
@@ -855,21 +1213,13 @@ export default function ProjectIndexPage() {
             {/* Middle Row 2: Comparison Chart (left) & Profile (right) */}
             <div className="grid gap-4 xl:grid-cols-2">
               <div className="terminal-panel">
-                <div className="terminal-panel-head">
-                  <div>
-                    <h2 className="terminal-panel-title">Comparison Overview</h2>
-                    <p className="terminal-panel-sub">
-                      Performance vs benchmark ({resolvedActive.assetType === 'forex' ? 'GBP/USD' : resolvedActive.assetType === 'crypto' ? 'ETH/USD' : 'S&P 500'}) · percentage scale
-                    </p>
-                  </div>
-                </div>
                 <div className="p-2 bg-white">
                   <TradingViewWidget
                     scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-symbol-overview.js"
                     config={{
                       symbols: [
                         [
-                          currentStockItem.name || resolvedActive.cleanSymbol,
+                          currentStockItem?.name || resolvedActive.cleanSymbol,
                           `${resolvedActive.fullSymbol}|1D`,
                         ],
                       ],
@@ -925,218 +1275,118 @@ export default function ProjectIndexPage() {
               </div>
 
               <div className="terminal-panel">
-                <div className="terminal-panel-head">
-                  <div>
-                    <h2 className="terminal-panel-title">Profile</h2>
-                    <p className="terminal-panel-sub">
-                      {resolvedActive.isCorporateStock
-                        ? 'What the company does and stories'
-                        : `${resolvedActive.cleanSymbol} asset overview & market specifications`}
-                    </p>
-                  </div>
-                </div>
                 <div className="p-2 bg-white">
-                  {resolvedActive.isCorporateStock ? (
-                    <TradingViewWidget
-                      scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-symbol-profile.js"
-                      config={{
-                        width: '100%',
-                        height: 420,
-                        colorTheme: 'light',
-                        isTransparent: true,
-                        symbol: resolvedActive.fullSymbol,
-                        locale: 'en',
-                      }}
-                      height={420}
-                    />
-                  ) : (
-                    <div className="p-5 space-y-4 font-sans text-xs">
-                      <div className="flex justify-between items-center py-2.5 border-b border-zinc-100">
-                        <span className="text-zinc-500 font-medium">Exchange Venue</span>
-                        <span className="font-bold text-zinc-950 font-mono">{resolvedActive.exchange}</span>
-                      </div>
-                      <div className="flex justify-between items-center py-2.5 border-b border-zinc-100">
-                        <span className="text-zinc-500 font-medium">Asset Class</span>
-                        <span className="font-bold text-zinc-950 uppercase">{resolvedActive.assetType}</span>
-                      </div>
-                      <div className="flex justify-between items-center py-2.5 border-b border-zinc-100">
-                        <span className="text-zinc-500 font-medium">Trading Schedule</span>
-                        <span className="font-bold text-emerald-600">24/7 Real-Time Active</span>
-                      </div>
-                      <div className="flex justify-between items-center py-2.5 border-b border-zinc-100">
-                        <span className="text-zinc-500 font-medium">Data Stream Latency</span>
-                        <span className="font-bold text-emerald-600">0 ms Tick-by-Tick</span>
-                      </div>
-                      <div className="flex justify-between items-center py-2.5">
-                        <span className="text-zinc-500 font-medium">Full Ticker Symbol</span>
-                        <span className="font-mono font-semibold text-zinc-800">{resolvedActive.fullSymbol}</span>
-                      </div>
-                    </div>
-                  )}
+                  <TvCompanyProfile symbol={resolvedActive.fullSymbol} height={420} />
                 </div>
               </div>
             </div>
 
-            {/* Bottom Grid: Financials (left) & Vertical Multi-Symbol Area Chart (right) */}
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-              <div className="terminal-panel">
-                <div className="terminal-panel-head">
-                  <div>
-                    <h2 className="terminal-panel-title">
-                      {resolvedActive.isCorporateStock ? 'Financials' : 'Market Specifications'}
-                    </h2>
-                    <p className="terminal-panel-sub">
-                      {resolvedActive.isCorporateStock
-                        ? 'Income statement, balance sheet and ratios'
-                        : `${resolvedActive.cleanSymbol} contract parameters and liquidity info`}
-                    </p>
-                  </div>
-                </div>
-                <div className="p-2 bg-white">
-                  {resolvedActive.isCorporateStock ? (
-                    <TradingViewWidget
-                      scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-financials.js"
-                      config={{
-                        isTransparent: true,
-                        largeChartUrl: '',
-                        displayMode: 'regular',
-                        width: '100%',
-                        height: 520,
-                        colorTheme: 'light',
-                        symbol: resolvedActive.fullSymbol,
-                        locale: 'en',
-                      }}
-                      height={520}
-                    />
-                  ) : (
-                    <div className="p-6 space-y-5 font-sans">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="p-4 rounded-xl bg-zinc-50 border border-zinc-200/80">
-                          <span className="text-[11px] font-semibold text-zinc-500 uppercase">Contract Base</span>
-                          <p className="text-base font-bold text-zinc-950 font-mono mt-1">
-                            {resolvedActive.cleanSymbol.slice(0, 3)}
-                          </p>
-                        </div>
-                        <div className="p-4 rounded-xl bg-zinc-50 border border-zinc-200/80">
-                          <span className="text-[11px] font-semibold text-zinc-500 uppercase">Quote Currency</span>
-                          <p className="text-base font-bold text-zinc-950 font-mono mt-1">
-                            {resolvedActive.cleanSymbol.slice(3) || 'USD'}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="p-4 rounded-xl bg-emerald-50/50 border border-emerald-200/60">
-                        <span className="text-xs font-semibold text-emerald-800">Global Liquidity Feed</span>
-                        <p className="text-xs text-emerald-700 mt-1">
-                          Direct institutional market quotes streamed continuously from {resolvedActive.exchange}. Multi-timeframe execution analysis available in the Journal.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </div>
+            {/* Seasonal Chart Widget */}
+            <div className="terminal-panel">
+              <div className="p-2 bg-white">
+                <TvSeasonalChart symbol={resolvedActive.fullSymbol} height={420} />
               </div>
+            </div>
 
-              <div className="terminal-panel">
-                <div className="terminal-panel-head">
-                  <div>
-                    <h2 className="terminal-panel-title">Market Area Comparison</h2>
-                    <p className="terminal-panel-sub">Multi-symbol dynamic area chart</p>
-                  </div>
-                </div>
-                <div className="p-2 bg-white flex justify-center">
-                  <TradingViewWidget
-                    scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-symbol-overview.js"
-                    config={{
-                      symbols:
-                        resolvedActive.assetType === 'forex'
-                          ? [
-                              ['EUR/USD', 'FX:EURUSD|1D'],
-                              ['GBP/USD', 'FX:GBPUSD|1D'],
-                              ['USD/JPY', 'FX:USDJPY|1D'],
-                            ]
-                          : resolvedActive.assetType === 'crypto'
-                          ? [
-                              ['BTC/USD', 'BINANCE:BTCUSDT|1D'],
-                              ['ETH/USD', 'BINANCE:ETHUSDT|1D'],
-                              ['SOL/USD', 'BINANCE:SOLUSDT|1D'],
-                            ]
-                          : [
-                              [
-                                currentStockItem.name || resolvedActive.cleanSymbol,
-                                `${resolvedActive.fullSymbol}|1D`,
-                              ],
-                              ['NASDAQ:AMD|1D'],
-                              ['NASDAQ:MSFT|1D'],
-                            ],
-                      chartOnly: true,
-                      width: 320,
-                      height: 520,
-                      locale: 'en',
-                      colorTheme: 'light',
-                      autosize: false,
-                      showVolume: false,
-                      showMA: false,
-                      hideDateRanges: false,
-                      hideMarketStatus: false,
-                      hideSymbolLogo: false,
-                      scalePosition: 'left',
-                      scaleMode: 'Normal',
-                      fontFamily: 'Andale Mono, monospace',
-                      fontSize: '10',
-                      noTimeScale: false,
-                      valuesTracking: '1',
-                      changeMode: 'price-and-percent',
-                      chartType: 'area',
-                      maLineColor: '#2962FF',
-                      maLineWidth: 1,
-                      maLength: 9,
-                      lineWidth: 2,
-                      lineType: 0,
-                      dateRanges: [
-                        '1d|5',
-                      ],
-                      lineColor: 'rgba(41, 98, 255, 1)',
-                      topColor: 'rgba(41, 98, 255, 0.24)',
-                      bottomColor: 'rgba(209, 212, 220, 0.13)',
-                      dateFormat: 'MM/dd/yy',
-                      timeHoursFormat: '12-hours',
-                    }}
-                    height={520}
-                  />
-                </div>
+            {/* Financials Widget */}
+            <div className="terminal-panel">
+              <div className="p-2 bg-white">
+                <TradingViewWidget
+                  scriptUrl="https://s3.tradingview.com/external-embedding/embed-widget-financials.js"
+                  config={{
+                    isTransparent: true,
+                    largeChartUrl: '',
+                    displayMode: 'regular',
+                    width: '100%',
+                    height: 550,
+                    colorTheme: 'light',
+                    symbol: resolvedActive.fullSymbol,
+                    locale: 'en',
+                  }}
+                  height={550}
+                />
               </div>
             </div>
           </div>
-        )}
-
-        {/* ========================================================================= */}
-        {/* VIEW 5: TAURICRESEARCH TRADING AGENT PROFILE HUB                          */}
-        {/* ========================================================================= */}
-        {activeView === 'agent' && (
-          <AgentProfileHub
-            agentId={searchParams.get('agentId')}
-            projectId={projectId}
-            onOpenChat={(prompt) => {
-              if (prompt) {
-                useComposerPrefillStore.getState().setPrefill(projectId, prompt);
-              }
-              setActiveView('chat');
-            }}
-          />
         )}
       </div>
 
       {/* Global Search Dialog Modal (⌘K) */}
       <SearchCommand />
 
-      {/* Right-Side Bot Identity Editor Drawer (Image 1 & 3) */}
-      <BotEditDrawer
-        isOpen={!!editingAgent}
-        agent={editingAgent}
-        onClose={() => setEditingAgent(null)}
-        onSave={(updated) => {
-          setEditingAgent(null);
-        }}
-      />
+      {/* Create Group Modal */}
+      <Dialog open={showCreateGroupModal} onOpenChange={setShowCreateGroupModal}>
+        <DialogPopup className="sm:max-w-md p-6 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold text-foreground">Create Multi-Agent Group</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Select agents to combine into a collaborative trading swarm desk.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-3">
+            <div>
+              <label className="text-xs font-medium text-foreground block mb-1">Group Name</label>
+              <input
+                type="text"
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                placeholder="e.g. Alpha Momentum Swarm"
+                className="w-full px-3 py-2 text-xs rounded-lg border border-border bg-background text-foreground outline-none focus:border-zinc-950"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-foreground block mb-1">Select Agents</label>
+              <div className="max-h-48 overflow-y-auto space-y-1.5 p-1">
+                {tradingAgents.map((agent) => {
+                  const isChecked = newGroupAgentIds.includes(agent.id);
+                  return (
+                    <label
+                      key={agent.id}
+                      className={cn(
+                        'flex items-center justify-between p-2 rounded-lg border cursor-pointer transition-colors',
+                        isChecked ? 'border-zinc-950 bg-zinc-50 dark:bg-zinc-800/50' : 'border-border hover:bg-muted/50',
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        <BotAvatar shape={agent.shape} color={agent.color} expression={agent.expression} size={20} />
+                        <span className="text-xs font-medium text-foreground">{agent.name}</span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setNewGroupAgentIds((prev) => [...prev, agent.id]);
+                          } else {
+                            setNewGroupAgentIds((prev) => prev.filter((id) => id !== agent.id));
+                          }
+                        }}
+                        className="size-4 rounded text-zinc-950"
+                      />
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" size="sm" onClick={() => setShowCreateGroupModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              disabled={!newGroupName.trim() || newGroupAgentIds.length === 0}
+              onClick={() => {
+                setShowCreateGroupModal(false);
+              }}
+              className="bg-zinc-950 text-white hover:bg-zinc-800 cursor-pointer"
+            >
+              Create Group
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
     </div>
   );
 }
