@@ -32,14 +32,28 @@ export interface SwarmAgentRow {
   system_prompt: string | null;
 }
 
+let cachedAgentsList: SwarmAgentRow[] | null = null;
+let cachedAgentsExpiresAt = 0;
+
+export function invalidateAgentsCache(): void {
+  cachedAgentsList = null;
+  cachedAgentsExpiresAt = 0;
+}
+
 export async function listAgents(): Promise<SwarmAgentRow[]> {
+  const now = Date.now();
+  if (cachedAgentsList && now < cachedAgentsExpiresAt) {
+    return cachedAgentsList;
+  }
   const result = await db.execute(sql`
     select id, name, role, group_category, shape, color, expression,
            description, system_prompt
     from trading.agents
     order by case when is_admin then 0 else 1 end, id
   `);
-  return resultRows<SwarmAgentRow>(result);
+  cachedAgentsList = resultRows<SwarmAgentRow>(result);
+  cachedAgentsExpiresAt = now + 30000; // 30s ultra-fast in-memory cache
+  return cachedAgentsList;
 }
 
 /** Fenced-JSON parser: survives prose wrappers and code fences. */

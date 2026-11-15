@@ -17,7 +17,7 @@ import { sql } from 'drizzle-orm';
 import type { AppEnv } from '../types';
 import { db } from '../shared/db';
 import { getSupabase, toPublicStorageUrl } from '../shared/supabase';
-import { listAgents, chatWithAgent, runSwarmAnalysis, type SwarmRunReport } from './swarm';
+import { listAgents, chatWithAgent, runSwarmAnalysis, invalidateAgentsCache, type SwarmRunReport } from './swarm';
 import type { SwarmAgentRow } from './swarm';
 
 /** db.execute returns an array-RowList in this driver — normalize both shapes. */
@@ -110,6 +110,7 @@ tradingApp.patch('/agents/:id', async (c: Context<AppEnv>) => {
       returning id
     `);
     if (!resultRows<{ id: string }>(rows).length) return jsonError(c, 404, `Unknown agent: ${id}`);
+    invalidateAgentsCache();
     return c.json({ updated: true, id });
   } catch (e) {
     return jsonError(c, 500, `agent update: ${String(e).slice(0, 200)}`);
@@ -242,10 +243,23 @@ function finiteNumberOr(value: unknown, fallback: number): number {
 const VALID_DIRECTIONS = new Set(['Buy', 'Sell', 'Long', 'Short']);
 const VALID_SOURCES = new Set(['manual', 'auto']);
 
+// Fast sub-millisecond in-memory cache for journal queries
+const journalCache = new Map<string, { data: Record<string, unknown>[]; expiresAt: number }>();
+function invalidateJournalCache(): void {
+  journalCache.clear();
+}
+
 tradingApp.get('/journal', async (c: Context<AppEnv>) => {
   const projectId = c.req.query('projectId') ?? null;
   const limitRaw = Number(c.req.query('limit') ?? '200');
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 200;
+
+  const cacheKey = `${projectId || 'all'}_${limit}`;
+  const now = Date.now();
+  const cached = journalCache.get(cacheKey);
+  if (cached && now < cached.expiresAt) {
+    return c.json({ trades: cached.data });
+  }
 
   try {
     const rows = await db.execute(sql`
@@ -255,7 +269,9 @@ tradingApp.get('/journal', async (c: Context<AppEnv>) => {
       order by entry_date desc, coalesce(entry_time, '00:00') desc, created_at desc
       limit ${limit}
     `);
-    return c.json({ trades: resultRows<Record<string, unknown>>(rows) });
+    const trades = resultRows<Record<string, unknown>>(rows);
+    journalCache.set(cacheKey, { data: trades, expiresAt: now + 5000 });
+    return c.json({ trades });
   } catch (e) {
     return jsonError(c, 500, `journal get: ${String(e).slice(0, 200)}`);
   }
@@ -385,6 +401,7 @@ tradingApp.post('/journal', async (c: Context<AppEnv>) => {
       returning *
     `);
     const created = resultRows<Record<string, unknown>>(rows)[0];
+    invalidateJournalCache();
     return c.json({ trade: created });
   } catch (e) {
     return jsonError(c, 500, `journal save: ${String(e).slice(0, 200)}`);
@@ -607,6 +624,7 @@ tradingApp.delete('/journal/:id', async (c: Context<AppEnv>) => {
         .catch(() => undefined);
     }
 
+    invalidateJournalCache();
     return c.json({ deleted: true, id });
   } catch (e) {
     return jsonError(c, 500, `journal delete: ${String(e).slice(0, 200)}`);

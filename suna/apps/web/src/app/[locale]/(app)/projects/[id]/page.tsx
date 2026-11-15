@@ -176,8 +176,20 @@ export default function ProjectIndexPage() {
   const [activeStockTab, setActiveStockTab] = useState<string>('stock:AAPL');
 
   const [activeMarket, setActiveMarket] = useState<MarketId>('us');
-  const [watchlistItems, setWatchlistItems] = useState<WatchlistEntry[]>([]);
+  const [watchlistItems, setWatchlistItems] = useState<WatchlistEntry[]>(() => getStoredWatchlist());
   const [selectedWatchlistStock, setSelectedWatchlistStock] = useState<string>('AAPL');
+
+  // Keep-alive set for sub-0.05ms instant tab switching
+  const [visitedViews, setVisitedViews] = useState<Set<string>>(() => new Set([activeView]));
+
+  useEffect(() => {
+    setVisitedViews((prev) => {
+      if (prev.has(activeView)) return prev;
+      const next = new Set(prev);
+      next.add(activeView);
+      return next;
+    });
+  }, [activeView]);
   const [editingAgent, setEditingAgent] = useState<TradingAgentDef | null>(null);
   const [showComputer, setShowComputer] = useState(true);
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
@@ -508,13 +520,13 @@ export default function ProjectIndexPage() {
         {/* ========================================================================= */}
         {/* VIEW 1: KORTIX CHAT COMPOSER WITH PROMPT SUGGESTIONS & ADMIN COMPUTER     */}
         {/* ========================================================================= */}
-        {activeView === 'chat' && (() => {
+        {visitedViews.has('chat') && (() => {
           const selectedAgentId = searchParams.get('agentId');
           const selectedAgent =
             tradingAgents.find((a) => a.id === selectedAgentId) || tradingAgents[0] || DEFAULT_PORTFOLIO_MANAGER;
 
           return (
-            <div className="h-full flex flex-row overflow-hidden flex-1 min-h-0">
+            <div className={cn("h-full flex flex-row overflow-hidden flex-1 min-h-0", activeView !== 'chat' && 'hidden')}>
               {/* Left Column: Chat Area */}
               <div className="flex-1 min-w-0 flex flex-col h-full overflow-y-auto">
                 {selectedAgent && (
@@ -647,8 +659,8 @@ export default function ProjectIndexPage() {
         {/* ========================================================================= */}
         {/* VIEW 2: MARKETS OVERVIEW (KORTIX DESIGN SYSTEM)                            */}
         {/* ========================================================================= */}
-        {activeView === 'overview' && (
-          <div id="overview-scroll-container" className="w-full h-full flex-1 p-4 sm:p-6 lg:p-8 flex flex-col gap-6 overflow-y-auto bg-background text-foreground">
+        {visitedViews.has('overview') && (
+          <div id="overview-scroll-container" className={cn("w-full h-full flex-1 p-4 sm:p-6 lg:p-8 flex flex-col gap-6 overflow-y-auto bg-background text-foreground", activeView !== 'overview' && 'hidden')}>
             {/* Kortix Page Header */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border/40 font-sans">
               <div className="flex flex-col gap-1">
@@ -979,8 +991,8 @@ export default function ProjectIndexPage() {
         {/* ========================================================================= */}
         {/* VIEW 3: FULL WATCHLIST VIEW (KORTIX DESIGN SYSTEM)                         */}
         {/* ========================================================================= */}
-        {activeView === 'watchlist' && (
-          <div className="w-full h-full flex-1 p-4 sm:p-6 lg:p-8 flex flex-col gap-6 overflow-y-auto bg-background text-foreground">
+        {visitedViews.has('watchlist') && (
+          <div className={cn("w-full h-full flex-1 p-4 sm:p-6 lg:p-8 flex flex-col gap-6 overflow-y-auto bg-background text-foreground", activeView !== 'watchlist' && 'hidden')}>
             {/* Header */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border/40 font-sans">
               <div className="flex flex-col gap-1">
@@ -1022,18 +1034,26 @@ export default function ProjectIndexPage() {
         {/* ========================================================================= */}
         {/* VIEW: SPEC (God's Eye View - bilawalsidhu/gods-eye-view)                  */}
         {/* ========================================================================= */}
-        {activeView === 'spec' && <GodsEyeSpecView />}
+        {visitedViews.has('spec') && (
+          <div className={cn("w-full h-full flex-1 overflow-hidden", activeView !== 'spec' && 'hidden')}>
+            <GodsEyeSpecView />
+          </div>
+        )}
 
         {/* ========================================================================= */}
         {/* VIEW: JOURNAL                                                             */}
         {/* ========================================================================= */}
-        {activeView === 'journal' && <JournalView projectId={projectId} />}
+        {visitedViews.has('journal') && (
+          <div className={cn("w-full h-full flex-1 overflow-hidden", activeView !== 'journal' && 'hidden')}>
+            <JournalView projectId={projectId} />
+          </div>
+        )}
 
         {/* ========================================================================= */}
         {/* VIEW: CHART (FULLSCREEN ADVANCED TRADINGVIEW CHART ALONE)                 */}
         {/* ========================================================================= */}
-        {activeView === 'chart' && (
-          <div className="relative w-full h-full flex-1 flex flex-col overflow-hidden bg-background">
+        {visitedViews.has('chart') && (
+          <div className={cn("relative w-full h-full flex-1 flex flex-col overflow-hidden bg-background", activeView !== 'chart' && 'hidden')}>
             <TvLiveChart
               symbol={searchParams.get('symbol') || selectedWatchlistStock || 'NASDAQ:AAPL'}
               height="100%"

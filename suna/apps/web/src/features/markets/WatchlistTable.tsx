@@ -15,8 +15,8 @@ interface WatchlistTableProps {
   selectedSymbol?: string;
 }
 
-export default function WatchlistTable({ onSelectSymbol, selectedSymbol }: WatchlistTableProps) {
-  const [items, setItems] = useState<WatchlistEntry[]>([]);
+export const WatchlistTable = React.memo(function WatchlistTable({ onSelectSymbol, selectedSymbol }: WatchlistTableProps) {
+  const [items, setItems] = useState<WatchlistEntry[]>(() => getStoredWatchlist());
 
   useEffect(() => {
     setItems(getStoredWatchlist());
@@ -148,4 +148,6 @@ export default function WatchlistTable({ onSelectSymbol, selectedSymbol }: Watch
       )}
     </div>
   );
-}
+});
+
+export default WatchlistTable;

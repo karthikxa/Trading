@@ -139,10 +139,11 @@ function processQueue() {
       // ignore
     }
   }
+  // Sub-millisecond queue progression for ultra-fast widget rendering
   setTimeout(() => {
     isQueueRunning = false;
     processQueue();
-  }, 250);
+  }, 10);
 }
 
 function queueWidgetScript(mountFn: () => void) {

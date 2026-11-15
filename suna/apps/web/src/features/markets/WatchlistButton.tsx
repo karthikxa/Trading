@@ -15,15 +15,15 @@ interface WatchlistButtonProps {
   onWatchlistChange?: (symbol: string, added: boolean) => void;
 }
 
-export const WatchlistButton = ({
+export const WatchlistButton = React.memo(function WatchlistButton({
   symbol,
   name,
   exchange,
   variant = 'icon',
   className,
   onWatchlistChange,
-}: WatchlistButtonProps) => {
-  const [pinned, setPinned] = useState(false);
+}: WatchlistButtonProps) {
+  const [pinned, setPinned] = useState(() => isSymbolInWatchlist(symbol));
 
   useEffect(() => {
     setPinned(isSymbolInWatchlist(symbol));
@@ -83,6 +83,6 @@ export const WatchlistButton = ({
       />
     </button>
   );
-};
+});
 
 export default WatchlistButton;
