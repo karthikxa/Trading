@@ -171,14 +171,35 @@ export async function GET(req: Request) {
   let filtered = catalog;
 
   if (q) {
-    filtered = filtered.filter(
-      (item) =>
-        item.name.toLowerCase().includes(q) ||
-        item.slug.toLowerCase().includes(q) ||
-        item.description.toLowerCase().includes(q) ||
-        (item.domain || '').toLowerCase().includes(q) ||
-        item.categories.some((c) => c.toLowerCase().includes(q))
-    );
+    filtered = filtered
+      .filter(
+        (item) =>
+          item.name.toLowerCase().includes(q) ||
+          item.slug.toLowerCase().includes(q) ||
+          item.description.toLowerCase().includes(q) ||
+          (item.domain || '').toLowerCase().includes(q) ||
+          item.categories.some((c) => c.toLowerCase().includes(q))
+      )
+      .sort((a, b) => {
+        const aName = a.name.toLowerCase();
+        const bName = b.name.toLowerCase();
+        const aExact = aName === q || a.slug.toLowerCase() === q;
+        const bExact = bName === q || b.slug.toLowerCase() === q;
+        if (aExact && !bExact) return -1;
+        if (!aExact && bExact) return 1;
+
+        const aStarts = aName.startsWith(q) || a.slug.toLowerCase().startsWith(q);
+        const bStarts = bName.startsWith(q) || b.slug.toLowerCase().startsWith(q);
+        if (aStarts && !bStarts) return -1;
+        if (!aStarts && bStarts) return 1;
+
+        const aHas = aName.includes(q);
+        const bHas = bName.includes(q);
+        if (aHas && !bHas) return -1;
+        if (!aHas && bHas) return 1;
+
+        return (b.popularity || 0) - (a.popularity || 0);
+      });
   }
 
   if (category) {

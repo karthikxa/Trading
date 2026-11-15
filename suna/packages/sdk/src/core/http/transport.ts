@@ -1333,12 +1333,13 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
   }
 
   // Connect action: POST /connectors/projects/:id/connectors/:slug/connect
-  if ((url.includes('/connectors') || url.includes('/connections')) && (url.includes('/connect') || init?.method === 'POST')) {
+  if (init?.method === 'POST' && (url.endsWith('/connect') || url.includes('/connect?') || (url.includes('/connectors/') && url.includes('/connect')))) {
     try {
       const parsed = new URL(url, 'http://localhost:3000');
       const slugMatch = url.match(/\/connectors\/([^/?#]+)\/connect/);
       const slug = slugMatch ? slugMatch[1] : parsed.searchParams.get('slug') || 'app';
-      const res = await fetch('/api/connectors', {
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ slug }),
@@ -1371,7 +1372,8 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     try {
       const parsed = new URL(url, 'http://localhost:3000');
       const qs = parsed.searchParams.toString();
-      const res = await fetch(`/api/connectors?mode=toolkits&${qs}`);
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors?mode=toolkits&${qs}`);
       if (res.ok) {
         const data = await res.json();
         return new Response(JSON.stringify(data), {
@@ -1389,7 +1391,8 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     try {
       const parsed = new URL(url, 'http://localhost:3000');
       const qs = parsed.searchParams.toString();
-      const res = await fetch(`/api/connectors?mode=sections&${qs}`);
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors?mode=sections&${qs}`);
       if (res.ok) {
         const data = await res.json();
         return new Response(JSON.stringify(data), {
@@ -1407,7 +1410,8 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     try {
       const parsed = new URL(url, 'http://localhost:3000');
       const qs = parsed.searchParams.toString();
-      const res = await fetch(`/api/connectors?mode=discover&${qs}`);
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors?mode=discover&${qs}`);
       if (res.ok) {
         const data = await res.json();
         return new Response(JSON.stringify(data), {
@@ -1425,7 +1429,8 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
   if (singleConnectorMatch && singleConnectorMatch[1] !== 'sync' && singleConnectorMatch[1] !== 'connect') {
     const slug = singleConnectorMatch[1];
     try {
-      const res = await fetch(`/api/connectors?mode=detail&slug=${encodeURIComponent(slug)}`);
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors?mode=detail&slug=${encodeURIComponent(slug)}`);
       if (res.ok) {
         const data = await res.json();
         return new Response(JSON.stringify(data), {
@@ -1439,7 +1444,8 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
   // Active Connections: GET /projects/:id/connections
   if (url.includes('/connections')) {
     try {
-      const res = await fetch('/api/connectors?mode=connections');
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors?mode=connections`);
       if (res.ok) {
         const data = await res.json();
         return new Response(JSON.stringify(data), {
@@ -1457,7 +1463,8 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
   // Installed Connectors: GET /connectors/projects/:id/connectors
   if (url.includes('/connectors')) {
     try {
-      const res = await fetch('/api/connectors?mode=installed');
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors?mode=installed`);
       if (res.ok) {
         const data = await res.json();
         return new Response(JSON.stringify(data), {
@@ -2711,6 +2718,19 @@ export async function send(
     token = 'mock_access_token';
   }
 
+  const url = input instanceof Request ? input.url : String(input);
+
+  // Directly route all connectors, discover catalog, and toolkits to the 4200+ connectors engine
+  if (
+    url.includes('/discover') ||
+    url.includes('/connectors/projects') ||
+    url.includes('/connect/toolkits') ||
+    url.includes('/connect-status') ||
+    url.includes('/connections')
+  ) {
+    return await getMockBackendResponse(url, init, input);
+  }
+
   const canRetry =
     retryOnAuthError && !hasOneShotBody(init) && !hasHeader(callerHeaders(input, init), 'authorization');
   const retryInput = canRetry && input instanceof Request ? input.clone() : input;
@@ -2723,8 +2743,8 @@ export async function send(
     }
   }
 
-  if (!response.ok) {
-    const url = input instanceof Request ? input.url : String(input);
+  const isHtmlCatchall = response.headers.get('content-type')?.includes('text/html');
+  if (!response.ok || isHtmlCatchall) {
     if (
       url.includes('proj-trading') ||
       url.includes('/projects') ||
