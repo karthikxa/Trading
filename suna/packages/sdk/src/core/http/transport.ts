@@ -1325,239 +1325,158 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     return new Response(
       JSON.stringify({
         configured: true,
-        providers: ['composio'],
+        providers: ['composio', 'mcp', 'kortix'],
         provider: 'composio',
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
   }
 
+  // Connect action: POST /connectors/projects/:id/connectors/:slug/connect
+  if ((url.includes('/connectors') || url.includes('/connections')) && (url.includes('/connect') || init?.method === 'POST')) {
+    try {
+      const parsed = new URL(url, 'http://localhost:3000');
+      const slugMatch = url.match(/\/connectors\/([^/?#]+)\/connect/);
+      const slug = slugMatch ? slugMatch[1] : parsed.searchParams.get('slug') || 'app';
+      const res = await fetch('/api/connectors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch (e) {
+      console.warn('[Connectors] Connect API error:', e);
+    }
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        provider: 'composio',
+        status: 'active',
+        connectionId: `conn_${Date.now()}`,
+        requestId: `req_${Date.now()}`,
+        sessionId: `sess_${Date.now()}`,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  // 4000+ Composio Toolkits: GET /connectors/projects/:id/connect/toolkits
+  if (url.includes('/connect/toolkits')) {
+    try {
+      const parsed = new URL(url, 'http://localhost:3000');
+      const qs = parsed.searchParams.toString();
+      const res = await fetch(`/api/connectors?mode=toolkits&${qs}`);
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch (e) {
+      console.warn('[Connectors] Toolkits API error:', e);
+    }
+  }
+
+  // 4000+ Discover Sections: GET /connectors/projects/:id/discover/sections
   if (url.includes('/discover/sections') || (url.includes('/discover') && url.includes('sections'))) {
-    const apps = [
-      {
-        id: 'gmail',
-        slug: 'gmail',
-        name: 'Gmail',
-        description: 'Connect your Gmail to send, receive, search emails and summarize inbox threads via Composio.',
-        provider: 'composio',
-        category: 'Communication',
-        categories: ['Communication'],
-        icon: 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/gmail.png',
-        domain: 'mail.google.com',
-        kind: 'composio',
-        popularity: 1,
-        rank: 1,
-        variants: [{ id: 'gmail-oauth', kind: 'composio', name: 'Composio OAuth', oneClick: true }],
-      },
-      {
-        id: 'github',
-        slug: 'github',
-        name: 'GitHub',
-        description: 'Connect GitHub to create pull requests, read repository code, and trigger automated workflows.',
-        provider: 'composio',
-        category: 'Developer Tools',
-        categories: ['Developer Tools'],
-        icon: 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github.png',
-        domain: 'github.com',
-        kind: 'composio',
-        popularity: 2,
-        rank: 2,
-        variants: [{ id: 'github-oauth', kind: 'composio', name: 'Composio OAuth', oneClick: true }],
-      },
-      {
-        id: 'slack',
-        slug: 'slack',
-        name: 'Slack',
-        description: 'Connect Slack to send notifications, post market reports, and coordinate across team channels.',
-        provider: 'composio',
-        category: 'Communication',
-        categories: ['Communication'],
-        icon: 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/slack.png',
-        domain: 'slack.com',
-        kind: 'composio',
-        popularity: 3,
-        rank: 3,
-        variants: [{ id: 'slack-oauth', kind: 'composio', name: 'Composio OAuth', oneClick: true }],
-      },
-      {
-        id: 'google-drive',
-        slug: 'google-drive',
-        name: 'Google Drive',
-        description: 'Access research documents, spreadsheets, financial models, and workspace files.',
-        provider: 'composio',
-        category: 'Productivity',
-        categories: ['Productivity'],
-        icon: 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/google-drive.png',
-        domain: 'drive.google.com',
-        kind: 'composio',
-        popularity: 4,
-        rank: 4,
-        variants: [{ id: 'gdrive-oauth', kind: 'composio', name: 'Composio OAuth', oneClick: true }],
-      },
-      {
-        id: 'notion',
-        slug: 'notion',
-        name: 'Notion',
-        description: 'Sync investment memos, strategy wikis, and trading logs with your team workspace.',
-        provider: 'composio',
-        category: 'Productivity',
-        categories: ['Productivity'],
-        icon: 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/notion.png',
-        domain: 'notion.so',
-        kind: 'composio',
-        popularity: 5,
-        rank: 5,
-        variants: [{ id: 'notion-oauth', kind: 'composio', name: 'Composio OAuth', oneClick: true }],
-      },
-    ];
-    return new Response(
-      JSON.stringify({
-        popular: apps,
-        sections: [
-          {
-            key: 'popular',
-            label: 'Popular Apps',
-            total: apps.length,
-            items: apps,
-          },
-        ],
-        categories: [
-          { key: 'Communication', count: 2 },
-          { key: 'Developer Tools', count: 1 },
-          { key: 'Productivity', count: 2 },
-        ],
-      }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
-    );
+    try {
+      const parsed = new URL(url, 'http://localhost:3000');
+      const qs = parsed.searchParams.toString();
+      const res = await fetch(`/api/connectors?mode=sections&${qs}`);
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch (e) {
+      console.warn('[Connectors] Discover sections API error:', e);
+    }
   }
 
+  // 4000+ Discover Connectors (Search, Categories, Pagination): GET /connectors/projects/:id/discover
   if (url.includes('/discover')) {
-    const apps = [
-      {
-        id: 'gmail',
-        slug: 'gmail',
-        name: 'Gmail',
-        description: 'Connect your Gmail to send, receive, search emails and summarize inbox threads via Composio.',
-        provider: 'composio',
-        category: 'Communication',
-        categories: ['Communication'],
-        icon: 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/gmail.png',
-        domain: 'mail.google.com',
-        kind: 'composio',
-        popularity: 1,
-        rank: 1,
-        variants: [{ id: 'gmail-oauth', kind: 'composio', name: 'Composio OAuth', oneClick: true }],
-      },
-      {
-        id: 'github',
-        slug: 'github',
-        name: 'GitHub',
-        description: 'Connect GitHub to create pull requests, read repository code, and trigger automated workflows.',
-        provider: 'composio',
-        category: 'Developer Tools',
-        categories: ['Developer Tools'],
-        icon: 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/github.png',
-        domain: 'github.com',
-        kind: 'composio',
-        popularity: 2,
-        rank: 2,
-        variants: [{ id: 'github-oauth', kind: 'composio', name: 'Composio OAuth', oneClick: true }],
-      },
-      {
-        id: 'slack',
-        slug: 'slack',
-        name: 'Slack',
-        description: 'Connect Slack to send notifications, post market reports, and coordinate across team channels.',
-        provider: 'composio',
-        category: 'Communication',
-        categories: ['Communication'],
-        icon: 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/slack.png',
-        domain: 'slack.com',
-        kind: 'composio',
-        popularity: 3,
-        rank: 3,
-        variants: [{ id: 'slack-oauth', kind: 'composio', name: 'Composio OAuth', oneClick: true }],
-      },
-      {
-        id: 'google-drive',
-        slug: 'google-drive',
-        name: 'Google Drive',
-        description: 'Access research documents, spreadsheets, financial models, and workspace files.',
-        provider: 'composio',
-        category: 'Productivity',
-        categories: ['Productivity'],
-        icon: 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/google-drive.png',
-        domain: 'drive.google.com',
-        kind: 'composio',
-        popularity: 4,
-        rank: 4,
-        variants: [{ id: 'gdrive-oauth', kind: 'composio', name: 'Composio OAuth', oneClick: true }],
-      },
-      {
-        id: 'notion',
-        slug: 'notion',
-        name: 'Notion',
-        description: 'Sync investment memos, strategy wikis, and trading logs with your team workspace.',
-        provider: 'composio',
-        category: 'Productivity',
-        categories: ['Productivity'],
-        icon: 'https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/notion.png',
-        domain: 'notion.so',
-        kind: 'composio',
-        popularity: 5,
-        rank: 5,
-        variants: [{ id: 'notion-oauth', kind: 'composio', name: 'Composio OAuth', oneClick: true }],
-      },
-    ];
-    return new Response(
-      JSON.stringify({
-        items: apps,
-        total: apps.length,
-        hasMore: false,
-        nextCursor: null,
-      }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
-    );
+    try {
+      const parsed = new URL(url, 'http://localhost:3000');
+      const qs = parsed.searchParams.toString();
+      const res = await fetch(`/api/connectors?mode=discover&${qs}`);
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch (e) {
+      console.warn('[Connectors] Discover connectors API error:', e);
+    }
   }
 
+  // Connector Detail: GET /connectors/projects/:id/connectors/:slug
+  const singleConnectorMatch = url.match(/\/connectors\/projects\/[^/]+\/connectors\/([^/?#]+)$/);
+  if (singleConnectorMatch && singleConnectorMatch[1] !== 'sync' && singleConnectorMatch[1] !== 'connect') {
+    const slug = singleConnectorMatch[1];
+    try {
+      const res = await fetch(`/api/connectors?mode=detail&slug=${encodeURIComponent(slug)}`);
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch {}
+  }
+
+  // Active Connections: GET /projects/:id/connections
+  if (url.includes('/connections')) {
+    try {
+      const res = await fetch('/api/connectors?mode=connections');
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch {}
+    return new Response(JSON.stringify({ connections: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Installed Connectors: GET /connectors/projects/:id/connectors
   if (url.includes('/connectors')) {
+    try {
+      const res = await fetch('/api/connectors?mode=installed');
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch {}
     return new Response(
       JSON.stringify({
         connectors: [
-          {
-            slug: 'gmail',
-            name: 'Gmail',
-            description: 'Connect your Gmail to send, receive, search emails and summarize inbox threads via Composio.',
-            provider: 'composio',
-            status: 'active',
-            actions: [
-              { name: 'send_email', description: 'Send an email' },
-              { name: 'read_threads', description: 'Read email threads' },
-            ],
-          },
-          {
-            slug: 'github',
-            name: 'GitHub',
-            description: 'Connect GitHub to create pull requests, read repository code, and trigger automated workflows.',
-            provider: 'composio',
-            status: 'active',
-            actions: [
-              { name: 'create_pr', description: 'Create a pull request' },
-              { name: 'get_repo', description: 'Get repository details' },
-            ],
-          },
-          {
-            slug: 'slack',
-            name: 'Slack',
-            description: 'Connect Slack to send notifications, post market reports, and coordinate across team channels.',
-            provider: 'composio',
-            status: 'active',
-            actions: [
-              { name: 'send_message', description: 'Post a Slack message' },
-            ],
-          },
+          { slug: 'gmail', name: 'Gmail', provider: 'composio', status: 'active', credentialMode: 'shared' },
+          { slug: 'github', name: 'GitHub', provider: 'composio', status: 'active', credentialMode: 'shared' },
+          { slug: 'slack', name: 'Slack', provider: 'composio', status: 'active', credentialMode: 'shared' },
+          { slug: 'tradingview', name: 'TradingView', provider: 'kortix', status: 'active', credentialMode: 'shared' },
+          { slug: 'alpaca', name: 'Alpaca Brokerage', provider: 'kortix', status: 'active', credentialMode: 'shared' },
+          { slug: 'binance', name: 'Binance Exchange', provider: 'kortix', status: 'active', credentialMode: 'shared' },
         ],
-        total: 3,
+        total: 6,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
@@ -1565,13 +1484,6 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
 
   if (url.includes('/connector-moves')) {
     return new Response(JSON.stringify({ moves: [] }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  if (url.includes('/connections')) {
-    return new Response(JSON.stringify([]), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -2832,6 +2744,7 @@ export async function send(
       url.includes('/llm-catalog') ||
       url.includes('/connectors') ||
       url.includes('/discover') ||
+      url.includes('/toolkits') ||
       url.includes('/connections') ||
       url.includes('/files') ||
       url.includes('/branches') ||
