@@ -157,6 +157,8 @@ const useTradingViewWidget = (
   lazy: boolean = false,
 ) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const lastMountedConfigRef = useRef<string>('');
+  const lastScriptUrlRef = useRef<string>('');
   const serializedConfig = JSON.stringify(config);
   const [inView, setInView] = useState(!lazy);
 
@@ -189,14 +191,19 @@ const useTradingViewWidget = (
     const container = containerRef.current;
     if (!container || typeof window === 'undefined') return;
 
-    const existingScript = container.querySelector('script');
+    // If already mounted with the exact same config and script URL, NEVER wipe or remount.
+    // TradingView embeds dynamically manage iframes and internal scripts. Wiping
+    // container.innerHTML on regular component re-renders causes white-flash flickering.
     if (
-      existingScript &&
-      existingScript.src === scriptUrl &&
-      (existingScript.textContent === serializedConfig || existingScript.innerHTML === serializedConfig)
+      lastMountedConfigRef.current === serializedConfig &&
+      lastScriptUrlRef.current === scriptUrl &&
+      container.children.length > 0
     ) {
       return;
     }
+
+    lastMountedConfigRef.current = serializedConfig;
+    lastScriptUrlRef.current = scriptUrl;
 
     container.innerHTML = '';
 

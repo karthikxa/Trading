@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -62,6 +62,14 @@ export function copyViewerWasm() {
     const src = resolve(asset.from);
     const out = resolve(asset.to);
     mkdirSync(dirname(out), { recursive: true });
+    if (existsSync(out) && existsSync(src)) {
+      try {
+        if (statSync(src).size === statSync(out).size) {
+          copied.push({ from: asset.from, to: asset.to, src, out });
+          continue;
+        }
+      } catch {}
+    }
     copyFileSync(src, out);
     copied.push({ from: asset.from, to: asset.to, src, out });
   }

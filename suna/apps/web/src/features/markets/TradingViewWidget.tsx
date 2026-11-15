@@ -1,6 +1,6 @@
 'use client';
 
-import React, { memo, useState, useEffect } from 'react';
+import React, { memo, useState, useEffect, useMemo } from 'react';
 import useTradingViewWidget from './useTradingViewWidget';
 import { cn } from '@kortix/ui';
 import { ArrowsOut, ArrowsIn } from '@phosphor-icons/react';
@@ -38,12 +38,12 @@ const TradingViewWidget = ({
   const isAdvancedChart = scriptUrl.includes('advanced-chart');
   const shouldLazy = lazy !== undefined ? lazy : !isAdvancedChart;
 
-  const widgetConfig = {
+  const widgetConfig = useMemo(() => ({
     ...config,
     width: '100%',
     height: isAdvancedChart ? (isExpanded ? '100%' : height) : height,
     ...(isAdvancedChart ? { autosize: true } : {}),
-  };
+  }), [config, isAdvancedChart, isExpanded, height]);
 
   const containerRef = useTradingViewWidget(scriptUrl, widgetConfig, shouldLazy);
 

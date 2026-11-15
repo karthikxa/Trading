@@ -42,6 +42,8 @@ export default function TvLiveChart({
   onExpand,
 }: TvLiveChartProps) {
   const chartWrapperRef = useRef<HTMLDivElement>(null);
+  const lastMountedSymbolRef = useRef<string>('');
+  const lastMountedThemeRef = useRef<string>('');
   const rawId = useId().replace(/[^a-zA-Z0-9]/g, '_');
   const containerId = `tv_chart_${rawId}`;
   const detailsRef = useRef(details);
@@ -68,6 +70,17 @@ export default function TvLiveChart({
 
   useEffect(() => {
     if (!chartWrapperRef.current || typeof window === 'undefined') return;
+
+    if (
+      lastMountedSymbolRef.current === symbol &&
+      lastMountedThemeRef.current === theme &&
+      chartWrapperRef.current.children.length > 0
+    ) {
+      return;
+    }
+
+    lastMountedSymbolRef.current = symbol;
+    lastMountedThemeRef.current = theme;
 
     const container = chartWrapperRef.current;
     container.innerHTML = `<div id="${containerId}" style="width:100%;height:100%;"></div>`;

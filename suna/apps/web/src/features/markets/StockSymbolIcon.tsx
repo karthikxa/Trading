@@ -97,6 +97,8 @@ const TRADINGVIEW_KNOWN_LOGOS: Record<string, string> = {
   UBER: 'https://s3-symbol-logo.tradingview.com/uber.svg',
 };
 
+const FAILED_LOGO_URLS = new Set<string>();
+
 export const StockSymbolIcon = React.memo(function StockSymbolIcon({
   symbol,
   type,
@@ -104,8 +106,16 @@ export const StockSymbolIcon = React.memo(function StockSymbolIcon({
   size = 'md',
   className,
 }: StockSymbolIconProps) {
-  const [imageError, setImageError] = useState(false);
   const cleanSym = symbol.toUpperCase().replace(/^.*:/, '').trim();
+
+  // 1. Prioritize authentic real TradingView SVG CDN logo for verified visual accuracy
+  const directLogoUrl = logoid
+    ? `https://s3-symbol-logo.tradingview.com/${logoid}.svg`
+    : TRADINGVIEW_KNOWN_LOGOS[cleanSym];
+
+  const [imageError, setImageError] = useState(() => {
+    return directLogoUrl ? FAILED_LOGO_URLS.has(directLogoUrl) : false;
+  });
 
   const sizeClasses = {
     xs: 'size-4 text-[9px]',
@@ -114,12 +124,7 @@ export const StockSymbolIcon = React.memo(function StockSymbolIcon({
     lg: 'size-10 text-sm',
   }[size];
 
-  // 1. Prioritize authentic real TradingView SVG CDN logo for verified visual accuracy
-  const directLogoUrl = logoid
-    ? `https://s3-symbol-logo.tradingview.com/${logoid}.svg`
-    : TRADINGVIEW_KNOWN_LOGOS[cleanSym];
-
-  if (directLogoUrl && !imageError) {
+  if (directLogoUrl && !imageError && !FAILED_LOGO_URLS.has(directLogoUrl)) {
     return (
       <div
         className={cn(
@@ -132,7 +137,10 @@ export const StockSymbolIcon = React.memo(function StockSymbolIcon({
           src={directLogoUrl}
           alt={cleanSym}
           className="size-full object-contain p-0.5"
-          onError={() => setImageError(true)}
+          onError={() => {
+            FAILED_LOGO_URLS.add(directLogoUrl);
+            setImageError(true);
+          }}
           loading="eager"
           decoding="async"
         />

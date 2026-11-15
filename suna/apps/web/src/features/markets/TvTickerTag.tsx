@@ -18,9 +18,15 @@ declare global {
 
 export default function TvTickerTag({ symbol, className }: TvTickerTagProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const lastMountedSymbolRef = useRef<string>('');
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+
+    if (lastMountedSymbolRef.current === symbol && containerRef.current && containerRef.current.children.length > 0) {
+      return;
+    }
+    lastMountedSymbolRef.current = symbol;
 
     const scriptSrc = 'https://widgets.tradingview-widget.com/w/en/tv-ticker-tag.js';
     let script = document.querySelector(`script[src="${scriptSrc}"]`) as HTMLScriptElement;
