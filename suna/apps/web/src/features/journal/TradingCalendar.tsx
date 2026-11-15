@@ -162,12 +162,6 @@ export const TradingCalendar = React.memo(function TradingCalendar({
 
     return cells;
   }, [currentYear, currentMonth]);
-      cellId: `next-${dateStr}`,
-      dateStr,
-      dayNumber: d,
-      isCurrentMonth: false,
-    });
-  }
 
   const weekHeaders = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
