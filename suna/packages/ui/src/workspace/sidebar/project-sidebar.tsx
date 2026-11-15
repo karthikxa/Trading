@@ -135,7 +135,7 @@ export function ProjectSidebar({
       currentTab === 'chart'
     ) {
       setSidebarView('main');
-    } else if (currentTab === 'chat' || currentTab === 'agent' || !currentTab) {
+    } else if (currentTab === 'chat' || currentTab === 'agent') {
       setSidebarView('agents');
     }
   }, [currentTab]);

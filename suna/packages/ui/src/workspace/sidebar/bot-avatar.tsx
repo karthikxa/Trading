@@ -40,7 +40,7 @@ export interface BotAvatarProps {
   isSpeaking?: boolean;
 }
 
-export function BotAvatar({
+function BotAvatarInner({
   shape = 'circle',
   color = '#2563EB',
   expression = 'attentive',
@@ -50,7 +50,7 @@ export function BotAvatar({
   isSpeaking = false,
 }: BotAvatarProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [gaze, setGaze] = useState({ x: 0, y: 0 });
+  const eyesGazeRef = useRef<SVGGElement>(null);
   const [isBlinking, setIsBlinking] = useState(false);
 
   // Shape-specific bounds and vertical offsets to keep eyes perfectly centered and inside the silhouette
@@ -68,6 +68,7 @@ export function BotAvatar({
   const currentShapeOffset = shapeOffsets[shape] || { offsetY: 0, maxGaze: 7 };
 
   // 360-degree continuous circular gaze tracking with angle & distance
+  // Directly transforms DOM via ref to eliminate 60 FPS React re-renders and SVG clipPath flickering
   useEffect(() => {
     if (!isAnimated) return;
 
@@ -82,10 +83,12 @@ export function BotAvatar({
       if (rafId) return;
       rafId = requestAnimationFrame(() => {
         rafId = null;
-        if (!cachedRect && containerRef.current) {
+        if (!containerRef.current || !eyesGazeRef.current) return;
+        if (!cachedRect) {
           cachedRect = containerRef.current.getBoundingClientRect();
         }
-        if (!cachedRect) return;
+        if (!cachedRect || cachedRect.width === 0) return;
+
         const centerX = cachedRect.left + cachedRect.width / 2;
         const centerY = cachedRect.top + cachedRect.height / 2;
         const dx = e.clientX - centerX;
@@ -98,10 +101,10 @@ export function BotAvatar({
         const maxDist = currentShapeOffset.maxGaze;
         const r = Math.min(distance / 70, 1) * maxDist;
 
-        setGaze({
-          x: Math.cos(angle) * r,
-          y: Math.sin(angle) * (r * 0.85),
-        });
+        const gx = Math.cos(angle) * r;
+        const gy = Math.sin(angle) * (r * 0.85);
+
+        eyesGazeRef.current.style.transform = `translate3d(${gx.toFixed(2)}px, ${gy.toFixed(2)}px, 0)`;
       });
     };
 
@@ -123,7 +126,7 @@ export function BotAvatar({
 
     let blinkTimeout: NodeJS.Timeout;
     const scheduleNextBlink = () => {
-      const delay = 2500 + Math.random() * 3000; // blink every 2.5s - 5.5s
+      const delay = 3500 + Math.random() * 4000; // blink every 3.5s - 7.5s
       blinkTimeout = setTimeout(() => {
         setIsBlinking(true);
         setTimeout(() => {
@@ -359,9 +362,11 @@ export function BotAvatar({
         <g clipPath={`url(#${clipId})`}>
           <g transform={`translate(0, ${currentShapeOffset.offsetY})`}>
             <g
+              ref={eyesGazeRef}
               style={{
-                transform: `translate3d(${gaze.x}px, ${gaze.y}px, 0)`,
-                transition: 'transform 0.02s linear',
+                transform: 'translate3d(0px, 0px, 0)',
+                transition: 'transform 0.04s ease-out',
+                willChange: 'transform',
               }}
             >
               {renderEyes()}
@@ -372,3 +377,5 @@ export function BotAvatar({
     </div>
   );
 }
+
+export const BotAvatar = React.memo(BotAvatarInner);

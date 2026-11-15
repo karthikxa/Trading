@@ -139,45 +139,45 @@ export function AgentSelector({
 
   // Sync with URL query parameter & custom event
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const sp = new URLSearchParams(window.location.search);
-      const urlAgent = sp.get('agentId');
-      const urlGroup = sp.get('groupId');
-      if (urlGroup) {
-        const grp = dynamicGroups.find((g) => g.id === urlGroup);
-        if (grp) {
-          setSelectedGroup(grp);
-        }
-      } else if (urlAgent) {
-        setSelectedBotId(urlAgent);
+    if (typeof window === 'undefined') return;
+
+    const sp = new URLSearchParams(window.location.search);
+    const urlAgent = sp.get('agentId');
+    const urlGroup = sp.get('groupId');
+    if (urlGroup) {
+      const grp = dynamicGroups.find((g) => g.id === urlGroup);
+      if (grp) {
+        setSelectedGroup(grp);
+      }
+    } else if (urlAgent) {
+      setSelectedBotId(urlAgent);
+      setSelectedGroup(null);
+    }
+
+    const handleSwarmSelect = (e: any) => {
+      const custom = e as CustomEvent;
+      if (custom.detail?.isGroup) {
+        setSelectedGroup(custom.detail);
+      } else if (custom.detail?.id) {
+        setSelectedBotId(custom.detail.id);
         setSelectedGroup(null);
       }
+    };
 
-      const handleSwarmSelect = (e: any) => {
-        const custom = e as CustomEvent;
-        if (custom.detail?.isGroup) {
-          setSelectedGroup(custom.detail);
-        } else if (custom.detail?.id) {
-          setSelectedBotId(custom.detail.id);
-          setSelectedGroup(null);
-        }
-      };
+    const handleGroupsUpdate = (e: any) => {
+      const custom = e as CustomEvent;
+      if (Array.isArray(custom.detail)) {
+        setDynamicGroups(custom.detail);
+      }
+    };
 
-      const handleGroupsUpdate = (e: any) => {
-        const custom = e as CustomEvent;
-        if (Array.isArray(custom.detail)) {
-          setDynamicGroups(custom.detail);
-        }
-      };
-
-      window.addEventListener('selected-swarm-agent', handleSwarmSelect);
-      window.addEventListener('tauric-groups-updated', handleGroupsUpdate);
-      return () => {
-        window.removeEventListener('selected-swarm-agent', handleSwarmSelect);
-        window.removeEventListener('tauric-groups-updated', handleGroupsUpdate);
-      };
-    }
-  }, [dynamicGroups]);
+    window.addEventListener('selected-swarm-agent', handleSwarmSelect);
+    window.addEventListener('tauric-groups-updated', handleGroupsUpdate);
+    return () => {
+      window.removeEventListener('selected-swarm-agent', handleSwarmSelect);
+      window.removeEventListener('tauric-groups-updated', handleGroupsUpdate);
+    };
+  }, []);
 
   const DEFAULT_SWARM_LEAD: TradingAgentDef = {
     id: 'portfolio_manager',
@@ -277,7 +277,7 @@ export function AgentSelector({
     ? selectedGroup.name || selectedGroup.label || 'Offsite crew'
     : null;
   const currentDisplayName =
-    groupDisplayName || (isAll ? '@all (All Agents)' : activeSwarmBot.name);
+    groupDisplayName || (isAll ? '@all (All Agents)' : formatCleanAgentName(activeSwarmBot.name));
 
   if (disabled) {
     return (
@@ -375,7 +375,7 @@ export function AgentSelector({
                     )}
                     <div className="flex flex-col min-w-0 flex-1">
                       <span className="text-sm font-medium text-zinc-900 dark:text-zinc-100 leading-tight font-sans tracking-normal">
-                        {item.label || item.name}
+                        {formatCleanAgentName(item.label || item.name)}
                       </span>
                       <span className="text-xs text-zinc-400 dark:text-zinc-500 truncate mt-0.5 font-sans">
                         {item.role}

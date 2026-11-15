@@ -557,11 +557,23 @@ export const BOT_PERSONAS: Record<
   },
 };
 
+export function normalizeAgentKey(key?: string | null): string {
+  if (!key) return 'portfolio_manager';
+  const clean = key.toLowerCase().trim().replace(/[\s-]+/g, '_');
+  if (BOT_PERSONAS[clean]) return clean;
+  for (const [id, bot] of Object.entries(BOT_PERSONAS)) {
+    if (bot.name.toLowerCase() === key.toLowerCase() || id === clean) {
+      return id;
+    }
+  }
+  return 'portfolio_manager';
+}
+
 function createInitialSession(sessionId: string, preferredAgent?: string): MockSessionRecord {
   const userMsgId = 'msg-welcome-u1';
   const asstMsgId = 'msg-welcome-a1';
   const now = new Date().toISOString();
-  const agentKey = (preferredAgent || 'portfolio_manager').toLowerCase();
+  const agentKey = normalizeAgentKey(preferredAgent);
   const bot = BOT_PERSONAS[agentKey] || BOT_PERSONAS['portfolio_manager'];
 
   return {
@@ -946,9 +958,16 @@ const PROVIDER_CONFIGS: Record<string, {
   },
 };
 
-function generateDynamicTradingAnalysis(promptText: string, modelDisplayName: string): string {
+function generateDynamicTradingAnalysis(promptText: string, modelDisplayName: string, agentId?: string): string {
+  const normKey = normalizeAgentKey(agentId);
+  const bot = BOT_PERSONAS[normKey] || BOT_PERSONAS['portfolio_manager'];
   const q = promptText.trim();
   const lower = q.toLowerCase();
+
+  // Natural conversational greetings
+  if (lower === 'hi' || lower === 'hello' || lower === 'hey' || lower === 'good' || lower === 'good morning' || lower === 'good afternoon') {
+    return `Hello! I am **${bot.name}** on Tauric Trading Desk, powered by **Zed**.\n\nI am ready to assist with your trading desk operations, market analysis, and risk management. What setups, tickers, or strategies are you tracking today?`;
+  }
 
   const tickerMatch = q.match(/\b([A-Z]{2,6}(?::[A-Z0-9]+)?)\b/g);
   const skipWords = new Set(['WHAT', 'HOW', 'WHY', 'WHEN', 'WHICH', 'WHERE', 'SHOW', 'TELL', 'GIVE', 'MAKE', 'HELP', 'CALL', 'USER', 'WITH', 'FROM', 'THIS', 'THAT', 'THE', 'AND', 'FOR', 'NOT', 'YES', 'NO', 'CAN', 'COULD', 'WILL', 'WOULD']);
@@ -960,7 +979,7 @@ function generateDynamicTradingAnalysis(promptText: string, modelDisplayName: st
   const isLevels = lower.includes('support') || lower.includes('resistance') || lower.includes('level') || lower.includes('target') || lower.includes('trend');
 
   const sections: string[] = [];
-  sections.push(`### Analysis: ${primaryTicker}\n*Synthesized via **${modelDisplayName}** on FreeLLMAPI Smart Router*\n`);
+  sections.push(`### Analysis: ${primaryTicker}\n*Synthesized via **${bot.name}** powered by **${modelDisplayName}** on FreeLLMAPI Smart Router*\n`);
 
   if (isTechnical || isLevels) {
     sections.push(`#### 1. Key Technical Structures & Indicators
@@ -994,7 +1013,7 @@ async function fetchRealLlmCompletion(
   const mDef = FREE_LLM_MODELS[modelId];
   const provider = mDef?.provider || 'zed';
   const modelDisplayName = mDef?.name || modelId || 'zed';
-  const agentKey = (agentId || 'portfolio_manager').toLowerCase();
+  const agentKey = normalizeAgentKey(agentId);
   const bot = BOT_PERSONAS[agentKey] || BOT_PERSONAS['portfolio_manager'];
   const systemPrompt = bot.systemPrompt;
 
@@ -1020,7 +1039,7 @@ async function fetchRealLlmCompletion(
         ],
         max_tokens: 1500,
       }),
-      signal: AbortSignal.timeout(90000),
+      signal: AbortSignal.timeout(15000),
     });
 
     if (renderRes.ok) {
@@ -1277,18 +1296,18 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
           name: 'Trading Assistant',
           default_agent: 'portfolio_manager',
           agents: [
-            { name: 'portfolio_manager', role: 'Chief of Staff', description: 'Capital Allocation & Swarm Lead' },
-            { name: 'ea', role: 'EA', description: 'Executive & Workflow Automation' },
-            { name: 'fundamentals_analyst', role: 'Inbox Manager', description: 'Financials & Intrinsic Value' },
-            { name: 'technical_analyst', role: 'Sales Outbound', description: 'Technicals & Price Momentum' },
-            { name: 'news_analyst', role: 'Talent Scout', description: 'Global Wire & Headlines' },
-            { name: 'sentiment_analyst', role: 'Customer Support', description: 'Social & Institutional Flow' },
-            { name: 'growth_analyst', role: 'Growth Marketer', description: 'Growth Catalyst Identification' },
-            { name: 'macro_analyst', role: 'Marketing Lead', description: 'Macroeconomic & Rates Regime' },
-            { name: 'bull_researcher', role: 'Billing Support', description: 'Bullish Thesis & Upside Catalysts' },
-            { name: 'bear_researcher', role: 'Designer', description: 'Downside Risk & Short Arguments' },
-            { name: 'risk_manager', role: 'Sales Inbound', description: 'Drawdown & Volatility Guard' },
-            { name: 'trader_agent', role: 'Product Manager', description: 'Order Routing & Execution Desk' },
+            { id: 'portfolio_manager', name: 'Portfolio Manager', role: 'Capital Allocation & Swarm Lead', description: 'Capital Allocation & Swarm Lead' },
+            { id: 'ea', name: 'EA', role: 'Executive & Workflow Automation', description: 'Executive & Workflow Automation' },
+            { id: 'fundamentals_analyst', name: 'Fundamentals Analyst', role: 'Financials & Intrinsic Value', description: 'Financials & Intrinsic Value' },
+            { id: 'technical_analyst', name: 'Technical Analyst', role: 'Technicals & Price Momentum', description: 'Technicals & Price Momentum' },
+            { id: 'news_analyst', name: 'News Analyst', role: 'Global Wire & Headlines', description: 'Global Wire & Headlines' },
+            { id: 'sentiment_analyst', name: 'Sentiment Analyst', role: 'Social & Institutional Flow', description: 'Social & Institutional Flow' },
+            { id: 'growth_analyst', name: 'Growth Analyst', role: 'Growth Catalyst Identification', description: 'Growth Catalyst Identification' },
+            { id: 'macro_analyst', name: 'Macro Analyst', role: 'Macroeconomic & Rates Regime', description: 'Macroeconomic & Rates Regime' },
+            { id: 'bull_researcher', name: 'Bull Researcher', role: 'Bullish Thesis & Upside Catalysts', description: 'Bullish Thesis & Upside Catalysts' },
+            { id: 'bear_researcher', name: 'Bear Researcher', role: 'Downside Risk & Short Arguments', description: 'Downside Risk & Short Arguments' },
+            { id: 'risk_manager', name: 'Risk Manager', role: 'Drawdown & Volatility Guard', description: 'Drawdown & Volatility Guard' },
+            { id: 'trader_agent', name: 'Trader Agent', role: 'Order Routing & Execution Desk', description: 'Order Routing & Execution Desk' },
           ],
           skills: [],
           commands: [],
@@ -1868,7 +1887,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         console.error('[Render-LLM] Error fetching follow-up completion:', e);
       }
       if (!reply || !reply.trim()) {
-        reply = generateDynamicTradingAnalysis(promptText, 'zed');
+        reply = generateDynamicTradingAnalysis(promptText, 'zed', agentId);
       }
 
       // Add assistant reply to session with explicit reply_to so transcript links it to the user turn!
@@ -2336,7 +2355,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
           console.error('[Render-LLM] Error fetching completion:', e);
         }
         if (!reply || !reply.trim()) {
-          reply = generateDynamicTradingAnalysis(promptText, 'zed');
+          reply = generateDynamicTradingAnalysis(promptText, 'zed', agentId);
         }
 
         // Add assistant reply to session with explicit reply_to

@@ -402,6 +402,7 @@ export function ModelSelector({
   models,
   selectedModel,
   onSelect,
+  providers,
   defaultControls,
   unsetLabel,
   disabled = false,
@@ -467,21 +468,38 @@ export function ModelSelector({
     !projectId || caps[PROJECT_ACTIONS.PROJECT_MODEL_WRITE]?.allowed === true;
   const rowDefaultControls = canManageModels ? defaultControls : undefined;
 
+  // Ensure zed model is always present in the pool
+  const effectiveModels = useMemo<FlatModel[]>(() => {
+    const list = Array.isArray(models) ? [...models] : [];
+    if (!list.some((m) => m.modelID === 'zed')) {
+      list.unshift({
+        id: 'zed',
+        modelID: 'zed',
+        providerID: 'kortix',
+        modelName: 'zed',
+        providerName: 'zed',
+        available: true,
+        enabled: true,
+      } as FlatModel);
+    }
+    return list;
+  }, [models]);
+
   const availableSelectedModel = entitlementsPending
     ? selectedModel
     : resolveAvailableSelectedModel(selectedModel, isSelectableModel);
   const effectiveSelectedModel =
     availableSelectedModel ||
-    models.find((m) => m.modelID === 'zed') ||
-    models[0] ||
+    effectiveModels.find((m) => m.modelID === 'zed') ||
+    effectiveModels[0] ||
     null;
-  const current = models.find(
+  const current = effectiveModels.find(
     (m) =>
       (m.providerID === (availableSelectedModel?.providerID ?? effectiveSelectedModel?.providerID) ||
         m.modelID === (availableSelectedModel?.modelID ?? effectiveSelectedModel?.modelID)) &&
       m.modelID === (availableSelectedModel?.modelID ?? effectiveSelectedModel?.modelID),
   );
-  const displayName = current?.modelName || (models.some((m) => m.modelID === 'zed') ? 'zed' : unsetLabel || t('noModel'));
+  const displayName = current?.modelName || (effectiveModels.some((m) => m.modelID === 'zed') ? 'zed' : unsetLabel || t('noModel'));
 
   useEffect(() => {
     if (!open) {
@@ -493,40 +511,46 @@ export function ModelSelector({
     }
   }, [open]);
 
-  // The store's visibility rule (newest per family + flagships + user pins)
-  // curates the NO-SEARCH view for native providers — the client twin of the
-  // `enabled` stamping `/model-picker` gives gateway catalogs. See
-  // modelInDefaultView.
-  const pickerModelStore = useModelStore(models);
+  // Curates the picker view: strictly show connected models with zed as default
   const visibleModels = useMemo(() => {
     const q = search.toLowerCase();
-    return models
-      .filter(
-        (m) =>
+    
+    // Connected providers from providers prop
+    const connectedProviderIds = new Set(
+      providers?.providers?.filter((p) => p.connected).map((p) => p.id) ?? []
+    );
+
+    return effectiveModels
+      .filter((m) => {
+        // zed is our custom autonomous model — always connected
+        if (m.modelID === 'zed') return true;
+
+        // Only include if provider is explicitly connected by user
+        const isConnected =
+          (m as any).connected === true ||
+          connectedProviderIds.has(m.providerID) ||
+          connectedProviderIds.has((m as any).provider);
+
+        if (!isConnected) return false;
+
+        return (
           m.enabled !== false &&
           m.available !== false &&
-          // Claude subscription models appear once the member signed in to Claude
-          // (Customize → Models → Anthropic), like ChatGPT subscription models.
-          !(isClaudeSubscriptionModel(m) && m.available === false) &&
           (!q ||
             (m.modelName || '').toLowerCase().includes(q) ||
             (m.modelID || '').toLowerCase().includes(q) ||
-            (m.providerName || '').toLowerCase().includes(q)) &&
-          modelInDefaultView(m, {
-            search,
-            isStoreVisible: pickerModelStore.isVisible,
-            selected: selectedModel ?? (models.find((cand) => cand.modelID === 'zed') ? { providerID: 'kortix', modelID: 'zed' } : null),
-          }),
-      )
+            (m.providerName || '').toLowerCase().includes(q))
+        );
+      })
       .sort((a, b) => (a.modelID === 'zed' ? -1 : b.modelID === 'zed' ? 1 : a.modelName.localeCompare(b.modelName)));
-  }, [models, search, pickerModelStore.isVisible, selectedModel]);
+  }, [effectiveModels, providers, search]);
 
   /** Is there anything to pick AT ALL, ignoring the search box? The empty
    *  state below branches on this: "no models match your search" and "you have
    *  no models" are different problems with different ways out. */
   const hasAnyModel = useMemo(
-    () => models.some((m) => m.enabled !== false && !(isClaudeSubscriptionModel(m) && m.available === false)),
-    [models],
+    () => visibleModels.length > 0 || effectiveModels.some((m) => m.modelID === 'zed'),
+    [visibleModels, effectiveModels],
   );
   /** Does this member already have ChatGPT subscription models? Then the row
    *  manages their accounts instead of offering to connect one. */

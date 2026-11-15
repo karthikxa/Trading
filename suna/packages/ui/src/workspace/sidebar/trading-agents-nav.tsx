@@ -93,6 +93,14 @@ export const INITIAL_TAURIC_GROUPS: AgentGroupDef[] = [
   },
 ];
 
+export function formatCleanAgentName(name: string): string {
+  if (!name) return 'Agent';
+  const lower = name.toLowerCase().trim();
+  if (lower === 'ea') return 'EA';
+  if (lower === 'portfolio_manager' || lower === 'chief of staff') return 'Portfolio Manager';
+  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 /**
  * OverlappingAvatars: Renders a cluster of maximum 3 bot avatars with intelligent admin-first sorting.
  * If > 3 bots are in the group, shows +N badge (e.g. +2, +11).
@@ -163,10 +171,10 @@ export function OverlappingAvatars({
         style={{ width: size, height: size }}
       >
         <div className="absolute left-0.5 top-1/2 -translate-y-1/2 z-20 rounded-full ring-1.5 ring-white shadow-2xs overflow-hidden">
-          <BotAvatar shape={b1.shape} color={b1.color} expression={b1.expression} size={avatarSize} isAnimated={true} />
+          <BotAvatar shape={b1.shape} color={b1.color} expression={b1.expression} size={avatarSize} isAnimated={false} />
         </div>
         <div className="absolute right-0.5 top-1/2 -translate-y-1/2 z-10 rounded-full ring-1.5 ring-white shadow-2xs overflow-hidden">
-          <BotAvatar shape={b2.shape} color={b2.color} expression={b2.expression} size={avatarSize} isAnimated={true} />
+          <BotAvatar shape={b2.shape} color={b2.color} expression={b2.expression} size={avatarSize} isAnimated={false} />
         </div>
         {remainingCount > 0 && (
           <span
@@ -200,7 +208,7 @@ export function OverlappingAvatars({
           color={topBot.color}
           expression={topBot.expression}
           size={avatarSize}
-          isAnimated={true}
+          isAnimated={false}
         />
       </div>
       {/* Bottom left avatar */}
@@ -210,7 +218,7 @@ export function OverlappingAvatars({
           color={leftBot.color}
           expression={leftBot.expression}
           size={avatarSize}
-          isAnimated={true}
+          isAnimated={false}
         />
       </div>
       {/* Bottom right avatar */}
@@ -220,7 +228,7 @@ export function OverlappingAvatars({
           color={rightBot.color}
           expression={rightBot.expression}
           size={avatarSize}
-          isAnimated={true}
+          isAnimated={false}
         />
       </div>
 
@@ -621,7 +629,7 @@ export function AgentsSidebarView({
                         'font-medium text-sm truncate font-sans tracking-tight',
                         isSelected ? 'text-zinc-950 dark:text-white font-semibold' : 'text-zinc-900 dark:text-zinc-100',
                       )}>
-                        {bot.name}
+                        {formatCleanAgentName(bot.name)}
                       </span>
 
                       <div className="flex items-center gap-1.5 shrink-0 ml-auto">

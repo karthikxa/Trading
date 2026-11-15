@@ -279,5 +279,7 @@ export function useTradingAgents() {
     },
     initialData: DEFAULT_CANONICAL_TRADING_AGENTS,
     staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
