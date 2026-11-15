@@ -270,7 +270,7 @@ function ModelRow({
       */}
       <span className="relative flex size-6 shrink-0 items-center justify-center">
         {isSelected && (
-          <Check className="text-foreground size-4 group-hover:opacity-0 group-data-[selected=true]:opacity-0" />
+          <Check className={cn('text-foreground size-4', defaultControls && 'group-hover:opacity-0 group-data-[selected=true]:opacity-0')} />
         )}
 
         {defaultControls && (
@@ -470,12 +470,18 @@ export function ModelSelector({
   const availableSelectedModel = entitlementsPending
     ? selectedModel
     : resolveAvailableSelectedModel(selectedModel, isSelectableModel);
+  const effectiveSelectedModel =
+    availableSelectedModel ||
+    models.find((m) => m.modelID === 'zed') ||
+    models[0] ||
+    null;
   const current = models.find(
     (m) =>
-      m.providerID === availableSelectedModel?.providerID &&
-      m.modelID === availableSelectedModel?.modelID,
+      (m.providerID === (availableSelectedModel?.providerID ?? effectiveSelectedModel?.providerID) ||
+        m.modelID === (availableSelectedModel?.modelID ?? effectiveSelectedModel?.modelID)) &&
+      m.modelID === (availableSelectedModel?.modelID ?? effectiveSelectedModel?.modelID),
   );
-  const displayName = current?.modelName || unsetLabel || t('noModel');
+  const displayName = current?.modelName || (models.some((m) => m.modelID === 'zed') ? 'zed' : unsetLabel || t('noModel'));
 
   useEffect(() => {
     if (!open) {
@@ -498,6 +504,7 @@ export function ModelSelector({
       .filter(
         (m) =>
           m.enabled !== false &&
+          m.available !== false &&
           // Claude subscription models appear once the member signed in to Claude
           // (Customize → Models → Anthropic), like ChatGPT subscription models.
           !(isClaudeSubscriptionModel(m) && m.available === false) &&
@@ -508,10 +515,10 @@ export function ModelSelector({
           modelInDefaultView(m, {
             search,
             isStoreVisible: pickerModelStore.isVisible,
-            selected: selectedModel,
+            selected: selectedModel ?? (models.find((cand) => cand.modelID === 'zed') ? { providerID: 'kortix', modelID: 'zed' } : null),
           }),
       )
-      .sort((a, b) => a.modelName.localeCompare(b.modelName));
+      .sort((a, b) => (a.modelID === 'zed' ? -1 : b.modelID === 'zed' ? 1 : a.modelName.localeCompare(b.modelName)));
   }, [models, search, pickerModelStore.isVisible, selectedModel]);
 
   /** Is there anything to pick AT ALL, ignoring the search box? The empty
@@ -585,10 +592,12 @@ export function ModelSelector({
    * the model is grouped below so the pinned copy shows the same provider mark.
    */
   const pinnedDefault = useMemo(() => {
-    const ref = defaultControls?.accountDefault;
+    const ref = defaultControls?.accountDefault || { providerID: 'kortix', modelID: 'zed' };
     if (!ref) return null;
     const model = visibleModels.find(
-      (m) => m.providerID === ref.providerID && m.modelID === ref.modelID,
+      (m) =>
+        (m.providerID === ref.providerID || m.provider === ref.providerID || m.modelID === ref.modelID) &&
+        m.modelID === ref.modelID,
     );
     if (!model) return null;
     const groupID = pickerGroupId(model);
@@ -645,8 +654,14 @@ export function ModelSelector({
             <button
               type="button"
               disabled={disabled}
-              className={cn(triggerVariants(), 'h-9 w-full')}
+              className={cn(triggerVariants(), 'h-9 w-full flex items-center gap-1.5')}
             >
+              <ProviderLogo
+                providerID={current?.providerID || (displayName.toLowerCase() === 'zed' ? 'zed' : 'kortix')}
+                name={displayName}
+                size="xs"
+                className="size-3.5 shrink-0"
+              />
               <span className="truncate">{displayName}</span>
               {disabled ? null : <ChevronDown className={cn(TRIGGER_CARET_CLASS, 'size-4')} />}
             </button>
@@ -657,12 +672,18 @@ export function ModelSelector({
             size="sm"
             // `min-w-0 shrink`: in a narrow toolbar (a channel's thread panel) the
             // model name truncates; the controls beside it keep their width.
-            className={cn('min-w-0 shrink rounded-lg hit-area-y-3', triggerVariant === 'ghost' && 'text-muted-foreground')}
+            className={cn('min-w-0 shrink rounded-lg hit-area-y-3 flex items-center gap-1.5', triggerVariant === 'ghost' && 'text-muted-foreground')}
           >
+            <ProviderLogo
+              providerID={current?.providerID || (displayName.toLowerCase() === 'zed' ? 'zed' : 'kortix')}
+              name={displayName}
+              size="xs"
+              className="size-3.5 shrink-0"
+            />
             <span className={cn('max-w-30 truncate', triggerLabelClassName)}>{displayName}</span>
             <ChevronDown
               className={cn(
-                'duration-moderate size-3 transition-transform ease-out',
+                'duration-moderate size-3 transition-transform ease-out shrink-0',
                 open && 'rotate-180',
               )}
             />
@@ -730,7 +751,7 @@ export function ModelSelector({
                 </div>
               ) : grouped.length > 0 ? (
                 <>
-                  {pinnedDefault && (
+                  {pinnedDefault && visibleModels.length > 1 && (
                     <>
                       {/* The model you chose, first, so it never has to be
                           hunted for in a provider group. Deliberately a COPY —
@@ -746,8 +767,7 @@ export function ModelSelector({
                           groupProviderID={pinnedDefault.providerID}
                           groupProviderName={pinnedDefault.providerName}
                           isSelected={
-                            availableSelectedModel?.providerID === pinnedDefault.model.providerID &&
-                            availableSelectedModel?.modelID === pinnedDefault.model.modelID
+                            (availableSelectedModel?.modelID ?? effectiveSelectedModel?.modelID) === pinnedDefault.model.modelID
                           }
                           isAccountDefault
                           defaultControls={rowDefaultControls}
@@ -763,8 +783,7 @@ export function ModelSelector({
                   {sections.map((section, sectionIndex) => {
                     const selectedInSection = section.models.find(
                       (m) =>
-                        availableSelectedModel?.providerID === m.providerID &&
-                        availableSelectedModel?.modelID === m.modelID,
+                        (availableSelectedModel?.modelID ?? effectiveSelectedModel?.modelID) === m.modelID,
                     );
                     const open = isPickerGroupOpen({
                       groupIndex: sectionIndex,
@@ -836,12 +855,10 @@ export function ModelSelector({
                                 groupProviderID={section.providerID}
                                 groupProviderName={section.label}
                                 isSelected={
-                                  availableSelectedModel?.providerID === model.providerID &&
-                                  availableSelectedModel?.modelID === model.modelID
+                                  (availableSelectedModel?.modelID ?? effectiveSelectedModel?.modelID) === model.modelID
                                 }
                                 isAccountDefault={
-                                  defaultControls?.accountDefault?.providerID === model.providerID &&
-                                  defaultControls?.accountDefault?.modelID === model.modelID
+                                  defaultControls?.accountDefault?.modelID === model.modelID || model.modelID === 'zed'
                                 }
                                 defaultControls={rowDefaultControls}
                                 onSelect={handleSelect}

@@ -15,7 +15,6 @@ import { WeeklyBreakdownCard } from './WeeklyBreakdownCard';
 import { DayDetailsDrawer } from './DayDetailsDrawer';
 import { AddTradeView } from './AddTradeView';
 import { TradeDetailView } from './TradeDetailView';
-import { SidebarToggle } from '@kortix/ui/workspace';
 import { Button } from '@kortix/ui';
 import Hint from '@kortix/ui/hint';
 import { SidebarGlyph } from '@kortix/ui/icons';
@@ -233,7 +232,6 @@ export default function JournalView({ projectId }: JournalViewProps) {
 
   return (
     <div className="relative flex flex-col h-full w-full overflow-hidden bg-background text-foreground font-sans">
-      <SidebarToggle placement="floating" />
       {!drawerOpen && viewMode === 'calendar' && (
         <div className="absolute top-[11px] right-3.5 z-30">
           <Hint label="Open side panel">

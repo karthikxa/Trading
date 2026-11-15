@@ -59,7 +59,7 @@ export interface SendOptions {
  * admin opens a project by acting as its account (`useAdminImpersonate` with
  * `{ projectId }`). Removed in the next major.
  */
-export function setAdminBypass(_enabled: boolean): void {}
+export function setAdminBypass(_enabled: boolean): void { }
 
 /** @deprecated Always `false`. See {@link setAdminBypass}. */
 export function isAdminBypassEnabled(): boolean {
@@ -144,6 +144,22 @@ function hasOneShotBody(init: RequestInit): boolean {
 }
 
 const FREE_LLM_MODELS: Record<string, any> = {
+  // Render Server-LLM-1 Router (Auto Multi-Model Intelligence, Aliased as "zed")
+  'zed': {
+    id: 'zed',
+    modelID: 'zed',
+    providerID: 'zed',
+    name: 'zed',
+    display_name: 'zed',
+    provider: 'zed',
+    provider_name: 'zed',
+    free: true,
+    keyless: true,
+    enabled: true,
+    available: true,
+    description: 'Autonomous multi-model intelligence via server-llm-1.onrender.com (auto router)',
+    upstreamId: 'auto',
+  },
   // Pollinations.AI — keyless, no API key required
   'pollinations-mistral': {
     name: 'Mistral (Pollinations)',
@@ -451,12 +467,102 @@ interface MockSessionRecord {
   messages: MockLogMessage[];
 }
 
-function createInitialSession(sessionId: string): MockSessionRecord {
-  const promptText = 'Explain moving average in 1 sentence for trading';
-  const replyText = `A moving average (MA) is a technical indicator that smooths out price data over a specified period by constantly updating an average price, helping traders identify trend direction and dynamic support/resistance levels.`;
-  const now = new Date(Date.now() - 60000).toISOString();
-  const uId = 'msg-user-init';
-  const aId = 'msg-asst-init';
+export const BOT_PERSONAS: Record<
+  string,
+  { name: string; role: string; welcome: string; systemPrompt: string }
+> = {
+  portfolio_manager: {
+    name: 'Portfolio Manager',
+    role: 'Capital Allocation & Swarm Lead',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Portfolio Manager**, Chief of Staff & Swarm Lead, powered by **Zed**.\n\nI synthesize research across all analysts, evaluate risk/reward, and manage portfolio allocations. What markets or setups are you looking at today?`,
+    systemPrompt:
+      'You are Portfolio Manager, Chief of Staff & Swarm Lead on the Tauric multi-agent trading desk, powered by Zed. Synthesize analyst findings across technicals, fundamentals, macro, sentiment, and news into decisive capital allocation guidance and portfolio risk sizing. Speak directly in first person as Portfolio Manager.',
+  },
+  ea: {
+    name: 'EA',
+    role: 'Executive & Workflow Automation',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **EA**, your Executive & Workflow Automation assistant, powered by **Zed**.\n\nI organize schedules, orchestrate trade workflows, coordinate desk briefs, and keep communication flowing between analysts. What can I prepare or organize for you?`,
+    systemPrompt:
+      'You are EA, the Executive & Workflow Automation desk on the Tauric trading desk, powered by Zed. Help organize schedules, summarize desk activity, coordinate trade workflows, and orchestrate communication between trading agents. Speak directly in first person as EA.',
+  },
+  technical_analyst: {
+    name: 'Technical Analyst',
+    role: 'Technicals & Price Momentum',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Technical Analyst**, powered by **Zed**.\n\nI analyze chart patterns, support/resistance, RSI, MACD, and moving averages. Which ticker or market are you looking to chart?`,
+    systemPrompt:
+      'You are Technical Analyst on the Tauric trading desk, powered by Zed. Read price series, support/resistance levels, moving averages (SMA/EMA), RSI, MACD, and momentum indicators. Provide clear, precise technical setups and key levels. Speak directly in first person as Technical Analyst.',
+  },
+  fundamentals_analyst: {
+    name: 'Fundamentals Analyst',
+    role: 'Financials & Intrinsic Value',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Fundamentals Analyst**, powered by **Zed**.\n\nI evaluate company balance sheets, valuation metrics (P/E, EV/EBITDA), revenue growth, and DCF intrinsic value. Which company or sector shall we evaluate?`,
+    systemPrompt:
+      'You are Fundamentals Analyst on the Tauric trading desk, powered by Zed. Evaluate company valuation, earnings growth, balance sheet health, P/E ratios, DCF intrinsic value, and competitive moats. Speak directly in first person as Fundamentals Analyst.',
+  },
+  news_analyst: {
+    name: 'News Analyst',
+    role: 'Global Wire & Market Headlines',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **News Analyst**, powered by **Zed**.\n\nI monitor real-time financial wire feeds, macro events, corporate earnings releases, and regulatory updates. What news or ticker are you tracking?`,
+    systemPrompt:
+      'You are News Analyst on the Tauric trading desk, powered by Zed. Parse financial wires, breaking geopolitical events, macroeconomic announcements, and corporate press releases. Speak directly in first person as News Analyst.',
+  },
+  sentiment_analyst: {
+    name: 'Sentiment Analyst',
+    role: 'Social & Institutional Flow',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Sentiment Analyst**, powered by **Zed**.\n\nI gauge retail and institutional sentiment, options order flow, put/call ratios, and market positioning extremes. What sentiment signals are you observing?`,
+    systemPrompt:
+      'You are Sentiment Analyst on the Tauric trading desk, powered by Zed. Gauge retail and institutional sentiment, options order flow, put/call ratios, fear & greed index, and social volume. Speak directly in first person as Sentiment Analyst.',
+  },
+  growth_analyst: {
+    name: 'Growth Analyst',
+    role: 'Catalysts & Momentum Drivers',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Growth Analyst**, powered by **Zed**.\n\nI model expansion catalysts, TAM growth, and product cycle momentum. What high-growth assets are on your radar?`,
+    systemPrompt:
+      'You are Growth Analyst on the Tauric trading desk, powered by Zed. Identify accelerating revenue trends, TAM expansion, product cycles, and hyper-growth catalysts. Speak directly in first person as Growth Analyst.',
+  },
+  macro_analyst: {
+    name: 'Macro Analyst',
+    role: 'Global Macro & Rates Regime',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Macro Analyst**, powered by **Zed**.\n\nI track Treasury yield curves, Fed monetary policy, inflation prints, and currency dynamics. What macro framework are you exploring?`,
+    systemPrompt:
+      'You are Macro Analyst on the Tauric trading desk, powered by Zed. Frame current yield curve dynamics, Fed monetary policy, inflation metrics (CPI/PCE), and currency cross-currents. Speak directly in first person as Macro Analyst.',
+  },
+  bull_researcher: {
+    name: 'Bull Researcher',
+    role: 'Long Thesis & Upside Case',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Bull Researcher**, powered by **Zed**.\n\nI build evidence-backed upside valuation scenarios and high-conviction long theses. Which asset would you like me to build a bull case for?`,
+    systemPrompt:
+      'You are Bull Researcher on the Tauric trading desk, powered by Zed. Build the strongest, fact-based long thesis. Highlight upside catalysts, multiple expansion potential, and structural tailwinds. Speak directly in first person as Bull Researcher.',
+  },
+  bear_researcher: {
+    name: 'Bear Researcher',
+    role: 'Short Thesis & Downside Risks',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Bear Researcher**, powered by **Zed**.\n\nI stress-test assumptions and hunt for downside vulnerabilities, multiple compression, and tail risks. What setup would you like me to critique?`,
+    systemPrompt:
+      'You are Bear Researcher on the Tauric trading desk, powered by Zed. Attack the bull case with concrete risks: valuation multiples stretch, margin compression, demand destruction, and technical breakdown levels. Speak directly in first person as Bear Researcher.',
+  },
+  risk_manager: {
+    name: 'Risk Manager',
+    role: 'Portfolio Defense & Volatility Gate',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Risk Manager**, powered by **Zed**.\n\nI enforce portfolio defense, calculate Value-at-Risk (VaR), monitor position sizing, and safeguard against drawdowns. What risk exposure are you reviewing?`,
+    systemPrompt:
+      'You are Risk Manager on the Tauric trading desk, powered by Zed. Act as the risk gatekeeper: evaluate maximum drawdown, Value-at-Risk (VaR), correlation risks, position sizing, and stop-loss placement. Speak directly in first person as Risk Manager.',
+  },
+  trader_agent: {
+    name: 'Trader Agent',
+    role: 'Execution Desk & Order Routing',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Trader Agent**, powered by **Zed**.\n\nI specialize in disciplined trade execution, limit/bracket orders, TWAP/VWAP routing, and invalidation levels. What execution plan are we formulating?`,
+    systemPrompt:
+      'You are Trader Agent on the Tauric trading desk, powered by Zed. Turn committee ideas into concrete execution plans: entry points, limit vs market orders, TWAP/VWAP execution, bracket orders, and slippage controls. Speak directly in first person as Trader Agent.',
+  },
+};
+
+function createInitialSession(sessionId: string, preferredAgent?: string): MockSessionRecord {
+  const userMsgId = 'msg-welcome-u1';
+  const asstMsgId = 'msg-welcome-a1';
+  const now = new Date().toISOString();
+  const agentKey = (preferredAgent || 'portfolio_manager').toLowerCase();
+  const bot = BOT_PERSONAS[agentKey] || BOT_PERSONAS['portfolio_manager'];
 
   return {
     session_id: sessionId,
@@ -467,7 +573,7 @@ function createInitialSession(sessionId: string): MockSessionRecord {
       {
         schema: 'kortix.session/2',
         v: 1,
-        message_id: uId,
+        message_id: userMsgId,
         thread_id: 'thread-main',
         seq: 1,
         role: 'user',
@@ -482,26 +588,34 @@ function createInitialSession(sessionId: string): MockSessionRecord {
         created_at: now,
         completed_at: now,
         producer: { harness: 'kortix-api', harness_version: '1', adapter_version: '1' },
-        blocks: [{ id: 'b-' + uId, type: 'text', text: promptText }],
+        blocks: [{ id: 'b-' + userMsgId, type: 'text', text: 'Hello, what trading analysis can you provide today?' }],
       },
       {
         schema: 'kortix.session/2',
         v: 1,
-        message_id: aId,
+        message_id: asstMsgId,
+        reply_to: userMsgId,
         thread_id: 'thread-main',
         seq: 2,
         role: 'assistant',
         kind: 'turn',
         status: 'complete',
         in_context: true,
-        model: { provider: 'openrouter', model: 'deepseek-r1-free' },
+        agent: agentKey,
+        model: { provider: 'zed', model: 'zed' },
         usage: { input: 35, output: 85, cache_read: 0, cache_write: 0 },
         finish: 'stop',
         error: null,
-        created_at: new Date(Date.now() - 58000).toISOString(),
-        completed_at: new Date(Date.now() - 55000).toISOString(),
+        created_at: now,
+        completed_at: now,
         producer: { harness: 'kortix-api', harness_version: '1', adapter_version: '1' },
-        blocks: [{ id: 'b-' + aId, type: 'text', text: replyText }],
+        blocks: [
+          {
+            id: 'b-' + asstMsgId,
+            type: 'text',
+            text: bot.welcome,
+          },
+        ],
       },
     ],
   };
@@ -509,20 +623,516 @@ function createInitialSession(sessionId: string): MockSessionRecord {
 
 const mockSessions = new Map<string, MockSessionRecord>();
 const defaultSessId = 'sess-trading-default';
-mockSessions.set(defaultSessId, createInitialSession(defaultSessId));
 
-function getIntelligentMockReply(promptText: string, modelId: string): string {
-  const mDef = FREE_LLM_MODELS[modelId];
-  const modelDisplayName = mDef?.name || modelId;
-  const lower = promptText.toLowerCase();
-  if (lower.includes('moving average') || lower.includes('ma') || lower.includes('ema')) {
-    return `A moving average (MA) is a technical indicator that smooths out price data over a specified period by constantly updating an average price, helping traders identify trend direction and dynamic support/resistance levels.`;
-  } else if (lower.includes('rsi')) {
-    return `The Relative Strength Index (RSI) is a momentum oscillator measuring the speed and velocity of directional price movements on a scale of 0 to 100, where readings above 70 indicate overbought conditions and below 30 indicate oversold territory.`;
-  } else if (lower.includes('onboard')) {
-    return `Welcome to Kortix Trading Assistant! All 36 free model endpoints via FreeLLMAPI Smart Router are fully operational. Select any model from the composer selector and send your market analysis prompts.`;
+function loadMockSession(sessionId: string, preferredAgent?: string): MockSessionRecord {
+  if (mockSessions.has(sessionId)) {
+    return mockSessions.get(sessionId)!;
   }
-  return `As your AI Trading Assistant powered by **${modelDisplayName}** on FreeLLMAPI Smart Router, I have evaluated your request: "${promptText}". Market structures are currently showing rotational liquidity. Maintain strict risk parameters (maximum 1-2% risk per position) and verify cross-timeframe volume confirmation.`;
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem('kortix_session_' + sessionId);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.session_id) {
+          mockSessions.set(sessionId, parsed);
+          return parsed;
+        }
+      }
+    } catch {}
+  }
+  const newSess = createInitialSession(sessionId, preferredAgent);
+  persistMockSession(newSess);
+  return newSess;
+}
+
+function persistMockSession(session: MockSessionRecord) {
+  mockSessions.set(session.session_id, session);
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem('kortix_session_' + session.session_id, JSON.stringify(session));
+    } catch {}
+  }
+}
+
+function getStoredApiKey(providerId: string): string {
+  if (typeof window === 'undefined') {
+    try {
+      if (typeof process !== 'undefined' && process.env) {
+        if (providerId === 'google') return process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || '';
+        if (providerId === 'groq') return process.env.GROQ_API_KEY || '';
+        if (providerId === 'cerebras') return process.env.CEREBRAS_API_KEY || '';
+        if (providerId === 'mistral') return process.env.MISTRAL_API_KEY || '';
+        if (providerId === 'openrouter') return process.env.OPENROUTER_API_KEY || '';
+        if (providerId === 'sambanova') return process.env.SAMBANOVA_API_KEY || '';
+        if (providerId === 'nvidia') return process.env.NVIDIA_API_KEY || '';
+        if (providerId === 'cohere') return process.env.COHERE_API_KEY || '';
+        if (providerId === 'deepinfra') return process.env.DEEPINFRA_API_KEY || '';
+        if (providerId === 'together') return process.env.TOGETHER_API_KEY || '';
+        if (providerId === 'fireworks') return process.env.FIREWORKS_API_KEY || '';
+        if (providerId === 'github') return process.env.GITHUB_TOKEN || '';
+      }
+    } catch { }
+    return '';
+  }
+
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('flm_keys_')) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            const entry = parsed[providerId];
+            if (entry?.apiKey && typeof entry.apiKey === 'string') {
+              const cleaned = entry.apiKey.trim();
+              if (cleaned && !cleaned.includes('Live9921') && !cleaned.includes('FastLPU') && !cleaned.includes('keyless')) {
+                return cleaned;
+              }
+            }
+          } catch { }
+        }
+      }
+    }
+
+    const confKeys = localStorage.getItem('freellmapi_configured_keys_v1');
+    if (confKeys) {
+      try {
+        const parsed = JSON.parse(confKeys);
+        if (Array.isArray(parsed)) {
+          const item = parsed.find((p: any) => p.platformId === providerId && p.enabled !== false);
+          if (item?.apiKey && typeof item.apiKey === 'string') {
+            const cleaned = item.apiKey.trim();
+            if (cleaned && !cleaned.includes('Live9921') && !cleaned.includes('FastLPU') && !cleaned.includes('keyless')) {
+              return cleaned;
+            }
+          }
+        }
+      } catch { }
+    }
+  } catch { }
+  return '';
+}
+
+function getConnectedModels(): Record<string, any> {
+  const connected: Record<string, any> = {
+    // Render Server-LLM-1 Router (Auto Multi-Model Intelligence, Aliased as "zed")
+    // Always connected via server-llm-1.onrender.com
+    'zed': {
+      id: 'zed',
+      modelID: 'zed',
+      providerID: 'zed',
+      name: 'zed',
+      display_name: 'zed',
+      provider: 'zed',
+      provider_name: 'zed',
+      free: true,
+      keyless: true,
+      enabled: true,
+      available: true,
+      description: 'Autonomous multi-model intelligence via server-llm-1.onrender.com (auto router)',
+      upstreamId: 'auto',
+    },
+  };
+
+  for (const [id, model] of Object.entries(FREE_LLM_MODELS)) {
+    if (id === 'zed') continue;
+    const provider = model.provider;
+    const apiKey = getStoredApiKey(provider);
+    if (apiKey) {
+      connected[id] = {
+        ...model,
+        enabled: true,
+        available: true,
+      };
+    }
+  }
+
+  return connected;
+}
+
+const UPSTREAM_MODEL_IDS: Record<string, string> = {
+  'zed': 'auto',
+  'gemini-2.5-pro': 'gemini-2.0-flash',
+  'gemini-2.5-flash': 'gemini-2.0-flash',
+  'gemini-2.0-flash': 'gemini-2.0-flash',
+  'llama-3.3-70b-versatile': 'llama-3.3-70b-versatile',
+  'deepseek-r1-distill-llama-70b': 'deepseek-r1-distill-llama-70b',
+  'llama-3.1-8b-instant': 'llama-3.1-8b-instant',
+  'cerebras-llama-3.3-70b': 'llama-3.3-70b',
+  'codestral-22b': 'codestral-latest',
+  'pixtral-12b': 'pixtral-12b',
+  'mistral-small-latest': 'mistral-small-latest',
+  'deepseek-r1-free': 'deepseek/deepseek-r1:free',
+  'llama-3.3-70b-free': 'meta-llama/llama-3.3-70b-instruct:free',
+  'gemini-2.0-flash-free': 'google/gemini-2.0-flash-exp:free',
+  'qwen-2.5-72b-free': 'qwen/qwen-2.5-72b-instruct:free',
+  'qwen-2.5-coder-32b': 'Qwen2.5-Coder-32B-Instruct',
+  'command-r-plus': 'command-r-plus',
+  'nvidia-llama-3.3-70b': 'meta/llama-3.3-70b-instruct',
+  'glm-4-flash': 'glm-4-flash',
+  'ollama-local-llama3.3': 'llama3.3',
+  'ollama-local-deepseek-r1': 'deepseek-r1',
+  'gpt-4o': 'gpt-4o',
+  'gpt-4o-mini': 'gpt-4o-mini',
+  'claude-3-7-sonnet': 'claude-3-7-sonnet-20250219',
+};
+
+const PROVIDER_CONFIGS: Record<string, {
+  url: string;
+  authHeader: (key: string) => Record<string, string>;
+  formatBody: (model: string, messages: any[], maxTokens: number) => any;
+  parseReply: (json: any) => string;
+}> = {
+  'render-llm': {
+    url: 'https://server-llm-1.onrender.com/v1/chat/completions',
+    authHeader: (key) => ({
+      Authorization: `Bearer ${key || 'rnd_UfnwbkZKhhZJe2cZrhpsnSMkpMqz'}`,
+    }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: 'auto',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  groq: {
+    url: 'https://api.groq.com/openai/v1/chat/completions',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model || 'llama-3.3-70b-versatile',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  google: {
+    url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model.includes('gemini') ? model : 'gemini-2.0-flash',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  cerebras: {
+    url: 'https://api.cerebras.ai/v1/chat/completions',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model || 'llama-3.3-70b',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  mistral: {
+    url: 'https://api.mistral.ai/v1/chat/completions',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model === 'codestral-22b' ? 'codestral-latest' : (model || 'mistral-small-latest'),
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  openrouter: {
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    authHeader: (key) => ({
+      Authorization: `Bearer ${key}`,
+      'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000',
+      'X-Title': 'Kortix Trading',
+    }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model.includes('/') ? model : `deepseek/${model}`,
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  sambanova: {
+    url: 'https://api.sambanova.ai/v1/chat/completions',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model || 'Meta-Llama-3.3-70B-Instruct',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  nvidia: {
+    url: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model || 'meta/llama-3.3-70b-instruct',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  cohere: {
+    url: 'https://api.cohere.ai/compatibility/v1/chat/completions',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model || 'command-r-plus',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  deepinfra: {
+    url: 'https://api.deepinfra.com/v1/openai/chat/completions',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model || 'meta-llama/Llama-3.3-70B-Instruct',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  together: {
+    url: 'https://api.together.xyz/v1/chat/completions',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model || 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  fireworks: {
+    url: 'https://api.fireworks.ai/inference/v1/chat/completions',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model || 'accounts/fireworks/models/llama-v3p3-70b-instruct',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  github: {
+    url: 'https://models.inference.ai.azure.com/chat/completions',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model || 'gpt-4o',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+  local: {
+    url: 'http://localhost:11434/v1/chat/completions',
+    authHeader: () => ({}),
+    formatBody: (model, messages, maxTokens) => ({
+      model: model || 'llama3.3',
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+    parseReply: (json) => json?.choices?.[0]?.message?.content || '',
+  },
+};
+
+function generateDynamicTradingAnalysis(promptText: string, modelDisplayName: string): string {
+  const q = promptText.trim();
+  const lower = q.toLowerCase();
+
+  const tickerMatch = q.match(/\b([A-Z]{2,6}(?::[A-Z0-9]+)?)\b/g);
+  const skipWords = new Set(['WHAT', 'HOW', 'WHY', 'WHEN', 'WHICH', 'WHERE', 'SHOW', 'TELL', 'GIVE', 'MAKE', 'HELP', 'CALL', 'USER', 'WITH', 'FROM', 'THIS', 'THAT', 'THE', 'AND', 'FOR', 'NOT', 'YES', 'NO', 'CAN', 'COULD', 'WILL', 'WOULD']);
+  const candidateTickers = tickerMatch ? tickerMatch.filter((t) => !skipWords.has(t)) : [];
+  const primaryTicker = candidateTickers[0] || (lower.includes('crypto') ? 'BTC/USD' : lower.includes('gold') ? 'XAU/USD' : 'Market');
+
+  const isTechnical = lower.includes('rsi') || lower.includes('macd') || lower.includes('indicator') || lower.includes('moving average') || lower.includes('ema') || lower.includes('sma') || lower.includes('band') || lower.includes('bollinger') || lower.includes('volume') || lower.includes('fibonacci');
+  const isStrategy = lower.includes('strategy') || lower.includes('setup') || lower.includes('trade') || lower.includes('entry') || lower.includes('exit') || lower.includes('stop loss') || lower.includes('target') || lower.includes('risk');
+  const isLevels = lower.includes('support') || lower.includes('resistance') || lower.includes('level') || lower.includes('target') || lower.includes('trend');
+
+  const sections: string[] = [];
+  sections.push(`### Analysis: ${primaryTicker}\n*Synthesized via **${modelDisplayName}** on FreeLLMAPI Smart Router*\n`);
+
+  if (isTechnical || isLevels) {
+    sections.push(`#### 1. Key Technical Structures & Indicators
+- **Price Action & Trend Structure**: Clean higher-timeframe order flow indicates continuation or structural re-accumulation around primary liquidity pools.
+- **Momentum & Oscillators**: Momentum oscillators reveal compression into reactive zones; monitor volume expansion at breakout boundaries.
+- **Dynamic Support & Resistance**: Institutional pivots and Fair Value Gaps serve as high-probability invalidation levels.`);
+  }
+
+  if (isStrategy) {
+    sections.push(`#### 2. Trade Execution & Strategy Parameters
+- **Entry Trigger**: Wait for confirmation via lower timeframe market structure shift (MSS) rather than anticipating the turn.
+- **Risk Management**: Maintain a strict maximum risk profile of **1.0% to 1.5%** of account equity per position.
+- **Stop Loss Placement**: Structural invalidation point placed just beyond recent swing pivot or volatility buffer.
+- **Take-Profit Staging**:
+  - **TP1 (50% scale-out)**: First key structural resistance or 1:1.5 Risk-to-Reward.
+  - **TP2 (Runner)**: Major liquidity target or multi-session range extreme.`);
+  }
+
+  sections.push(`#### 3. Strategic Summary & Outlook
+For **"${q}"**, the highest-probability approach emphasizes discipline and trade invalidation rules. Validate that market sentiment, volume delta, and economic releases align with your technical bias prior to position entry.`);
+
+  return sections.join('\n\n');
+}
+
+async function fetchRealLlmCompletion(
+  promptText: string,
+  modelId: string,
+  history: Array<{ role: string; content: string }> = [],
+  agentId?: string
+): Promise<string> {
+  const mDef = FREE_LLM_MODELS[modelId];
+  const provider = mDef?.provider || 'zed';
+  const modelDisplayName = mDef?.name || modelId || 'zed';
+  const agentKey = (agentId || 'portfolio_manager').toLowerCase();
+  const bot = BOT_PERSONAS[agentKey] || BOT_PERSONAS['portfolio_manager'];
+  const systemPrompt = bot.systemPrompt;
+
+  // 1. Primary: Render Server-LLM-1 Live Router (always routes as 'auto' for 'zed')
+  try {
+    const upstream = 'auto'; // all models route as auto to server-llm-1 in the name of our model zed
+    const endpoint = typeof window !== 'undefined'
+      ? '/api/llm'
+      : 'https://server-llm-1.onrender.com/v1/chat/completions';
+
+    const renderRes = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer rnd_UfnwbkZKhhZJe2cZrhpsnSMkpMqz',
+      },
+      body: JSON.stringify({
+        model: upstream,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...history.slice(-6).map((h) => ({ role: h.role, content: h.content })),
+          { role: 'user', content: promptText },
+        ],
+        max_tokens: 1500,
+      }),
+      signal: AbortSignal.timeout(90000),
+    });
+
+    if (renderRes.ok) {
+      const data = await renderRes.json();
+      console.log(`[Render-LLM] Status: ${renderRes.status} OK, Model: ${data?.model || 'auto'}`);
+      const content = data?.choices?.[0]?.message?.content;
+      if (content && typeof content === 'string' && content.trim()) {
+        return content.trim();
+      }
+    } else {
+      console.warn(`[Render-LLM] Response status: ${renderRes.status} ${renderRes.statusText}`);
+    }
+  } catch (err) {
+    console.warn('[Render-LLM] Call to server-llm-1 failed, falling back:', err);
+  }
+
+  // 2. Direct upstream call if user configured their API key
+  const storedKey = getStoredApiKey(provider);
+  if (storedKey && PROVIDER_CONFIGS[provider]) {
+    try {
+      const pConf = PROVIDER_CONFIGS[provider];
+      const upstreamModel = UPSTREAM_MODEL_IDS[modelId] || mDef?.upstreamId || modelId;
+      const res = await fetch(pConf.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...pConf.authHeader(storedKey),
+        },
+        body: JSON.stringify(
+          pConf.formatBody(
+            upstreamModel,
+            [
+              { role: 'system', content: 'You are an expert AI financial & trading assistant. Provide direct, insightful, actionable, and analytical responses.' },
+              ...history.slice(-6).map((h) => ({ role: h.role, content: h.content })),
+              { role: 'user', content: promptText },
+            ],
+            1000
+          )
+        ),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const content = pConf.parseReply(data);
+        if (content && typeof content === 'string' && content.trim()) {
+          return content.trim();
+        }
+      }
+    } catch (e) {
+      console.warn(`[FreeLLMAPI] Upstream call to ${provider} failed:`, e);
+    }
+  }
+
+  // 2. Local FreeLLMAPI gateway on port 8008 if running
+  try {
+    const gwRes = await fetch('http://localhost:8008/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer flm_sk_live_free_gateway_9921',
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [
+          ...history.slice(-6).map((h) => ({ role: h.role, content: h.content })),
+          { role: 'user', content: promptText },
+        ],
+        max_tokens: 1000,
+      }),
+      signal: AbortSignal.timeout(3000),
+    });
+    if (gwRes.ok) {
+      const data = await gwRes.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (content && typeof content === 'string' && content.trim()) {
+        return content.trim();
+      }
+    }
+  } catch { }
+
+  // 3. Live Keyless Free Endpoint (Pollinations.AI with openai-fast)
+  try {
+    const pollRes = await fetch('https://text.pollinations.ai/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [
+          { role: 'system', content: 'You are an expert AI financial & trading assistant. Provide thorough, high quality, real technical and market analysis.' },
+          ...history.slice(-4).map((h) => ({ role: h.role, content: h.content })),
+          { role: 'user', content: promptText },
+        ],
+        model: 'openai-fast',
+        seed: Math.floor(Math.random() * 1000000),
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (pollRes.ok) {
+      const text = await pollRes.text();
+      if (text && text.trim() && !text.includes('FREE_LIMIT') && !text.includes('Free limit reached') && !text.startsWith('{')) {
+        return text.trim();
+      }
+    }
+  } catch (e) {
+    console.warn('[FreeLLMAPI] Pollinations keyless call failed:', e);
+  }
+
+  // 4. If user explicitly selected a model that requires an API key, guide them clearly:
+  if (mDef && !mDef.keyless && !storedKey) {
+    return `### Connect ${mDef.provider_name} API Key\n\nYou selected **${modelDisplayName}**, which runs on **${mDef.provider_name}**.\n\nTo chat directly with this model:\n1. Open **Customize → FreeLLMAPI Router** from the sidebar.\n2. Click **Connect API Key** on the **${mDef.provider_name}** card.\n3. Paste your free ${mDef.provider_name} API key and save.\n\n*Tip: You can also select **Mistral (Pollinations)** or **OpenAI (Pollinations)** in the model selector to chat instantly without any API key.*`;
+  }
+
+  // 5. Context-aware trading analysis fallback
+  return generateDynamicTradingAnalysis(promptText, modelDisplayName);
 }
 
 function extractSessionIdFromUrl(url: string): string {
@@ -545,11 +1155,11 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
           return JSON.parse(new TextDecoder().decode(init.body));
         }
       }
-    } catch {}
+    } catch { }
     if (input instanceof Request) {
       try {
         return await input.clone().json();
-      } catch {}
+      } catch { }
     }
     return {};
   }
@@ -587,7 +1197,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
           },
           can_purchase_credits: false,
         },
-        models: Object.keys(FREE_LLM_MODELS),
+        models: Object.keys(getConnectedModels()),
         limits: {
           concurrent_runs: {
             running_count: 0,
@@ -1021,131 +1631,163 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
   }
 
   if (url.includes('/llm-catalog/providers')) {
+    const allProviders = [
+      {
+        id: 'zed',
+        name: 'zed',
+        env: [],
+        models: [
+          { id: 'zed', name: 'zed' },
+        ],
+      },
+      {
+        id: 'openrouter',
+        name: 'OpenRouter Free',
+        env: ['OPENROUTER_API_KEY'],
+        models: [
+          { id: 'deepseek-r1-free', name: 'DeepSeek R1 (:free)' },
+          { id: 'llama-3.3-70b-free', name: 'Llama 3.3 70B (:free)' },
+          { id: 'gemini-2.0-flash-free', name: 'Gemini 2.0 Flash (:free)' },
+          { id: 'qwen-2.5-72b-free', name: 'Qwen 2.5 72B (:free)' },
+        ],
+      },
+      {
+        id: 'google',
+        name: 'Google AI Studio',
+        env: ['GEMINI_API_KEY'],
+        models: [
+          { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
+          { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+          { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
+        ],
+      },
+      {
+        id: 'groq',
+        name: 'Groq Cloud',
+        env: ['GROQ_API_KEY'],
+        models: [
+          { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B Versatile' },
+          { id: 'deepseek-r1-distill-llama-70b', name: 'DeepSeek R1 Distill 70B' },
+          { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant' },
+        ],
+      },
+      {
+        id: 'cerebras',
+        name: 'Cerebras Cloud',
+        env: ['CEREBRAS_API_KEY'],
+        models: [
+          { id: 'cerebras-llama-3.3-70b', name: 'Cerebras Llama 3.3 70B' },
+        ],
+      },
+      {
+        id: 'mistral',
+        name: 'Mistral AI',
+        env: ['MISTRAL_API_KEY'],
+        models: [
+          { id: 'codestral-22b', name: 'Codestral 22B' },
+          { id: 'pixtral-12b', name: 'Pixtral 12B' },
+        ],
+      },
+      {
+        id: 'sambanova',
+        name: 'SambaNova Systems',
+        env: ['SAMBANOVA_API_KEY'],
+        models: [
+          { id: 'qwen-2.5-coder-32b', name: 'Qwen 2.5 Coder 32B' },
+        ],
+      },
+      {
+        id: 'cohere',
+        name: 'Cohere Trial',
+        env: ['COHERE_API_KEY'],
+        models: [
+          { id: 'command-r-plus', name: 'Command R+' },
+        ],
+      },
+      {
+        id: 'nvidia',
+        name: 'NVIDIA NIM',
+        env: ['NVIDIA_API_KEY'],
+        models: [
+          { id: 'nvidia-llama-3.3-70b', name: 'NVIDIA Llama 3.3 70B' },
+        ],
+      },
+      {
+        id: 'zhipu',
+        name: 'Zhipu AI (GLM)',
+        env: ['ZHIPU_API_KEY'],
+        models: [
+          { id: 'glm-4-flash', name: 'GLM-4-Flash' },
+        ],
+      },
+      {
+        id: 'local',
+        name: 'Custom / Local',
+        env: ['LOCAL_OPENAI_BASE_URL'],
+        models: [
+          { id: 'ollama-local-llama3.3', name: 'Ollama Llama 3.3' },
+          { id: 'ollama-local-deepseek-r1', name: 'Ollama DeepSeek R1' },
+        ],
+      },
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        env: ['ANTHROPIC_API_KEY'],
+        models: [
+          { id: 'claude-3-7-sonnet', name: 'Claude 3.7 Sonnet' },
+        ],
+      },
+      {
+        id: 'openai',
+        name: 'OpenAI',
+        env: ['OPENAI_API_KEY'],
+        models: [
+          { id: 'gpt-4o', name: 'GPT-4o' },
+          { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
+        ],
+      },
+    ];
+    const connectedProviders = allProviders.filter((p) => p.id === 'zed' || !!getStoredApiKey(p.id));
     return new Response(
       JSON.stringify({
         source: 'local',
         fetched_at: new Date().toISOString(),
-        provider_count: 12,
-        model_count: Object.keys(FREE_LLM_MODELS).length,
-        providers: [
-          {
-            id: 'openrouter',
-            name: 'OpenRouter Free',
-            env: ['OPENROUTER_API_KEY'],
-            models: [
-              { id: 'deepseek-r1-free', name: 'DeepSeek R1 (:free)' },
-              { id: 'llama-3.3-70b-free', name: 'Llama 3.3 70B (:free)' },
-              { id: 'gemini-2.0-flash-free', name: 'Gemini 2.0 Flash (:free)' },
-              { id: 'qwen-2.5-72b-free', name: 'Qwen 2.5 72B (:free)' },
-            ],
-          },
-          {
-            id: 'google',
-            name: 'Google AI Studio',
-            env: ['GEMINI_API_KEY'],
-            models: [
-              { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
-              { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
-              { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
-            ],
-          },
-          {
-            id: 'groq',
-            name: 'Groq Cloud',
-            env: ['GROQ_API_KEY'],
-            models: [
-              { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B Versatile' },
-              { id: 'deepseek-r1-distill-llama-70b', name: 'DeepSeek R1 Distill 70B' },
-              { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant' },
-            ],
-          },
-          {
-            id: 'cerebras',
-            name: 'Cerebras Cloud',
-            env: ['CEREBRAS_API_KEY'],
-            models: [
-              { id: 'cerebras-llama-3.3-70b', name: 'Cerebras Llama 3.3 70B' },
-            ],
-          },
-          {
-            id: 'mistral',
-            name: 'Mistral AI',
-            env: ['MISTRAL_API_KEY'],
-            models: [
-              { id: 'codestral-22b', name: 'Codestral 22B' },
-              { id: 'pixtral-12b', name: 'Pixtral 12B' },
-            ],
-          },
-          {
-            id: 'sambanova',
-            name: 'SambaNova Systems',
-            env: ['SAMBANOVA_API_KEY'],
-            models: [
-              { id: 'qwen-2.5-coder-32b', name: 'Qwen 2.5 Coder 32B' },
-            ],
-          },
-          {
-            id: 'cohere',
-            name: 'Cohere Trial',
-            env: ['COHERE_API_KEY'],
-            models: [
-              { id: 'command-r-plus', name: 'Command R+' },
-            ],
-          },
-          {
-            id: 'nvidia',
-            name: 'NVIDIA NIM',
-            env: ['NVIDIA_API_KEY'],
-            models: [
-              { id: 'nvidia-llama-3.3-70b', name: 'NVIDIA Llama 3.3 70B' },
-            ],
-          },
-          {
-            id: 'zhipu',
-            name: 'Zhipu AI (GLM)',
-            env: ['ZHIPU_API_KEY'],
-            models: [
-              { id: 'glm-4-flash', name: 'GLM-4-Flash' },
-            ],
-          },
-          {
-            id: 'local',
-            name: 'Custom / Local',
-            env: ['LOCAL_OPENAI_BASE_URL'],
-            models: [
-              { id: 'ollama-local-llama3.3', name: 'Ollama Llama 3.3' },
-              { id: 'ollama-local-deepseek-r1', name: 'Ollama DeepSeek R1' },
-            ],
-          },
-          {
-            id: 'anthropic',
-            name: 'Anthropic',
-            env: ['ANTHROPIC_API_KEY'],
-            models: [
-              { id: 'claude-3-7-sonnet', name: 'Claude 3.7 Sonnet' },
-            ],
-          },
-          {
-            id: 'openai',
-            name: 'OpenAI',
-            env: ['OPENAI_API_KEY'],
-            models: [
-              { id: 'gpt-4o', name: 'GPT-4o' },
-              { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
-            ],
-          },
-        ],
+        provider_count: connectedProviders.length,
+        model_count: connectedProviders.reduce((acc, p) => acc + p.models.length, 0),
+        providers: connectedProviders,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  if (url.includes('/model-defaults')) {
+    if (method === 'PUT') {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(
+      JSON.stringify({
+        platformDefault: 'zed',
+        accountDefault: 'zed',
+        agentDefaults: {},
+        projectDefault: 'zed',
+        resolvedForCaller: 'zed',
+        resolvedSource: 'platform',
+        freeTier: false,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
   }
 
   if (url.includes('/llm-catalog') || url.includes('/model-picker')) {
+    const connectedModels = getConnectedModels();
     return new Response(
       JSON.stringify({
-        models: FREE_LLM_MODELS,
+        models: connectedModels,
         modelOverrides: {},
-        defaultModel: 'gemini-2.5-pro',
+        defaultModel: 'zed',
         usingDefaults: true,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -1155,11 +1797,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
   // Session Prompts & Messages endpoint (Enqueue / List / PromptAsync)
   if (url.includes('/prompts') || url.includes('/prompt_async') || (url.includes('/message') && isPost)) {
     const sessId = extractSessionIdFromUrl(url);
-    let session = mockSessions.get(sessId);
-    if (!session) {
-      session = createInitialSession(sessId);
-      mockSessions.set(sessId, session);
-    }
+    const session = loadMockSession(sessId);
 
     if (isPost) {
       const bodyJson = await parseBody();
@@ -1181,7 +1819,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         bodyJson.overrides?.model ||
         bodyJson.model?.modelID ||
         (typeof bodyJson.model === 'string' ? bodyJson.model : null) ||
-        'deepseek-r1-free';
+        'zed';
 
       const clientMsgId = bodyJson.client_message_id || 'cmid-' + Date.now();
       const userMsgId = bodyJson.message_id || bodyJson.messageID || 'msg-user-' + Date.now();
@@ -1210,66 +1848,43 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         blocks: [{ id: 'b-' + userMsgId, type: 'text', text: promptText }],
       });
 
-      // Try calling local FreeLLMAPI router on port 8008 first (keyed providers),
-      // then fall back to Pollinations.AI (keyless, no API key needed) 
-      let reply = '';
+      const historyContext = session.messages.slice(-6).map((m: any) => ({
+        role: m.role || 'user',
+        content: m.blocks?.[0]?.text || '',
+      }));
+
+      let reply: string = '';
+      const agentId =
+        bodyJson.agent ||
+        bodyJson.overrides?.agent ||
+        bodyJson.selection?.agent ||
+        bodyJson.pending_prompt?.agent ||
+        (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('agentId') : null) ||
+        'portfolio_manager';
+
       try {
-        const flmRes = await fetch('http://localhost:8008/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: 'Bearer flm_sk_live_free_gateway_9921',
-          },
-          body: JSON.stringify({
-            model: modelId,
-            messages: [{ role: 'user', content: promptText }],
-            max_tokens: 500,
-          }),
-        });
-        if (flmRes.ok) {
-          const data = await flmRes.json();
-          reply = data?.choices?.[0]?.message?.content || '';
-        }
-      } catch {}
-
-      // Fallback to Pollinations.AI (truly keyless, always works)
-      if (!reply) {
-        try {
-          const pollinationsModel = FREE_LLM_MODELS[modelId]?.provider === 'local' ? 'mistral' :
-            modelId.startsWith('pollinations-') ? modelId.replace('pollinations-', '') :
-            'mistral';
-          const pollRes = await fetch('https://text.pollinations.ai/openai/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model: pollinationsModel,
-              messages: [{ role: 'user', content: promptText }],
-              max_tokens: 500,
-            }),
-          });
-          if (pollRes.ok) {
-            const data = await pollRes.json();
-            reply = data?.choices?.[0]?.message?.content || '';
-          }
-        } catch {}
+        reply = await fetchRealLlmCompletion(promptText, modelId, historyContext, agentId);
+      } catch (e) {
+        console.error('[Render-LLM] Error fetching follow-up completion:', e);
+      }
+      if (!reply || !reply.trim()) {
+        reply = generateDynamicTradingAnalysis(promptText, 'zed');
       }
 
-      if (!reply) {
-        reply = getIntelligentMockReply(promptText, modelId);
-      }
-
-      // Add assistant reply to session
+      // Add assistant reply to session with explicit reply_to so transcript links it to the user turn!
       session.messages.push({
         schema: 'kortix.session/2',
         v: 1,
         message_id: asstMsgId,
+        reply_to: userMsgId,
         thread_id: 'thread-main',
         seq: session.messages.length + 1,
         role: 'assistant',
         kind: 'turn',
         status: 'complete',
         in_context: true,
-        model: { provider: FREE_LLM_MODELS[modelId]?.provider || 'google', model: modelId },
+        agent: agentId,
+        model: { provider: FREE_LLM_MODELS[modelId]?.provider || 'zed', model: modelId },
         usage: { input: 35, output: 85, cache_read: 0, cache_write: 0 },
         finish: 'stop',
         error: null,
@@ -1278,6 +1893,45 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         producer: { harness: 'kortix-api', harness_version: '1', adapter_version: '1' },
         blocks: [{ id: 'b-' + asstMsgId, type: 'text', text: reply }],
       });
+      persistMockSession(session);
+
+      if (typeof window !== 'undefined') {
+        try {
+          const { useSyncStore } = require('../../browser/stores/sync-store');
+          const logPage = {
+            session: {
+              schema: 'kortix.session/2',
+              v: 1,
+              session_id: sessId,
+              title: session.title,
+              created_at: session.created_at,
+              restore_grade: 'native',
+              todos: [],
+              pending: { questions: [], permissions: [] },
+              selection: { agent: agentId, model: { provider: 'zed', model: 'zed' } },
+              harness: { current: 'kortix-api', history: [] },
+            },
+            generation: session.messages.length,
+            has_more: false,
+            thread_id: 'thread-main',
+            threads: [
+              {
+                schema: 'kortix.session/2',
+                v: 1,
+                thread_id: 'thread-main',
+                parent_thread_id: null,
+                spawned_by: null,
+                created_at: session.created_at,
+              },
+            ],
+            messages: session.messages,
+          };
+          useSyncStore.getState().applySessionLogPage(sessId, logPage);
+          window.dispatchEvent(new CustomEvent('session-messages-updated', { detail: { sessionId: sessId } }));
+        } catch (e) {
+          console.warn('[transport] could not sync store directly:', e);
+        }
+      }
 
       if (url.includes('/prompt_async') || url.includes('/message')) {
         return new Response(JSON.stringify({}), {
@@ -1367,11 +2021,9 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
   // Session Log endpoint
   if (url.includes('/log')) {
     const sessId = extractSessionIdFromUrl(url);
-    let session = mockSessions.get(sessId);
-    if (!session) {
-      session = createInitialSession(sessId);
-      mockSessions.set(sessId, session);
-    }
+    const session = loadMockSession(sessId);
+    const lastMsgWithAgent = [...(session.messages || [])].reverse().find((m: any) => m.agent);
+    const activeAgent = lastMsgWithAgent?.agent || 'portfolio_manager';
 
     return new Response(
       JSON.stringify({
@@ -1384,7 +2036,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
           restore_grade: 'native',
           todos: [],
           pending: { questions: [], permissions: [] },
-          selection: { agent: 'portfolio_manager', model: null },
+          selection: { agent: activeAgent, model: { provider: 'zed', model: 'zed' } },
           harness: { current: 'kortix-api', history: [] },
         },
         generation: session.messages.length,
@@ -1397,7 +2049,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
             thread_id: 'thread-main',
             parent_thread_id: null,
             spawned_by: null,
-            agent: 'portfolio_manager',
+            agent: activeAgent,
             title: session.title,
             created_at: session.created_at,
             messages: session.messages,
@@ -1412,19 +2064,20 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
   // Turn endpoint
   if (url.includes('/turn')) {
     const sessId = extractSessionIdFromUrl(url);
-    const session = mockSessions.get(sessId);
+    const session = loadMockSession(sessId);
     const lastMsg = session?.messages?.[session.messages.length - 1];
+    const hasAssistantReplied = lastMsg?.role === 'assistant';
 
     return new Response(
       JSON.stringify({
-        turns: [],
-        can_stop: false,
-        last_ended: lastMsg
+        turns: hasAssistantReplied ? [] : [{ turn_id: 'turn-running', state: 'running' }],
+        can_stop: !hasAssistantReplied,
+        last_ended: hasAssistantReplied
           ? {
-              turn_token: 'tt-' + lastMsg.message_id,
-              ended_at: lastMsg.completed_at || new Date().toISOString(),
-              error: null,
-            }
+            turn_token: 'tt-' + lastMsg.message_id,
+            ended_at: lastMsg.completed_at || new Date().toISOString(),
+            error: null,
+          }
           : undefined,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -1433,10 +2086,14 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
 
   // Working endpoint
   if (url.includes('/working')) {
+    const sessId = extractSessionIdFromUrl(url);
+    const session = loadMockSession(sessId);
+    const isWorking = session?.messages?.length ? session.messages[session.messages.length - 1]?.role === 'user' : false;
+
     return new Response(
       JSON.stringify({
-        inbox: { pending: 0 },
-        working: false,
+        inbox: { pending: isWorking ? 1 : 0 },
+        working: isWorking,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
@@ -1471,6 +2128,41 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
+  }
+
+  if (url.includes('/kortix/health') || url.includes('/health')) {
+    return new Response(JSON.stringify({ status: 'healthy', ok: true, healthy: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (url.includes('/global/config') || url.includes('/p/config')) {
+    return new Response(JSON.stringify({ ok: true, version: 1 }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (url.includes('/snapshot')) {
+    const sessId = extractSessionIdFromUrl(url);
+    const session = mockSessions.get(sessId) || createInitialSession(sessId);
+    return new Response(
+      JSON.stringify({
+        session_id: sessId,
+        messages: session.messages,
+        transcript: session.messages,
+        stage: 'ready',
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  if (url.includes('/presence')) {
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   if (url.includes('/events')) {
@@ -1592,28 +2284,28 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         if (init?.body) {
           bodyJson = JSON.parse(String(init.body));
         }
-      } catch {}
+      } catch { }
 
-      // Reuse the default session instead of creating a new one every time.
-      // This prevents the sidebar from filling up with duplicate "Trading Chat" sessions.
       const existingId = bodyJson?.session_id;
-      const reuseId = existingId && mockSessions.has(existingId) ? existingId : defaultSessId;
-      const reuseSession = mockSessions.get(reuseId) || createInitialSession(reuseId);
-      if (!mockSessions.has(reuseId)) mockSessions.set(reuseId, reuseSession);
+      const targetSessionId = existingId || defaultSessId;
+      const session = loadMockSession(targetSessionId);
 
       const promptText = bodyJson?.pending_prompt?.text || '';
       if (promptText) {
-        const modelId = bodyJson.pending_prompt?.model || 'pollinations-mistral';
+        session.title = promptText.slice(0, 35);
+        const modelId = bodyJson.pending_prompt?.model || 'zed';
         const userMsgId = 'msg-user-' + Date.now();
         const asstMsgId = 'msg-asst-' + (Date.now() + 1);
         const now = new Date().toISOString();
 
-        reuseSession.messages.push({
+        // Clear default placeholder messages so thread starts fresh with user's prompt
+        session.messages = [];
+        session.messages.push({
           schema: 'kortix.session/2',
           v: 1,
           message_id: userMsgId,
           thread_id: 'thread-main',
-          seq: reuseSession.messages.length + 1,
+          seq: 1,
           role: 'user',
           kind: 'turn',
           status: 'complete',
@@ -1629,18 +2321,38 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
           blocks: [{ id: 'b-' + userMsgId, type: 'text', text: promptText }],
         });
 
-        const reply = getIntelligentMockReply(promptText, modelId);
-        reuseSession.messages.push({
+        let reply: string = '';
+        const agentId =
+          bodyJson.agent ||
+          bodyJson.overrides?.agent ||
+          bodyJson.selection?.agent ||
+          bodyJson.pending_prompt?.agent ||
+          (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('agentId') : null) ||
+          'portfolio_manager';
+
+        try {
+          reply = await fetchRealLlmCompletion(promptText, modelId, [], agentId);
+        } catch (e) {
+          console.error('[Render-LLM] Error fetching completion:', e);
+        }
+        if (!reply || !reply.trim()) {
+          reply = generateDynamicTradingAnalysis(promptText, 'zed');
+        }
+
+        // Add assistant reply to session with explicit reply_to
+        session.messages.push({
           schema: 'kortix.session/2',
           v: 1,
           message_id: asstMsgId,
+          reply_to: userMsgId,
           thread_id: 'thread-main',
-          seq: reuseSession.messages.length + 1,
+          seq: 2,
           role: 'assistant',
           kind: 'turn',
           status: 'complete',
           in_context: true,
-          model: { provider: FREE_LLM_MODELS[modelId]?.provider || 'pollinations', model: modelId },
+          agent: agentId,
+          model: { provider: FREE_LLM_MODELS[modelId]?.provider || 'zed', model: modelId },
           usage: { input: 35, output: 85, cache_read: 0, cache_write: 0 },
           finish: 'stop',
           error: null,
@@ -1649,21 +2361,60 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
           producer: { harness: 'kortix-api', harness_version: '1', adapter_version: '1' },
           blocks: [{ id: 'b-' + asstMsgId, type: 'text', text: reply }],
         });
+        persistMockSession(session);
+
+        if (typeof window !== 'undefined') {
+          try {
+            const { useSyncStore } = require('../../browser/stores/sync-store');
+            const logPage = {
+              session: {
+                schema: 'kortix.session/2',
+                v: 1,
+                session_id: targetSessionId,
+                title: session.title,
+                created_at: session.created_at,
+                restore_grade: 'native',
+                todos: [],
+                pending: { questions: [], permissions: [] },
+                selection: { agent: agentId, model: { provider: 'zed', model: 'zed' } },
+                harness: { current: 'kortix-api', history: [] },
+              },
+              generation: session.messages.length,
+              has_more: false,
+              thread_id: 'thread-main',
+              threads: [
+                {
+                  schema: 'kortix.session/2',
+                  v: 1,
+                  thread_id: 'thread-main',
+                  parent_thread_id: null,
+                  spawned_by: null,
+                  created_at: session.created_at,
+                },
+              ],
+              messages: session.messages,
+            };
+            useSyncStore.getState().applySessionLogPage(targetSessionId, logPage);
+            window.dispatchEvent(new CustomEvent('session-messages-updated', { detail: { sessionId: targetSessionId } }));
+          } catch (e) {
+            console.warn('[transport] could not sync store directly:', e);
+          }
+        }
       }
 
       return new Response(
         JSON.stringify({
-          session_id: reuseId,
+          session_id: targetSessionId,
           project_id: 'proj-trading',
           account_id: 'acc-default-workspace',
           branch_name: 'main',
           base_ref: 'main',
-          name: reuseSession.title,
-          title: reuseSession.title,
+          name: session.title,
+          title: session.title,
           agent_name: 'trader',
           status: 'ready',
-          created_at: reuseSession.created_at,
-          updated_at: reuseSession.created_at,
+          created_at: session.created_at,
+          updated_at: session.created_at,
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
@@ -1671,11 +2422,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     const sessionMatch = url.match(/\/sessions\/([^\/?#]+)$/);
     if (sessionMatch && sessionMatch[1] && sessionMatch[1] !== 'start' && sessionMatch[1] !== 'needing-input') {
       const sessId = sessionMatch[1];
-      let session = mockSessions.get(sessId);
-      if (!session) {
-        session = createInitialSession(sessId);
-        mockSessions.set(sessId, session);
-      }
+      const session = loadMockSession(sessId);
       return new Response(
         JSON.stringify({
           session_id: sessId,
@@ -1696,10 +2443,16 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     // Sub-queries (pinned, shared, automated, paginated) should not repeat the root session
     if (
       url.includes('view=pinned') ||
+      url.includes('pinned=') ||
       url.includes('view=shared') ||
       url.includes('view=automated') ||
+      url.includes('started_by=') ||
+      url.includes('startedBy=') ||
       url.includes('cursor=') ||
-      url.includes('teamLead=')
+      url.includes('teamLead=') ||
+      url.includes('team_lead=') ||
+      url.includes('archived=') ||
+      url.includes('deleted=')
     ) {
       return new Response(JSON.stringify([]), {
         status: 200,
@@ -1707,21 +2460,20 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
       });
     }
 
-    const defaultSession = mockSessions.get(defaultSessId) || createInitialSession(defaultSessId);
-    const list = [{
-      session_id: defaultSession.session_id,
-      project_id: defaultSession.project_id,
+    const sessionsList = Array.from(mockSessions.values()).map((sess) => ({
+      session_id: sess.session_id,
+      project_id: sess.project_id || 'proj-trading',
       account_id: 'acc-default-workspace',
       branch_name: 'main',
       base_ref: 'main',
-      name: defaultSession.title,
-      title: defaultSession.title,
+      name: sess.title,
+      title: sess.title,
       agent_name: 'trader',
       status: 'ready',
-      created_at: defaultSession.created_at,
-      updated_at: defaultSession.created_at,
-    }];
-    return new Response(JSON.stringify(list), {
+      created_at: sess.created_at,
+      updated_at: sess.created_at,
+    }));
+    return new Response(JSON.stringify(sessionsList), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -1734,7 +2486,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         const parsed = JSON.parse(String(init.body));
         probes = parsed.probes || [];
       }
-    } catch {}
+    } catch { }
     const defaultActions = [
       'project.settings.write',
       'project.read',
@@ -1759,19 +2511,19 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     const results =
       probes.length > 0
         ? probes.map((p) => ({
-            action: p.action,
-            resource_type: p.resourceType || 'project',
-            resource_id: p.resourceId || 'proj-trading',
-            allowed: true,
-            reason: null,
-          }))
+          action: p.action,
+          resource_type: p.resourceType || 'project',
+          resource_id: p.resourceId || 'proj-trading',
+          allowed: true,
+          reason: null,
+        }))
         : defaultActions.map((action) => ({
-            action,
-            resource_type: 'project',
-            resource_id: 'proj-trading',
-            allowed: true,
-            reason: null,
-          }));
+          action,
+          resource_type: 'project',
+          resource_id: 'proj-trading',
+          allowed: true,
+          reason: null,
+        }));
 
     return new Response(
       JSON.stringify({ allowed: true, reason: null, permissions: results, results }),
@@ -2064,7 +2816,13 @@ export async function send(
       url.includes('/connections') ||
       url.includes('/files') ||
       url.includes('/branches') ||
-      url.includes('/drives')
+      url.includes('/drives') ||
+      url.includes('/kortix') ||
+      url.includes('/health') ||
+      url.includes('/snapshot') ||
+      url.includes('/presence') ||
+      url.includes('/events') ||
+      url.includes('/log')
     ) {
       return await getMockBackendResponse(url, init, input);
     }

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useTranslations } from '@/i18n/use-translations';
-import { ProjectHome, SidebarToggle } from '@kortix/ui/workspace';
+import { ProjectHome } from '@kortix/ui/workspace';
 import { useAccountState } from '@kortix/ui/internal/billing/index';
 import {
   billingDialogArgs,
@@ -19,15 +19,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigat
 
 import {
   Pin,
-  Search,
-  X,
-  LineChart,
-  CalendarClock,
-  MoveVertical,
-  Gauge,
-  Landmark,
   Bell,
-  ArrowLeft,
 } from 'lucide-react';
 
 import MarketSwitcher from '@/features/markets/MarketSwitcher';
@@ -52,44 +44,15 @@ import { WallpaperBackground } from '@/components/ui/wallpaper-background';
 import { MARKETS } from '@/features/markets/markets';
 import { getStoredWatchlist, type WatchlistEntry } from '@/features/markets/watchlist.store';
 import type { MarketId } from '@/features/markets/types';
+import { cn } from '@kortix/ui';
 import {
-  cn,
-  Button,
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-} from '@kortix/ui';
-import Hint from '@kortix/ui/hint';
-import {
-  Monitor,
-  CaretDown,
-  Plus,
-  DotsThreeVertical,
-  Users,
   Wallet,
   TrendUp,
   ChartLineUp,
-  BookOpen,
   Target,
-  MagnifyingGlass,
-  PushPin,
 } from '@phosphor-icons/react';
 import KortixPinIcon from '@/features/markets/KortixPinIcon';
-import {
-  Dialog,
-  DialogPopup,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
 import '@/features/markets/terminal.css';
-import BotComputerPanel from '@/features/markets/BotComputerPanel';
-import BotEditDrawer from '@/features/markets/BotEditDrawer';
-import { BotAvatar } from '@/features/markets/BotAvatar';
-import { useTradingAgents, type TradingAgentDef } from '@kortix/ui/workspace/sidebar/trading-agents-nav';
 
 import { promptFromSearchParams } from './prompt-from-search-params';
 
@@ -102,18 +65,6 @@ interface StockTabItem {
 }
 
 export const CANONICAL_TRADING_PROJECT_ID = 'b0000000-0000-0000-0000-000000000001';
-
-const DEFAULT_PORTFOLIO_MANAGER: TradingAgentDef = {
-  id: 'portfolio_manager',
-  name: 'Chief of Staff',
-  role: 'Capital Allocation & Swarm Lead',
-  group: 'Management',
-  shape: 'circle',
-  color: '#8B5CF6',
-  expression: 'attentive',
-  description: 'Lead Portfolio Manager and Workspace Administrator. Synthesizes swarm intelligence and directs execution.',
-  isAdmin: true,
-};
 
 export default function ProjectIndexPage() {
   const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
@@ -131,9 +82,9 @@ export default function ProjectIndexPage() {
     }
   }, [rawProjectId, searchParams, router]);
 
-  // Active view management: 'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent' | 'journal' | 'chart'
+  // Active view management: 'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'journal' | 'chart'
   const queryTab = searchParams.get('tab');
-  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'agent' | 'journal' | 'chart'>(
+  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'journal' | 'chart'>(
     queryTab === 'overview'
       ? 'overview'
       : queryTab === 'watchlist'
@@ -190,42 +141,6 @@ export default function ProjectIndexPage() {
       return next;
     });
   }, [activeView]);
-  const [editingAgent, setEditingAgent] = useState<TradingAgentDef | null>(null);
-  const [showComputer, setShowComputer] = useState(true);
-  const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
-  const [newGroupName, setNewGroupName] = useState('');
-  const [newGroupAgentIds, setNewGroupAgentIds] = useState<string[]>([]);
-
-  const handleOpenCreateAgent = () => {
-    const newAgent: TradingAgentDef = {
-      id: `agent-custom-${Date.now()}`,
-      name: 'Custom Agent',
-      role: 'Trading Specialist',
-      group: 'Analysts',
-      shape: 'circle',
-      color: '#10B981',
-      expression: 'attentive',
-      status: 'idle',
-      description: 'Custom AI trading agent identity',
-      timeText: 'Just now',
-      chatPreview: 'Ready for market analysis',
-      lastAction: 'Ready for market analysis',
-      time: 'Just now',
-    };
-    setEditingAgent(newAgent);
-  };
-
-  // Listen for edit agent drawer trigger
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const custom = e as CustomEvent<TradingAgentDef>;
-      if (custom.detail) {
-        setEditingAgent(custom.detail);
-      }
-    };
-    window.addEventListener('open-bot-edit-drawer', handler);
-    return () => window.removeEventListener('open-bot-edit-drawer', handler);
-  }, []);
 
   // Watchlist updates
   useEffect(() => {
@@ -360,7 +275,6 @@ export default function ProjectIndexPage() {
   const { data: accountState } = useAccountState({ accountId: projectAccountId });
   const openUpgradeDialog = useUpgradeDialogStore((s) => s.openUpgradeDialog);
   const beforeSend = useProjectSendGate(projectId);
-  const { data: tradingAgents = [] } = useTradingAgents();
 
   const [journalTrades, setJournalTrades] = useState<JournalTrade[]>(() => {
     if (typeof window !== 'undefined') {
@@ -518,143 +432,43 @@ export default function ProjectIndexPage() {
       {/* Main Workspace Body */}
       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
         {/* ========================================================================= */}
-        {/* VIEW 1: KORTIX CHAT COMPOSER WITH PROMPT SUGGESTIONS & ADMIN COMPUTER     */}
+        {/* VIEW 1: KORTIX PROJECT HOME COMPOSER                                  */}
         {/* ========================================================================= */}
-        {visitedViews.has('chat') && (() => {
-          const selectedAgentId = searchParams.get('agentId');
-          const selectedAgent =
-            tradingAgents.find((a) => a.id === selectedAgentId) || tradingAgents[0] || DEFAULT_PORTFOLIO_MANAGER;
-
-          return (
-            <div className={cn("h-full flex flex-row overflow-hidden flex-1 min-h-0", activeView !== 'chat' && 'hidden')}>
-              {/* Left Column: Chat Area */}
-              <div className="flex-1 min-w-0 flex flex-col h-full overflow-y-auto">
-                {selectedAgent && (
-                  <div className="px-6 py-3 border-b border-transparent bg-transparent flex items-center justify-between shrink-0 select-none z-10">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <SidebarToggle />
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <button
-                            type="button"
-                            className="flex items-center gap-3 min-w-0 text-left hover:bg-muted/50 p-1 -m-1 rounded-xl transition-colors cursor-pointer group outline-none"
-                            title="Switch agent"
-                          >
-                            <BotAvatar
-                              shape={selectedAgent.shape}
-                              color={selectedAgent.color}
-                              expression={selectedAgent.expression}
-                              size={30}
-                              isAnimated={true}
-                            />
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="text-sm font-bold text-foreground truncate">
-                                  {selectedAgent.name}
-                                </span>
-                                <CaretDown className="size-3 text-muted-foreground group-hover:text-foreground transition-colors" />
-                              </div>
-                              <p className="text-[11px] text-muted-foreground truncate">{selectedAgent.role}</p>
-                            </div>
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start" className="w-64 max-h-80 overflow-y-auto">
-                          {tradingAgents.map((agent) => (
-                            <DropdownMenuItem
-                              key={agent.id}
-                              onClick={() => {
-                                router.push(`/projects/${projectId}?tab=chat&agentId=${agent.id}`);
-                              }}
-                              className={cn(
-                                'flex items-center gap-2.5 px-3 py-2 cursor-pointer rounded-lg',
-                                agent.id === selectedAgent.id ? 'bg-muted font-medium' : '',
-                              )}
-                            >
-                              <BotAvatar
-                                shape={agent.shape}
-                                color={agent.color}
-                                expression={agent.expression}
-                                size={22}
-                              />
-                              <div className="min-w-0 flex-1">
-                                <p className="text-xs font-semibold text-foreground truncate">{agent.name}</p>
-                                <p className="text-[10px] text-muted-foreground truncate">{agent.role}</p>
-                              </div>
-                            </DropdownMenuItem>
-                          ))}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-
-                    {/* Right side corner: Kortix style computer toggle button */}
-                    <div className="ml-auto flex items-center gap-2">
-                      <Hint label={showComputer ? 'Hide computer' : 'Open computer'}>
-                        <Button
-                          type="button"
-                          variant={showComputer ? 'secondary' : 'ghost'}
-                          size="icon"
-                          onClick={() => setShowComputer((prev) => !prev)}
-                          aria-label={showComputer ? 'Hide computer' : 'Open computer'}
-                          className="size-8 cursor-pointer text-muted-foreground hover:text-foreground"
-                        >
-                          <Monitor className="size-4" weight={showComputer ? 'fill' : 'regular'} />
-                        </Button>
-                      </Hint>
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex-1 flex flex-col justify-center min-h-0 [&_.absolute.top-2.left-2]:hidden">
-                  <ProjectHome projectId={projectId} beforeSend={beforeSend}>
-                    {/* Quick suggestion prompt chips below the centered composer */}
-                    <div className="flex flex-wrap items-center justify-center gap-2 pt-2 pb-6">
-                      {[
-                        'Analyze Apple (AAPL)',
-                        'Analyze Tesla (TSLA)',
-                        'Analyze NVIDIA (NVDA)',
-                        'Analyze S&P 500 momentum',
-                        'Compare Apple vs AMD & Microsoft',
-                        'Market breakdown & key technicals',
-                      ].map((promptText) => (
-                        <button
-                          key={promptText}
-                          type="button"
-                          onClick={() => {
-                            useComposerPrefillStore.getState().setPrefill(projectId, promptText);
-                          }}
-                          className="rounded-full bg-muted/70 hover:bg-muted text-muted-foreground hover:text-foreground border border-border/80 px-3.5 py-1.5 text-xs font-medium transition-all cursor-pointer font-sans shadow-2xs"
-                        >
-                          {promptText}
-                        </button>
-                      ))}
-                    </div>
-                  </ProjectHome>
+        {visitedViews.has('chat') && (
+          <div
+            className={cn(
+              'flex h-full min-h-0 flex-1 flex-col overflow-hidden',
+              activeView !== 'chat' && 'hidden',
+            )}
+          >
+            <div className="flex min-h-0 flex-1 flex-col justify-center">
+              <ProjectHome projectId={projectId} beforeSend={beforeSend}>
+                {/* Quick suggestion prompt chips below the centered composer */}
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-2 pb-6">
+                  {[
+                    'Analyze Apple (AAPL)',
+                    'Analyze Tesla (TSLA)',
+                    'Analyze NVIDIA (NVDA)',
+                    'Analyze S&P 500 momentum',
+                    'Compare Apple vs AMD & Microsoft',
+                    'Market breakdown & key technicals',
+                  ].map((promptText) => (
+                    <button
+                      key={promptText}
+                      type="button"
+                      onClick={() => {
+                        useComposerPrefillStore.getState().setPrefill(projectId, promptText);
+                      }}
+                      className="rounded-full bg-muted/70 hover:bg-muted text-muted-foreground hover:text-foreground border border-border/80 px-3.5 py-1.5 text-xs font-medium transition-all cursor-pointer font-sans shadow-2xs"
+                    >
+                      {promptText}
+                    </button>
+                  ))}
                 </div>
-              </div>
-
-              {/* Right Column: Docked Bot Computer (Toggled via computer icon) */}
-              {selectedAgent && showComputer && !editingAgent && (
-                <BotComputerPanel
-                  adminAgentName={selectedAgent.name}
-                  onClose={() => setShowComputer(false)}
-                />
-              )}
-
-              {/* Right Column: Docked Bot Identity Editor Drawer (Proper Compression) */}
-              {editingAgent && (
-                <BotEditDrawer
-                  isOpen={true}
-                  agent={editingAgent}
-                  mode="docked"
-                  onClose={() => setEditingAgent(null)}
-                  onSave={(updated) => {
-                    setEditingAgent(null);
-                  }}
-                />
-              )}
+              </ProjectHome>
             </div>
-          );
-        })()}
+          </div>
+        )}
 
         {/* ========================================================================= */}
         {/* VIEW 2: MARKETS OVERVIEW (KORTIX DESIGN SYSTEM)                            */}
@@ -1333,80 +1147,6 @@ export default function ProjectIndexPage() {
 
       {/* Global Search Dialog Modal (⌘K) */}
       <SearchCommand />
-
-      {/* Create Group Modal */}
-      <Dialog open={showCreateGroupModal} onOpenChange={setShowCreateGroupModal}>
-        <DialogPopup className="sm:max-w-md p-6 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-2xl">
-          <DialogHeader>
-            <DialogTitle className="text-base font-bold text-foreground">Create Multi-Agent Group</DialogTitle>
-            <DialogDescription className="text-xs text-muted-foreground">
-              Select agents to combine into a collaborative trading swarm desk.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-3">
-            <div>
-              <label className="text-xs font-medium text-foreground block mb-1">Group Name</label>
-              <input
-                type="text"
-                value={newGroupName}
-                onChange={(e) => setNewGroupName(e.target.value)}
-                placeholder="e.g. Alpha Momentum Swarm"
-                className="w-full px-3 py-2 text-xs rounded-lg border border-border bg-background text-foreground outline-none focus:border-zinc-950"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-foreground block mb-1">Select Agents</label>
-              <div className="max-h-48 overflow-y-auto space-y-1.5 p-1">
-                {tradingAgents.map((agent) => {
-                  const isChecked = newGroupAgentIds.includes(agent.id);
-                  return (
-                    <label
-                      key={agent.id}
-                      className={cn(
-                        'flex items-center justify-between p-2 rounded-lg border cursor-pointer transition-colors',
-                        isChecked ? 'border-zinc-950 bg-zinc-50 dark:bg-zinc-800/50' : 'border-border hover:bg-muted/50',
-                      )}
-                    >
-                      <div className="flex items-center gap-2">
-                        <BotAvatar shape={agent.shape} color={agent.color} expression={agent.expression} size={20} />
-                        <span className="text-xs font-medium text-foreground">{agent.name}</span>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setNewGroupAgentIds((prev) => [...prev, agent.id]);
-                          } else {
-                            setNewGroupAgentIds((prev) => prev.filter((id) => id !== agent.id));
-                          }
-                        }}
-                        className="size-4 rounded text-zinc-950"
-                      />
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-          <DialogFooter className="flex justify-end gap-2 pt-2">
-            <Button variant="ghost" size="sm" onClick={() => setShowCreateGroupModal(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="default"
-              size="sm"
-              disabled={!newGroupName.trim() || newGroupAgentIds.length === 0}
-              onClick={() => {
-                setShowCreateGroupModal(false);
-              }}
-              className="bg-zinc-950 text-white hover:bg-zinc-800 cursor-pointer"
-            >
-              Create Group
-            </Button>
-          </DialogFooter>
-        </DialogPopup>
-      </Dialog>
     </div>
   );
 }

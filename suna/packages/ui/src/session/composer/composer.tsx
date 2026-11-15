@@ -46,7 +46,11 @@ import {
 import { ImagesUnsupportedBar, ModelConnectionBar } from '../models/model-connection-gate';
 import { type ModelDefaultControls } from '../models/model-selector';
 import { useModelConnectionGate } from '../models/use-model-connection-gate';
-import { NO_AGENT_ACCESS_HINT, NO_AGENT_ACCESS_LABEL } from './composer-agent-access';
+import {
+  composerSelectableAgents,
+  NO_AGENT_ACCESS_HINT,
+  NO_AGENT_ACCESS_LABEL,
+} from './composer-agent-access';
 import { useComposerDropZone } from './composer-drop-zone';
 import type { DraftScope, StoredDraft } from './draft/composer-draft';
 import { finishedDraftUploads, keepUnsentUploadFile, restoreDraftUploads } from './draft/draft-uploads';
@@ -838,7 +842,7 @@ function ComposerImpl(props: SessionChatInputProps) {
   const [activeSpace] = useActiveSpace(projectId ?? '');
   const scopeConfig = useProjectConfig(projectId);
   const primaryAgents = useMemo(() => {
-    const base = agents.filter((a) => !a.hidden && a.mode !== 'subagent');
+    const base = composerSelectableAgents(agents);
     if (!activeSpace || !scopeConfig) return base;
     const spaceByName = new Map(scopeConfig.agents.map((a) => [a.name, a.space ?? null]));
     return base.filter(

@@ -73,6 +73,28 @@ const TRADINGVIEW_KNOWN_LOGOS: Record<string, string> = {
   RELIANCE: 'https://s3-symbol-logo.tradingview.com/reliance.svg',
   HDFCBANK: 'https://s3-symbol-logo.tradingview.com/hdfc-bank.svg',
   ICICIBANK: 'https://s3-symbol-logo.tradingview.com/icici-bank.svg',
+  TCS: 'https://s3-symbol-logo.tradingview.com/tata-consultancy-services.svg',
+  INFY: 'https://s3-symbol-logo.tradingview.com/infosys.svg',
+  SBIN: 'https://s3-symbol-logo.tradingview.com/state-bank-of-india.svg',
+  TATAMOTORS: 'https://s3-symbol-logo.tradingview.com/tata-motors.svg',
+  NIFTY: 'https://s3-symbol-logo.tradingview.com/indices/nifty-50.svg',
+  NIFTY50: 'https://s3-symbol-logo.tradingview.com/indices/nifty-50.svg',
+  BANKNIFTY: 'https://s3-symbol-logo.tradingview.com/indices/nifty-bank.svg',
+
+  // Metals & Commodities
+  GOLD: 'https://s3-symbol-logo.tradingview.com/metal/gold.svg',
+  XAUUSD: 'https://s3-symbol-logo.tradingview.com/metal/gold.svg',
+  SILVER: 'https://s3-symbol-logo.tradingview.com/metal/silver.svg',
+  XAGUSD: 'https://s3-symbol-logo.tradingview.com/metal/silver.svg',
+  USOIL: 'https://s3-symbol-logo.tradingview.com/crude-oil.svg',
+  UKOIL: 'https://s3-symbol-logo.tradingview.com/crude-oil.svg',
+
+  // Additional Popular Stocks
+  COIN: 'https://s3-symbol-logo.tradingview.com/coinbase.svg',
+  PLTR: 'https://s3-symbol-logo.tradingview.com/palantir.svg',
+  AVGO: 'https://s3-symbol-logo.tradingview.com/broadcom.svg',
+  CRM: 'https://s3-symbol-logo.tradingview.com/salesforce.svg',
+  UBER: 'https://s3-symbol-logo.tradingview.com/uber.svg',
 };
 
 export const StockSymbolIcon = React.memo(function StockSymbolIcon({
@@ -92,7 +114,33 @@ export const StockSymbolIcon = React.memo(function StockSymbolIcon({
     lg: 'size-10 text-sm',
   }[size];
 
-  // 1. Instantaneous sub-0.05ms inlined vector SVGs for all primary assets (0 network requests)
+  // 1. Prioritize authentic real TradingView SVG CDN logo for verified visual accuracy
+  const directLogoUrl = logoid
+    ? `https://s3-symbol-logo.tradingview.com/${logoid}.svg`
+    : TRADINGVIEW_KNOWN_LOGOS[cleanSym];
+
+  if (directLogoUrl && !imageError) {
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full overflow-hidden shrink-0 bg-white border border-border/70 shadow-2xs',
+          sizeClasses,
+          className,
+        )}
+      >
+        <img
+          src={directLogoUrl}
+          alt={cleanSym}
+          className="size-full object-contain p-0.5"
+          onError={() => setImageError(true)}
+          loading="eager"
+          decoding="async"
+        />
+      </div>
+    );
+  }
+
+  // 2. High-performance inlined vector SVGs fallback if offline or CDN unavailable
   if (cleanSym === 'AAPL' || cleanSym.includes('APPLE')) {
     return (
       <div
@@ -283,31 +331,6 @@ export const StockSymbolIcon = React.memo(function StockSymbolIcon({
     );
   }
 
-  // 2. Direct TradingView CDN logo if logoid is present or in known dictionary
-  const directLogoUrl = logoid
-    ? `https://s3-symbol-logo.tradingview.com/${logoid}.svg`
-    : TRADINGVIEW_KNOWN_LOGOS[cleanSym];
-
-  if (directLogoUrl && !imageError) {
-    return (
-      <div
-        className={cn(
-          'flex items-center justify-center rounded-full overflow-hidden shrink-0 bg-zinc-100 border border-zinc-200/60 shadow-2xs',
-          sizeClasses,
-          className,
-        )}
-      >
-        <img
-          src={directLogoUrl}
-          alt={cleanSym}
-          className="size-full object-contain"
-          onError={() => setImageError(true)}
-          loading="eager"
-          decoding="async"
-        />
-      </div>
-    );
-  }
 
   // Commodities: Gold
   if (cleanSym.includes('XAU') || cleanSym.includes('GOLD')) {

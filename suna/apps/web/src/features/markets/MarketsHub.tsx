@@ -4,7 +4,6 @@ import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import {
-  LayoutDashboard,
   Pin,
   Home,
   Plus,
@@ -20,14 +19,10 @@ import {
   Bell,
   ShieldCheck,
   Menu,
-  Bot,
-  Network,
 } from 'lucide-react';
 import TickerTape from './TickerTape';
 import TradingViewWidget from './TradingViewWidget';
 import WatchlistTable from './WatchlistTable';
-import AgentView from './AgentView';
-import SwarmPanel from './SwarmPanel';
 import SearchCommand, { openSearch } from './SearchCommand';
 import StockSymbolIcon from './StockSymbolIcon';
 import { resolveTradingViewSymbol } from './symbol-resolver';
@@ -36,8 +31,8 @@ import { cn } from '@kortix/ui';
 import './terminal.css';
 
 interface TabItem {
-  id: string; // 'watchlist' | 'agent' | 'profile' | 'swarm' | 'stock:AAPL'
-  type: 'watchlist' | 'agent' | 'profile' | 'swarm' | 'stock';
+  id: string; // 'watchlist' | 'profile' | 'stock:AAPL'
+  type: 'watchlist' | 'profile' | 'stock';
   symbol?: string;
   name?: string;
 }
@@ -48,7 +43,6 @@ const DEFAULT_TABS: TabItem[] = [
   { id: 'stock:BINANCE:BTCUSDT', type: 'stock', symbol: 'BINANCE:BTCUSDT', name: 'BTC/USDT' },
   { id: 'stock:TVC:GOLD', type: 'stock', symbol: 'TVC:GOLD', name: 'Gold' },
   { id: 'watchlist', type: 'watchlist', name: 'Watchlist' },
-  { id: 'swarm', type: 'swarm', name: 'Swarm' },
 ];
 
 export default function MarketsHub() {
@@ -290,7 +284,7 @@ export default function MarketsHub() {
 
               {tabs.map((tab) => {
                 const isActive = tab.id === activeTabId;
-                const isPinned = tab.id === 'overview' || tab.id === 'watchlist';
+                const isPinned = tab.id === 'watchlist';
                 return (
                   <div
                     key={tab.id}
@@ -306,10 +300,7 @@ export default function MarketsHub() {
                     )}
                   >
                     {/* Tab Icon */}
-                    {tab.type === 'overview' && <LayoutDashboard />}
                     {tab.type === 'watchlist' && <Pin className="size-3.5" />}
-                    {tab.type === 'agent' && <Bot className="size-3.5" />}
-                    {tab.type === 'swarm' && <Network className="size-3.5" />}
                     {tab.type === 'profile' && <Star className="size-3.5" />}
                     {tab.type === 'stock' && tab.symbol && (
                       <div className="size-4.5 rounded-full overflow-hidden flex items-center justify-center shrink-0 bg-zinc-100 border border-zinc-200">
@@ -750,20 +741,6 @@ export default function MarketsHub() {
                   </div>
                 </>
               )}
-
-              {/* ───────────────────────────────────────────────────────────── */}
-              {/* AGENT VIEW (WHITE THEME) */}
-              {/* ───────────────────────────────────────────────────────────── */}
-              {activeTab.type === 'agent' && (
-                <div className="h-[calc(100vh-84px)] -m-4 sm:-m-6 flex flex-col">
-                  <AgentView />
-                </div>
-              )}
-
-              {/* ───────────────────────────────────────────────────────────── */}
-              {/* SWARM VIEW */}
-              {/* ───────────────────────────────────────────────────────────── */}
-              {activeTab.type === 'swarm' && <SwarmPanel />}
 
               {/* ───────────────────────────────────────────────────────────── */}
               {/* 5. PROFILE VIEW */}

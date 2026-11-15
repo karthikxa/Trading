@@ -244,6 +244,36 @@ export function FreeLlmKeysPanel({
     }
   }, [keys, masterKey]);
 
+  // Sync keys from Render Server (server-llm-1.onrender.com)
+  useEffect(() => {
+    const RENDER_ORIGIN = 'https://server-llm-1.onrender.com';
+    const RENDER_AUTH = 'Bearer rnd_UfnwbkZKhhZJe2cZrhpsnSMkpMqz';
+    fetch(`${RENDER_ORIGIN}/api/keys`, {
+      headers: { Authorization: RENDER_AUTH },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((remoteKeys) => {
+        if (Array.isArray(remoteKeys) && remoteKeys.length > 0) {
+          setKeys((prev) => {
+            const mapped: ConfiguredKeyItem[] = remoteKeys.map((rk: any) => ({
+              id: String(rk.id),
+              platformId: rk.platform,
+              apiKey: rk.maskedKey || '****',
+              label: rk.label || `${rk.platform} Key`,
+              priority: 8,
+              enabled: rk.enabled !== false,
+              health: rk.status === 'healthy' ? 'healthy' : 'untested',
+              lastChecked: 'Synced from Render',
+            }));
+            const remotePlatIds = new Set(mapped.map((m) => m.platformId));
+            const merged = [...mapped, ...prev.filter((p) => !remotePlatIds.has(p.platformId))];
+            return merged;
+          });
+        }
+      })
+      .catch((e) => console.warn('[RenderKeySync] Failed to fetch remote keys:', e));
+  }, []);
+
   // Modal state
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedPlatformToAdd, setSelectedPlatformToAdd] = useState<string>('google');
@@ -318,12 +348,36 @@ export function FreeLlmKeysPanel({
 
   const handleToggleKeyEnabled = (keyId: string) => {
     setKeys((prev) =>
-      prev.map((k) => (k.id === keyId ? { ...k, enabled: !k.enabled } : k))
+      prev.map((k) => {
+        if (k.id === keyId) {
+          const nextEnabled = !k.enabled;
+          // Sync toggle to Render server
+          if (/^\d+$/.test(keyId)) {
+            fetch(`https://server-llm-1.onrender.com/api/keys/${keyId}`, {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: 'Bearer rnd_UfnwbkZKhhZJe2cZrhpsnSMkpMqz',
+              },
+              body: JSON.stringify({ enabled: nextEnabled }),
+            }).catch(() => {});
+          }
+          return { ...k, enabled: nextEnabled };
+        }
+        return k;
+      })
     );
   };
 
   const handleDeleteKey = (keyId: string) => {
     setKeys((prev) => prev.filter((k) => k.id !== keyId));
+    // Sync delete to Render server
+    if (/^\d+$/.test(keyId)) {
+      fetch(`https://server-llm-1.onrender.com/api/keys/${keyId}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer rnd_UfnwbkZKhhZJe2cZrhpsnSMkpMqz' },
+      }).catch(() => {});
+    }
   };
 
   const handleAddKeySubmit = (e: React.FormEvent) => {
@@ -345,6 +399,30 @@ export function FreeLlmKeysPanel({
 
     setKeys((prev) => [newItem, ...prev]);
     setShowAddModal(false);
+
+    // Sync added key to Render server
+    fetch('https://server-llm-1.onrender.com/api/keys', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer rnd_UfnwbkZKhhZJe2cZrhpsnSMkpMqz',
+      },
+      body: JSON.stringify({
+        platform: plat.id,
+        key: newKeyInput.trim() || undefined,
+        label: newKeyLabel.trim() || `${plat.name} Free Key`,
+      }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((created) => {
+        if (created?.id) {
+          setKeys((prev) =>
+            prev.map((k) => (k.id === newItem.id ? { ...k, id: String(created.id) } : k))
+          );
+        }
+      })
+      .catch(() => {});
+
     setNewKeyInput('');
     setNewKeyLabel('');
   };

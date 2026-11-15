@@ -15,23 +15,28 @@ const QUARTER_HOUR_SLOTS: string[] = Array.from({ length: 24 * 4 }, (_, idx) => 
 /**
  * Normalize date strings (YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY) into ISO YYYY-MM-DD.
  */
-export function normalizeToIsoDate(raw?: string | null): string {
-  if (!raw) return '2026-12-31';
+export function normalizeToIsoDate(raw?: string | null): string | null {
+  if (!raw) return null;
   const trimmed = raw.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const [y, m, d] = trimmed.split('-').map(Number);
+    if (y >= 1970 && y <= 2099 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return trimmed;
+    }
+  }
   if (/^\d{2}-\d{2}-\d{4}$/.test(trimmed)) {
-    const [d, m, y] = trimmed.split('-');
-    return `${y}-${m}-${d}`;
+    const [d, m, y] = trimmed.split('-').map(Number);
+    if (y >= 1970 && y <= 2099 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
   }
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) {
-    const [d, m, y] = trimmed.split('/');
-    return `${y}-${m}-${d}`;
+    const [d, m, y] = trimmed.split('/').map(Number);
+    if (y >= 1970 && y <= 2099 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
   }
-  const d = new Date(trimmed);
-  if (!Number.isNaN(d.getTime())) {
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  }
-  return '2026-12-31';
+  return null;
 }
 
 /**
@@ -40,7 +45,7 @@ export function normalizeToIsoDate(raw?: string | null): string {
 export function parseIsoDate(iso?: string | null): Date | undefined {
   if (!iso) return undefined;
   const normalized = normalizeToIsoDate(iso);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return undefined;
+  if (!normalized) return undefined;
   const [y, m, d] = normalized.split('-').map(Number);
   const parsed = new Date(y, m - 1, d);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
@@ -107,48 +112,89 @@ export function JournalDatePicker({
   className,
 }: JournalDatePickerProps) {
   const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(value);
   const selectedDate = useMemo(() => parseIsoDate(value), [value]);
   const [viewMonth, setViewMonth] = useState<Date>(() => selectedDate ?? new Date());
+
+  useEffect(() => {
+    setDraft(value);
+    const parsed = parseIsoDate(value);
+    if (parsed) setViewMonth(parsed);
+  }, [value]);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    setDraft(raw);
+    const parsed = parseIsoDate(raw);
+    if (parsed) {
+      const iso = formatIsoDate(parsed);
+      onChange(iso);
+      setViewMonth(parsed);
+    }
+  };
+
+  const handleInputBlur = () => {
+    const parsed = parseIsoDate(draft);
+    if (parsed) {
+      const iso = formatIsoDate(parsed);
+      setDraft(iso);
+      onChange(iso);
+      setViewMonth(parsed);
+    } else {
+      setDraft(value);
+    }
+  };
 
   const handleOpenChange = (nextOpen: boolean) => {
     setOpen(nextOpen);
     if (nextOpen) {
-      setViewMonth(selectedDate ?? new Date());
+      setViewMonth(parseIsoDate(value) ?? new Date());
     }
   };
 
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
-      <PopoverTrigger
-        render={
-          <button
-            id={id}
-            type="button"
-            aria-label={ariaLabel}
-            className={cn(
-              'h-9 w-full flex items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-[13px] font-medium font-sans tabular-nums text-zinc-950 shadow-2xs',
-              'hover:bg-zinc-50 hover:border-zinc-300 focus:outline-none',
-              'data-[popup-open]:border-zinc-400 transition-colors cursor-pointer',
-              className
-            )}
-          >
-            <span className={selectedDate ? 'text-zinc-950' : 'text-zinc-400'}>
-              {formatReadableDate(value)}
-            </span>
-            <CalendarIcon className="size-3.5 text-zinc-400 shrink-0" />
-          </button>
-        }
-      />
-      <PopoverPopup align="start" sideOffset={6} className="p-2.5 w-auto font-sans">
+      <div className={cn('relative flex items-center w-full font-sans', className)}>
+        <CalendarIcon className="pointer-events-none absolute left-3 size-3.5 text-zinc-400" />
+        <input
+          id={id}
+          type="text"
+          aria-label={ariaLabel}
+          value={draft}
+          onChange={handleInputChange}
+          onBlur={handleInputBlur}
+          placeholder="YYYY-MM-DD"
+          className={cn(
+            'h-9 w-full rounded-lg border border-zinc-200 bg-white pl-8 pr-8 text-[13px] font-medium font-sans tabular-nums text-zinc-950 shadow-2xs',
+            'hover:border-zinc-300 focus:outline-none focus:border-zinc-400 transition-colors'
+          )}
+        />
+        <PopoverTrigger
+          render={
+            <button
+              type="button"
+              aria-label={`Open ${ariaLabel || 'date'} calendar`}
+              className="absolute right-1 inline-flex size-7 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 transition-colors cursor-pointer"
+            >
+              <ChevronDown className="size-3.5 text-zinc-400" />
+            </button>
+          }
+        />
+      </div>
+      <PopoverPopup align="start" sideOffset={6} className="p-2.5 w-auto font-sans z-[70]">
         <Calendar
           mode="single"
           captionLayout="dropdown-buttons"
+          fromYear={2020}
+          toYear={2035}
           month={viewMonth}
           onMonthChange={setViewMonth}
           selected={selectedDate}
           onSelect={(day) => {
             if (day) {
-              onChange(formatIsoDate(day));
+              const iso = formatIsoDate(day);
+              setDraft(iso);
+              onChange(iso);
               setOpen(false);
             }
           }}
@@ -159,7 +205,9 @@ export function JournalDatePicker({
             type="button"
             onClick={() => {
               const today = new Date();
-              onChange(formatIsoDate(today));
+              const iso = formatIsoDate(today);
+              setDraft(iso);
+              onChange(iso);
               setViewMonth(today);
               setOpen(false);
             }}

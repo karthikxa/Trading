@@ -12,8 +12,13 @@ Keep entries short, dated and verifiable.
 - The Chief's prompt is `agents/portfolio-manager.md`.
 - The operating contract is `skills/trading-desk/SKILL.md`.
 - The risk policy is `skills/trading-desk/references/decision-schema.md`.
-- The bops-to-Kortix map and the UI target are
+- The unified Kortix + bops + OpenMausBot map and the UI target are
   `skills/trading-desk/references/architecture.md`.
+- bops (FSL-1.1-ALv2) and OpenMausBot (Apache-2.0) are concept sources only. No
+  source is copied into this repository.
+- The custom market agent surfaces (`AgentProfileHub`, `AgentView`,
+  `BotComputerPanel`, `SwarmPanel`, `BotEditDrawer`, `BotAvatar`) are deleted.
+  Markets keeps the stock, watchlist and profile tabs.
 - `trading.agents` and `trading.agent_groups` are frozen legacy tables. Do not
   add reads or writes.
 - No order, payment or external write runs without an explicit human approval.

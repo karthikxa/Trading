@@ -114,14 +114,29 @@ export function ProjectSidebar({
   const [computerConnectOpen, setComputerConnectOpen] = useState(false);
   const [connectMcpOpen, setConnectMcpOpen] = useState(false);
 
-  const [sidebarView, setSidebarView] = useState<'main' | 'agents'>('main');
-
   const searchParams = useUiSearchParams();
   const currentTab = searchParams.get('tab');
 
+  const [sidebarView, setSidebarView] = useState<'main' | 'agents'>(() => {
+    if (typeof window !== 'undefined') {
+      const sp = new URLSearchParams(window.location.search);
+      const tab = sp.get('tab');
+      if (tab === 'chat' || tab === 'agent' || !tab) return 'agents';
+    }
+    return 'agents';
+  });
+
   useEffect(() => {
-    if (currentTab === 'overview' || currentTab === 'watchlist' || currentTab === 'journal' || currentTab === 'spec' || currentTab === 'chart') {
+    if (
+      currentTab === 'overview' ||
+      currentTab === 'watchlist' ||
+      currentTab === 'journal' ||
+      currentTab === 'spec' ||
+      currentTab === 'chart'
+    ) {
       setSidebarView('main');
+    } else if (currentTab === 'chat' || currentTab === 'agent' || !currentTab) {
+      setSidebarView('agents');
     }
   }, [currentTab]);
 
@@ -208,9 +223,9 @@ export function ProjectSidebar({
         ) : (
           <>
             <SidebarHeader
-          className="kx-project-sidebar-header space-y-2"
-          data-peek={peek ? '' : undefined}
-        >
+              className="kx-project-sidebar-header space-y-2"
+              data-peek={peek ? '' : undefined}
+            >
               <div
                 className={cn(
                   'flex w-full items-center gap-1',
@@ -437,7 +452,7 @@ export function ProjectSidebar({
                         <Link
                           href={`/projects/${projectId}/apps`}
                           onClick={() => {
-                            useAppsModalStore.getState().openAppsModal();
+                            useAppsModalStore.getState().setOpen(true);
                           }}
                         >
                           <span className="shrink-0">

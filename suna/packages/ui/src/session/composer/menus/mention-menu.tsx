@@ -7,10 +7,7 @@ import { ChatIcon, FolderIcon } from '@phosphor-icons/react';
 import { useTranslations } from '../../../i18n';
 import { useEffect, useMemo } from 'react';
 import { BotAvatar } from '../../../workspace/sidebar/bot-avatar';
-import {
-  OverlappingAvatars,
-  useTradingAgents,
-} from '../../../workspace/sidebar/trading-agents-nav';
+import { useTradingAgents } from '../../../workspace/sidebar/trading-agents-nav';
 
 import { useFileSearch } from '../hooks/use-file-search';
 import type { MentionSection, MenuRow } from './menu-items';
@@ -114,38 +111,6 @@ function RowIcon({ row }: { row: MenuRow }) {
   if (row.kind === 'agent') {
     const cleanLabel = (row.label || '').replace(/^@\s*/, '').toLowerCase().trim();
     const cleanValue = (row.value || '').replace(/^agent-/, '').toLowerCase().trim();
-
-    // Broadcast to all agents in workspace
-    if (cleanValue === 'all' || cleanLabel === 'all' || cleanLabel.includes('broadcast')) {
-      return (
-        <span className="shrink-0 flex items-center justify-center">
-          <BotAvatar shape="circle" color="#6366F1" expression="excited" size={20} isAnimated={false} />
-        </span>
-      );
-    }
-
-    // Swarm Group
-    let groupAgentIds: string[] = ['fundamentals_analyst', 'trader_agent', 'portfolio_manager'];
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = JSON.parse(localStorage.getItem('tauric_trading_groups_v1') || '[]');
-        const matched = saved.find((g: any) => g.id === cleanValue || g.name?.toLowerCase() === cleanLabel);
-        if (matched?.agentIds?.length) groupAgentIds = matched.agentIds;
-      } catch {}
-    }
-    if (
-      cleanValue === 'offsite_crew' ||
-      cleanValue.includes('crew') ||
-      cleanValue.includes('group') ||
-      cleanLabel.includes('crew') ||
-      cleanLabel.includes('group')
-    ) {
-      return (
-        <span className="shrink-0 flex items-center justify-center">
-          <OverlappingAvatars agentIds={(row as any).agentIds || groupAgentIds} size={20} />
-        </span>
-      );
-    }
 
     // Tauric Swarm Agent by id or name
     const tauricBot = serverAgents.find(

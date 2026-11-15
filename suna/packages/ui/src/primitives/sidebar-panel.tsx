@@ -127,6 +127,14 @@ function Sidebar({
       data-peek={peeking ? '' : undefined}
       data-slot="sidebar"
     >
+      {peeking && (
+        <div
+          aria-hidden
+          className="fixed inset-0 z-35 bg-transparent cursor-default"
+          onClick={peekLeave}
+          onPointerDown={peekLeave}
+        />
+      )}
       {/* This is what handles the sidebar gap on desktop. Its width snaps —
           it must NOT transition. This box is what pushes the content over, so
           animating its width reflows the entire page subtree (resizable panel
@@ -158,6 +166,7 @@ function Sidebar({
         }
         onPointerEnter={peekable ? peekEnter : undefined}
         onPointerLeave={peekable ? peekLeave : undefined}
+        onClickCapture={peeking ? peekLeave : undefined}
         className={cn(
           'fixed z-10 hidden w-(--sidebar-width) md:flex',
           // ─────────────────────────────────────────────────────────────────

@@ -697,18 +697,7 @@ export function ProjectSessionList({ projectId }: ProjectSessionListProps) {
 
     return (
       <FadedScrollArea fadeColor="from-background" className="h-full min-h-0 space-y-px">
-        {/* Pinned is the top of the list, not a block above it. Its caret shows
-            on hover. With group headers below, the next header separates it;
-            without them, a line keeps an unpinned row from reading as pinned. */}
-        <StarterSection
-          title={tPinArchive('section')}
-          query={pinnedQuery}
-          sessions={visiblePinned}
-          open={!collapsedSectionIds.has(PINNED_SECTION_ID)}
-          onToggle={() => toggleSectionCollapsed(projectId, PINNED_SECTION_ID)}
-          renderNode={(session) => renderSessionNode(session, false)}
-          caretOnHover
-        />
+        {/* Pinned section removed per user requirement */}
         {groups.length > 0 && (
           <SessionGroupSections
             projectId={projectId}
@@ -766,34 +755,7 @@ export function ProjectSessionList({ projectId }: ProjectSessionListProps) {
             onClick={() => fetchNextPage()}
           />
         )}
-        <StarterSection
-          title={t('startedBy.others')}
-          query={sharedQuery}
-          sessions={visibleShared}
-          open={expandedIdSet.has('section:shared')}
-          onToggle={() => toggleExpanded(projectId, 'section:shared')}
-          renderNode={(session) => renderSessionNode(session, false, true)}
-        />
-        <StarterSection
-          title={t('startedBy.automated')}
-          query={automatedQuery}
-          sessions={visibleAutomated}
-          open={expandedIdSet.has('section:automated')}
-          onToggle={() => toggleExpanded(projectId, 'section:automated')}
-          renderNode={(session) => renderSessionNode(session, false)}
-          caretOnHover
-        />
-        {/* The first chat never leaves. It is the oldest conversation, so it
-            sits at the very bottom — after the last page, never mid-list. */}
-        {firstChatPending &&
-          !hasNextPage &&
-          !sharedQuery.hasNextPage &&
-          !automatedQuery.hasNextPage && (
-            <FirstChatRow
-              projectId={projectId}
-              isActive={pathname === uiRoutes().project(projectId) && isFirstChatRequested(searchParams)}
-            />
-          )}
+        {/* Shared, Automated, and FirstChatRow removed per user requirement */}
       </>
     );
   }

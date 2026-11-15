@@ -250,7 +250,36 @@ async function dispatchOne(
   const key = providerApiKey(model.provider);
   const flooredTokens = Math.max(maxTokens, 320);
 
-  // Pollinations uses a standard OpenAI-compatible endpoint; no auth needed
+  // Pollinations uses direct text endpoint with openai-fast model
+  if (model.provider === 'pollinations') {
+    try {
+      const pollRes = await fetch('https://text.pollinations.ai/', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          messages: bodyMessages,
+          model: 'openai-fast',
+          seed: Math.floor(Math.random() * 1000000),
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (pollRes.ok) {
+        const text = await pollRes.text();
+        if (text && !text.includes('FREE_LIMIT') && !text.includes('Free limit reached')) {
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { role: 'assistant', content: text.trim() } }],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        }
+      }
+      return pollRes;
+    } catch (err: any) {
+      throw err;
+    }
+  }
+
   return fetch(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {

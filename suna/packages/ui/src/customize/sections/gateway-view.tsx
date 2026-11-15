@@ -91,7 +91,6 @@ import { CapabilityPageShell } from '../shared/capability-page-shell';
 import { GatewayAccessTab } from './gateway-access-tab';
 import { CustomProviderPanel } from './llm-provider/custom-provider-panel';
 import { ModelsTab } from './llm-provider/models-tab';
-import { FreeLlmRouterPanel } from './llm-provider/free-llm-router-panel';
 import { GatewayLogs } from './view/gateway/gateway-logs';
 import { GatewayOverview } from './view/gateway/gateway-overview';
 import { GatewayRouting } from './view/gateway/gateway-routing';
@@ -107,7 +106,6 @@ export const MODELS_PAGE_DESCRIPTION = 'Choose the providers and models this pro
 type LlmTab =
   | 'providers'
   | 'models'
-  | 'router'
   | 'custom'
   | 'gateway'
   | 'routing'
@@ -126,8 +124,6 @@ export const LLM_TABS: LlmTabEntry[] = [
   // way; see `gateway-access-tab.tsx`.
   { id: 'providers', label: 'Providers' },
   { id: 'models', label: 'Models' },
-  // FreeLLMAPI Smart Router: Models, Keys, Analytics, Endpoints
-  { id: 'router', label: 'Router' },
   // The custom-provider form used to be section 4 of the Providers tab. It
   // moved to its own tab so the screen everyone uses to paste a key stops
   // ending in a form almost nobody fills — see `custom-provider-panel.tsx`.
@@ -145,17 +141,17 @@ export const LLM_TABS: LlmTabEntry[] = [
 ];
 
 /**
- * The four tabs the QUICK version carries — `ProjectProviderModal`, the
+ * The three tabs the QUICK version carries — `ProjectProviderModal`, the
  * dialog the session model picker and the Secrets tab open.
  *
  * It is a slice of `LLM_TABS`, not a second list: same ids, same labels, same
  * order, same pills, and it renders through the same `LlmTabStrip` and the
  * same `LlmSections`.
  */
-export type QuickLlmTab = 'providers' | 'models' | 'router' | 'custom';
+export type QuickLlmTab = 'providers' | 'models' | 'custom';
 
 export const QUICK_LLM_TABS: LlmTabEntry[] = LLM_TABS.filter((t) =>
-  (['providers', 'models', 'router', 'custom'] as string[]).includes(t.id),
+  (['providers', 'models', 'custom'] as string[]).includes(t.id),
 );
 
 /** True when `tab` is one of the quick version's three. */
@@ -336,7 +332,6 @@ export function LlmSections({
           provider modal's own "Models" tab. Flattened to a sibling here so it
           keeps a home now that `ProviderConnect` has no tabs of its own. */}
       {tab === 'models' && <ModelsTab projectId={projectId} canWrite={canWrite} />}
-      {tab === 'router' && <FreeLlmRouterPanel projectId={projectId} canWrite={canWrite} />}
       {tab === 'custom' && <CustomProviderPanel projectId={projectId} canWrite={canWrite} />}
       {tab === 'gateway' && (
         <GatewayAccessTab

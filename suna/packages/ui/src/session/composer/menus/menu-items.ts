@@ -4,6 +4,7 @@ import { REMAINING_UI_TRANSLATION_KEYS } from '../../../i18n/ui-catalog/remainin
 import type { UiTranslator } from '../../../i18n';
 
 import type { MentionKind } from '../types';
+import { composerSelectableAgents } from '../composer-agent-access';
 
 export interface MenuRow {
   index: number;
@@ -79,66 +80,15 @@ export function buildMentionSections({
   let index = 0;
   const sections: MentionSection[] = [];
 
-  // Deliberately no `hidden` / `mode` filter here — this mirrors
-  // session-chat-input.tsx:665 (`agents.filter((a) => (a.name || '')
-  // .toLowerCase().includes(q))`, nothing else). `primaryAgents`
-  // (session-chat-input.tsx:312-314, `!a.hidden && a.mode !== 'subagent'`)
-  // exists in the same component but feeds Tab-cycling and the toolbar's
-  // `AgentSelector` only — never the `@` menu. So hidden agents and
-  // subagents ARE listed here today, which is plausibly how you delegate to
-  // a subagent by name. Changing that is a product decision for Jay, not
-  // something to fold into this refactor — see the pinning test below.
+  // One rule for every agent list: only selectable primary agents. Subagents
+  // are dispatched by the Chief, never mentioned as a peer. The legacy `@all`
+  // broadcast and the localStorage group roster are retired with the
+  // `trading.agents` tables.
   const agentRows: MenuRow[] = [];
-
-  // Swarm Broadcast @all
-  if ('all'.includes(q) || '@all'.includes(q) || !q) {
-    agentRows.push({
-      index: index++,
-      kind: 'agent',
-      label: 'all',
-      value: 'all',
-      description: 'Broadcast to all agents in workspace',
-    });
-  }
-
-  // Swarm Groups (dynamic from localStorage + default)
-  let dynamicGroups: Array<{ id: string; name: string; description?: string; agentIds?: string[] }> = [
-    {
-      id: 'offsite_crew',
-      name: 'Offsite crew',
-      description: 'Group (Lead, Fundamentals, Execution)',
-      agentIds: ['fundamentals_analyst', 'trader_agent', 'portfolio_manager'],
-    },
-  ];
-  if (typeof window !== 'undefined') {
-    try {
-      const saved = localStorage.getItem('tauric_trading_groups_v1');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          dynamicGroups = parsed;
-        }
-      }
-    } catch {}
-  }
-
-  for (const group of dynamicGroups) {
-    if (group.name.toLowerCase().includes(q) || (group.description || '').toLowerCase().includes(q) || !q) {
-      agentRows.push({
-        index: index++,
-        kind: 'agent',
-        label: group.name,
-        value: group.id,
-        description: group.description || 'Custom Agent Group',
-        ...(group.agentIds ? { agentIds: group.agentIds } : {}),
-      } as any);
-    }
-  }
-
-  for (const a of agents) {
+  for (const a of composerSelectableAgents(agents)) {
     if (!(a.name || '').toLowerCase().includes(q)) continue;
-    if (agentRows.some((r) => r.label.toLowerCase() === (a.name || '').toLowerCase())) continue;
-    agentRows.push({ index: index++, kind: 'agent', label: a.name || '', value: a.name || '' });
+    const cleanLabel = (a.name || '').replace(/_/g, ' ');
+    agentRows.push({ index: index++, kind: 'agent', label: cleanLabel, value: a.name || '' });
   }
   if (agentRows.length) sections.push({ kind: 'agent', heading: heading('Agents'), items: agentRows });
 

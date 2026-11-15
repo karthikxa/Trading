@@ -20,7 +20,10 @@ export const POPULAR_PROVIDER_IDS = [
 ];
 
 export const MODEL_SELECTOR_PROVIDER_IDS: readonly string[] = SHARED_MODEL_SELECTOR_PROVIDER_IDS;
-export const PROVIDER_LABELS: Record<string, string> = SHARED_PROVIDER_LABELS;
+export const PROVIDER_LABELS: Record<string, string> = {
+  ...SHARED_PROVIDER_LABELS,
+  zed: 'zed',
+};
 
 export const PROVIDER_HINTS: Record<string, string> = {
   anthropic: 'Pro/Max or API key',
@@ -113,9 +116,9 @@ const CATALOG_PROVIDER_IDS = new Set(CATALOG_PROVIDER_ENV.map((provider) => prov
  * (a custom provider) keeps initials.
  */
 export function providerIconSrc(providerID: string, baseUrl?: string): string | undefined {
-  // Drawn in code (ProviderLogo), never fetched: models.dev has no Platinum logo
+  // Drawn in code (ProviderLogo), never fetched: models.dev has no Platinum or Zed logo
   // and answers with its generic sparkles mark.
-  if (providerID === 'platinum') return undefined;
+  if (providerID === 'platinum' || providerID === 'zed' || providerID === 'render-llm') return undefined;
   const icon = PROVIDER_ICON_MAP[providerID]?.icon;
   if (icon) return baseUrl === undefined ? `https://models.dev/logos/${icon}.svg` : `${baseUrl}/${icon}.svg`;
   if (CATALOG_PROVIDER_IDS.has(providerID)) return `https://models.dev/logos/${providerID}.svg`;
@@ -157,6 +160,31 @@ const KORTIX_MARK_STEPS = {
   large: 5,
 } as const;
 
+export function ZedLogo({
+  className,
+  style,
+}: {
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <svg
+      viewBox="0 0 270 270"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={cn('shrink-0 select-none', className)}
+      style={style}
+      aria-label="zed"
+    >
+      <rect width="270" height="270" rx="40" fill="#000000" />
+      <path
+        d="M69.9 58.5H201.3V81.3L113.1 182.7H202.5V211.5H66.9V186.9L155.1 87.3H69.9V58.5Z"
+        fill="#FFFFFF"
+      />
+    </svg>
+  );
+}
+
 export function ProviderLogo({
   providerID,
   name,
@@ -177,9 +205,14 @@ export function ProviderLogo({
   const light = tone === 'light';
   // An unreachable models.dev logo (offline self-host) falls back to initials.
   const [failedSrc, setFailedSrc] = useState<string>();
-  const kortix = providerID === 'kortix';
+  const isZed =
+    providerID === 'zed' ||
+    providerID === 'render-llm' ||
+    name?.toLowerCase() === 'zed' ||
+    name?.toLowerCase()?.includes('zed');
+  const kortix = !isZed && providerID === 'kortix';
   const platinum = providerID === 'platinum';
-  const iconSrc = kortix || platinum ? undefined : providerIconSrc(providerID, providerIconBaseUrl);
+  const iconSrc = isZed || kortix || platinum ? undefined : providerIconSrc(providerID, providerIconBaseUrl);
   const src = iconSrc === failedSrc ? undefined : iconSrc;
 
   const sizeClasses = {
@@ -207,13 +240,21 @@ export function ProviderLogo({
         // the other sizes read as an avatar, and at 16px a tile around a 12px
         // mark is all frame and no logo. The initials fallback keeps its tile
         // at every size: two bare letters at 9px read as debris, not a logo.
-        (src || kortix || platinum) && size === 'xs' ? 'bg-transparent' : light ? LOGO_TILE_LIGHT : 'bg-muted rounded-md',
+        (src || isZed || kortix || platinum) && size === 'xs' ? 'bg-transparent' : light ? LOGO_TILE_LIGHT : 'bg-muted rounded-md',
         sizeClasses[size],
         className,
       )}
       aria-hidden="true"
     >
-      {kortix ? (
+      {isZed ? (
+        <ZedLogo
+          style={{
+            width: size === 'xs' ? '14px' : `calc(var(--spacing) * ${KORTIX_MARK_STEPS[size]} + 2px)`,
+            height: size === 'xs' ? '14px' : `calc(var(--spacing) * ${KORTIX_MARK_STEPS[size]} + 2px)`,
+          }}
+          className={cn('rounded-[3px] overflow-hidden', size === 'xs' ? 'size-3.5' : undefined)}
+        />
+      ) : kortix ? (
         // The host's brand mark (`useBrand` icon), else the Kortix symbol in currentColor.
         <KortixLogo
           variant="icon"

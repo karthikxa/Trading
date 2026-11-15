@@ -1,6 +1,6 @@
 ---
 name: trading-desk
-description: "Run the Tauric Trading Desk: one Chief of Staff with the only session and computer, eleven specialists called with session: same, one decision schema, one risk policy. Use when configuring, auditing or operating the desk roster, the specialist protocol, the risk gate, the triggers, or the migration from the legacy trading.agents roster."
+description: "Run the unified Tauric Trading Desk on Kortix: one Chief of Staff with the only session and computer, eleven specialists called with session: same, one decision schema, one risk policy. Use when configuring, auditing or operating the roster, the specialist protocol, the risk gate, the triggers, or the migration from the legacy trading.agents roster and the bops/OpenMausBot concepts."
 ---
 
 # Trading desk
@@ -33,6 +33,9 @@ works and how to change it safely.
    `INC-2026-09-15`.
 9. **No secrets or PII in the manifest, prompts, memory or commits.** Store
    values with Kortix secrets. Use the class, not the customer.
+10. **Port concepts, not code.** The desk unifies Kortix, bops (FSL-1.1-ALv2)
+    and OpenMausBot (Apache-2.0) into one model. Do not copy bops or
+    OpenMausBot source into this repository.
 
 ## Roster
 
@@ -50,6 +53,20 @@ works and how to change it safely.
 | `risk_manager` | subagent | Risk gate and veto |
 | `trader_agent` | subagent | Execution plan, no order |
 | `ea` | subagent | Desk note and summary |
+
+## Unified model
+
+The desk is the single implementation of three products on one Kortix runtime:
+
+- **bops** contributes the workspace, thread, shared computer, Vault, routines,
+  approvals and bot-group concepts.
+- **OpenMausBot** contributes the bot, channel, Chief of Staff, computer,
+  connected-app, skill, memory-topic and routine concepts.
+- **Kortix** supplies the manifest, sessions, sandbox and `SessionDesktop`,
+  connectors, skills, triggers, approvals and Apps.
+
+One project, one roster, one session, one computer and one UI. The three-way
+mapping and every known gap are in `references/architecture.md`.
 
 ## Protocol at a glance
 
@@ -72,7 +89,7 @@ The full protocol, prompt templates and failure handling are in
 | --- | --- |
 | `references/desk-protocol.md` | Intake, the brief, specialist calls, debate, risk gate, execution, failures |
 | `references/decision-schema.md` | Every JSON schema, confidence and risk bands, risk policy, a worked example |
-| `references/architecture.md` | bops-to-Kortix matrix, the one-computer model, the UI target, the legacy freeze, migration and verification |
+| `references/architecture.md` | Three-way Kortix + bops + OpenMausBot matrix, the one-computer model, the UI target, the legacy freeze, migration and verification |
 | `references/operations.md` | Add or remove a specialist, add a connector, change the model or risk policy, validate, roll back |
 
 ## Triggers

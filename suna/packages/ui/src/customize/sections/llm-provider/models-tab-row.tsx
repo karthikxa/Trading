@@ -54,7 +54,7 @@ export function ModelsTabRow({
   const isManaged =
     group.providerID === 'kortix' && !model.modelID.includes('/');
   const enabled = !!model.enabled;
-  const modelDisabled = access.data?.disabledModels.includes(wireId) ?? false;
+  const modelDisabled = access.data?.disabledModels?.includes(wireId) ?? false;
   const hiddenFromPicker =
     !!access.data && !enabled && !providerDisabled && !modelDisabled;
   // `auto` resolves to this one, so turning it off would break

@@ -95,13 +95,30 @@ function SidebarProvider({
   // those get NO motion. The frequency rule is not about the number of
   // milliseconds; it is about the hand expecting the panel to already be there
   // when the fingers come off the keys.
+
+  // Edge-peek flyout state — hover intent lives in a plain controller so the
+  // open/close delays are testable without React or wall-clock timers.
+  const [peek, setPeek] = React.useState(false);
+  const peekController = React.useMemo(() => createPeekController(setPeek), []);
+
   const [instantToggle, setInstantToggle] = React.useState(false);
+  const lastCollapseTimeRef = React.useRef(0);
   const toggleSidebar = React.useCallback(
     (options?: SidebarToggleOptions) => {
       setInstantToggle(resolveInstant(options));
-      return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open);
+      peekController.cancel();
+      setOpen((currentOpen) => {
+        const nextOpen = !currentOpen;
+        if (!nextOpen) {
+          lastCollapseTimeRef.current = Date.now();
+        }
+        return nextOpen;
+      });
+      if (isMobile) {
+        setOpenMobile((open) => !open);
+      }
     },
-    [isMobile, setOpen, setOpenMobile],
+    [isMobile, peekController, setOpen, setOpenMobile],
   );
 
   // Release the instant flag once the browser has painted the snapped frame, so
@@ -121,10 +138,6 @@ function SidebarProvider({
     };
   }, [instantToggle]);
 
-  // Edge-peek flyout state — hover intent lives in a plain controller so the
-  // open/close delays are testable without React or wall-clock timers.
-  const [peek, setPeek] = React.useState(false);
-  const peekController = React.useMemo(() => createPeekController(setPeek), []);
   React.useEffect(() => () => peekController.cancel(), [peekController]);
   React.useEffect(() => {
     if (open || isMobile) peekController.cancel();
@@ -134,6 +147,8 @@ function SidebarProvider({
   // menu closing can decide whether to re-arm the flyout's close timer.
   const pointerOverRef = React.useRef(false);
   const peekEnter = React.useCallback(() => {
+    // If the user just collapsed the sidebar within the last 600ms, do not immediately re-peek
+    if (Date.now() - lastCollapseTimeRef.current < 600) return;
     pointerOverRef.current = true;
     peekController.enter();
   }, [peekController]);

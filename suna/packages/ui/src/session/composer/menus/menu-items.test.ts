@@ -75,25 +75,32 @@ describe('buildMentionSections', () => {
     expect(sections[0].items.map((i) => i.value)).toEqual(['ses_1']);
   });
 
-  // Pins live behaviour at session-chat-input.tsx:665 deliberately: the `@`
-  // menu's agent list has never applied a hidden/subagent filter (that
-  // filter — `primaryAgents` at :312-314 — feeds Tab-cycling and the
-  // toolbar's AgentSelector only). Listing hidden agents and subagents here
-  // is plausibly how a user delegates to a subagent by name. Whether to
-  // change that is a product decision for Jay, not something a refactor
-  // should silently fold in — do not "tidy" this filter back in without
-  // that decision.
-  test('hidden and subagent agents ARE listed in the @ menu', () => {
+  // One rule for every agent list: the `@` menu offers the same selectable
+  // primary agents as the composer picker. Subagents are dispatched by the
+  // Chief, and the legacy group and `@all` broadcasts are retired.
+  test('lists only selectable primary agents; hidden and subagent agents are excluded', () => {
+    const visible = { name: 'primary-agent', hidden: false, mode: 'primary' } as never;
     const hidden = { name: 'hidden-agent', hidden: true, mode: 'primary' } as never;
     const subagent = { name: 'sub-agent', hidden: false, mode: 'subagent' } as never;
     const sections = buildMentionSections({
-      agents: [hidden, subagent],
+      agents: [visible, hidden, subagent],
       sessions: [],
       files: [],
       query: '',
       currentSessionId: undefined,
     });
-    expect(sections[0].items.map((i) => i.value)).toEqual(['hidden-agent', 'sub-agent']);
+    expect(sections[0].items.map((i) => i.value)).toEqual(['primary-agent']);
+  });
+
+  test('does not list @all or a legacy group roster', () => {
+    const sections = buildMentionSections({
+      agents: [agent('portfolio_manager')],
+      sessions: [],
+      files: [],
+      query: '',
+      currentSessionId: undefined,
+    });
+    expect(sections.flatMap((s) => s.items.map((i) => i.value))).toEqual(['portfolio_manager']);
   });
 
   test('does not match a session when the diffs entry has no file field', () => {
