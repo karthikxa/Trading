@@ -21,7 +21,7 @@ interface ConnectorItem {
 }
 
 let cachedCatalog: ConnectorItem[] | null = null;
-const installedSlugs = new Set<string>(['gmail', 'github', 'slack', 'tradingview', 'alpaca', 'binance']);
+const installedSlugs = new Set<string>();
 
 function getCatalog(): ConnectorItem[] {
   if (cachedCatalog) return cachedCatalog;
@@ -82,9 +82,9 @@ export async function GET(req: Request) {
       status: installedSlugs.has(slug) ? 'active' : 'needs_auth',
       connected: installedSlugs.has(slug),
       actions: [
-        { name: `${slug}_query`, description: `Execute query or read operations on ${item.name}` },
-        { name: `${slug}_action`, description: `Perform write and workflow actions on ${item.name}` },
-        { name: `${slug}_sync`, description: `Real-time bidirectional event sync with ${item.name}` },
+        { path: `${slug}_query`, name: `${slug}_query`, description: `Execute query or read operations on ${item.name}`, risk: 'low' },
+        { path: `${slug}_action`, name: `${slug}_action`, description: `Perform write and workflow actions on ${item.name}`, risk: 'low' },
+        { path: `${slug}_sync`, name: `${slug}_sync`, description: `Real-time bidirectional event sync with ${item.name}`, risk: 'low' },
       ],
     });
   }
@@ -102,8 +102,8 @@ export async function GET(req: Request) {
         status: 'active' as const,
         credentialMode: 'shared' as const,
         actions: [
-          { name: `${s}_read`, description: `Read data from ${match?.name || s}` },
-          { name: `${s}_write`, description: `Execute operations on ${match?.name || s}` },
+          { path: `${s}_read`, name: `${s}_read`, description: `Read data from ${match?.name || s}`, risk: 'low' },
+          { path: `${s}_write`, name: `${s}_write`, description: `Execute operations on ${match?.name || s}`, risk: 'low' },
         ],
       };
     });

@@ -54,7 +54,7 @@ import {
   AppWindow,
   PlugsConnectedIcon,
 } from '@phosphor-icons/react';
-import { UiLink as Link, useUiSearchParams } from '../../providers/ui-provider';
+import { UiLink as Link, useUiPathname, useUiSearchParams } from '../../providers/ui-provider';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { SidebarBalanceWarning } from './footer/project-balance-warning';
 import { SidebarUpgradeButton } from './footer/project-upgrade-button';
@@ -114,6 +114,7 @@ export function ProjectSidebar({
   const [computerConnectOpen, setComputerConnectOpen] = useState(false);
   const [connectMcpOpen, setConnectMcpOpen] = useState(false);
 
+  const pathname = useUiPathname();
   const searchParams = useUiSearchParams();
   const currentTab = searchParams.get('tab');
 
@@ -121,7 +122,21 @@ export function ProjectSidebar({
     if (typeof window !== 'undefined') {
       const sp = new URLSearchParams(window.location.search);
       const tab = sp.get('tab');
-      if (tab === 'chat' || tab === 'agent' || !tab) return 'agents';
+      const path = window.location.pathname;
+      if (
+        tab === 'overview' ||
+        tab === 'watchlist' ||
+        tab === 'journal' ||
+        tab === 'spec' ||
+        tab === 'chart' ||
+        path.includes('/admin') ||
+        path.includes('/customize') ||
+        path.includes('/apps') ||
+        path.includes('/drive')
+      ) {
+        return 'main';
+      }
+      if (tab === 'chat' || tab === 'agent' || path.includes('/sessions') || !tab) return 'agents';
     }
     return 'agents';
   });
@@ -132,13 +147,22 @@ export function ProjectSidebar({
       currentTab === 'watchlist' ||
       currentTab === 'journal' ||
       currentTab === 'spec' ||
-      currentTab === 'chart'
+      currentTab === 'chart' ||
+      pathname.includes('/admin') ||
+      pathname.includes('/customize') ||
+      pathname.includes('/apps') ||
+      pathname.includes('/drive')
     ) {
       setSidebarView('main');
-    } else if (currentTab === 'chat' || currentTab === 'agent') {
+    } else if (
+      currentTab === 'chat' ||
+      currentTab === 'agent' ||
+      pathname.includes('/sessions') ||
+      !currentTab
+    ) {
       setSidebarView('agents');
     }
-  }, [currentTab]);
+  }, [currentTab, pathname]);
 
   const accountId = useBillingAccountId();
   // Channels replace New session and the session list (fail-closed: off until the project answers).

@@ -555,11 +555,27 @@ export const BOT_PERSONAS: Record<
     systemPrompt:
       'You are Trader Agent on the Tauric trading desk, powered by Zed. Turn committee ideas into concrete execution plans: entry points, limit vs market orders, TWAP/VWAP execution, bracket orders, and slippage controls. Speak directly in first person as Trader Agent.',
   },
+  bops: {
+    name: 'BOPS Swarm',
+    role: 'Autonomous Multi-Agent Orchestrator',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **BOPS Swarm**, powered by **Zed**.\n\nI orchestrate parallel agent teams across research, technical validation, and execution. Which swarm strategy should we launch?`,
+    systemPrompt:
+      'You are BOPS Swarm on the Tauric trading desk, powered by Zed. Coordinate multi-agent tasks, synthesize cross-analyst validation, and deploy automated swarm intelligence. Speak directly in first person as BOPS.',
+  },
+  manus: {
+    name: 'Manus Bot',
+    role: 'Autonomous Deep Research & Execution',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Manus Bot**, powered by **Zed**.\n\nI perform autonomous web research, deep filing reviews, and automated data compilation. What workflow shall I investigate?`,
+    systemPrompt:
+      'You are Manus Bot on the Tauric trading desk, powered by Zed. Perform deep market research, examine filings, compile financial data, and execute autonomous tasks end-to-end. Speak directly in first person as Manus Bot.',
+  },
 };
 
 export function normalizeAgentKey(key?: string | null): string {
   if (!key) return 'portfolio_manager';
   const clean = key.toLowerCase().trim().replace(/[\s-]+/g, '_');
+  if (clean.includes('manus') || clean.includes('maus')) return 'manus';
+  if (clean.includes('bops') || clean.includes('boqs')) return 'bops';
   if (BOT_PERSONAS[clean]) return clean;
   for (const [id, bot] of Object.entries(BOT_PERSONAS)) {
     if (bot.name.toLowerCase() === key.toLowerCase() || id === clean) {
@@ -586,7 +602,7 @@ function createInitialSession(sessionId: string, preferredAgent?: string): MockS
         schema: 'kortix.session/2',
         v: 1,
         message_id: userMsgId,
-        thread_id: 'thread-main',
+        thread_id: sessionId,
         seq: 1,
         role: 'user',
         kind: 'turn',
@@ -607,7 +623,7 @@ function createInitialSession(sessionId: string, preferredAgent?: string): MockS
         v: 1,
         message_id: asstMsgId,
         reply_to: userMsgId,
-        thread_id: 'thread-main',
+        thread_id: sessionId,
         seq: 2,
         role: 'assistant',
         kind: 'turn',
@@ -1039,7 +1055,7 @@ async function fetchRealLlmCompletion(
         ],
         max_tokens: 1500,
       }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(4500),
     });
 
     if (renderRes.ok) {
@@ -1475,15 +1491,8 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     } catch {}
     return new Response(
       JSON.stringify({
-        connectors: [
-          { slug: 'gmail', name: 'Gmail', provider: 'composio', status: 'active', credentialMode: 'shared' },
-          { slug: 'github', name: 'GitHub', provider: 'composio', status: 'active', credentialMode: 'shared' },
-          { slug: 'slack', name: 'Slack', provider: 'composio', status: 'active', credentialMode: 'shared' },
-          { slug: 'tradingview', name: 'TradingView', provider: 'kortix', status: 'active', credentialMode: 'shared' },
-          { slug: 'alpaca', name: 'Alpaca Brokerage', provider: 'kortix', status: 'active', credentialMode: 'shared' },
-          { slug: 'binance', name: 'Binance Exchange', provider: 'kortix', status: 'active', credentialMode: 'shared' },
-        ],
-        total: 6,
+        connectors: [],
+        total: 0,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
@@ -1769,7 +1778,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         schema: 'kortix.session/2',
         v: 1,
         message_id: userMsgId,
-        thread_id: 'thread-main',
+        thread_id: sessId,
         seq: session.messages.length + 1,
         role: 'user',
         kind: 'turn',
@@ -1815,7 +1824,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         v: 1,
         message_id: asstMsgId,
         reply_to: userMsgId,
-        thread_id: 'thread-main',
+        thread_id: sessId,
         seq: session.messages.length + 1,
         role: 'assistant',
         kind: 'turn',
@@ -1851,20 +1860,40 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
             },
             generation: session.messages.length,
             has_more: false,
-            thread_id: 'thread-main',
+            thread_id: sessId,
             threads: [
               {
                 schema: 'kortix.session/2',
                 v: 1,
-                thread_id: 'thread-main',
+                thread_id: sessId,
                 parent_thread_id: null,
                 spawned_by: null,
                 created_at: session.created_at,
               },
             ],
-            messages: session.messages,
+            messages: session.messages.map((m: any) => ({ ...m, thread_id: sessId })),
           };
           useSyncStore.getState().applySessionLogPage(sessId, logPage);
+
+          const v1Messages = session.messages.map((m: any) => ({
+            info: {
+              id: m.message_id,
+              sessionID: sessId,
+              role: m.role,
+              time: { created: Date.parse(m.created_at) || Date.now() },
+              parentID: m.reply_to || undefined,
+              model: m.model,
+              agent: m.agent,
+            },
+            parts: (m.blocks || []).map((b: any, bIdx: number) => ({
+              id: b.id || `part-${m.message_id}-${bIdx}`,
+              type: b.type || 'text',
+              text: b.text || '',
+              sessionID: sessId,
+              messageID: m.message_id,
+            })),
+          }));
+          useSyncStore.getState().hydrate(sessId, v1Messages);
           window.dispatchEvent(new CustomEvent('session-messages-updated', { detail: { sessionId: sessId } }));
         } catch (e) {
           console.warn('[transport] could not sync store directly:', e);
@@ -1979,21 +2008,21 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         },
         generation: session.messages.length,
         has_more: false,
-        thread_id: 'thread-main',
+        thread_id: sessId,
         threads: [
           {
             schema: 'kortix.session/2',
             v: 1,
-            thread_id: 'thread-main',
+            thread_id: sessId,
             parent_thread_id: null,
             spawned_by: null,
             agent: activeAgent,
             title: session.title,
             created_at: session.created_at,
-            messages: session.messages,
+            messages: (session.messages || []).map((m: any) => ({ ...m, thread_id: sessId })),
           },
         ],
-        messages: session.messages,
+        messages: (session.messages || []).map((m: any) => ({ ...m, thread_id: sessId })),
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
@@ -2720,13 +2749,20 @@ export async function send(
 
   const url = input instanceof Request ? input.url : String(input);
 
-  // Directly route all connectors, discover catalog, and toolkits to the 4200+ connectors engine
+  // Directly route all connectors, sessions, prompts, turns, and log calls to the local engine
   if (
     url.includes('/discover') ||
     url.includes('/connectors/projects') ||
     url.includes('/connect/toolkits') ||
     url.includes('/connect-status') ||
-    url.includes('/connections')
+    url.includes('/connections') ||
+    url.includes('/prompts') ||
+    url.includes('/prompt_async') ||
+    url.includes('/turn') ||
+    url.includes('/working') ||
+    url.includes('/log') ||
+    url.includes('/sandboxes') ||
+    (url.includes('/sessions/') && (url.includes('/start') || url.includes('/log') || url.includes('/turn') || url.includes('/working') || url.includes('/prompts')))
   ) {
     return await getMockBackendResponse(url, init, input);
   }

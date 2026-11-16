@@ -67,10 +67,11 @@ export function inheritedAction(
  * disabled and says where the rule actually lives.
  */
 export function isLockedByProject(
-  path: string,
-  effective: readonly ConnectorEffectivePolicy[],
+  path: string | undefined | null,
+  effective: readonly ConnectorEffectivePolicy[] | undefined | null,
 ): boolean {
-  return effective.find((e) => e.path === path)?.source === 'project';
+  if (!path || !effective) return false;
+  return effective.find((e) => e?.path === path)?.source === 'project';
 }
 
 /**
@@ -97,14 +98,12 @@ export function applyBulkPolicy(
   paths: readonly string[],
   choice: PolicyChoice,
 ): ConnectorPolicyRule[] {
-  const targets = new Set(paths.map((path) => path.toLowerCase()));
-  // Only an exact rule can name one tool. A glob is never replaced by a
-  // per-tool decision, even when it happens to cover the same tool.
-  // A conditional rule (`conditions:` in kortix.yaml) is kept too: a per-tool
-  // click has no way to express it, and replacing it would drop the condition.
-  const kept = rules.filter((r) => isAdvancedRule(r) || !targets.has(r.match.toLowerCase()));
+  const targets = new Set((paths || []).map((path) => (path ? String(path).toLowerCase() : '')));
+  const kept = (rules || []).filter(
+    (r) => isAdvancedRule(r) || !targets.has(r?.match ? String(r.match).toLowerCase() : ''),
+  );
   if (choice === 'default') return kept;
-  return [...kept, ...paths.map((match) => ({ match, action: choice }))];
+  return [...kept, ...(paths || []).map((match) => ({ match, action: choice }))];
 }
 
 /**
@@ -114,7 +113,8 @@ export function applyBulkPolicy(
  * apps/api/src/connectors/policy.ts:92): a glob if it contains `*`, or an
  * explicit regex when slash-wrapped. Everything else is a literal path.
  */
-export function isPatternRule(match: string): boolean {
+export function isPatternRule(match: string | undefined | null): boolean {
+  if (!match || typeof match !== 'string') return false;
   return match.includes('*') || /^\/.*\/[a-z]*$/.test(match);
 }
 
@@ -156,15 +156,17 @@ export function orderPolicyRules(rules: readonly ConnectorPolicyRule[]): Connect
  * both cases instead of showing every tool as unset.
  */
 export function toolChoice(
-  path: string,
-  policies: readonly ConnectorPolicyRule[],
-  effective: readonly ConnectorEffectivePolicy[],
+  path: string | undefined | null,
+  policies: readonly ConnectorPolicyRule[] | undefined | null,
+  effective: readonly ConnectorEffectivePolicy[] | undefined | null,
   scope: PolicyScope = 'base',
 ): PolicyChoice {
-  if (effective.some((e) => e.path === path)) return effectiveChoice(path, effective, scope);
+  if (!path) return 'default';
+  const effectiveList = effective || [];
+  if (effectiveList.some((e) => e?.path === path)) return effectiveChoice(path, effectiveList, scope);
   // Case-insensitive, like the engine — `GetPetById` governs `getpetbyid`.
-  const needle = path.toLowerCase();
-  const exact = policies.find((p) => !isAdvancedRule(p) && p.match.toLowerCase() === needle);
+  const needle = String(path).toLowerCase();
+  const exact = (policies || []).find((p) => !isAdvancedRule(p) && p?.match && String(p.match).toLowerCase() === needle);
   return exact ? exact.action : 'default';
 }
 
@@ -231,22 +233,26 @@ export interface ToolDecisionSummary {
  * wins; `fallback` names what a tool with no entry does.
  */
 export function summarizeToolDecisions(
-  actions: readonly ConnectorAction[],
-  policies: readonly ConnectorPolicyRule[],
-  effective: readonly ConnectorEffectivePolicy[],
+  actions: readonly ConnectorAction[] | undefined | null,
+  policies: readonly ConnectorPolicyRule[] | undefined | null,
+  effective: readonly ConnectorEffectivePolicy[] | undefined | null,
   scope: PolicyScope,
   fallback: (action: ConnectorAction) => ConnectorPolicyAction,
 ): ToolDecisionSummary {
-  const summary: ToolDecisionSummary = { total: actions.length, block: 0, ask: 0, run: 0, changed: 0 };
-  for (const action of actions) {
-    const choice = toolChoice(action.path, policies, effective, scope);
+  const actionList = actions || [];
+  const polList = policies || [];
+  const effList = effective || [];
+  const summary: ToolDecisionSummary = { total: actionList.length, block: 0, ask: 0, run: 0, changed: 0 };
+  for (const action of actionList) {
+    const actionPath = action?.path || action?.name || '';
+    const choice = toolChoice(actionPath, polList, effList, scope);
     const decided =
-      effective.find((entry) => entry.path === action.path)?.action ??
+      effList.find((entry) => entry?.path === actionPath)?.action ??
       (choice === 'default' ? fallback(action) : choice);
     if (decided === 'block') summary.block++;
     else if (decided === 'require_approval') summary.ask++;
     else summary.run++;
-    if (choice !== 'default' && !isLockedByProject(action.path, effective)) summary.changed++;
+    if (choice !== 'default' && !isLockedByProject(actionPath, effList)) summary.changed++;
   }
   return summary;
 }

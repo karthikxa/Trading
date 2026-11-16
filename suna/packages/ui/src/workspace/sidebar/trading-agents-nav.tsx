@@ -265,6 +265,7 @@ export function TradingAgentsSidebarNav({
   projectId: string;
   onOpenAgentsSidebar?: () => void;
 }) {
+  const router = useUiRouter();
   const searchParams = useUiSearchParams();
   const currentTab = searchParams.get('tab');
   const isActive = currentTab === 'chat' || currentTab === 'agent';
@@ -274,15 +275,19 @@ export function TradingAgentsSidebarNav({
       <SidebarMenuButton
         onClick={() => {
           onOpenAgentsSidebar?.();
+          router.push(`/projects/${projectId}?tab=chat`);
         }}
         isActive={isActive}
         className="group/menu-button text-sidebar-foreground relative cursor-pointer font-sans"
       >
-        <span className="shrink-0 flex items-center justify-center">
-          <BotAvatar shape="circle" color="#8B5CF6" size={16} expression="attentive" isAnimated={true} />
+        <span className="shrink-0 flex items-center justify-center text-purple-400">
+          <BotAvatar shape="circle" color="#8B5CF6" size={16} expression="attentive" isAnimated={false} />
         </span>
         <span className="font-sans text-sm font-medium">Agents</span>
-        <CaretRight className="size-3.5 text-muted-foreground group-hover/menu-button:text-sidebar-foreground transition-transform duration-150 ml-auto" />
+        <span className="ml-auto flex items-center gap-1.5">
+          <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-purple-500/15 text-purple-400 font-medium border border-purple-500/25">Swarm</span>
+          <CaretRight className="size-3 text-muted-foreground group-hover/menu-button:text-sidebar-foreground transition-transform duration-150" />
+        </span>
       </SidebarMenuButton>
     </SidebarMenuItem>
   );
@@ -300,8 +305,29 @@ export function AgentsSidebarView({
 }) {
   const router = useUiRouter();
   const searchParams = useUiSearchParams();
+  const currentTab = searchParams.get('tab');
   const currentAgentId = searchParams.get('agentId');
   const currentGroupId = searchParams.get('groupId');
+
+  const [selectedAgentId, setSelectedAgentId] = useState<string>(() => {
+    return (
+      currentAgentId ||
+      (typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('agentId') || 'portfolio_manager'
+        : 'portfolio_manager')
+    );
+  });
+
+  useEffect(() => {
+    const handleSwarmSelect = (e: any) => {
+      const custom = e as CustomEvent;
+      if (custom.detail?.id && !custom.detail?.isGroup) {
+        setSelectedAgentId(custom.detail.id);
+      }
+    };
+    window.addEventListener('selected-swarm-agent', handleSwarmSelect);
+    return () => window.removeEventListener('selected-swarm-agent', handleSwarmSelect);
+  }, []);
 
   const {
     data: serverAgents = [],
@@ -433,9 +459,18 @@ export function AgentsSidebarView({
   };
 
   const handleOpenAgentChat = (bot: TradingAgentDef) => {
+    setSelectedAgentId(bot.id);
+    if (typeof window !== 'undefined') {
+      const sp = new URLSearchParams(window.location.search);
+      sp.set('agentId', bot.id);
+      sp.delete('groupId');
+      window.history.pushState(null, '', `?${sp.toString()}`);
+    }
     // Immediately dispatch selection so composer updates instantaneously
     window.dispatchEvent(new CustomEvent('selected-swarm-agent', { detail: bot }));
-    router.push(`/projects/${projectId}?tab=chat&agentId=${bot.id}`);
+    if (currentTab !== 'chat') {
+      router.push(`/projects/${projectId}?tab=chat&agentId=${bot.id}`);
+    }
   };
 
   const handleOpenGroupChat = (group: AgentGroupDef) => {
@@ -600,7 +635,7 @@ export function AgentsSidebarView({
           <>
             {/* Bots rendered in Grok style: Name & Time on top, Shimmering Status or Chat text below */}
             {sortedAgents.map((bot) => {
-              const isSelected = currentAgentId === bot.id;
+              const isSelected = (selectedAgentId || currentAgentId || 'portfolio_manager') === bot.id;
               return (
                 <div
                   key={bot.id}
