@@ -47,6 +47,203 @@ function getCatalog(): ConnectorItem[] {
   return [];
 }
 
+function findCatalogItem(queryIdOrSlug: string, catalog: ConnectorItem[]): ConnectorItem {
+  const raw = (queryIdOrSlug || '').trim();
+  const lower = raw.toLowerCase();
+  const stripped = lower.replace(/^(composio|kortix|mcp|trading|openapi):/, '');
+
+  const match = catalog.find(
+    (c) =>
+      c.id.toLowerCase() === lower ||
+      c.slug.toLowerCase() === lower ||
+      c.id.toLowerCase() === stripped ||
+      c.slug.toLowerCase() === stripped ||
+      c.id.toLowerCase().endsWith(`:${stripped}`) ||
+      c.id.toLowerCase().replace(/[^a-z0-9]/g, '') === stripped.replace(/[^a-z0-9]/g, ''),
+  );
+
+  if (match) return match;
+
+  const cleanSlug = stripped || lower || 'connector';
+  const displayName = cleanSlug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
+  return {
+    id: raw || cleanSlug,
+    slug: cleanSlug,
+    name: displayName,
+    description: `Universal AI Connector for ${displayName}. Seamlessly connect tools, triggers, and live data feeds.`,
+    provider: 'composio',
+    category: 'productivity & project management',
+    categories: ['productivity & project management'],
+    icon: `https://logos.composio.dev/api/${cleanSlug}`,
+    kind: 'composio',
+    popularity: 50,
+    rank: 1,
+    isNoAuth: false,
+    variants: [
+      { id: `${cleanSlug}-oauth`, kind: 'composio', name: 'Composio OAuth', oneClick: true },
+      { id: `${cleanSlug}-direct`, kind: 'mcp', name: 'Direct MCP', oneClick: true },
+    ],
+  };
+}
+
+function buildDiscoverConnectorDetail(item: ConnectorItem) {
+  const isMcp = item.kind === 'mcp' || item.provider === 'mcp';
+  const isKortix = item.kind === 'kortix' || item.provider === 'kortix';
+  const isComposio = item.kind === 'composio' || item.provider === 'composio' || (!isMcp && !isKortix);
+  const mcpUrl = item.directMcpUrl || `https://mcp.run/${item.slug}`;
+
+  const composioToolkit = {
+    slug: item.slug,
+    name: item.name,
+    logo: item.icon,
+    description: item.description,
+    categories: item.categories || [item.category],
+    isNoAuth: item.isNoAuth ?? false,
+    connected: installedSlugs.has(item.slug),
+    directId: item.id,
+    directMcpUrl: item.directMcpUrl || null,
+  };
+
+  const discoverItem = {
+    id: item.id || `composio:${item.slug}`,
+    kind: (isMcp ? 'mcp' : isKortix ? 'kortix' : 'composio') as any,
+    slug: item.slug,
+    name: item.name,
+    description: item.description,
+    url: item.domain ? `https://${item.domain}` : null,
+    icon: item.icon,
+    domain: item.domain || '',
+    categories: item.categories || [item.category],
+    feeds: [item.kind || item.provider || 'composio'],
+    popularity: item.popularity || 10,
+    oneClick: true,
+    mcpUrl: isMcp ? mcpUrl : undefined,
+    composio: isComposio ? composioToolkit : undefined,
+    installed: installedSlugs.has(item.slug) ? [item.slug] : [],
+  };
+
+  const variants: any[] = [];
+
+  if (isComposio) {
+    variants.push({
+      id: `${item.slug}-composio`,
+      kind: 'composio',
+      name: `${item.name} Composio OAuth`,
+      url: null,
+      docs: null,
+      description: item.description,
+      transports: ['http'],
+      requiresAuth: !item.isNoAuth,
+      command: null,
+      connector: null,
+      oneClick: true,
+      recommended: true,
+      composio: composioToolkit,
+      installed: installedSlugs.has(item.slug) ? [item.slug] : [],
+    });
+  }
+
+  if (isMcp || item.directMcpUrl) {
+    variants.push({
+      id: `${item.slug}-mcp`,
+      kind: 'mcp',
+      name: `${item.name} MCP`,
+      url: mcpUrl,
+      docs: null,
+      description: item.description,
+      transports: ['http', 'sse'],
+      requiresAuth: !item.isNoAuth,
+      command: null,
+      oneClick: true,
+      recommended: !isComposio,
+      connector: {
+        provider: 'mcp',
+        url: mcpUrl,
+        transport: 'sse',
+        auth: item.isNoAuth
+          ? { type: 'none', in: 'header', name: null, prefix: null }
+          : { type: 'bearer', in: 'header', name: 'Authorization', prefix: 'Bearer' },
+      },
+      installed: installedSlugs.has(item.slug) ? [item.slug] : [],
+    });
+  }
+
+  if (isKortix) {
+    variants.push({
+      id: `${item.slug}-kortix`,
+      kind: 'kortix',
+      name: `${item.name} Native`,
+      url: item.domain ? `https://${item.domain}` : null,
+      docs: null,
+      description: item.description,
+      transports: ['http'],
+      requiresAuth: false,
+      command: null,
+      connector: null,
+      oneClick: true,
+      recommended: true,
+      kortix: { app: item.slug },
+      installed: installedSlugs.has(item.slug) ? [item.slug] : [],
+    });
+  }
+
+  if (variants.length === 0) {
+    variants.push({
+      id: `${item.slug}-default`,
+      kind: 'composio',
+      name: item.name,
+      url: null,
+      docs: null,
+      description: item.description,
+      transports: ['http'],
+      requiresAuth: false,
+      command: null,
+      connector: null,
+      oneClick: true,
+      recommended: true,
+      composio: composioToolkit,
+      installed: installedSlugs.has(item.slug) ? [item.slug] : [],
+    });
+  }
+
+  let foundRecommended = false;
+  for (const v of variants) {
+    if (v.recommended && !foundRecommended) {
+      foundRecommended = true;
+    } else if (v.recommended && foundRecommended) {
+      v.recommended = false;
+    }
+  }
+  if (!foundRecommended && variants.length > 0) {
+    variants[0].recommended = true;
+  }
+
+  return {
+    item: discoverItem,
+    variants,
+    installed: discoverItem.installed,
+  };
+}
+
+function buildDiscoverConnectorTools(item: ConnectorItem, wayId?: string) {
+  const isMcp = item.kind === 'mcp' || item.provider === 'mcp';
+  const tools = [
+    { name: `${item.slug}_get_status`, description: `Check connection and live health status for ${item.name}` },
+    { name: `${item.slug}_query`, description: `Query and retrieve records from ${item.name}` },
+    { name: `${item.slug}_execute`, description: `Execute operations, commands, or automations with ${item.name}` },
+  ];
+  return {
+    way: {
+      id: wayId || `${item.slug}-way`,
+      kind: (isMcp ? 'mcp' : 'composio') as any,
+      name: item.name,
+    },
+    tools,
+    total: tools.length,
+    source: (isMcp ? 'mcp' : 'composio') as any,
+  };
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const mode = url.searchParams.get('mode') || 'discover';
@@ -57,8 +254,22 @@ export async function GET(req: Request) {
   const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '48', 10), 1), 200);
   const cursor = parseInt(url.searchParams.get('cursor') || '0', 10);
   const slug = (url.searchParams.get('slug') || '').toLowerCase().trim();
+  const id = (url.searchParams.get('id') || '').trim();
+  const way = (url.searchParams.get('way') || '').trim();
 
   const catalog = getCatalog();
+
+  // Mode: discover-detail (Explicit Discover connector detail with item + variants)
+  if (mode === 'discover-detail' || (mode === 'detail' && (id || slug)) || (id && mode === 'discover')) {
+    const item = findCatalogItem(id || slug, catalog);
+    return NextResponse.json(buildDiscoverConnectorDetail(item));
+  }
+
+  // Mode: discover-tools
+  if (mode === 'discover-tools' && (id || slug)) {
+    const item = findCatalogItem(id || slug, catalog);
+    return NextResponse.json(buildDiscoverConnectorTools(item, way));
+  }
 
   // Mode: detail
   if (mode === 'detail' && slug) {
@@ -258,24 +469,39 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const slug = (body.slug || body.app || '').toLowerCase().trim();
+    const rawSlug = (body.slug || body.app || body.id || '').toLowerCase().trim();
+    const cleanSlug = rawSlug.replace(/^(composio|kortix|mcp|trading|openapi):/, '');
 
-    if (slug) {
-      installedSlugs.add(slug);
+    if (cleanSlug) {
+      installedSlugs.add(cleanSlug);
     }
 
-    const connectionId = `conn_${slug || 'gen'}_${Date.now()}`;
+    const catalog = getCatalog();
+    const match = catalog.find((c) => c.slug === cleanSlug || c.id === body.id || c.id === rawSlug);
+    const appName = body.name || match?.name || cleanSlug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
+    const provider = body.provider || match?.provider || 'composio';
+    const connectionId = `conn_${cleanSlug || 'gen'}_${Date.now()}`;
 
     return NextResponse.json({
       ok: true,
-      provider: 'composio',
-      app: slug,
+      success: true,
+      provider,
+      app: cleanSlug,
+      slug: cleanSlug,
+      name: appName,
       status: 'active',
       connectionId,
       requestId: `req_${Date.now()}`,
       sessionId: `sess_${Date.now()}`,
       redirectUrl: null,
       connectUrl: null,
+      sync: { status: 'synced' },
+      way: {
+        id: body.way || `${cleanSlug}-way`,
+        kind: provider === 'mcp' ? 'mcp' : 'composio',
+        name: appName,
+        oneClick: true,
+      },
     });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || 'Failed to connect' }, { status: 500 });
@@ -285,9 +511,10 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   try {
     const url = new URL(req.url);
-    const slug = (url.searchParams.get('slug') || '').toLowerCase().trim();
-    if (slug) {
-      installedSlugs.delete(slug);
+    const raw = (url.searchParams.get('slug') || url.searchParams.get('id') || '').toLowerCase().trim();
+    const cleanSlug = raw.replace(/^(composio|kortix|mcp|trading|openapi):/, '');
+    if (cleanSlug) {
+      installedSlugs.delete(cleanSlug);
     }
     return NextResponse.json({ ok: true });
   } catch (err: any) {

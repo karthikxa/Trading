@@ -137,11 +137,11 @@ export async function runInstall(
 ): Promise<InstallResult> {
   const { projectId, connectors } = input;
   const target = input.name?.trim() ? { ...input.target, appName: input.name.trim() } : input.target;
-  const existing = connectors.find((connector) =>
+  const existing = (connectors || []).find((connector) =>
     connectorInstalledFrom(connector, target.appName, target.provider),
   );
   if (existing && !input.asNewProfile) return { status: 'installed', slug: existing.slug, existing: true };
-  const slugs = connectors.map((connector) => connector.slug);
+  const slugs = (connectors || []).map((connector) => connector.slug);
   const slug = proposeConnectorConnectionSlug(target.appName, slugs, deps.random);
   const name = proposeConnectorConnectionName(target.appName, slugs);
   const result = await deps.createConnector(projectId, target.buildDraft({ slug, name }));

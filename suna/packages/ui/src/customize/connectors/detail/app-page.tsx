@@ -854,7 +854,7 @@ function useAppData(projectId: string, app: ReturnType<typeof appRefFromLocation
           }),
           ...(managedSurface ? [managedSurface] : []),
         ],
-        references: detail.variants
+        references: (detail.variants || [])
           .filter((variant) => !variant.connector && variant.kind !== 'composio' && variant.kind !== 'kortix')
           .map((variant) => ({
             key: `${variant.kind}:${variant.id}`,

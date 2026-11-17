@@ -1402,6 +1402,77 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     }
   }
 
+  // MCP Server Sign-in Check: POST /connectors/projects/:id/connectors/mcp-server-sign-in-check
+  if (url.includes('/mcp-server-sign-in-check')) {
+    return new Response(
+      JSON.stringify({
+        requires_sign_in: false,
+        one_click: true,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  // 4000+ Discover Connector Detail: GET /connectors/projects/:id/discover/connectors/detail?id=...
+  if (url.includes('/discover/connectors/detail') || url.includes('/discover/detail')) {
+    try {
+      const parsed = new URL(url, 'http://localhost:3000');
+      const qs = parsed.searchParams.toString();
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors?mode=discover-detail&${qs}`);
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch (e) {
+      console.warn('[Connectors] Discover connector detail API error:', e);
+    }
+  }
+
+  // 4000+ Discover Connector Tools: GET /connectors/projects/:id/discover/connectors/tools?id=...
+  if (url.includes('/discover/connectors/tools') || url.includes('/discover/tools')) {
+    try {
+      const parsed = new URL(url, 'http://localhost:3000');
+      const qs = parsed.searchParams.toString();
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors?mode=discover-tools&${qs}`);
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch (e) {
+      console.warn('[Connectors] Discover connector tools API error:', e);
+    }
+  }
+
+  // Discover Install: POST /connectors/projects/:id/discover/install
+  if (url.includes('/discover/install') && isPost) {
+    try {
+      const body = await parseBody();
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'discover-install', ...body }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch (e) {
+      console.warn('[Connectors] Discover install API error:', e);
+    }
+  }
+
   // 4000+ Discover Sections: GET /connectors/projects/:id/discover/sections
   if (url.includes('/discover/sections') || (url.includes('/discover') && url.includes('sections'))) {
     try {
@@ -1438,6 +1509,50 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     } catch (e) {
       console.warn('[Connectors] Discover connectors API error:', e);
     }
+  }
+
+  // Create / Install Connector: POST /connectors/projects/:id/connectors
+  if (url.match(/\/connectors\/projects\/[^/]+\/connectors$/) && isPost) {
+    try {
+      const body = await parseBody();
+      const slug = (body.slug || body.app || '').toLowerCase().trim();
+      const name = body.name || slug;
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            slug: data.slug || slug,
+            name: data.name || name,
+            provider: body.provider || 'composio',
+            sync: { status: 'synced' },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+    } catch (e) {
+      console.warn('[Connectors] Create connector API error:', e);
+    }
+  }
+
+  // Delete Connector: DELETE /connectors/projects/:id/connectors/:slug
+  const singleConnectorDeleteMatch = url.match(/\/connectors\/projects\/[^/]+\/connectors\/([^/?#]+)$/);
+  if (singleConnectorDeleteMatch && method === 'DELETE') {
+    const slug = singleConnectorDeleteMatch[1];
+    try {
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      await fetch(`${origin}/api/connectors?slug=${encodeURIComponent(slug)}`, { method: 'DELETE' });
+    } catch {}
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   // Connector Detail: GET /connectors/projects/:id/connectors/:slug

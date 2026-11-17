@@ -163,7 +163,8 @@ export function useInstall(
           staleTime: 15 * 60_000,
         })
         .then(async (detail) => {
-          const recommended = detail.variants.find((variant) => variant.recommended);
+          const variants = detail?.variants || [];
+          const recommended = variants.find((variant) => variant.recommended) || variants[0];
           if (recommended?.kind === 'composio' && recommended.composio) {
             ask({
               target: easyConnectInstallTarget(connectToolkitApp(recommended.composio)),
@@ -173,7 +174,7 @@ export function useInstall(
             });
             return;
           }
-          const variant = pickSurface(recommended ? [recommended] : detail.variants);
+          const variant = pickSurface(recommended ? [recommended] : variants);
           if (!variant) {
             // Nothing installable from here: the app page shows its surfaces.
             setPendingKey(null);
@@ -184,7 +185,7 @@ export function useInstall(
           // A Kortix catalogue app or a one-click server is the vendor's MCP
           // server: a one-click sign-in opens the one-step MCP dialog (which
           // names the profile too); anything else asks for the name first.
-          const oneClickServer = entry.connector.feeds.includes('kortix') || recommended?.oneClick === true || entry.connector.oneClick === true;
+          const oneClickServer = (entry.connector.feeds || []).includes('kortix') || recommended?.oneClick === true || entry.connector.oneClick === true;
           let addAccount: boolean | undefined;
           if (oneClickServer && mcpUrl && onMcpServer) {
             const check = await checkMcpServerSignIn(projectId, mcpUrl).catch(() => null);
