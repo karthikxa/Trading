@@ -1348,17 +1348,18 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     );
   }
 
-  // Connect action: POST /connectors/projects/:id/connectors/:slug/connect
-  if (init?.method === 'POST' && (url.endsWith('/connect') || url.includes('/connect?') || (url.includes('/connectors/') && url.includes('/connect')))) {
+  // Connect action: POST /connectors/projects/:id/connectors/:slug/connect OR /projects/:id/connections/:connectionId/connect
+  if (init?.method === 'POST' && (url.endsWith('/connect') || url.includes('/connect?') || url.includes('/connect/'))) {
     try {
       const parsed = new URL(url, 'http://localhost:3000');
-      const slugMatch = url.match(/\/connectors\/([^/?#]+)\/connect/);
+      const slugMatch = url.match(/\/connectors\/([^/?#]+)\/connect/) || url.match(/\/connections\/([^/?#]+)\/connect/);
       const slug = slugMatch ? slugMatch[1] : parsed.searchParams.get('slug') || 'app';
+      const body = await parseBody();
       const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
       const res = await fetch(`${origin}/api/connectors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug }),
+        body: JSON.stringify({ mode: 'connect', slug, ...body }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -1378,6 +1379,40 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         connectionId: `conn_${Date.now()}`,
         requestId: `req_${Date.now()}`,
         sessionId: `sess_${Date.now()}`,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  // Finalize action: POST /connectors/projects/:id/connectors/:slug/finalize OR /projects/:id/connections/:connectionId/finalize
+  if (init?.method === 'POST' && (url.endsWith('/finalize') || url.includes('/finalize?') || url.includes('/finalize/'))) {
+    try {
+      const parsed = new URL(url, 'http://localhost:3000');
+      const slugMatch = url.match(/\/connectors\/([^/?#]+)\/finalize/) || url.match(/\/connections\/([^/?#]+)\/finalize/);
+      const slug = slugMatch ? slugMatch[1] : parsed.searchParams.get('slug') || 'app';
+      const body = await parseBody();
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const res = await fetch(`${origin}/api/connectors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'finalize', slug, ...body }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    } catch (e) {
+      console.warn('[Connectors] Finalize API error:', e);
+    }
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        connected: true,
+        status: 'active',
+        connectionId: `conn_${Date.now()}`,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
@@ -1556,8 +1591,8 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
   }
 
   // Connector Detail: GET /connectors/projects/:id/connectors/:slug
-  const singleConnectorMatch = url.match(/\/connectors\/projects\/[^/]+\/connectors\/([^/?#]+)$/);
-  if (singleConnectorMatch && singleConnectorMatch[1] !== 'sync' && singleConnectorMatch[1] !== 'connect') {
+  const singleConnectorMatch = url.match(/\/connectors\/projects\/[^/]+\/connectors\/([^/?#]+)(\?.*)?$/);
+  if (singleConnectorMatch && singleConnectorMatch[1] !== 'sync' && singleConnectorMatch[1] !== 'connect' && singleConnectorMatch[1] !== 'finalize') {
     const slug = singleConnectorMatch[1];
     try {
       const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
@@ -1572,8 +1607,27 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     } catch {}
   }
 
-  // Active Connections: GET /projects/:id/connections
+  // Active Connections: GET /projects/:id/connections OR POST /projects/:id/connections
   if (url.includes('/connections')) {
+    if (init?.method === 'POST') {
+      try {
+        const body = await parseBody();
+        const alias = body.connector_alias || body.slug || 'app';
+        const connectionId = `conn_${alias}_${Date.now()}`;
+        return new Response(
+          JSON.stringify({
+            connection_id: connectionId,
+            connector_alias: alias,
+            owner_type: body.owner_type || 'project',
+            label: body.label || 'Project connection',
+            status: 'active',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      } catch {}
+    }
     try {
       const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
       const res = await fetch(`${origin}/api/connectors?mode=connections`);

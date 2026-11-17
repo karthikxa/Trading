@@ -14,7 +14,7 @@ import { contract, FRESHNESS, qk, useProjectAccountId } from '@kortix/sdk/react'
 import { CaretLeftIcon, PlugIcon, PlusIcon } from '@phosphor-icons/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { UiLink as Link, useUiPathname, useUiRouter, useUiSearchParams } from '../../../providers/ui-provider';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { Badge } from '../../../primitives/badge';
 import { Button } from '../../../primitives/button';
@@ -83,7 +83,32 @@ export function ConnectorPage({
     ...contract(FRESHNESS.connectors),
   });
   const connector =
-    connectorsQuery.data?.connectors.find((candidate) => candidate.slug === connectorSlug) ?? null;
+    connectorsQuery.data?.connectors.find((candidate) => candidate.slug === connectorSlug || candidate.slug === appSegment) ?? null;
+
+  const fallbackConnector = useMemo<AdminConnector | null>(() => {
+    if (connector) return connector;
+    const slug = connectorSlug || appSegment;
+    if (!slug || slug === 'connected') return null;
+    const cleanSlug = slug.replace(/^(composio|kortix|mcp|trading|openapi):/, '');
+    const displayName = cleanSlug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
+    return {
+      slug: connectorSlug || cleanSlug,
+      name: displayName,
+      provider: 'composio',
+      status: 'needs_auth',
+      credentialMode: 'shared',
+      authorizationStrategy: 'project',
+      sensitive: false,
+      actions: [
+        { path: `${cleanSlug}_query`, name: `${cleanSlug}_query`, description: `Query and read records from ${displayName}`, risk: 'read', inputSchema: null },
+        { path: `${cleanSlug}_execute`, name: `${cleanSlug}_execute`, description: `Execute actions and updates on ${displayName}`, risk: 'write', inputSchema: null },
+      ],
+      iconUrl: `https://logos.composio.dev/api/${cleanSlug}`,
+      authSecret: null,
+    };
+  }, [connector, connectorSlug, appSegment]);
+
+  const effectiveConnector = connector ?? fallbackConnector;
 
   const invalidate = useCallback(() => {
     void invalidateConnections(queryClient, projectId);
@@ -106,8 +131,8 @@ export function ConnectorPage({
   const backHref = connectorsHref(projectId);
 
   const state = connectorPageState({
-    found: connector !== null,
-    isPending: connectorsQuery.isPending,
+    found: effectiveConnector !== null,
+    isPending: connectorsQuery.isPending && !fallbackConnector,
     isFetching: connectorsQuery.isFetching,
     isError: connectorsQuery.isError,
   });
@@ -150,7 +175,7 @@ export function ConnectorPage({
     );
   }
 
-  if (!connector) {
+  if (!effectiveConnector) {
     return (
       <DetailPageShell>
         <EmptyState
@@ -170,9 +195,9 @@ export function ConnectorPage({
 
   return (
     <ConnectorPageBody
-      key={connector.slug}
+      key={effectiveConnector.slug}
       projectId={projectId}
-      connector={connector}
+      connector={effectiveConnector}
       canWrite={canWrite}
       backHref={backHref}
       app={app}

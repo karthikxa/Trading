@@ -23,6 +23,70 @@ interface ConnectorItem {
 let cachedCatalog: ConnectorItem[] | null = null;
 const installedSlugs = new Set<string>();
 
+const installedFilePath = path.resolve(process.cwd(), 'src/features/connectors/data/installed-connectors.json');
+
+function loadInstalled(): void {
+  try {
+    if (fs.existsSync(installedFilePath)) {
+      const data = JSON.parse(fs.readFileSync(installedFilePath, 'utf8'));
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (typeof item === 'string' && item) installedSlugs.add(item);
+        }
+      }
+    }
+  } catch {}
+}
+
+function saveInstalled(): void {
+  try {
+    const dir = path.dirname(installedFilePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(installedFilePath, JSON.stringify(Array.from(installedSlugs), null, 2), 'utf8');
+  } catch {}
+}
+
+loadInstalled();
+
+async function getComposioOAuthLink(slug: string): Promise<string | null> {
+  const apiKey =
+    process.env.COMPOSIO_API_KEY ||
+    process.env.NEXT_PUBLIC_COMPOSIO_API_KEY ||
+    'ck_1XxofHhReEgRH9hjdNRp';
+  if (!apiKey || apiKey.includes('YOUR_')) return null;
+
+  try {
+    const cleanSlug = slug.toLowerCase().replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+    const res = await fetch('https://connect.composio.dev/mcp', {
+      method: 'POST',
+      headers: {
+        'x-consumer-api-key': apiKey,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'tools/call',
+        params: {
+          name: 'COMPOSIO_MANAGE_CONNECTIONS',
+          arguments: { toolkits: [cleanSlug] },
+        },
+      }),
+    });
+
+    if (!res.ok) return null;
+    const text = await res.text();
+    const linkMatch = text.match(/https:\/\/connect\.composio\.dev\/link\/[a-zA-Z0-9_\-]+/);
+    if (linkMatch) {
+      return linkMatch[0];
+    }
+  } catch (err) {
+    console.error('[Composio Connect] Failed to get OAuth redirect URL for', slug, err);
+  }
+  return null;
+}
+
 function getCatalog(): ConnectorItem[] {
   if (cachedCatalog) return cachedCatalog;
 
@@ -260,7 +324,7 @@ export async function GET(req: Request) {
   const catalog = getCatalog();
 
   // Mode: discover-detail (Explicit Discover connector detail with item + variants)
-  if (mode === 'discover-detail' || (mode === 'detail' && (id || slug)) || (id && mode === 'discover')) {
+  if (mode === 'discover-detail' || (id && mode === 'discover')) {
     const item = findCatalogItem(id || slug, catalog);
     return NextResponse.json(buildDiscoverConnectorDetail(item));
   }
@@ -271,31 +335,25 @@ export async function GET(req: Request) {
     return NextResponse.json(buildDiscoverConnectorTools(item, way));
   }
 
-  // Mode: detail
-  if (mode === 'detail' && slug) {
-    const item = catalog.find((c) => c.slug.toLowerCase() === slug || c.id.toLowerCase() === slug) || {
-      id: slug,
-      slug,
-      name: slug.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase()),
-      description: `Universal AI Connector for ${slug}.`,
-      provider: 'composio',
-      category: 'productivity & project management',
-      categories: ['productivity & project management'],
-      icon: `https://logos.composio.dev/api/${slug}`,
-      kind: 'composio',
-      popularity: 10,
-      rank: 1,
-      variants: [{ id: `${slug}-auth`, kind: 'composio', name: 'Composio OAuth', oneClick: true }],
-    };
+  // Mode: detail (Returns AdminConnector format for connector-page)
+  if (mode === 'detail' && (slug || id)) {
+    const targetSlug = (slug || id || '').toLowerCase();
+    const cleanSlug = targetSlug.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+    const item = catalog.find((c) => c.slug.toLowerCase() === targetSlug || c.slug.toLowerCase() === cleanSlug || c.id.toLowerCase() === targetSlug) || findCatalogItem(targetSlug, catalog);
+    const displayName = item.name || cleanSlug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
 
     return NextResponse.json({
-      ...item,
-      status: installedSlugs.has(slug) ? 'active' : 'needs_auth',
-      connected: installedSlugs.has(slug),
+      slug: slug || cleanSlug,
+      name: displayName,
+      provider: item.provider || 'composio',
+      status: installedSlugs.has(cleanSlug) || installedSlugs.has(targetSlug) ? 'active' : 'needs_auth',
+      connected: installedSlugs.has(cleanSlug) || installedSlugs.has(targetSlug),
+      credentialMode: 'shared',
+      authorizationStrategy: 'project',
+      iconUrl: item.icon || `https://logos.composio.dev/api/${cleanSlug}`,
       actions: [
-        { path: `${slug}_query`, name: `${slug}_query`, description: `Execute query or read operations on ${item.name}`, risk: 'low' },
-        { path: `${slug}_action`, name: `${slug}_action`, description: `Perform write and workflow actions on ${item.name}`, risk: 'low' },
-        { path: `${slug}_sync`, name: `${slug}_sync`, description: `Real-time bidirectional event sync with ${item.name}`, risk: 'low' },
+        { path: `${cleanSlug}_read`, name: `${cleanSlug}_read`, description: `Query and read records from ${displayName}`, risk: 'read', inputSchema: null },
+        { path: `${cleanSlug}_write`, name: `${cleanSlug}_write`, description: `Execute operations and updates on ${displayName}`, risk: 'write', inputSchema: null },
       ],
     });
   }
@@ -303,18 +361,21 @@ export async function GET(req: Request) {
   // Mode: installed
   if (mode === 'installed') {
     const installedList = Array.from(installedSlugs).map((s) => {
-      const match = catalog.find((c) => c.slug === s);
+      const clean = s.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+      const match = catalog.find((c) => c.slug === s || c.slug === clean || c.id === s);
+      const cleanName = clean.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
       return {
         slug: s,
-        name: match?.name || s,
-        description: match?.description || `Integrated connection for ${s}`,
+        name: match?.name || cleanName,
+        description: match?.description || `Integrated connection for ${cleanName}`,
         provider: match?.provider || 'composio',
-        iconUrl: match?.icon || null,
+        iconUrl: match?.icon || `https://logos.composio.dev/api/${clean}`,
         status: 'active' as const,
         credentialMode: 'shared' as const,
+        authorizationStrategy: 'project' as const,
         actions: [
-          { path: `${s}_read`, name: `${s}_read`, description: `Read data from ${match?.name || s}`, risk: 'low' },
-          { path: `${s}_write`, name: `${s}_write`, description: `Execute operations on ${match?.name || s}`, risk: 'low' },
+          { path: `${clean}_read`, name: `${clean}_read`, description: `Read data from ${match?.name || cleanName}`, risk: 'read', inputSchema: null },
+          { path: `${clean}_write`, name: `${clean}_write`, description: `Execute operations on ${match?.name || cleanName}`, risk: 'write', inputSchema: null },
         ],
       };
     });
@@ -328,18 +389,23 @@ export async function GET(req: Request) {
   // Mode: connections
   if (mode === 'connections') {
     const connections = Array.from(installedSlugs).map((s, idx) => {
-      const match = catalog.find((c) => c.slug === s);
+      const clean = s.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+      const match = catalog.find((c) => c.slug === s || c.slug === clean || c.id === s);
+      const cleanName = clean.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
       return {
         connection_id: `conn_${s}_${idx + 1}`,
+        connector_alias: s,
         connector_slug: s,
-        name: match?.name || s,
+        label: `${cleanName} Connection`,
+        name: match?.name || cleanName,
         provider: match?.provider || 'composio',
+        owner_type: 'project',
         status: 'active',
         created_at: new Date(Date.now() - idx * 86400000).toISOString(),
         updated_at: new Date().toISOString(),
       };
     });
-    return NextResponse.json({ connections });
+    return NextResponse.json({ connections, total: connections.length });
   }
 
   // Mode: sections (Browse sections for Connectors directory)
@@ -469,32 +535,78 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const rawSlug = (body.slug || body.app || body.id || '').toLowerCase().trim();
-    const cleanSlug = rawSlug.replace(/^(composio|kortix|mcp|trading|openapi):/, '');
-
-    if (cleanSlug) {
-      installedSlugs.add(cleanSlug);
-    }
+    const rawSlug = (body.slug || body.app || body.id || body.connector_alias || '').toLowerCase().trim();
+    const cleanSlug = rawSlug.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
 
     const catalog = getCatalog();
-    const match = catalog.find((c) => c.slug === cleanSlug || c.id === body.id || c.id === rawSlug);
+    const match = catalog.find((c) => c.slug === cleanSlug || c.slug === rawSlug || c.id === body.id || c.id === rawSlug);
     const appName = body.name || match?.name || cleanSlug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
     const provider = body.provider || match?.provider || 'composio';
-    const connectionId = `conn_${cleanSlug || 'gen'}_${Date.now()}`;
+    const connectionId = body.connectionId || `conn_${cleanSlug || 'gen'}_${Date.now()}`;
+
+    // Mode: connect (Generate real Composio OAuth authorization URL)
+    if (body.mode === 'connect' || body.operation === 'connect') {
+      const connectUrl = await getComposioOAuthLink(cleanSlug || rawSlug);
+      if (cleanSlug) {
+        installedSlugs.add(cleanSlug);
+        installedSlugs.add(rawSlug);
+        saveInstalled();
+      }
+      return NextResponse.json({
+        ok: true,
+        success: true,
+        provider,
+        app: cleanSlug,
+        slug: rawSlug || cleanSlug,
+        name: appName,
+        status: connectUrl ? 'needs_auth' : 'active',
+        connectionId,
+        requestId: `req_${Date.now()}`,
+        sessionId: `sess_${Date.now()}`,
+        redirectUrl: connectUrl,
+        connectUrl: connectUrl,
+        connected: !connectUrl,
+      });
+    }
+
+    // Mode: finalize (Verify or complete authorization)
+    if (body.mode === 'finalize' || body.operation === 'finalize') {
+      if (cleanSlug) {
+        installedSlugs.add(cleanSlug);
+        installedSlugs.add(rawSlug);
+        saveInstalled();
+      }
+      return NextResponse.json({
+        ok: true,
+        connected: true,
+        status: 'active',
+        connectionId,
+      });
+    }
+
+    // Default Install / Create Connector
+    if (cleanSlug) {
+      installedSlugs.add(cleanSlug);
+      installedSlugs.add(rawSlug);
+      saveInstalled();
+    }
+
+    // Get live OAuth connectUrl if available
+    const connectUrl = await getComposioOAuthLink(cleanSlug || rawSlug);
 
     return NextResponse.json({
       ok: true,
       success: true,
       provider,
       app: cleanSlug,
-      slug: cleanSlug,
+      slug: rawSlug || cleanSlug,
       name: appName,
       status: 'active',
       connectionId,
       requestId: `req_${Date.now()}`,
       sessionId: `sess_${Date.now()}`,
-      redirectUrl: null,
-      connectUrl: null,
+      redirectUrl: connectUrl,
+      connectUrl: connectUrl,
       sync: { status: 'synced' },
       way: {
         id: body.way || `${cleanSlug}-way`,
@@ -512,9 +624,11 @@ export async function DELETE(req: Request) {
   try {
     const url = new URL(req.url);
     const raw = (url.searchParams.get('slug') || url.searchParams.get('id') || '').toLowerCase().trim();
-    const cleanSlug = raw.replace(/^(composio|kortix|mcp|trading|openapi):/, '');
+    const cleanSlug = raw.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
     if (cleanSlug) {
       installedSlugs.delete(cleanSlug);
+      installedSlugs.delete(raw);
+      saveInstalled();
     }
     return NextResponse.json({ ok: true });
   } catch (err: any) {
