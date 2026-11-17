@@ -69,16 +69,17 @@ export function connectToolkitApp(toolkit: ConnectToolkit): EasyConnectApp {
 }
 
 export function catalogEntryFromDiscover(connector: DiscoverConnector): CatalogEntry {
+  const id = connector?.id || (connector as any)?.slug || '';
   return {
     source: 'discover',
-    connector,
-    key: `discover:${connector.id}`,
-    slug: connector.slug,
-    name: connector.name,
-    description: connector.description,
-    icon: discoverEntryIcon(connector),
-    categories: connector.categories,
-    popularity: connector.popularity,
+    connector: connector || ({} as DiscoverConnector),
+    key: `discover:${id}`,
+    slug: connector?.slug || '',
+    name: connector?.name || '',
+    description: connector?.description ?? null,
+    icon: connector ? discoverEntryIcon(connector) : null,
+    categories: connector?.categories || [],
+    popularity: connector?.popularity ?? 0,
   };
 }
 
@@ -101,7 +102,7 @@ export function appNameKey(name: string): string {
 }
 
 export function catalogEntryKindLabel(entry: CatalogEntry): string {
-  switch (entry.connector.kind) {
+  switch (entry?.connector?.kind) {
     case 'composio':
       return 'Composio';
     case 'kortix':

@@ -284,8 +284,7 @@ export function TradingAgentsSidebarNav({
           <BotAvatar shape="circle" color="#8B5CF6" size={16} expression="attentive" isAnimated={false} />
         </span>
         <span className="font-sans text-sm font-medium">Agents</span>
-        <span className="ml-auto flex items-center gap-1.5">
-          <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-purple-500/15 text-purple-400 font-medium border border-purple-500/25">Swarm</span>
+        <span className="ml-auto flex items-center">
           <CaretRight className="size-3 text-muted-foreground group-hover/menu-button:text-sidebar-foreground transition-transform duration-150" />
         </span>
       </SidebarMenuButton>

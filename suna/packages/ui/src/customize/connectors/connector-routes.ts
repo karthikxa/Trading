@@ -27,7 +27,7 @@ function withQuery(path: string, params: URLSearchParams): string {
 }
 
 function appParams(app: AppRef): URLSearchParams {
-  return new URLSearchParams({ id: app.id });
+  return new URLSearchParams({ id: app?.id || '' });
 }
 
 /** The Connectors page on one tab. */
@@ -60,7 +60,8 @@ export function withConnectorSearch(params: URLSearchParams, query: string): URL
 }
 
 export function appRefFromEntry(entry: CatalogEntry): AppRef {
-  return { source: 'discover', slug: entry.slug, id: entry.connector.id };
+  const id = entry?.connector?.id || (entry as any)?.id || entry?.slug || '';
+  return { source: 'discover', slug: entry?.slug || '', id };
 }
 
 /**
@@ -91,7 +92,7 @@ export function appRefFromLocation(
   search: URLSearchParams | null,
 ): AppRef | null {
   if (appSegment === CONNECTED_APP_SEGMENT) return null;
-  const id = search?.get('id');
+  const id = search?.get('id') || appSegment;
   return id ? { source: 'discover', slug: appSegment, id } : null;
 }
 

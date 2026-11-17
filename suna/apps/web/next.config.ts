@@ -416,6 +416,7 @@ const nextConfig = (): NextConfig => ({
 
   // Performance optimizations
   experimental: {
+    agentUpgrade: 'security',
     ...(process.env.RENDER
       ? {
           cpus: 1,

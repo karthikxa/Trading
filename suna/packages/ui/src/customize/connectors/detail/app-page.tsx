@@ -193,9 +193,9 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
     resolved?.surfaces.find((surface) => surface.variantId !== null) ??
     null;
   const toolsQuery = useQuery({
-    queryKey: ['discover-connector-tools', projectId, detail?.item.id ?? null, shownWay?.variantId ?? null],
-    queryFn: () => getDiscoverConnectorTools(projectId, detail?.item.id ?? '', shownWay?.variantId ?? undefined),
-    enabled: Boolean(detail && shownWay?.variantId),
+    queryKey: ['discover-connector-tools', projectId, detail?.item?.id ?? null, shownWay?.variantId ?? null],
+    queryFn: () => getDiscoverConnectorTools(projectId, detail?.item?.id ?? '', shownWay?.variantId ?? undefined),
+    enabled: Boolean(detail?.item?.id && shownWay?.variantId),
     staleTime: 15 * 60_000,
     retry: false,
   });
@@ -212,7 +212,7 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
   // One page per app: once the project has exactly one profile of it, the
   // app's page is that connector's page. A Kortix channel keeps its own page.
   const installedOnce =
-    app && resolved && detail?.item.kind !== 'kortix' && !ways
+    app && resolved && detail?.item?.kind !== 'kortix' && !ways
       ? catalogEntryConnectors(connectorsQuery.data?.connectors ?? [], {
           source: app.source,
           slug: app.slug,
@@ -382,7 +382,7 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
   // A Kortix channel's own page draws the channel as its hero; the ways list
   // keeps only the other ways (the vendor's MCP server, Composio, the API).
   // Computer has a page of its own (`ComputerAppPage`).
-  const kortixApp = detail?.item.kind === 'kortix' ? (detail.item.kortix?.app ?? null) : null;
+  const kortixApp = detail?.item?.kind === 'kortix' ? (detail?.item?.kortix?.app ?? null) : null;
   const channelPlatform = kortixApp && kortixApp !== 'computer' ? kortixApp : null;
   const waySurfaces = channelPlatform
     ? resolved.surfaces.filter((surface) => surface.kind !== 'kortix')
@@ -844,7 +844,7 @@ function useAppData(projectId: string, app: ReturnType<typeof appRefFromLocation
                 key: `${variant.kind}:${variant.id}`,
                 label: variant.name,
                 kind: variant.kind as WayKind,
-                target: discoverInstallTarget(surfaceInstallName(detail.item.name, usable, index), usable),
+                target: discoverInstallTarget(surfaceInstallName(detail?.item?.name || variant.name, usable, index), usable),
                 oneClick: variant.oneClick === true,
                 recommended: variant.recommended === true,
                 variantId: variant.id,

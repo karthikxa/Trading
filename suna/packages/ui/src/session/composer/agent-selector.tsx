@@ -182,7 +182,7 @@ export function AgentSelector({
   const DEFAULT_SWARM_LEAD: TradingAgentDef = {
     id: 'portfolio_manager',
     name: 'Portfolio Manager',
-    role: 'Capital Allocation & Swarm Lead',
+    role: 'Capital Allocation & Lead',
     group: 'Execution',
     shape: 'circle',
     color: '#8B5CF6',

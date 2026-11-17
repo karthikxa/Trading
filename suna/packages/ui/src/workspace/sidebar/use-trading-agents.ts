@@ -131,13 +131,13 @@ export const DEFAULT_CANONICAL_TRADING_AGENTS: TradingAgentDef[] = [
   {
     id: 'portfolio_manager',
     name: 'Chief of Staff',
-    role: 'Capital Allocation & Swarm Lead',
+    role: 'Capital Allocation & Lead',
     group: 'Management',
     shape: 'circle',
     color: '#8B5CF6',
     expression: 'attentive',
     status: 'idle',
-    description: 'Lead Portfolio Manager and Workspace Administrator. Synthesizes swarm intelligence and directs execution.',
+    description: 'Lead Portfolio Manager and Workspace Administrator. Directs multi-agent execution.',
     isAdmin: true,
   },
   {

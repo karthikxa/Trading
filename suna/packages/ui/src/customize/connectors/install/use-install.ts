@@ -148,8 +148,9 @@ export function useInstall(
   const installEntry = useCallback(
     (entry: CatalogEntry, connectors: readonly AdminConnector[]) => {
       const app = appRefFromEntry(entry);
+      const connectorId = entry?.connector?.id || (entry as any)?.id || entry?.slug || app?.id || '';
       // What Kortix built is set up on its own page, not installed.
-      if (entry.connector.kind === 'kortix') {
+      if (entry?.connector?.kind === 'kortix') {
         router.push(appHref(projectId, app));
         return;
       }
@@ -158,8 +159,8 @@ export function useInstall(
       setPendingKey(app.slug);
       void queryClient
         .fetchQuery({
-          queryKey: ['discover-connector-detail', projectId, entry.connector.id],
-          queryFn: () => getDiscoverConnector(projectId, entry.connector.id),
+          queryKey: ['discover-connector-detail', projectId, connectorId],
+          queryFn: () => getDiscoverConnector(projectId, connectorId),
           staleTime: 15 * 60_000,
         })
         .then(async (detail) => {
@@ -185,7 +186,7 @@ export function useInstall(
           // A Kortix catalogue app or a one-click server is the vendor's MCP
           // server: a one-click sign-in opens the one-step MCP dialog (which
           // names the profile too); anything else asks for the name first.
-          const oneClickServer = (entry.connector.feeds || []).includes('kortix') || recommended?.oneClick === true || entry.connector.oneClick === true;
+          const oneClickServer = (entry?.connector?.feeds || []).includes('kortix') || recommended?.oneClick === true || entry?.connector?.oneClick === true;
           let addAccount: boolean | undefined;
           if (oneClickServer && mcpUrl && onMcpServer) {
             const check = await checkMcpServerSignIn(projectId, mcpUrl).catch(() => null);
