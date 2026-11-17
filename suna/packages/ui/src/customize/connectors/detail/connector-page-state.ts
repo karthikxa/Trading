@@ -53,7 +53,7 @@ export function connectHandoff(input: {
   | { action: 'discard' } {
   if (!input.connectId) return { action: 'none' };
   if (!input.direct) return { action: 'discard' };
-  const row = input.accounts.find((account) => account.connection_id === input.connectId);
+  const row = (input.accounts || []).find((account) => account.connection_id === input.connectId);
   if (row) {
     const owner = row.owner_type === 'project' ? 'project' : 'me';
     if (owner === 'me' || input.canManageConnections) {

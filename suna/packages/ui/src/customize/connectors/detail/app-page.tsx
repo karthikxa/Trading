@@ -189,8 +189,8 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
   const [allTools, setAllTools] = useState(false);
   const { appQuery, resolved, managed, detail, provider } = useAppData(projectId, app);
   const shownWay =
-    resolved?.surfaces.find((surface) => surface.variantId !== null && surface.variantId === toolsWay) ??
-    resolved?.surfaces.find((surface) => surface.variantId !== null) ??
+    resolved?.surfaces?.find((surface) => surface.variantId !== null && surface.variantId === toolsWay) ??
+    resolved?.surfaces?.find((surface) => surface.variantId !== null) ??
     null;
   const toolsQuery = useQuery({
     queryKey: ['discover-connector-tools', projectId, detail?.item?.id ?? null, shownWay?.variantId ?? null],
@@ -320,7 +320,7 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
   // The profile this way already installed, if any: its action is Add
   // account on that profile, never a second profile.
   const installedFor = (surface: Surface) =>
-    surface.target ? inProject.find((connector) => connector.provider === surface.target?.provider) ?? null : null;
+    surface.target ? (inProject || []).find((connector) => connector.provider === surface.target?.provider) ?? null : null;
   const installMenu = (key: string, surface: Surface, variant: 'default' | 'secondary', name: string) => {
     const installed = installedFor(surface);
     if (installed && !surface.setupHref) {
@@ -764,9 +764,10 @@ function useAppData(projectId: string, app: ReturnType<typeof appRefFromLocation
         provider,
         q: twinName ?? '',
         limit: 10,
-      });
+      }).catch(() => null);
+      if (!page?.apps) return null;
       const key = appNameKey(twinName ?? '');
-      return page.apps.find((candidate) => appNameKey(candidate.name) === key) ?? null;
+      return page.apps.find((candidate) => appNameKey(candidate?.name || '') === key) ?? null;
     },
     enabled:
       twinName !== null &&

@@ -165,7 +165,7 @@ export function useInstall(
         })
         .then(async (detail) => {
           const variants = detail?.variants || [];
-          const recommended = variants.find((variant) => variant.recommended) || variants[0];
+          const recommended = (variants || []).find((variant) => variant?.recommended) || variants[0];
           if (recommended?.kind === 'composio' && recommended.composio) {
             ask({
               target: easyConnectInstallTarget(connectToolkitApp(recommended.composio)),

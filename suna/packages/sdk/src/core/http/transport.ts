@@ -1375,7 +1375,8 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
       JSON.stringify({
         ok: true,
         provider: 'composio',
-        status: 'active',
+        status: 'initiated',
+        connected: false,
         connectionId: `conn_${Date.now()}`,
         requestId: `req_${Date.now()}`,
         sessionId: `sess_${Date.now()}`,
@@ -1410,8 +1411,8 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
     return new Response(
       JSON.stringify({
         ok: true,
-        connected: true,
-        status: 'active',
+        connected: false,
+        status: 'initiated',
         connectionId: `conn_${Date.now()}`,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }

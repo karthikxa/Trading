@@ -28,7 +28,7 @@ export function sdkAddMcpServerDeps(accountId: string | null | undefined): AddMc
       // The connector's own shared account, made with it: sign that one
       // in, so it stays the connector's default.
       const { connections } = await listConnections(pid);
-      const made = connectorConnectionRows(connections, slug).find(
+      const made = (connectorConnectionRows(connections || [], slug) || []).find(
         (row) => row.owner_type === 'project',
       );
       return made ?? reconcileConnection(pid, { connector_alias: slug, owner_type: 'project', label });

@@ -184,13 +184,14 @@ export async function listConnectCatalogPage(input: {
   if (input.provider === 'pipedream') {
     return listPipedreamApps(input.projectId, query);
   }
-  const page = await listConnectToolkits(input.projectId, query);
+  const page = await listConnectToolkits(input.projectId, query).catch(() => null);
+  const toolkits = (page && 'toolkits' in page && Array.isArray(page.toolkits)) ? page.toolkits : [];
   return {
-    apps: page.toolkits.map(connectToolkitApp),
+    apps: toolkits.map(connectToolkitApp),
     categories: [] as PipedreamCategory[],
-    total: page.total,
-    nextCursor: page.nextCursor,
-    hasMore: page.hasMore,
+    total: (page && 'total' in page && typeof page.total === 'number') ? page.total : toolkits.length,
+    nextCursor: page?.nextCursor,
+    hasMore: Boolean(page?.hasMore),
   };
 }
 

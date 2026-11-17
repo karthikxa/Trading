@@ -21,32 +21,69 @@ interface ConnectorItem {
 }
 
 let cachedCatalog: ConnectorItem[] | null = null;
-const installedSlugs = new Set<string>();
 
 const installedFilePath = path.resolve(process.cwd(), 'src/features/connectors/data/installed-connectors.json');
 
-function loadInstalled(): void {
+function getInstalledSlugs(): Set<string> {
+  const set = new Set<string>();
   try {
     if (fs.existsSync(installedFilePath)) {
       const data = JSON.parse(fs.readFileSync(installedFilePath, 'utf8'));
       if (Array.isArray(data)) {
         for (const item of data) {
-          if (typeof item === 'string' && item) installedSlugs.add(item);
+          if (typeof item === 'string' && item && !item.startsWith('conn_')) {
+            set.add(item);
+          }
         }
       }
     }
   } catch {}
+  return set;
 }
 
-function saveInstalled(): void {
+function saveInstalled(set: Set<string>): void {
   try {
     const dir = path.dirname(installedFilePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(installedFilePath, JSON.stringify(Array.from(installedSlugs), null, 2), 'utf8');
+    fs.writeFileSync(installedFilePath, JSON.stringify(Array.from(set).filter(s => !s.startsWith('conn_')), null, 2), 'utf8');
   } catch {}
 }
 
-loadInstalled();
+async function checkComposioActiveConnection(slug: string): Promise<boolean> {
+  const apiKey =
+    process.env.COMPOSIO_API_KEY ||
+    process.env.NEXT_PUBLIC_COMPOSIO_API_KEY ||
+    'ck_1XxofHhReEgRH9hjdNRp';
+  if (!apiKey || apiKey.includes('YOUR_')) return false;
+
+  try {
+    const cleanSlug = slug.toLowerCase().replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+    const res = await fetch('https://connect.composio.dev/mcp', {
+      method: 'POST',
+      headers: {
+        'x-consumer-api-key': apiKey,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'tools/call',
+        params: {
+          name: 'COMPOSIO_MANAGE_CONNECTIONS',
+          arguments: { action: 'list', toolkits: [cleanSlug] },
+        },
+      }),
+    });
+
+    if (!res.ok) return false;
+    const text = await res.text();
+    return /"status"\s*:\s*"(active|ACTIVE)"/i.test(text);
+  } catch (err) {
+    console.error('[Composio Check] Failed to check status for', slug, err);
+  }
+  return false;
+}
 
 async function getComposioOAuthLink(slug: string): Promise<string | null> {
   const apiKey =
@@ -150,7 +187,7 @@ function findCatalogItem(queryIdOrSlug: string, catalog: ConnectorItem[]): Conne
   };
 }
 
-function buildDiscoverConnectorDetail(item: ConnectorItem) {
+function buildDiscoverConnectorDetail(item: ConnectorItem, installedSlugs: Set<string>) {
   const isMcp = item.kind === 'mcp' || item.provider === 'mcp';
   const isKortix = item.kind === 'kortix' || item.provider === 'kortix';
   const isComposio = item.kind === 'composio' || item.provider === 'composio' || (!isMcp && !isKortix);
@@ -322,11 +359,12 @@ export async function GET(req: Request) {
   const way = (url.searchParams.get('way') || '').trim();
 
   const catalog = getCatalog();
+  const installedSlugs = getInstalledSlugs();
 
   // Mode: discover-detail (Explicit Discover connector detail with item + variants)
   if (mode === 'discover-detail' || (id && mode === 'discover')) {
     const item = findCatalogItem(id || slug, catalog);
-    return NextResponse.json(buildDiscoverConnectorDetail(item));
+    return NextResponse.json(buildDiscoverConnectorDetail(item, installedSlugs));
   }
 
   // Mode: discover-tools
@@ -360,7 +398,8 @@ export async function GET(req: Request) {
 
   // Mode: installed
   if (mode === 'installed') {
-    const installedList = Array.from(installedSlugs).map((s) => {
+    const validInstalled = Array.from(installedSlugs).filter((s) => typeof s === 'string' && s && !s.startsWith('conn_'));
+    const installedList = validInstalled.map((s) => {
       const clean = s.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
       const match = catalog.find((c) => c.slug === s || c.slug === clean || c.id === s);
       const cleanName = clean.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
@@ -388,7 +427,8 @@ export async function GET(req: Request) {
 
   // Mode: connections
   if (mode === 'connections') {
-    const connections = Array.from(installedSlugs).map((s, idx) => {
+    const validInstalled = Array.from(installedSlugs).filter((s) => typeof s === 'string' && s && !s.startsWith('conn_'));
+    const connections = validInstalled.map((s, idx) => {
       const clean = s.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
       const match = catalog.find((c) => c.slug === s || c.slug === clean || c.id === s);
       const cleanName = clean.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
@@ -536,6 +576,10 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const rawSlug = (body.slug || body.app || body.id || body.connector_alias || '').toLowerCase().trim();
+    if (rawSlug.startsWith('conn_')) {
+      // Discard connection alias IDs from being treated as catalog connectors
+      return NextResponse.json({ ok: true, success: true });
+    }
     const cleanSlug = rawSlug.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
 
     const catalog = getCatalog();
@@ -547,11 +591,6 @@ export async function POST(req: Request) {
     // Mode: connect (Generate real Composio OAuth authorization URL)
     if (body.mode === 'connect' || body.operation === 'connect') {
       const connectUrl = await getComposioOAuthLink(cleanSlug || rawSlug);
-      if (cleanSlug) {
-        installedSlugs.add(cleanSlug);
-        installedSlugs.add(rawSlug);
-        saveInstalled();
-      }
       return NextResponse.json({
         ok: true,
         success: true,
@@ -559,39 +598,39 @@ export async function POST(req: Request) {
         app: cleanSlug,
         slug: rawSlug || cleanSlug,
         name: appName,
-        status: connectUrl ? 'needs_auth' : 'active',
+        status: 'needs_auth',
         connectionId,
         requestId: `req_${Date.now()}`,
         sessionId: `sess_${Date.now()}`,
         redirectUrl: connectUrl,
         connectUrl: connectUrl,
-        connected: !connectUrl,
+        connected: false,
       });
     }
 
     // Mode: finalize (Verify or complete authorization)
     if (body.mode === 'finalize' || body.operation === 'finalize') {
-      if (cleanSlug) {
-        installedSlugs.add(cleanSlug);
-        installedSlugs.add(rawSlug);
-        saveInstalled();
+      const isComposioActive = await checkComposioActiveConnection(cleanSlug);
+      if (isComposioActive && cleanSlug) {
+        const set = getInstalledSlugs();
+        set.add(cleanSlug);
+        saveInstalled(set);
+        return NextResponse.json({
+          ok: true,
+          connected: true,
+          status: 'active',
+          connectionId,
+        });
       }
       return NextResponse.json({
         ok: true,
-        connected: true,
-        status: 'active',
+        connected: false,
+        status: 'initiated',
         connectionId,
       });
     }
 
-    // Default Install / Create Connector
-    if (cleanSlug) {
-      installedSlugs.add(cleanSlug);
-      installedSlugs.add(rawSlug);
-      saveInstalled();
-    }
-
-    // Get live OAuth connectUrl if available
+    // Default Install / Create Connector (Draft profile created in project)
     const connectUrl = await getComposioOAuthLink(cleanSlug || rawSlug);
 
     return NextResponse.json({
@@ -601,7 +640,8 @@ export async function POST(req: Request) {
       app: cleanSlug,
       slug: rawSlug || cleanSlug,
       name: appName,
-      status: 'active',
+      status: 'needs_auth',
+      connected: false,
       connectionId,
       requestId: `req_${Date.now()}`,
       sessionId: `sess_${Date.now()}`,
@@ -625,11 +665,10 @@ export async function DELETE(req: Request) {
     const url = new URL(req.url);
     const raw = (url.searchParams.get('slug') || url.searchParams.get('id') || '').toLowerCase().trim();
     const cleanSlug = raw.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
-    if (cleanSlug) {
-      installedSlugs.delete(cleanSlug);
-      installedSlugs.delete(raw);
-      saveInstalled();
-    }
+    const set = getInstalledSlugs();
+    if (cleanSlug) set.delete(cleanSlug);
+    if (raw) set.delete(raw);
+    saveInstalled(set);
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || 'Failed to disconnect' }, { status: 500 });

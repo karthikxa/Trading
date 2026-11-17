@@ -27,10 +27,10 @@ function ownSource(scope: PolicyScope): ConnectorEffectivePolicy['source'] {
  */
 export function effectiveChoice(
   path: string,
-  effective: readonly ConnectorEffectivePolicy[],
+  effective: readonly ConnectorEffectivePolicy[] | undefined | null,
   scope: PolicyScope = 'base',
 ): PolicyChoice {
-  const hit = effective.find((e) => e.path === path);
+  const hit = (effective || []).find((e) => e?.path === path);
   if (!hit) return 'default';
   return hit.source === ownSource(scope) || hit.source === 'project' ? hit.action : 'default';
 }
@@ -49,14 +49,14 @@ export function effectiveChoice(
 export function inheritedAction(
   path: string,
   choice: PolicyChoice,
-  effective: readonly ConnectorEffectivePolicy[],
-  baseEffective: readonly ConnectorEffectivePolicy[],
+  effective: readonly ConnectorEffectivePolicy[] | undefined | null,
+  baseEffective: readonly ConnectorEffectivePolicy[] | undefined | null,
   scope: PolicyScope,
   fallback: ConnectorPolicyAction,
 ): ConnectorPolicyAction {
-  const base = scope === 'set' ? baseEffective.find((e) => e.path === path) : undefined;
+  const base = scope === 'set' ? (baseEffective || []).find((e) => e?.path === path) : undefined;
   if (base) return base.action;
-  const own = choice === 'default' ? effective.find((e) => e.path === path) : undefined;
+  const own = choice === 'default' ? (effective || []).find((e) => e?.path === path) : undefined;
   return own?.action ?? fallback;
 }
 

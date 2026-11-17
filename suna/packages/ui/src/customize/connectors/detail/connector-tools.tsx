@@ -340,7 +340,8 @@ export function ConnectorTools({
   // What decides a tool left on Default/Inherit, named the way the page names
   // it: the base rules, the sensitive flag, or the project's default mode.
   const decidedBy = (path: string) => {
-    const entry = (scope === 'set' ? baseEffective : effective).find((e) => e.path === path);
+    const list = scope === 'set' ? baseEffective : effective;
+    const entry = (list || []).find((e) => e?.path === path);
     if (scope === 'set' && entry?.source !== 'risk_default' && entry?.source !== 'allow_all') {
       return t('toolsFromBase');
     }

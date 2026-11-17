@@ -29,10 +29,13 @@ const hydrationCatalogs = new Map<Locale, Promise<MessageTree>>();
 function hydrationCatalog(locale: Locale): Promise<MessageTree> {
   let promise = hydrationCatalogs.get(locale);
   if (!promise) {
-    promise = loadClientCatalog(locale).catch((error: unknown) => {
-      console.error(`[i18n] could not load the ${locale} catalog:`, error);
-      return {};
-    });
+    promise =
+      typeof window === 'undefined'
+        ? Promise.resolve(serverCatalog(locale))
+        : loadClientCatalog(locale).catch((error: unknown) => {
+            console.error(`[i18n] could not load the ${locale} catalog:`, error);
+            return {};
+          });
     hydrationCatalogs.set(locale, promise);
   }
   return promise;
@@ -68,21 +71,8 @@ function CatalogProvider({
   children: ReactNode;
   initialLocale: Locale;
 }) {
-  // Always call `use` on the client. Never short-circuit it with a direct
-  // cache read of an already-loaded catalog.
-  //
-  // React suspends this component on the first client render, then replays it
-  // with the rerender dispatcher (ReactFiberHooks `useThenable`). `use` switches
-  // the dispatcher back to mount/update when no hooks remain from the suspended
-  // attempt. A skipped `use` leaves the rerender dispatcher in place, so the
-  // first `useState` throws minified React error #467 ("Update hook called on
-  // initial render") during hydration. When the catalog is already loaded,
-  // `loadClientCatalog` resolves synchronously, so `use` returns without
-  // suspending and the fast path is preserved.
-  const initialCatalog =
-    typeof window === 'undefined'
-      ? serverCatalog(initialLocale)
-      : use(hydrationCatalog(initialLocale));
+  // Always call `use` unconditionally on both server and client to avoid conditional hook call warnings
+  const initialCatalog = use(hydrationCatalog(initialLocale));
 
   const { user } = useAuth();
   const [locale, setLocale] = useState<Locale>(initialLocale);
