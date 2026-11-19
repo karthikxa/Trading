@@ -47,3 +47,10 @@ openstock_repo/
 kortix components/
 
 freellmapi/
+fincept_terminal_repo/
+
+tv-data/
+*.mjs
+all_indian_market_symbols.json
+indian-market-data.json
+suna/apps/web/public/market-icons/

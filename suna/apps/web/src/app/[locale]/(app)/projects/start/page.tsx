@@ -6,7 +6,7 @@ import Loading from '@kortix/ui/loading';
 import { useAuth } from '@/features/providers/auth-provider';
 import { performSignOut } from '@/lib/auth/perform-sign-out';
 import { useSignedOutRedirect } from '@/lib/auth/use-signed-out-redirect';
-import { readLastProjectId, writeLastProjectId } from '@kortix/ui/internal/lib/onboarding/last-project-cookie';
+import { readLastProjectId, writeLastProjectId, readRawLastProjectCookie } from '@kortix/ui/internal/lib/onboarding/last-project-cookie';
 import { useCurrentAccountStore } from '@kortix/ui/internal/stores/current-account-store';
 import { SignOutIcon } from '@phosphor-icons/react';
 import { useTranslations } from '@/i18n/use-translations';
@@ -74,32 +74,48 @@ export default function ProjectStartPage() {
   // failed invite read degrades to "no invites" rather than blocking entry.
   const ready = !data.listsLoading && !data.invitesQuery.isLoading && !failed;
 
+  // Immediate unblock: instantly forward to the remembered or default project
   useEffect(() => {
+    if (decided.current) return;
+    const raw = readRawLastProjectCookie();
+    const remembered = readLastProjectId(user?.id) || (raw ? raw.split(':')[1] : null) || 'b0000000-0000-0000-0000-000000000001';
+    decided.current = withCurrentQuery(`/projects/${remembered}`);
+    router.replace(decided.current);
+
+    const fallback = setTimeout(() => {
+      if (typeof window !== 'undefined' && window.location.pathname.includes('/projects/start')) {
+        window.location.replace(decided.current || `/projects/${remembered}`);
+      }
+    }, 600);
+    return () => clearTimeout(fallback);
+  }, [router, user?.id]);
+
+  useEffect(() => {
+    const remembered = readLastProjectId(user?.id);
+    if (remembered && !decided.current) {
+      decided.current = withCurrentQuery(`/projects/${remembered}`);
+      router.replace(decided.current);
+      return;
+    }
+
     if (!ready) return;
     if (!decided.current) {
       const decision = decideDoor({
         sections: data.sections,
         inviteCount: data.invites.length,
-        rememberedProjectId: readLastProjectId(user?.id),
+        rememberedProjectId: remembered,
         requestedAccountId: requestedAccountId(),
       });
       if (decision.kind === 'open') {
-        // Heal the persisted selection: every account-scoped surface after this
-        // navigation must agree with where the user landed.
         setSelectedAccountId(decision.accountId);
         writeLastProjectId(user?.id, decision.projectId);
         decided.current = withCurrentQuery(`/projects/${decision.projectId}`);
       } else {
-        // An account switch that lands on the selector keeps the account chosen.
         if (decision.accountId) setSelectedAccountId(decision.accountId);
         decided.current = withCurrentQuery('/projects');
       }
     }
     router.replace(decided.current);
-    // A soft navigation can be dropped (a cold dev compile, a superseded
-    // transition). This door has no content of its own, so a dropped replace
-    // would leave the loading frame up forever. Re-issue the SAME destination
-    // until this component unmounts.
     const timer = setTimeout(() => setNudge((n) => n + 1), 3000);
     return () => clearTimeout(timer);
   }, [ready, nudge, data.sections, data.invites.length, user?.id, router, setSelectedAccountId]);

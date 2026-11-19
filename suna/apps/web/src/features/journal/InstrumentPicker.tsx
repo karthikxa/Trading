@@ -1,65 +1,13 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
-import { Search, ChevronDown, Check, Sparkles } from 'lucide-react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Search, ChevronDown, Check, Loader2 } from 'lucide-react';
 import { TradingPairIcon } from './TradingPairIcon';
+import { TOP_MARKET_SYMBOLS, MarketSymbolOption } from './data/top-instruments';
+import { cn } from '@kortix/ui';
 
-export interface MarketSymbolOption {
-  symbol: string;
-  name: string;
-  category: 'Forex' | 'Commodities' | 'Crypto' | 'Futures' | 'Equities & Options';
-  exchange?: string;
-}
-
-export const ALL_MARKET_SYMBOLS: MarketSymbolOption[] = [
-  // Forex
-  { symbol: 'EURUSD', name: 'Euro / U.S. Dollar', category: 'Forex', exchange: 'FOREXCOM' },
-  { symbol: 'GBPUSD', name: 'British Pound / U.S. Dollar', category: 'Forex', exchange: 'FOREXCOM' },
-  { symbol: 'USDJPY', name: 'U.S. Dollar / Japanese Yen', category: 'Forex', exchange: 'FOREXCOM' },
-  { symbol: 'AUDCHF', name: 'Australian Dollar / Swiss Franc', category: 'Forex', exchange: 'OANDA' },
-  { symbol: 'GBPJPY', name: 'British Pound / Japanese Yen', category: 'Forex', exchange: 'SAXO' },
-  { symbol: 'USDINR', name: 'U.S. Dollar / Indian Rupee', category: 'Forex', exchange: 'FX_IDC' },
-  { symbol: 'AUDUSD', name: 'Australian Dollar / U.S. Dollar', category: 'Forex', exchange: 'OANDA' },
-  { symbol: 'USDCAD', name: 'U.S. Dollar / Canadian Dollar', category: 'Forex', exchange: 'FOREXCOM' },
-  { symbol: 'NZDUSD', name: 'New Zealand Dollar / U.S. Dollar', category: 'Forex', exchange: 'OANDA' },
-  { symbol: 'EURGBP', name: 'Euro / British Pound', category: 'Forex', exchange: 'FOREXCOM' },
-
-  // Commodities
-  { symbol: 'XAUUSD', name: 'Gold / U.S. Dollar', category: 'Commodities', exchange: 'TVC' },
-  { symbol: 'XAGUSD', name: 'Silver / U.S. Dollar', category: 'Commodities', exchange: 'TVC' },
-  { symbol: 'USOIL', name: 'Crude Oil WTI', category: 'Commodities', exchange: 'NYMEX' },
-  { symbol: 'UKOIL', name: 'Brent Crude Oil', category: 'Commodities', exchange: 'ICE' },
-  { symbol: 'COPPER', name: 'High Grade Copper', category: 'Commodities', exchange: 'COMEX' },
-  { symbol: 'NATGAS', name: 'Natural Gas', category: 'Commodities', exchange: 'NYMEX' },
-
-  // Crypto
-  { symbol: 'BTCUSD', name: 'Bitcoin / U.S. Dollar', category: 'Crypto', exchange: 'BINANCE' },
-  { symbol: 'ETHUSD', name: 'Ethereum / U.S. Dollar', category: 'Crypto', exchange: 'BINANCE' },
-  { symbol: 'SOLUSD', name: 'Solana / U.S. Dollar', category: 'Crypto', exchange: 'BINANCE' },
-  { symbol: 'XRPUSD', name: 'Ripple / U.S. Dollar', category: 'Crypto', exchange: 'BITSTAMP' },
-  { symbol: 'LTCUSD', name: 'Litecoin / U.S. Dollar', category: 'Crypto', exchange: 'COINBASE' },
-  { symbol: 'DOGEUSD', name: 'Dogecoin / U.S. Dollar', category: 'Crypto', exchange: 'BINANCE' },
-
-  // Futures & Indices
-  { symbol: 'US30', name: 'Dow Jones Industrial 30', category: 'Futures', exchange: 'DJI' },
-  { symbol: 'NDX100', name: 'Nasdaq 100 Index', category: 'Futures', exchange: 'NASDAQ' },
-  { symbol: 'SPX500', name: 'S&P 500 Index', category: 'Futures', exchange: 'SP' },
-  { symbol: 'US2000', name: 'Russell 2000 Index', category: 'Futures', exchange: 'RUSSELL' },
-  { symbol: 'NIFTY50', name: 'Nifty 50 Index', category: 'Futures', exchange: 'NSE' },
-  { symbol: 'DAX40', name: 'German DAX Index', category: 'Futures', exchange: 'XETR' },
-  { symbol: 'FTSE100', name: 'UK FTSE 100 Index', category: 'Futures', exchange: 'LSE' },
-
-  // Equities & Options
-  { symbol: 'NVDA', name: 'NVIDIA Corporation', category: 'Equities & Options', exchange: 'NASDAQ' },
-  { symbol: 'AAPL', name: 'Apple Inc.', category: 'Equities & Options', exchange: 'NASDAQ' },
-  { symbol: 'TSLA', name: 'Tesla, Inc.', category: 'Equities & Options', exchange: 'NASDAQ' },
-  { symbol: 'MSFT', name: 'Microsoft Corporation', category: 'Equities & Options', exchange: 'NASDAQ' },
-  { symbol: 'AMZN', name: 'Amazon.com, Inc.', category: 'Equities & Options', exchange: 'NASDAQ' },
-  { symbol: 'META', name: 'Meta Platforms, Inc.', category: 'Equities & Options', exchange: 'NASDAQ' },
-  { symbol: 'GOOGL', name: 'Alphabet Inc.', category: 'Equities & Options', exchange: 'NASDAQ' },
-  { symbol: 'AMD', name: 'Advanced Micro Devices', category: 'Equities & Options', exchange: 'NASDAQ' },
-  { symbol: 'INFY', name: 'Infosys Limited', category: 'Equities & Options', exchange: 'NSE' },
-];
+export type { MarketSymbolOption };
+export { TOP_MARKET_SYMBOLS as ALL_MARKET_SYMBOLS };
 
 interface InstrumentPickerProps {
   value: string;
@@ -70,9 +18,11 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const [searchResults, setSearchResults] = useState<MarketSymbolOption[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Close when clicking outside
+  // Close dropdown when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -83,85 +33,153 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const categories = ['All', 'Forex', 'Commodities', 'Crypto', 'Futures', 'Equities & Options'];
+  // Standard Kortix category options matching Image 4
+  const categories = [
+    'All',
+    'Stocks',
+    'Funds',
+    'Futures',
+    'Forex',
+    'Crypto',
+    'Indices',
+    'Bonds',
+    'Economy',
+    'Options',
+  ];
 
-  const filteredSymbols = ALL_MARKET_SYMBOLS.filter((item) => {
-    const matchesCategory = selectedCategory === 'All' || item.category === selectedCategory;
-    const matchesSearch =
-      item.symbol.toLowerCase().includes(search.toLowerCase()) ||
-      item.name.toLowerCase().includes(search.toLowerCase());
-    return matchesCategory && matchesSearch;
-  });
+  // Dynamic search across the full 12,500+ Indian & Global market catalog
+  useEffect(() => {
+    if (!isOpen) return;
+    const query = search.trim();
+    if (!query) {
+      setSearchResults([]);
+      setIsLoading(false);
+      return;
+    }
 
-  const selectedItem = ALL_MARKET_SYMBOLS.find(
-    (s) => s.symbol.toUpperCase() === value.toUpperCase()
-  );
+    const timer = setTimeout(async () => {
+      setIsLoading(true);
+      try {
+        const catParam = selectedCategory !== 'All' ? `&category=${encodeURIComponent(selectedCategory)}` : '';
+        const res = await fetch(`/api/markets/symbols?q=${encodeURIComponent(query)}${catParam}`);
+        if (res.ok) {
+          const data: MarketSymbolOption[] = await res.json();
+          setSearchResults(data);
+        }
+      } catch {
+        // Fallback to client-side filter
+      } finally {
+        setIsLoading(false);
+      }
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [search, selectedCategory, isOpen]);
+
+  // Compute displayed list: merge top pre-loaded items with search results
+  const displayedSymbols = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) {
+      if (selectedCategory === 'All') return TOP_MARKET_SYMBOLS;
+      return TOP_MARKET_SYMBOLS.filter((item) => item.category.toLowerCase() === selectedCategory.toLowerCase());
+    }
+
+    if (searchResults.length > 0) {
+      return searchResults;
+    }
+
+    // Instant local filter while remote query debounces
+    return TOP_MARKET_SYMBOLS.filter((item) => {
+      const matchCat = selectedCategory === 'All' || item.category.toLowerCase() === selectedCategory.toLowerCase();
+      const matchSearch =
+        item.symbol.toLowerCase().includes(q) || item.name.toLowerCase().includes(q);
+      return matchCat && matchSearch;
+    });
+  }, [search, selectedCategory, searchResults]);
+
+  // Look up current selected item for the trigger header
+  const selectedItem = useMemo(() => {
+    const clean = (value || '').toUpperCase().trim();
+    return (
+      TOP_MARKET_SYMBOLS.find((s) => s.symbol.toUpperCase() === clean) ||
+      searchResults.find((s) => s.symbol.toUpperCase() === clean)
+    );
+  }, [value, searchResults]);
 
   return (
-    <div ref={dropdownRef} className="relative w-full">
-      {/* Trigger Button: Boxy, sleek, COSS UI style */}
+    <div ref={dropdownRef} className="relative w-full font-sans select-none">
+      {/* Trigger Button: Sleek, compact Kortix Roobert UI style (Image 1 fix) */}
       <button
         type="button"
         onClick={() => setIsOpen((prev) => !prev)}
-        className="w-full flex items-center justify-between px-3 py-2 bg-white border border-zinc-200 rounded-lg hover:border-zinc-400 focus:outline-none focus:border-zinc-950 transition-colors shadow-2xs text-left"
+        className="w-full h-10 flex items-center justify-between px-3 py-1.5 bg-background border border-border/80 rounded-xl hover:border-border hover:bg-muted/20 focus:outline-none focus:ring-1 focus:ring-ring transition-all shadow-2xs text-left cursor-pointer font-sans"
       >
-        <div className="flex items-center gap-2 overflow-hidden">
-          <TradingPairIcon symbol={value || 'EURUSD'} size="sm" />
-          <div className="flex items-baseline gap-1.5 truncate">
-            <span className="font-bold text-xs text-zinc-950 font-sans">
-              {value || 'Select symbol'}
-            </span>
-            {selectedItem && (
-              <span className="text-[11px] text-zinc-400 truncate">
-                · {selectedItem.name}
+        <div className="flex items-center gap-2.5 overflow-hidden min-w-0">
+          <TradingPairIcon symbol={value || 'NIFTY 50'} logoid={selectedItem?.logoid} size="sm" />
+          <div className="flex flex-col min-w-0 justify-center">
+            <div className="flex items-center gap-1.5 leading-none">
+              <span className="font-medium text-[13px] text-foreground tracking-tight font-sans">
+                {value || 'Select symbol'}
+              </span>
+              {selectedItem?.exchange && (
+                <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider leading-none">
+                  {selectedItem.exchange}
+                </span>
+              )}
+            </div>
+            {selectedItem?.name && (
+              <span className="text-[11px] text-muted-foreground font-sans truncate mt-0.5 leading-none">
+                {selectedItem.name}
               </span>
             )}
           </div>
         </div>
 
         <ChevronDown
-          className={`size-4 text-zinc-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          className={`size-3.5 text-muted-foreground/70 transition-transform duration-200 shrink-0 ml-2 ${isOpen ? 'rotate-180' : ''}`}
         />
       </button>
 
-      {/* COSS UI Command Palette / Dropdown Menu */}
+      {/* Kortix Command Dropdown Menu */}
       {isOpen && (
-        <div className="absolute left-0 right-0 top-full mt-1.5 z-50 bg-white border border-zinc-200 rounded-xl shadow-lg flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+        <div className="absolute left-0 right-0 top-full mt-1.5 z-50 bg-popover border border-border/80 rounded-2xl shadow-xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150 font-sans">
           {/* Search Header */}
-          <div className="p-2.5 border-b border-zinc-100 bg-zinc-50/50 flex items-center gap-2">
-            <Search className="size-3.5 text-zinc-400 shrink-0" />
+          <div className="px-3 py-2 border-b border-border/50 bg-muted/30 flex items-center gap-2 font-sans">
+            <Search className="size-3.5 text-muted-foreground shrink-0" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search forex, crypto, indices, commodities..."
-              className="bg-transparent border-none outline-none text-xs text-zinc-900 placeholder:text-zinc-400 w-full"
+              placeholder="Search Indian stocks, ETFs, indices, F&O, forex..."
+              className="bg-transparent border-none outline-none text-xs text-foreground placeholder:text-muted-foreground w-full font-sans"
               autoFocus
             />
+            {isLoading && <Loader2 className="size-3.5 text-muted-foreground animate-spin shrink-0" />}
           </div>
 
-          {/* Category Chips Bar */}
-          <div className="flex items-center gap-1 p-2 overflow-x-auto border-b border-zinc-100 bg-white scrollbar-none text-[11px]">
+          {/* Category Chips Bar (Exact Image 4 options & style) */}
+          <div className="flex items-center gap-1.5 px-3 py-2 overflow-x-auto border-b border-border/50 bg-muted/10 [scrollbar-width:none]">
             {categories.map((cat) => (
               <button
                 key={cat}
                 type="button"
                 onClick={() => setSelectedCategory(cat)}
-                className={`px-2.5 py-1 rounded-md shrink-0 font-medium transition-colors ${
+                className={cn(
+                  'px-3 py-1 rounded-full shrink-0 text-xs font-medium transition-colors font-sans cursor-pointer',
                   selectedCategory === cat
-                    ? 'bg-zinc-950 text-white shadow-xs'
-                    : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200/80 hover:text-zinc-950'
-                }`}
+                    ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-2xs'
+                    : 'bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground'
+                )}
               >
                 {cat}
               </button>
             ))}
           </div>
 
-          {/* Symbol Results List */}
-          <div className="max-h-60 overflow-y-auto p-1.5 divide-y divide-zinc-50">
-            {filteredSymbols.length === 0 ? (
-              <div className="py-6 px-4 text-center text-xs text-zinc-400 flex flex-col items-center gap-1.5">
+          {/* Symbol Results List (Decent size, compact Kortix style - Image 2 & 3 fix) */}
+          <div className="max-h-64 overflow-y-auto p-1.5 space-y-0.5 font-sans [scrollbar-width:thin] scrollbar-thin">
+            {displayedSymbols.length === 0 ? (
+              <div className="py-7 px-4 text-center text-xs text-muted-foreground flex flex-col items-center gap-1.5 font-sans">
                 <span>No symbols found for &quot;{search}&quot;</span>
                 {search.trim() && (
                   <button
@@ -170,51 +188,52 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
                       onChange(search.toUpperCase().trim());
                       setIsOpen(false);
                     }}
-                    className="mt-1 text-xs font-semibold text-zinc-950 underline hover:text-zinc-600"
+                    className="mt-1 text-xs font-medium text-foreground underline hover:text-foreground/80 font-sans cursor-pointer"
                   >
                     Use custom symbol &quot;{search.toUpperCase().trim()}&quot;
                   </button>
                 )}
               </div>
             ) : (
-              filteredSymbols.map((item) => {
+              displayedSymbols.map((item) => {
                 const isSelected = item.symbol.toUpperCase() === value.toUpperCase();
                 return (
                   <button
-                    key={item.symbol}
+                    key={`${item.symbol}-${item.category}-${item.exchange}`}
                     type="button"
                     onClick={() => {
                       onChange(item.symbol);
                       setIsOpen(false);
                     }}
-                    className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left transition-colors ${
+                    className={cn(
+                      'w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl text-left transition-colors cursor-pointer font-sans',
                       isSelected
-                        ? 'bg-zinc-100 text-zinc-950 font-semibold'
-                        : 'hover:bg-zinc-50 text-zinc-800'
-                    }`}
+                        ? 'bg-muted text-foreground font-medium'
+                        : 'hover:bg-muted/50 text-foreground/90'
+                    )}
                   >
-                    <div className="flex items-center gap-2.5 overflow-hidden">
-                      <TradingPairIcon symbol={item.symbol} size="sm" />
-                      <div className="flex flex-col min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-bold text-xs text-zinc-950 font-sans">
+                    <div className="flex items-center gap-2.5 overflow-hidden min-w-0 pr-2">
+                      <TradingPairIcon symbol={item.symbol} logoid={item.logoid} size="sm" />
+                      <div className="flex flex-col min-w-0 justify-center">
+                        <div className="flex items-center gap-1.5 leading-snug">
+                          <span className="font-medium text-[13px] text-foreground tracking-tight font-sans">
                             {item.symbol}
                           </span>
-                          <span className="text-[10px] text-zinc-400 font-normal truncate">
+                          <span className="text-[10px] text-muted-foreground font-mono uppercase tracking-wider">
                             {item.exchange}
                           </span>
                         </div>
-                        <span className="text-[11px] text-zinc-500 truncate">
+                        <span className="text-[11px] text-muted-foreground font-sans truncate mt-0.2 leading-none">
                           {item.name}
                         </span>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-100 text-zinc-500 font-medium">
+                    <div className="flex items-center gap-2 shrink-0 ml-1.5">
+                      <span className="text-[9.5px] px-1.5 py-0.2 rounded-md bg-muted/70 text-muted-foreground font-medium font-sans">
                         {item.category}
                       </span>
-                      {isSelected && <Check className="size-3.5 text-zinc-950" />}
+                      {isSelected && <Check className="size-3.5 text-foreground" />}
                     </div>
                   </button>
                 );
@@ -228,4 +247,3 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
 }
 
 export default InstrumentPicker;
-

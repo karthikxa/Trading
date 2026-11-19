@@ -342,27 +342,31 @@ const ProjectSheelLayout = ({ children }: { children: React.ReactNode }) => {
       {/* Page headers can share z-50 with this fixed control. Paint the
           control after them so their macOS drag regions cannot take its click. */}
       {children}
-      {desktopShell && !isExpanded && (
-        <Hint
-          label={
-            peek ? tI18nComplete.raw('textbc44e1fccb68') : tI18nComplete.raw('text45609089ee73')
-          }
-          side="bottom"
-        >
-          <Button
-            type="button"
-            aria-label={
+      {/* On desktop or web, show the opener toggle whenever collapsed */}
+      {!isExpanded && (
+        <div className="fixed top-3 left-3 z-50">
+          <Hint
+            label={
               peek ? tI18nComplete.raw('textbc44e1fccb68') : tI18nComplete.raw('text45609089ee73')
             }
-            onClick={toggleSidebar}
-            onPointerEnter={peekEnter}
-            onPointerLeave={peekLeave}
-            variant="ghost"
-            className={cn(TITLEBAR_CONTROL_CLASS, 'flex w-[var(--kx-titlebar-control-size)]')}
+            side="bottom"
           >
-            <PanelLeft className="cn-rtl-flip size-4" />
-          </Button>
-        </Hint>
+            <Button
+              type="button"
+              aria-label={
+                peek ? tI18nComplete.raw('textbc44e1fccb68') : tI18nComplete.raw('text45609089ee73')
+              }
+              onClick={toggleSidebar}
+              onPointerEnter={peekEnter}
+              onPointerLeave={peekLeave}
+              variant="outline"
+              size="icon"
+              className="size-8 rounded-lg bg-background/90 backdrop-blur border border-border shadow-2xs hover:bg-muted text-foreground cursor-pointer flex items-center justify-center transition-all"
+            >
+              <PanelLeft className="cn-rtl-flip size-4" />
+            </Button>
+          </Hint>
+        </div>
       )}
       {/* On the web there is deliberately no shell-level opener: each view
           draws its own, in its own layout, gated by

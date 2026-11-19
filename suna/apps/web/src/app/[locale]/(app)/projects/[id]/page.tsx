@@ -32,7 +32,8 @@ import TvScreener from '@/features/markets/TvScreener';
 import TvEconomicCalendar from '@/features/markets/TvEconomicCalendar';
 import WatchlistTable from '@/features/markets/WatchlistTable';
 import TvLiveChart from '@/features/markets/TvLiveChart';
-import GodsEyeSpecView from '@/features/spec/GodsEyeSpecView';
+import FinceptTerminalView from '@/features/terminal/FinceptTerminalView';
+
 import JournalView from '@/features/journal/JournalView';
 import { getLocalTrades } from '@/features/journal/storage';
 import type { JournalTrade } from '@/features/journal/types';
@@ -82,20 +83,18 @@ export default function ProjectIndexPage() {
     }
   }, [rawProjectId, searchParams, router]);
 
-  // Active view management: 'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'journal' | 'chart'
+  // Active view management: 'chat' | 'overview' | 'stock' | 'journal' | 'chart' | 'terminal'
   const queryTab = searchParams.get('tab');
-  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'watchlist' | 'spec' | 'stock' | 'journal' | 'chart'>(
+  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'stock' | 'journal' | 'chart' | 'terminal'>(
     queryTab === 'overview'
       ? 'overview'
-      : queryTab === 'watchlist'
-        ? 'watchlist'
+      : queryTab === 'terminal'
+        ? 'terminal'
         : queryTab === 'journal'
           ? 'journal'
-          : queryTab === 'spec'
-            ? 'spec'
-            : queryTab === 'chart'
-              ? 'chart'
-              : 'chat',
+          : queryTab === 'chart'
+            ? 'chart'
+            : 'chat',
   );
 
   const [tradingGoal, setTradingGoal] = useState<{ targetAmount: number; targetDate: string }>({
@@ -157,12 +156,10 @@ export default function ProjectIndexPage() {
       const tab = url.searchParams.get('tab');
       if (tab === 'overview') {
         setActiveView('overview');
-      } else if (tab === 'watchlist') {
-        setActiveView('watchlist');
+      } else if (tab === 'terminal') {
+        setActiveView('terminal');
       } else if (tab === 'journal') {
         setActiveView('journal');
-      } else if (tab === 'spec') {
-        setActiveView('spec');
       } else if (tab === 'chart') {
         const symbol = url.searchParams.get('symbol');
         if (symbol) {
@@ -193,12 +190,10 @@ export default function ProjectIndexPage() {
   useEffect(() => {
     if (queryTab === 'overview') {
       setActiveView('overview');
-    } else if (queryTab === 'watchlist') {
-      setActiveView('watchlist');
+    } else if (queryTab === 'terminal') {
+      setActiveView('terminal');
     } else if (queryTab === 'journal') {
       setActiveView('journal');
-    } else if (queryTab === 'spec') {
-      setActiveView('spec');
     } else if (queryTab === 'chart') {
       const symbol = searchParams.get('symbol');
       if (symbol) {
@@ -802,57 +797,7 @@ export default function ProjectIndexPage() {
           </div>
         )}
 
-        {/* ========================================================================= */}
-        {/* VIEW 3: FULL WATCHLIST VIEW (KORTIX DESIGN SYSTEM)                         */}
-        {/* ========================================================================= */}
-        {visitedViews.has('watchlist') && (
-          <div className={cn("w-full h-full flex-1 p-4 sm:p-6 lg:p-8 flex flex-col gap-6 overflow-y-auto bg-background text-foreground", activeView !== 'watchlist' && 'hidden')}>
-            {/* Header */}
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border/40 font-sans">
-              <div className="flex flex-col gap-1">
-                <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-foreground font-sans">
-                  Watchlist
-                </h1>
-              </div>
-              <SearchButton />
-            </div>
 
-            <WatchlistTable
-              selectedSymbol={selectedWatchlistStock}
-              onSelectSymbol={(sym) => {
-                setSelectedWatchlistStock(sym);
-                openStockTab(sym);
-              }}
-            />
-
-            {/* Chart for selected stock */}
-            <div className="rounded-xl border border-border/70 bg-card shadow-2xs overflow-hidden mt-2 font-sans">
-              <div className="flex items-center justify-between px-5 py-3.5 border-b border-border/60">
-                <div className="flex items-center gap-2">
-                  <ChartLineUp className="size-4 text-foreground" />
-                  <h2 className="text-sm font-semibold text-foreground font-sans">
-                    Chart
-                  </h2>
-                </div>
-              </div>
-              <div className="p-3 bg-card">
-                <TvLiveChart
-                  symbol={selectedWatchlistStock}
-                  height={560}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ========================================================================= */}
-        {/* VIEW: SPEC (God's Eye View - bilawalsidhu/gods-eye-view)                  */}
-        {/* ========================================================================= */}
-        {visitedViews.has('spec') && (
-          <div className={cn("w-full h-full flex-1 overflow-hidden", activeView !== 'spec' && 'hidden')}>
-            <GodsEyeSpecView />
-          </div>
-        )}
 
         {/* ========================================================================= */}
         {/* VIEW: JOURNAL                                                             */}
@@ -873,6 +818,15 @@ export default function ProjectIndexPage() {
               height="100%"
               className="w-full h-full flex-1 !rounded-none !border-0"
             />
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* VIEW: FINCEPT INSTITUTIONAL TERMINAL                                      */}
+        {/* ========================================================================= */}
+        {visitedViews.has('terminal') && (
+          <div className={cn("relative w-full h-full flex-1 flex flex-col overflow-hidden bg-background", activeView !== 'terminal' && 'hidden')}>
+            <FinceptTerminalView />
           </div>
         )}
 

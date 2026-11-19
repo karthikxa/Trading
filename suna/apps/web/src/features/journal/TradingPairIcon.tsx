@@ -5,6 +5,7 @@ import StockSymbolIcon from '../markets/StockSymbolIcon';
 
 interface TradingPairIconProps {
   symbol: string;
+  logoid?: string;
   size?: 'sm' | 'md';
   className?: string;
 }
@@ -194,7 +195,95 @@ function FlagCrypto({ symbol, size }: { symbol: string; size: number }) {
   );
 }
 
-function getCurrencyBadge(code: string, size = 18) {
+const COUNTRY_MAP: Record<string, string> = {
+  EUR: 'EU',
+  USD: 'US',
+  GBP: 'GB',
+  JPY: 'JP',
+  INR: 'IN',
+  AUD: 'AU',
+  CAD: 'CA',
+  CHF: 'CH',
+  NZD: 'NZ',
+  SGD: 'SG',
+  HKD: 'HK',
+  CNY: 'CN',
+};
+
+function CurrencyBadge({ code, size = 34 }: { code: string; size?: number }) {
+  const [error, setError] = React.useState(false);
+  const upper = code.toUpperCase();
+  const countryCode = COUNTRY_MAP[upper];
+
+  if (upper === 'XAU' || upper === 'GOLD') {
+    if (!error) {
+      return (
+        <img
+          src="https://s3-symbol-logo.tradingview.com/metal/gold.svg"
+          alt="Gold"
+          width={size}
+          height={size}
+          className="size-full object-cover rounded-full"
+          onError={() => setError(true)}
+          loading="eager"
+        />
+      );
+    }
+    return <FlagGold size={size} />;
+  }
+
+  if (upper === 'BTC') {
+    if (!error) {
+      return (
+        <img
+          src="https://s3-symbol-logo.tradingview.com/crypto/XTVCBTC.svg"
+          alt="BTC"
+          width={size}
+          height={size}
+          className="size-full object-cover rounded-full"
+          onError={() => setError(true)}
+          loading="eager"
+        />
+      );
+    }
+    return <FlagCrypto symbol="BTC" size={size} />;
+  }
+
+  if (upper === 'ETH') {
+    if (!error) {
+      return (
+        <img
+          src="https://s3-symbol-logo.tradingview.com/crypto/XTVCETH.svg"
+          alt="ETH"
+          width={size}
+          height={size}
+          className="size-full object-cover rounded-full"
+          onError={() => setError(true)}
+          loading="eager"
+        />
+      );
+    }
+    return <FlagCrypto symbol="ETH" size={size} />;
+  }
+
+  if (countryCode && !error) {
+    return (
+      <img
+        src={`https://s3-symbol-logo.tradingview.com/country/${countryCode}.svg`}
+        alt={code}
+        width={size}
+        height={size}
+        className="size-full object-cover rounded-full"
+        onError={() => setError(true)}
+        loading="eager"
+      />
+    );
+  }
+
+  return getFallbackCurrencyBadge(upper, size);
+}
+
+function getFallbackCurrencyBadge(code: string, size = 34) {
   switch (code.toUpperCase()) {
     case 'EUR':
       return <FlagEU size={size} />;
@@ -232,41 +321,45 @@ function getCurrencyBadge(code: string, size = 18) {
   }
 }
 
-export function TradingPairIcon({ symbol, size = 'md', className = '' }: TradingPairIconProps) {
+export function TradingPairIcon({
+  symbol,
+  logoid,
+  size = 'md',
+  className = '',
+}: TradingPairIconProps) {
   const clean = symbol.toUpperCase().replace(/^.*:/, '').trim();
+  const badgeSize = size === 'xs' ? 22 : size === 'sm' ? 28 : size === 'md' ? 32 : 40;
 
   // US30 / Dow Jones
   if (clean === 'US30' || clean.includes('DOW')) {
-    const badgeSize = size === 'sm' ? 18 : 22;
     return (
       <div
         style={{ width: badgeSize, height: badgeSize }}
-        className={`rounded-full overflow-hidden ring-2 ring-white shadow-2xs shrink-0 ${className}`}
+        className={`rounded-full overflow-hidden ring-1.5 ring-white dark:ring-zinc-900 shadow-2xs shrink-0 bg-white ${className}`}
       >
-        <FlagUS size={badgeSize} />
+        <CurrencyBadge code="USD" size={badgeSize} />
       </div>
     );
   }
 
-  // If it's a 6-character forex currency pair like EURUSD, GBPJPY, AUDCHF
+  // If it's a 6-character forex currency pair like EURUSD, GBPJPY, AUDCHF, USDINR
   if (clean.length === 6 && !clean.startsWith('BTC') && !clean.startsWith('ETH')) {
     const base = clean.slice(0, 3);
     const quote = clean.slice(3, 6);
-    const badgeSize = size === 'sm' ? 18 : 22;
 
     return (
       <div className={`flex items-center -space-x-2 shrink-0 ${className}`}>
         <div
           style={{ width: badgeSize, height: badgeSize }}
-          className="rounded-full overflow-hidden ring-2 ring-white shadow-2xs z-10 shrink-0"
+          className="rounded-full overflow-hidden ring-1.5 ring-white dark:ring-zinc-900 shadow-2xs z-10 shrink-0 bg-white"
         >
-          {getCurrencyBadge(base, badgeSize)}
+          <CurrencyBadge code={base} size={badgeSize} />
         </div>
         <div
           style={{ width: badgeSize, height: badgeSize }}
-          className="rounded-full overflow-hidden ring-2 ring-white shadow-2xs z-0 shrink-0"
+          className="rounded-full overflow-hidden ring-1.5 ring-white dark:ring-zinc-900 shadow-2xs z-0 shrink-0 bg-white"
         >
-          {getCurrencyBadge(quote, badgeSize)}
+          <CurrencyBadge code={quote} size={badgeSize} />
         </div>
       </div>
     );
@@ -274,20 +367,19 @@ export function TradingPairIcon({ symbol, size = 'md', className = '' }: Trading
 
   // Gold pair: XAUUSD
   if (clean === 'XAUUSD') {
-    const badgeSize = size === 'sm' ? 18 : 22;
     return (
       <div className={`flex items-center -space-x-2 shrink-0 ${className}`}>
         <div
           style={{ width: badgeSize, height: badgeSize }}
-          className="rounded-full overflow-hidden ring-2 ring-white shadow-2xs z-10 shrink-0"
+          className="rounded-full overflow-hidden ring-1.5 ring-white dark:ring-zinc-900 shadow-2xs z-10 shrink-0 bg-white"
         >
-          <FlagGold size={badgeSize} />
+          <CurrencyBadge code="XAU" size={badgeSize} />
         </div>
         <div
           style={{ width: badgeSize, height: badgeSize }}
-          className="rounded-full overflow-hidden ring-2 ring-white shadow-2xs z-0 shrink-0"
+          className="rounded-full overflow-hidden ring-1.5 ring-white dark:ring-zinc-900 shadow-2xs z-0 shrink-0 bg-white"
         >
-          <FlagUS size={badgeSize} />
+          <CurrencyBadge code="USD" size={badgeSize} />
         </div>
       </div>
     );
@@ -295,27 +387,33 @@ export function TradingPairIcon({ symbol, size = 'md', className = '' }: Trading
 
   // BTC / Crypto pair: BTCUSD
   if (clean === 'BTCUSD' || clean === 'BTCUSDT') {
-    const badgeSize = size === 'sm' ? 18 : 22;
     return (
       <div className={`flex items-center -space-x-2 shrink-0 ${className}`}>
         <div
           style={{ width: badgeSize, height: badgeSize }}
-          className="rounded-full overflow-hidden ring-2 ring-white shadow-2xs z-10 shrink-0"
+          className="rounded-full overflow-hidden ring-1.5 ring-white dark:ring-zinc-900 shadow-2xs z-10 shrink-0 bg-white"
         >
-          <FlagCrypto symbol="BTC" size={badgeSize} />
+          <CurrencyBadge code="BTC" size={badgeSize} />
         </div>
         <div
           style={{ width: badgeSize, height: badgeSize }}
-          className="rounded-full overflow-hidden ring-2 ring-white shadow-2xs z-0 shrink-0"
+          className="rounded-full overflow-hidden ring-1.5 ring-white dark:ring-zinc-900 shadow-2xs z-0 shrink-0 bg-white"
         >
-          <FlagUS size={badgeSize} />
+          <CurrencyBadge code="USD" size={badgeSize} />
         </div>
       </div>
     );
   }
 
   // Otherwise, use TradingView StockSymbolIcon
-  return <StockSymbolIcon symbol={clean} size={size === 'sm' ? 'xs' : 'sm'} className={className} />;
+  return (
+    <StockSymbolIcon
+      symbol={clean}
+      logoid={logoid}
+      size={size}
+      className={className}
+    />
+  );
 }
 
 export default TradingPairIcon;

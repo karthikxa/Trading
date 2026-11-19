@@ -45,8 +45,7 @@ import {
   NavigationArrowIcon,
   ChartLineUp,
   TrendUp,
-  PushPin,
-  Eye,
+  TerminalWindow,
   Notebook,
   ChatCircleDots,
   Sliders,
@@ -64,26 +63,6 @@ import { Close } from '../../icons/close';
 const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
 const modSymbol = isMac ? '⌘' : 'Ctrl';
 
-const KortixPinIcon = ({ className }: { className?: string }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    viewBox="0 0 24 24"
-    fill="white"
-    stroke="currentColor"
-    strokeWidth={2.4}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className={cn('inline-block -rotate-45 transition-transform', className)}
-  >
-    <line x1="12" y1="17" x2="12" y2="22" stroke="currentColor" strokeWidth={2.4} />
-    <path
-      d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1v3.76a2 2 0 0 1-.89 1.66l-1.78.9A2 2 0 0 0 5 15.24Z"
-      fill="white"
-      stroke="currentColor"
-      strokeWidth={2.4}
-    />
-  </svg>
-);
 
 export function ProjectSidebar({
   projectId,
@@ -125,9 +104,7 @@ export function ProjectSidebar({
       const path = window.location.pathname;
       if (
         tab === 'overview' ||
-        tab === 'watchlist' ||
         tab === 'journal' ||
-        tab === 'spec' ||
         tab === 'chart' ||
         path.includes('/admin') ||
         path.includes('/customize') ||
@@ -144,9 +121,7 @@ export function ProjectSidebar({
   useEffect(() => {
     if (
       currentTab === 'overview' ||
-      currentTab === 'watchlist' ||
       currentTab === 'journal' ||
-      currentTab === 'spec' ||
       currentTab === 'chart' ||
       pathname.includes('/admin') ||
       pathname.includes('/customize') ||
@@ -371,17 +346,18 @@ export function ProjectSidebar({
                       </SidebarMenuButton>
                     </SidebarMenuItem>
 
+                    {/* Fincept Institutional Terminal */}
                     <SidebarMenuItem>
                       <SidebarMenuButton
                         asChild
-                        isActive={currentTab === 'watchlist'}
-                        className="group/menu-button text-sidebar-foreground relative cursor-pointer"
+                        isActive={currentTab === 'terminal'}
+                        className="group/menu-button text-sidebar-foreground relative cursor-pointer font-sans"
                       >
-                        <Link href={`/projects/${projectId}?tab=watchlist`}>
+                        <Link href={`/projects/${projectId}?tab=terminal`}>
                           <span className="shrink-0">
-                            <KortixPinIcon className="size-4" />
+                            <TerminalWindow className="size-4" />
                           </span>
-                          <span>Watchlist</span>
+                          <span>Terminal</span>
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
@@ -397,21 +373,6 @@ export function ProjectSidebar({
                             <Notebook className="size-4" />
                           </span>
                           <span>Journal</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        asChild
-                        isActive={currentTab === 'spec'}
-                        className="group/menu-button text-sidebar-foreground relative cursor-pointer"
-                      >
-                        <Link href={`/projects/${projectId}?tab=spec`}>
-                          <span className="shrink-0">
-                            <Eye className="size-4" />
-                          </span>
-                          <span>Spec</span>
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>

@@ -835,7 +835,7 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
 
           {/* Instrument */}
           <Field className="space-y-1.5">
-            <FieldLabel>Instrument Symbol</FieldLabel>
+            <FieldLabel>Symbol</FieldLabel>
             <InstrumentPicker value={instrument} onChange={setInstrument} />
           </Field>
 

@@ -5,7 +5,7 @@ import { Plus, MagnifyingGlass, ArrowUpRight } from '@phosphor-icons/react';
 import KortixPinIcon from './KortixPinIcon';
 import { getStoredWatchlist, type WatchlistEntry } from './watchlist.store';
 import WatchlistButton from './WatchlistButton';
-import StockSymbolIcon from './StockSymbolIcon';
+import { TradingPairIcon } from '../journal/TradingPairIcon';
 import { openSearch } from './SearchCommand';
 import TvTickerTag from './TvTickerTag';
 import { cn } from '@kortix/ui';
@@ -98,15 +98,15 @@ export const WatchlistTable = React.memo(function WatchlistTable({ onSelectSymbo
                       isSelected && 'bg-muted/60 font-medium',
                     )}
                   >
-                    <td className="py-3 px-5">
-                      <div className="flex items-center gap-3">
-                        <StockSymbolIcon symbol={item.symbol} size="sm" />
+                    <td className="py-2.5 px-4">
+                      <div className="flex items-center gap-2.5">
+                        <TradingPairIcon symbol={item.symbol} size="sm" />
                         <div>
-                          <div className="font-medium text-foreground flex items-center gap-1.5 font-sans tracking-tight text-sm">
+                          <div className="font-medium text-foreground flex items-center gap-1.5 font-sans tracking-tight text-[13px]">
                             {item.symbol}
                             <ArrowUpRight className="size-3 opacity-0 group-hover:opacity-100 text-muted-foreground transition-opacity" />
                           </div>
-                          <div className="text-xs font-normal text-muted-foreground truncate max-w-[220px] font-sans">
+                          <div className="text-[11.5px] font-normal text-muted-foreground truncate max-w-[220px] font-sans">
                             {item.name}
                           </div>
                         </div>

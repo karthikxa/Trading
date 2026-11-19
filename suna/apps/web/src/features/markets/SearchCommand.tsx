@@ -6,7 +6,9 @@ import { Loader2, Search, X } from 'lucide-react';
 import { searchTradingViewSymbols } from './tradingview.actions';
 import type { TvSymbolResult } from './types';
 import { cn } from '@kortix/ui';
-import { StockSymbolIcon } from './StockSymbolIcon';
+import { TradingPairIcon } from '../journal/TradingPairIcon';
+import { TOP_MARKET_SYMBOLS } from '../journal/data/top-instruments';
+import WatchlistButton from './WatchlistButton';
 
 const OPEN_SEARCH_EVENT = 'open-search';
 
@@ -27,17 +29,17 @@ export const SearchButton = ({
     type="button"
     onClick={openSearch}
     className={cn(
-      'inline-flex items-center gap-2.5 h-9 px-3.5 rounded-xl border border-border/60 bg-muted/50 hover:bg-muted/80 text-sm font-normal text-muted-foreground hover:text-foreground transition-all shadow-2xs cursor-pointer font-sans',
+      'inline-flex items-center gap-2.5 h-9 px-3 rounded-xl border border-border/70 bg-muted/40 hover:bg-muted/70 text-xs font-normal text-muted-foreground hover:text-foreground transition-all shadow-2xs cursor-pointer font-sans',
       className,
     )}
   >
-    <Search className="size-4 text-foreground/80 shrink-0" />
+    <Search className="size-3.5 text-muted-foreground shrink-0" />
     {children ? (
       children
     ) : (
       <>
-        <span className="font-sans text-sm font-normal text-foreground/90">Search stocks</span>
-        <kbd className="hidden sm:inline-block ml-3 rounded-md bg-background px-1.5 py-0.5 text-[10.5px] font-medium text-muted-foreground border border-border/50">
+        <span className="font-sans text-xs font-medium text-foreground/90">Search stocks...</span>
+        <kbd className="hidden sm:inline-block ml-2 rounded-md bg-background px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground border border-border/50">
           ⌘K
         </kbd>
       </>
@@ -45,6 +47,7 @@ export const SearchButton = ({
   </button>
 );
 
+// Exact categories matching Image 4
 const TV_CATEGORIES = [
   { label: 'All', value: 'all', tvType: '' },
   { label: 'Stocks', value: 'stocks', tvType: 'stocks' },
@@ -52,210 +55,21 @@ const TV_CATEGORIES = [
   { label: 'Futures', value: 'futures', tvType: 'futures' },
   { label: 'Forex', value: 'forex', tvType: 'forex' },
   { label: 'Crypto', value: 'crypto', tvType: 'crypto' },
-  { label: 'Indices', value: 'index', tvType: 'index' },
-  { label: 'Bonds', value: 'bond', tvType: 'bond' },
-  { label: 'Economy', value: 'economic', tvType: 'economic' },
+  { label: 'Indices', value: 'indices', tvType: 'index' },
+  { label: 'Bonds', value: 'bonds', tvType: 'bond' },
+  { label: 'Economy', value: 'economy', tvType: 'economic' },
   { label: 'Options', value: 'options', tvType: 'options' },
 ] as const;
 
-// The exact initial list shown in Image 2
-interface TradingViewModalItem extends TvSymbolResult {
-  badge: string;
-  multiSource?: string;
+interface SearchModalItem {
+  symbol: string;
+  description: string;
+  category: string;
+  exchange: string;
+  logoid?: string;
+  type?: string;
   isIndia?: boolean;
 }
-
-const EXACT_IMAGE_SYMBOLS: TradingViewModalItem[] = [
-  {
-    symbol: 'NIFTY',
-    description: 'Nifty 50 Index',
-    badge: 'INDEX',
-    type: 'index',
-    exchange: 'NSE',
-    country: 'IN',
-    isIndia: true,
-  },
-  {
-    symbol: 'XAUUSD',
-    description: 'Gold',
-    badge: 'COMMODITY CFD',
-    type: 'commodity',
-    exchange: 'OANDA',
-  },
-  {
-    symbol: 'XAUUSD',
-    description: 'Gold / U.S. Dollar',
-    badge: 'COMMODITY CFD',
-    type: 'commodity',
-    exchange: 'FOREXCOM',
-  },
-  {
-    symbol: 'NIFTY',
-    description: 'GIFT NIFTY 50 INDEX FUTURES',
-    badge: 'FUTURES',
-    type: 'futures',
-    exchange: 'NSEIX',
-    multiSource: '+8 ∨',
-  },
-  {
-    symbol: 'BANKNIFTY',
-    description: 'Nifty Bank Index',
-    badge: 'INDEX',
-    type: 'index',
-    exchange: 'NSE',
-    country: 'IN',
-    isIndia: true,
-  },
-  {
-    symbol: 'BTCUSD',
-    description: 'Bitcoin',
-    badge: 'SPOT CRYPTO',
-    type: 'crypto',
-    exchange: 'CRYPTO',
-    multiSource: '+49 ∨',
-  },
-  {
-    symbol: 'GOLD',
-    description: 'Gold',
-    badge: 'COMMODITY CFD',
-    type: 'commodity',
-    exchange: 'TVC',
-  },
-  {
-    symbol: 'SENSEX',
-    description: 'BSE Sensex Index',
-    badge: 'INDEX',
-    type: 'index',
-    exchange: 'BSE',
-    country: 'IN',
-    isIndia: true,
-  },
-  {
-    symbol: 'XAUUSD',
-    description: 'XAU/USD Spot - Gold',
-    badge: 'COMMODITY CFD',
-    type: 'commodity',
-    exchange: 'FXCM',
-  },
-  {
-    symbol: 'CRUDEOIL',
-    description: 'Crude Oil Futures',
-    badge: 'FUTURES',
-    type: 'futures',
-    exchange: 'MCX',
-    multiSource: '+12 ∨',
-  },
-  {
-    symbol: 'RELIANCE',
-    description: 'Reliance Industries Ltd',
-    badge: 'COMMON STOCK',
-    type: 'stock',
-    exchange: 'NSE',
-    country: 'IN',
-    isIndia: true,
-  },
-  {
-    symbol: 'AAPL',
-    description: 'Apple Inc.',
-    badge: 'COMMON STOCK',
-    type: 'stock',
-    exchange: 'NASDAQ',
-    country: 'US',
-  },
-  {
-    symbol: 'NVDA',
-    description: 'NVIDIA Corporation',
-    badge: 'COMMON STOCK',
-    type: 'stock',
-    exchange: 'NASDAQ',
-    country: 'US',
-  },
-  {
-    symbol: 'TSLA',
-    description: 'Tesla, Inc.',
-    badge: 'COMMON STOCK',
-    type: 'stock',
-    exchange: 'NASDAQ',
-    country: 'US',
-  },
-];
-
-const CATEGORY_PRESETS: Record<string, TradingViewModalItem[]> = {
-  all: EXACT_IMAGE_SYMBOLS,
-  stocks: [
-    { symbol: 'AAPL', description: 'Apple Inc.', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
-    { symbol: 'NVDA', description: 'NVIDIA Corporation', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
-    { symbol: 'TSLA', description: 'Tesla, Inc.', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
-    { symbol: 'MSFT', description: 'Microsoft Corporation', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
-    { symbol: 'AMZN', description: 'Amazon.com, Inc.', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
-    { symbol: 'GOOGL', description: 'Alphabet Inc. (Class A)', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
-    { symbol: 'META', description: 'Meta Platforms, Inc.', badge: 'COMMON STOCK', type: 'stock', exchange: 'NASDAQ', country: 'US' },
-    { symbol: 'RELIANCE', description: 'Reliance Industries Ltd', badge: 'COMMON STOCK', type: 'stock', exchange: 'NSE', country: 'IN', isIndia: true },
-    { symbol: 'TCS', description: 'Tata Consultancy Services', badge: 'COMMON STOCK', type: 'stock', exchange: 'NSE', country: 'IN', isIndia: true },
-    { symbol: 'INFY', description: 'Infosys Limited', badge: 'COMMON STOCK', type: 'stock', exchange: 'NSE', country: 'IN', isIndia: true },
-    { symbol: 'HDFCBANK', description: 'HDFC Bank Ltd', badge: 'COMMON STOCK', type: 'stock', exchange: 'NSE', country: 'IN', isIndia: true },
-    { symbol: 'JPM', description: 'JPMorgan Chase & Co.', badge: 'COMMON STOCK', type: 'stock', exchange: 'NYSE', country: 'US' },
-  ],
-  funds: [
-    { symbol: 'SPY', description: 'SPDR S&P 500 ETF Trust', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
-    { symbol: 'QQQ', description: 'Invesco QQQ Trust Series 1', badge: 'ETF', type: 'funds', exchange: 'NASDAQ', country: 'US' },
-    { symbol: 'IWM', description: 'iShares Russell 2000 ETF', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
-    { symbol: 'VOO', description: 'Vanguard S&P 500 ETF', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
-    { symbol: 'VTI', description: 'Vanguard Total Stock Market ETF', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
-    { symbol: 'DIA', description: 'SPDR Dow Jones Industrial Average ETF', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
-    { symbol: 'GLD', description: 'SPDR Gold Shares', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
-    { symbol: 'TLT', description: 'iShares 20+ Year Treasury Bond ETF', badge: 'ETF', type: 'funds', exchange: 'NASDAQ', country: 'US' },
-    { symbol: 'XLF', description: 'Financial Select Sector SPDR Fund', badge: 'ETF', type: 'funds', exchange: 'AMEX', country: 'US' },
-  ],
-  futures: [
-    { symbol: 'ES1!', description: 'E-mini S&P 500 Futures', badge: 'FUTURES', type: 'futures', exchange: 'CME', multiSource: '+18 ∨' },
-    { symbol: 'NQ1!', description: 'E-mini Nasdaq 100 Futures', badge: 'FUTURES', type: 'futures', exchange: 'CME', multiSource: '+18 ∨' },
-    { symbol: 'CL1!', description: 'Crude Oil Futures', badge: 'FUTURES', type: 'futures', exchange: 'NYMEX', multiSource: '+12 ∨' },
-    { symbol: 'GC1!', description: 'Gold Futures', badge: 'FUTURES', type: 'futures', exchange: 'COMEX', multiSource: '+14 ∨' },
-    { symbol: 'NIFTY', description: 'GIFT NIFTY 50 INDEX FUTURES', badge: 'FUTURES', type: 'futures', exchange: 'NSEIX', multiSource: '+8 ∨' },
-    { symbol: 'BANKNIFTY', description: 'Nifty Bank Futures', badge: 'FUTURES', type: 'futures', exchange: 'NSE', isIndia: true },
-  ],
-  forex: [
-    { symbol: 'EURUSD', description: 'Euro / U.S. Dollar', badge: 'FOREX', type: 'forex', exchange: 'FOREXCOM' },
-    { symbol: 'GBPUSD', description: 'British Pound / U.S. Dollar', badge: 'FOREX', type: 'forex', exchange: 'FOREXCOM' },
-    { symbol: 'USDJPY', description: 'U.S. Dollar / Japanese Yen', badge: 'FOREX', type: 'forex', exchange: 'FOREXCOM' },
-    { symbol: 'AUDUSD', description: 'Australian Dollar / U.S. Dollar', badge: 'FOREX', type: 'forex', exchange: 'OANDA' },
-    { symbol: 'USDCAD', description: 'U.S. Dollar / Canadian Dollar', badge: 'FOREX', type: 'forex', exchange: 'FXCM' },
-    { symbol: 'USDCHF', description: 'U.S. Dollar / Swiss Franc', badge: 'FOREX', type: 'forex', exchange: 'OANDA' },
-    { symbol: 'EURGBP', description: 'Euro / British Pound', badge: 'FOREX', type: 'forex', exchange: 'FOREXCOM' },
-    { symbol: 'GBPJPY', description: 'British Pound / Japanese Yen', badge: 'FOREX', type: 'forex', exchange: 'SAXO' },
-  ],
-  crypto: [
-    { symbol: 'BTCUSD', description: 'Bitcoin', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO', multiSource: '+49 ∨' },
-    { symbol: 'ETHUSD', description: 'Ethereum', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO', multiSource: '+35 ∨' },
-    { symbol: 'SOLUSD', description: 'Solana', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO', multiSource: '+22 ∨' },
-    { symbol: 'XRPUSD', description: 'XRP', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO', multiSource: '+28 ∨' },
-    { symbol: 'BNBUSD', description: 'BNB', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO' },
-    { symbol: 'DOGEUSD', description: 'Dogecoin', badge: 'SPOT CRYPTO', type: 'crypto', exchange: 'CRYPTO' },
-  ],
-  index: [
-    { symbol: 'NIFTY', description: 'Nifty 50 Index', badge: 'INDEX', type: 'index', exchange: 'NSE', country: 'IN', isIndia: true },
-    { symbol: 'BANKNIFTY', description: 'Nifty Bank Index', badge: 'INDEX', type: 'index', exchange: 'NSE', country: 'IN', isIndia: true },
-    { symbol: 'SENSEX', description: 'BSE Sensex Index', badge: 'INDEX', type: 'index', exchange: 'BSE', country: 'IN', isIndia: true },
-    { symbol: 'SPX', description: 'S&P 500 Index', badge: 'INDEX', type: 'index', exchange: 'SP', country: 'US' },
-    { symbol: 'NDX', description: 'Nasdaq 100 Index', badge: 'INDEX', type: 'index', exchange: 'NASDAQ', country: 'US' },
-    { symbol: 'DJI', description: 'Dow Jones Industrial Average', badge: 'INDEX', type: 'index', exchange: 'DJ', country: 'US' },
-    { symbol: 'DAX', description: 'DAX Index', badge: 'INDEX', type: 'index', exchange: 'XETR', country: 'DE' },
-  ],
-  bond: [
-    { symbol: 'US10Y', description: 'U.S. 10 Year Treasury Yield', badge: 'BOND', type: 'bond', exchange: 'TVC' },
-    { symbol: 'US02Y', description: 'U.S. 2 Year Treasury Yield', badge: 'BOND', type: 'bond', exchange: 'TVC' },
-    { symbol: 'US30Y', description: 'U.S. 30 Year Treasury Yield', badge: 'BOND', type: 'bond', exchange: 'TVC' },
-    { symbol: 'TNX', description: 'CBOE 10 Year Treasury Note Yield', badge: 'BOND', type: 'bond', exchange: 'CBOE' },
-  ],
-  options: [
-    { symbol: 'SPY', description: 'SPDR S&P 500 Options Chain', badge: 'OPTIONS', type: 'options', exchange: 'CBOE' },
-    { symbol: 'QQQ', description: 'Invesco QQQ Options Chain', badge: 'OPTIONS', type: 'options', exchange: 'CBOE' },
-    { symbol: 'AAPL', description: 'Apple Inc. Options Chain', badge: 'OPTIONS', type: 'options', exchange: 'OPRA' },
-    { symbol: 'NVDA', description: 'NVIDIA Options Chain', badge: 'OPTIONS', type: 'options', exchange: 'OPRA' },
-    { symbol: 'TSLA', description: 'Tesla, Inc. Options Chain', badge: 'OPTIONS', type: 'options', exchange: 'OPRA' },
-  ],
-};
 
 export default function SearchCommand({
   onSelectSymbol,
@@ -266,7 +80,7 @@ export default function SearchCommand({
   const [searchTerm, setSearchTerm] = useState('');
   const [category, setCategory] = useState('all');
   const [loading, setLoading] = useState(false);
-  const [symbols, setSymbols] = useState<TradingViewModalItem[]>(EXACT_IMAGE_SYMBOLS);
+  const [symbols, setSymbols] = useState<SearchModalItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -295,41 +109,85 @@ export default function SearchCommand({
   }, [open]);
 
   const fetchSymbols = useCallback(async (query: string, catValue: string) => {
-    if (!query.trim()) {
-      const preset = CATEGORY_PRESETS[catValue] || CATEGORY_PRESETS.all;
-      setSymbols(preset);
+    const trimmed = query.trim();
+    const catLabel = TV_CATEGORIES.find((c) => c.value === catValue)?.label || 'All';
+
+    // 1. If empty query, show top curated symbols for this category
+    if (!trimmed) {
+      const topItems = catValue === 'all'
+        ? TOP_MARKET_SYMBOLS.slice(0, 50)
+        : TOP_MARKET_SYMBOLS.filter((s) => s.category.toLowerCase() === catLabel.toLowerCase()).slice(0, 40);
+
+      setSymbols(
+        topItems.map((s) => ({
+          symbol: s.symbol,
+          description: s.name,
+          category: s.category,
+          exchange: s.exchange || 'NSE',
+          logoid: s.logoid,
+          isIndia: s.exchange === 'NSE' || s.exchange === 'BSE' || s.exchange === 'MCX',
+        }))
+      );
       setLoading(false);
       return;
     }
 
     setLoading(true);
     try {
+      // Query local 12,500+ Indian catalog API first for instant, complete results
+      const catParam = catValue !== 'all' ? `&category=${encodeURIComponent(catLabel)}` : '';
+      const localPromise = fetch(`/api/markets/symbols?q=${encodeURIComponent(trimmed)}${catParam}`)
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []);
+
+      // Also query TradingView remote search in parallel for global symbols
       const tvType = TV_CATEGORIES.find((c) => c.value === catValue)?.tvType ?? '';
-      const results = await searchTradingViewSymbols(query, tvType, '', 0);
+      const tvPromise = searchTradingViewSymbols(trimmed, tvType, '', 0).catch(() => []);
 
-      if (results && results.length > 0) {
-        const mapped: TradingViewModalItem[] = results.map((r) => {
-          const typeU = (r.type || 'stock').toUpperCase();
-          let badge = typeU;
-          if (typeU === 'STOCK') badge = 'COMMON STOCK';
-          else if (typeU === 'INDEX') badge = 'INDEX';
-          else if (typeU.includes('CRYPTO') || typeU.includes('SPOT')) badge = 'SPOT CRYPTO';
-          else if (typeU.includes('COMMODITY')) badge = 'COMMODITY CFD';
-          else if (typeU.includes('FUTURE')) badge = 'FUTURES';
-          else if (typeU.includes('FOREX')) badge = 'FOREX';
+      const [localResults, tvResults] = await Promise.all([localPromise, tvPromise]);
 
-          const isIndia = r.country === 'IN' || r.exchange === 'NSE' || r.exchange === 'BSE';
+      const seen = new Set<string>();
+      const combined: SearchModalItem[] = [];
 
-          return {
-            ...r,
-            badge,
-            isIndia,
-          };
-        });
-        setSymbols(mapped);
-      } else {
-        setSymbols([]);
+      // Add local results first (prioritizes authentic Indian Equities, Indices, F&O)
+      if (Array.isArray(localResults)) {
+        for (const item of localResults) {
+          const k = `${item.symbol}:${item.exchange}`;
+          if (!seen.has(k)) {
+            seen.add(k);
+            combined.push({
+              symbol: item.symbol,
+              description: item.name,
+              category: item.category,
+              exchange: item.exchange,
+              logoid: item.logoid,
+              isIndia: item.exchange === 'NSE' || item.exchange === 'BSE' || item.exchange === 'MCX',
+            });
+          }
+        }
       }
+
+      // Add global results from TradingView
+      if (Array.isArray(tvResults)) {
+        for (const r of tvResults) {
+          const sym = (r.symbol || '').replace(/<[^>]*>/g, '');
+          const ex = r.exchange || 'US';
+          const k = `${sym}:${ex}`;
+          if (!seen.has(k)) {
+            seen.add(k);
+            combined.push({
+              symbol: sym,
+              description: (r.description || '').replace(/<[^>]*>/g, ''),
+              category: r.type || 'Stock',
+              exchange: ex,
+              logoid: r.logoid,
+              isIndia: r.country === 'IN' || ex === 'NSE' || ex === 'BSE',
+            });
+          }
+        }
+      }
+
+      setSymbols(combined.slice(0, 80));
     } catch {
       setSymbols([]);
     } finally {
@@ -342,13 +200,13 @@ export default function SearchCommand({
     if (!open) return;
     const timer = setTimeout(() => {
       fetchSymbols(searchTerm, category);
-    }, searchTerm ? 120 : 0);
+    }, searchTerm ? 100 : 0);
     return () => clearTimeout(timer);
   }, [open, searchTerm, category, fetchSymbols]);
 
-  const handleSelect = (item: TradingViewModalItem) => {
+  const handleSelect = (item: SearchModalItem) => {
     setOpen(false);
-    const displaySymbol = (item.symbol || '').replace(/<[^>]*>/g, '');
+    const displaySymbol = item.symbol.replace(/<[^>]*>/g, '');
     const full =
       item.exchange && !displaySymbol.includes(':')
         ? `${item.exchange}:${displaySymbol}`
@@ -368,74 +226,66 @@ export default function SearchCommand({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex((prev) => Math.min(prev + 1, symbols.length - 1));
-      scrollIndexIntoView(selectedIndex + 1);
+      setSelectedIndex((prev) => (prev < symbols.length - 1 ? prev + 1 : prev));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setSelectedIndex((prev) => Math.max(prev - 1, 0));
-      scrollIndexIntoView(selectedIndex - 1);
-    } else if (e.key === 'Enter' && symbols[selectedIndex]) {
+      setSelectedIndex((prev) => (prev > 0 ? prev - 1 : 0));
+    } else if (e.key === 'Enter') {
       e.preventDefault();
-      handleSelect(symbols[selectedIndex]);
-    }
-  };
-
-  const scrollIndexIntoView = (index: number) => {
-    const list = listRef.current;
-    if (!list) return;
-    const items = list.querySelectorAll<HTMLElement>('[data-search-row]');
-    const target = items[index];
-    if (target) {
-      target.scrollIntoView({ block: 'nearest' });
+      if (symbols[selectedIndex]) {
+        handleSelect(symbols[selectedIndex]);
+      }
     }
   };
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
-        hideCloseButton={true}
-        className="!max-w-4xl sm:!max-w-4xl w-[92vw] sm:w-[860px] md:w-[860px] overflow-hidden p-0 rounded-2xl bg-white text-zinc-900 border border-zinc-200/90 shadow-2xl font-sans"
+        className="sm:max-w-[800px] w-[94vw] p-0 gap-0 overflow-hidden border border-border/80 shadow-2xl bg-popover rounded-2xl font-sans"
+        aria-describedby="symbol-search-description"
       >
         <DialogHeader className="sr-only">
           <DialogTitle>Symbol Search</DialogTitle>
-          <DialogDescription>Search worldwide symbols, ISIN, or CUSIP</DialogDescription>
+          <DialogDescription id="symbol-search-description">
+            Search worldwide and Indian stocks, indices, ETFs, F&O, forex, and crypto
+          </DialogDescription>
         </DialogHeader>
 
-        {/* Search Input Bar */}
-        <div className="flex items-center gap-3 px-4.5 pt-4 pb-3 border-b border-zinc-200/80 bg-white">
-          <Search className="size-5 text-zinc-400 shrink-0 stroke-[2.2]" />
+        {/* Search Input Bar (Sleek Kortix style) */}
+        <div className="flex items-center gap-2.5 px-4 pt-3.5 pb-2.5 border-b border-border/50 bg-background">
+          <Search className="size-4 text-muted-foreground shrink-0" />
           <input
             ref={inputRef}
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search stocks..."
-            className="flex-1 bg-transparent text-[15px] font-normal text-zinc-900 placeholder:text-zinc-400 outline-none font-sans"
+            placeholder="Search stocks, indices, ETFs, forex, crypto..."
+            className="flex-1 bg-transparent text-sm font-medium text-foreground placeholder:text-muted-foreground outline-none font-sans"
             autoFocus
           />
           {searchTerm && (
             <button
               type="button"
               onClick={() => setSearchTerm('')}
-              className="p-1 rounded-full text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors cursor-pointer mr-1"
+              className="p-1 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer mr-1"
               title="Clear search"
             >
-              <X className="size-4" />
+              <X className="size-3.5" />
             </button>
           )}
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="p-1 rounded-lg text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors cursor-pointer"
+            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
             title="Close (Esc)"
           >
-            <X className="size-4" />
+            <X className="size-3.5" />
           </button>
         </div>
 
-        {/* Category Filter Pills */}
-        <div className="flex items-center gap-1 overflow-x-auto px-4 py-2.5 bg-zinc-50/70 border-b border-zinc-200/60 [scrollbar-width:none]">
+        {/* Category Filter Pills (Exact Image 4 options & style) */}
+        <div className="flex items-center gap-1.5 overflow-x-auto px-3.5 py-2 bg-muted/20 border-b border-border/50 [scrollbar-width:none]">
           {TV_CATEGORIES.map((cat) => {
             const active = category === cat.value;
             return (
@@ -444,10 +294,10 @@ export default function SearchCommand({
                 type="button"
                 onClick={() => setCategory(cat.value)}
                 className={cn(
-                  'rounded-full px-3 py-1 text-[12.5px] font-medium transition-all shrink-0 cursor-pointer font-sans',
+                  'rounded-full px-3 py-1 text-xs font-medium transition-all shrink-0 cursor-pointer font-sans',
                   active
-                    ? 'bg-black text-white font-semibold shadow-xs'
-                    : 'text-zinc-600 hover:bg-zinc-200/60 hover:text-black',
+                    ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-2xs'
+                    : 'bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground',
                 )}
               >
                 {cat.label}
@@ -456,102 +306,94 @@ export default function SearchCommand({
           })}
         </div>
 
-            {/* Divider */}
-            <div className="h-px w-full bg-zinc-100" />
-
-            {/* Results List with Authentic TradingView CDN Logos */}
-            <div
-              ref={listRef}
-              className="max-h-[60vh] min-h-[440px] overflow-y-auto divide-y divide-zinc-100/70 font-sans"
-            >
-              {loading && (
-                <div className="flex items-center justify-center py-16 text-zinc-400 gap-2">
-                  <Loader2 className="size-5 animate-spin text-zinc-500" />
-                  <span className="text-xs font-medium">Searching live TradingView symbols...</span>
-                </div>
-              )}
-
-              {!loading && symbols.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-20 text-center text-zinc-400">
-                  <p className="text-sm font-semibold text-zinc-700">No symbols found</p>
-                  <p className="text-xs text-zinc-400 mt-0.5">Try searching another ticker or category</p>
-                </div>
-              )}
-
-              {!loading &&
-                symbols.map((item, idx) => {
-                  const displaySymbol = (item.symbol || '').replace(/<[^>]*>/g, '');
-                  const displayDesc = (item.description || '').replace(/<[^>]*>/g, '');
-                  const isSelected = selectedIndex === idx;
-
-                  return (
-                    <div
-                      key={`${displaySymbol}-${item.exchange}-${idx}`}
-                      data-search-row
-                      onClick={() => handleSelect(item)}
-                      onMouseEnter={() => setSelectedIndex(idx)}
-                      className={cn(
-                        'flex items-center justify-between px-4 py-2.5 cursor-pointer transition-colors select-none',
-                        isSelected ? 'bg-zinc-100/90' : 'hover:bg-zinc-50/80',
-                      )}
-                    >
-                      {/* Left: Real TradingView CDN Logo + Symbol Name + Description */}
-                      <div className="flex items-center gap-3 min-w-0 pr-4">
-                        <StockSymbolIcon
-                          symbol={displaySymbol}
-                          type={item.type}
-                          logoid={item.logoid}
-                          size="md"
-                        />
-
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5 leading-tight">
-                            <span className="font-bold text-[14px] text-zinc-950 font-sans tracking-tight">
-                              {displaySymbol}
-                            </span>
-                            {item.isIndia && <span className="text-[12px]">🇮🇳</span>}
-                          </div>
-
-                          <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
-                            <span className="truncate text-[12px] text-zinc-500 font-normal">
-                              {displayDesc || displaySymbol}
-                            </span>
-                            {item.badge && (
-                              <span className="rounded-[4px] bg-zinc-200/70 px-1.5 py-0.2 text-[9.5px] font-bold uppercase tracking-wider text-zinc-600 shrink-0">
-                                {item.badge}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Right: Exchange + Source Logo / Pill */}
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="font-sans text-[12px] font-semibold text-zinc-600">
-                          {item.exchange}
-                        </span>
-
-                        {item.multiSource && (
-                          <span className="font-sans text-[11px] font-medium text-zinc-500 bg-zinc-100 px-1.5 py-0.5 rounded">
-                            {item.multiSource}
-                          </span>
-                        )}
-
-                        {item.sourceLogoid ? (
-                          <img
-                            src={`https://s3-symbol-logo.tradingview.com/${item.sourceLogoid}.svg`}
-                            alt={item.exchange}
-                            className="size-4.5 rounded-full object-contain shrink-0 border border-zinc-200/60 bg-zinc-50"
-                            onError={(e) => {
-                              (e.currentTarget as HTMLElement).style.display = 'none';
-                            }}
-                          />
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })}
+        {/* Results List with Decent Size Icons & Kortix Roobert typography */}
+        <div
+          ref={listRef}
+          className="max-h-[55vh] min-h-[380px] overflow-y-auto p-1.5 space-y-0.5 font-sans [scrollbar-width:thin] scrollbar-thin"
+        >
+          {loading && (
+            <div className="flex items-center justify-center py-16 text-muted-foreground gap-2 font-sans">
+              <Loader2 className="size-4 animate-spin" />
+              <span className="text-xs font-medium">Searching live markets...</span>
             </div>
+          )}
+
+          {!loading && symbols.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground font-sans">
+              <p className="text-sm font-medium text-foreground">No symbols found</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Try searching another ticker or category</p>
+            </div>
+          )}
+
+          {!loading &&
+            symbols.map((item, idx) => {
+              const displaySymbol = item.symbol.replace(/<[^>]*>/g, '');
+              const displayDesc = item.description.replace(/<[^>]*>/g, '');
+              const isSelected = selectedIndex === idx;
+
+              return (
+                <div
+                  key={`${displaySymbol}-${item.exchange}-${idx}`}
+                  data-search-row
+                  onClick={() => handleSelect(item)}
+                  onMouseEnter={() => setSelectedIndex(idx)}
+                  className={cn(
+                    'flex items-center justify-between px-3 py-1.5 rounded-xl cursor-pointer transition-colors select-none font-sans',
+                    isSelected ? 'bg-muted text-foreground' : 'hover:bg-muted/50 text-foreground/90',
+                  )}
+                >
+                  {/* Left: Authentic SVG Logo (Decent size) + Symbol Name + Description */}
+                  <div className="flex items-center gap-2.5 min-w-0 pr-3">
+                    <TradingPairIcon
+                      symbol={displaySymbol}
+                      logoid={item.logoid}
+                      size="sm"
+                    />
+
+                    <div className="min-w-0 flex flex-col justify-center">
+                      <div className="flex items-center gap-1.5 leading-snug">
+                        <span className="font-medium text-[13px] text-foreground font-sans tracking-tight">
+                          {displaySymbol}
+                        </span>
+                        {item.isIndia && <span className="text-[11px]">🇮🇳</span>}
+                      </div>
+
+                      <span className="truncate text-[11.5px] text-muted-foreground font-normal font-sans leading-none mt-0.2">
+                        {displayDesc || displaySymbol}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Right: Exchange + Category + Quick Pin Button */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-mono text-[10px] text-muted-foreground uppercase tracking-wider bg-muted/60 px-1.5 py-0.5 rounded">
+                      {item.exchange}
+                    </span>
+
+                    {item.category && (
+                      <span className="text-[9.5px] px-1.5 py-0.2 rounded-md bg-muted/70 text-muted-foreground font-medium font-sans">
+                        {item.category}
+                      </span>
+                    )}
+
+                    <div
+                      onClick={(e) => {
+                        e.stopPropagation();
+                      }}
+                      className="ml-1"
+                    >
+                      <WatchlistButton
+                        symbol={displaySymbol}
+                        name={displayDesc}
+                        exchange={item.exchange}
+                        variant="icon"
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+        </div>
       </DialogContent>
     </Dialog>
   );

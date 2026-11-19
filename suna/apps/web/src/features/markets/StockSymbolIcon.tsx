@@ -69,17 +69,98 @@ const TRADINGVIEW_KNOWN_LOGOS: Record<string, string> = {
   USDCAD: 'https://s3-symbol-logo.tradingview.com/country/CA.svg',
   USDCHF: 'https://s3-symbol-logo.tradingview.com/country/CH.svg',
 
-  // India
-  RELIANCE: 'https://s3-symbol-logo.tradingview.com/reliance.svg',
-  HDFCBANK: 'https://s3-symbol-logo.tradingview.com/hdfc-bank.svg',
-  ICICIBANK: 'https://s3-symbol-logo.tradingview.com/icici-bank.svg',
-  TCS: 'https://s3-symbol-logo.tradingview.com/tata-consultancy-services.svg',
-  INFY: 'https://s3-symbol-logo.tradingview.com/infosys.svg',
-  SBIN: 'https://s3-symbol-logo.tradingview.com/state-bank-of-india.svg',
-  TATAMOTORS: 'https://s3-symbol-logo.tradingview.com/tata-motors.svg',
-  NIFTY: 'https://s3-symbol-logo.tradingview.com/indices/nifty-50.svg',
-  NIFTY50: 'https://s3-symbol-logo.tradingview.com/indices/nifty-50.svg',
-  BANKNIFTY: 'https://s3-symbol-logo.tradingview.com/indices/nifty-bank.svg',
+  // India Equities
+  RELIANCE: 'https://s3-symbol-logo.tradingview.com/reliance-industrial-infrastructure--big.svg',
+  TCS: 'https://s3-symbol-logo.tradingview.com/tata-consultancy--big.svg',
+  HDFCBANK: 'https://s3-symbol-logo.tradingview.com/hdfc-bank--big.svg',
+  ICICIBANK: 'https://s3-symbol-logo.tradingview.com/icici-bank--big.svg',
+  INFY: 'https://s3-symbol-logo.tradingview.com/infosys--big.svg',
+  SBIN: 'https://s3-symbol-logo.tradingview.com/state-bank--big.svg',
+  BHARTIARTL: 'https://s3-symbol-logo.tradingview.com/airtel--big.svg',
+  ITC: 'https://s3-symbol-logo.tradingview.com/itc--big.svg',
+  KOTAKBANK: 'https://s3-symbol-logo.tradingview.com/kotak-mahindra-bank--big.svg',
+  LT: 'https://s3-symbol-logo.tradingview.com/larsen-and-toubro--big.svg',
+  AXISBANK: 'https://s3-symbol-logo.tradingview.com/axis-bank--big.svg',
+  WIPRO: 'https://s3-symbol-logo.tradingview.com/wipro--big.svg',
+  HCLTECH: 'https://s3-symbol-logo.tradingview.com/hcl-technologies--big.svg',
+  MARUTI: 'https://s3-symbol-logo.tradingview.com/maruti-suzuki-india--big.svg',
+  TATAMOTORS: 'https://s3-symbol-logo.tradingview.com/tata-motors--big.svg',
+  TATASTEEL: 'https://s3-symbol-logo.tradingview.com/tata-steel--big.svg',
+  TITAN: 'https://s3-symbol-logo.tradingview.com/titan-company--big.svg',
+  BAJFINANCE: 'https://s3-symbol-logo.tradingview.com/bajaj-finance--big.svg',
+  BAJAJFINSV: 'https://s3-symbol-logo.tradingview.com/bajaj-finserv--big.svg',
+  'BAJAJ-AUTO': 'https://s3-symbol-logo.tradingview.com/bajaj-auto--big.svg',
+  ASIANPAINT: 'https://s3-symbol-logo.tradingview.com/asian-paints--big.svg',
+  ULTRACEMCO: 'https://s3-symbol-logo.tradingview.com/ultratech-cement--big.svg',
+  SUNPHARMA: 'https://s3-symbol-logo.tradingview.com/sun-pharmaceutical--big.svg',
+  NTPC: 'https://s3-symbol-logo.tradingview.com/ntpc--big.svg',
+  POWERGRID: 'https://s3-symbol-logo.tradingview.com/power-grid--big.svg',
+  COALINDIA: 'https://s3-symbol-logo.tradingview.com/coal-india--big.svg',
+  ONGC: 'https://s3-symbol-logo.tradingview.com/oil-and-natural-gas--big.svg',
+  ZOMATO: 'https://s3-symbol-logo.tradingview.com/zomato--big.svg',
+  DRREDDY: 'https://s3-symbol-logo.tradingview.com/dr-reddys--big.svg',
+  CIPLA: 'https://s3-symbol-logo.tradingview.com/cipla--big.svg',
+  EICHERMOT: 'https://s3-symbol-logo.tradingview.com/eicher-motors--big.svg',
+  HINDALCO: 'https://s3-symbol-logo.tradingview.com/hindalco--big.svg',
+  VEDL: 'https://s3-symbol-logo.tradingview.com/vedanta--big.svg',
+  TRENT: 'https://s3-symbol-logo.tradingview.com/trent--big.svg',
+  BEL: 'https://s3-symbol-logo.tradingview.com/bharat-electronics--big.svg',
+  HAL: 'https://s3-symbol-logo.tradingview.com/hindustan-aeronautics--big.svg',
+  DLF: 'https://s3-symbol-logo.tradingview.com/dlf--big.svg',
+  VBL: 'https://s3-symbol-logo.tradingview.com/varun-beverages--big.svg',
+  IOC: 'https://s3-symbol-logo.tradingview.com/indian-oil--big.svg',
+  GAIL: 'https://s3-symbol-logo.tradingview.com/gail--big.svg',
+  PIDILITIND: 'https://s3-symbol-logo.tradingview.com/pidilite--big.svg',
+  SIEMENS: 'https://s3-symbol-logo.tradingview.com/siemens--big.svg',
+  HAVELLS: 'https://s3-symbol-logo.tradingview.com/havells--big.svg',
+  DABUR: 'https://s3-symbol-logo.tradingview.com/dabur--big.svg',
+  POLYCAB: 'https://s3-symbol-logo.tradingview.com/polycab--big.svg',
+  SHREECEM: 'https://s3-symbol-logo.tradingview.com/shree-cement--big.svg',
+  BPCL: 'https://s3-symbol-logo.tradingview.com/bharat-petroleum--big.svg',
+  GRASIM: 'https://s3-symbol-logo.tradingview.com/grasim--big.svg',
+  APOLLOHOSP: 'https://s3-symbol-logo.tradingview.com/apollo-hospitals--big.svg',
+  INDUSINDBK: 'https://s3-symbol-logo.tradingview.com/indusind-bank--big.svg',
+  NESTLEIND: 'https://s3-symbol-logo.tradingview.com/nestle--big.svg',
+  BRITANNIA: 'https://s3-symbol-logo.tradingview.com/britannia--big.svg',
+  HINDUNILVR: 'https://s3-symbol-logo.tradingview.com/unilever--big.svg',
+  SUZLON: 'https://s3-symbol-logo.tradingview.com/suzlon-energy--big.svg',
+  BSE: 'https://s3-symbol-logo.tradingview.com/bse--big.svg',
+
+  // Indian Indices
+  NIFTY: 'https://s3-symbol-logo.tradingview.com/indices/nifty-50--big.svg',
+  NIFTY50: 'https://s3-symbol-logo.tradingview.com/indices/nifty-50--big.svg',
+  'NIFTY 50': 'https://s3-symbol-logo.tradingview.com/indices/nifty-50--big.svg',
+  BANKNIFTY: 'https://s3-symbol-logo.tradingview.com/indices/nifty-bank-index--big.svg',
+  FINNIFTY: 'https://s3-symbol-logo.tradingview.com/indices/finnifty--big.svg',
+  MIDCPNIFTY: 'https://s3-symbol-logo.tradingview.com/indices/nifty-midcap-select-index--big.svg',
+  SENSEX: 'https://s3-symbol-logo.tradingview.com/indices/bse-sensex--big.svg',
+  BANKEX: 'https://s3-symbol-logo.tradingview.com/indices/bse-bankex-index--big.svg',
+  INDIAVIX: 'https://s3-symbol-logo.tradingview.com/indices/india-vix--big.svg',
+  'INDIA VIX': 'https://s3-symbol-logo.tradingview.com/indices/india-vix--big.svg',
+  'NIFTY IT': 'https://s3-symbol-logo.tradingview.com/indices/nifty-it-index--big.svg',
+  NIFTYIT: 'https://s3-symbol-logo.tradingview.com/indices/nifty-it-index--big.svg',
+  'NIFTY AUTO': 'https://s3-symbol-logo.tradingview.com/indices/nifty-auto-index--big.svg',
+  NIFTYAUTO: 'https://s3-symbol-logo.tradingview.com/indices/nifty-auto-index--big.svg',
+  'NIFTY PHARMA': 'https://s3-symbol-logo.tradingview.com/indices/nifty-pharma-index--big.svg',
+  NIFTYPHARMA: 'https://s3-symbol-logo.tradingview.com/indices/nifty-pharma-index--big.svg',
+  'NIFTY METAL': 'https://s3-symbol-logo.tradingview.com/indices/nifty-metal-index--big.svg',
+  NIFTYMETAL: 'https://s3-symbol-logo.tradingview.com/indices/nifty-metal-index--big.svg',
+  'NIFTY FMCG': 'https://s3-symbol-logo.tradingview.com/indices/nifty-fmcg-index--big.svg',
+  NIFTYFMCG: 'https://s3-symbol-logo.tradingview.com/indices/nifty-fmcg-index--big.svg',
+  'NIFTY NEXT 50': 'https://s3-symbol-logo.tradingview.com/indices/nifty-next-50-index--big.svg',
+  'NIFTY ENERGY': 'https://s3-symbol-logo.tradingview.com/indices/nifty-energy-index--big.svg',
+
+  // Indian ETFs
+  NIFTYBEES: 'https://s3-symbol-logo.tradingview.com/indices/nifty-50--big.svg',
+  BANKBEES: 'https://s3-symbol-logo.tradingview.com/indices/nifty-bank-index--big.svg',
+  GOLDBEES: 'https://s3-symbol-logo.tradingview.com/metal/gold.svg',
+  SILVERBEES: 'https://s3-symbol-logo.tradingview.com/metal/silver.svg',
+  ITBEES: 'https://s3-symbol-logo.tradingview.com/indices/nifty-it-index--big.svg',
+  JUNIORBEES: 'https://s3-symbol-logo.tradingview.com/indices/nifty-next-50-index--big.svg',
+  LIQUIDBEES: 'https://s3-symbol-logo.tradingview.com/nippon-life-india-asset--big.svg',
+  MON100: 'https://s3-symbol-logo.tradingview.com/motilal--big.svg',
+  CPSEETF: 'https://s3-symbol-logo.tradingview.com/nippon-life-india-asset--big.svg',
+  BHARAT22: 'https://s3-symbol-logo.tradingview.com/icici-prudential-bank--big.svg',
 
   // Metals & Commodities
   GOLD: 'https://s3-symbol-logo.tradingview.com/metal/gold.svg',
@@ -108,39 +189,119 @@ export const StockSymbolIcon = React.memo(function StockSymbolIcon({
 }: StockSymbolIconProps) {
   const cleanSym = symbol.toUpperCase().replace(/^.*:/, '').trim();
 
-  // 1. Prioritize authentic real TradingView SVG CDN logo for verified visual accuracy
-  const directLogoUrl = logoid
-    ? `https://s3-symbol-logo.tradingview.com/${logoid}.svg`
-    : TRADINGVIEW_KNOWN_LOGOS[cleanSym];
-
-  const [imageError, setImageError] = useState(() => {
-    return directLogoUrl ? FAILED_LOGO_URLS.has(directLogoUrl) : false;
-  });
-
-  const sizeClasses = {
-    xs: 'size-4 text-[9px]',
-    sm: 'size-6 text-[10px]',
-    md: 'size-8 text-xs',
-    lg: 'size-10 text-sm',
-  }[size];
-
-  if (directLogoUrl && !imageError && !FAILED_LOGO_URLS.has(directLogoUrl)) {
+  // Handle Options (CE / PE) contracts
+  if (cleanSym.endsWith(' CE') || cleanSym.endsWith('CE')) {
+    const optSizeClasses = {
+      xs: 'size-[20px] text-[8px]',
+      sm: 'size-[24px] text-[9.5px]',
+      md: 'size-[28px] text-[10.5px]',
+      lg: 'size-[36px] text-xs',
+    }[size];
     return (
       <div
         className={cn(
-          'flex items-center justify-center rounded-full overflow-hidden shrink-0 bg-white border border-border/70 shadow-2xs',
+          'flex items-center justify-center rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-300/80 font-medium shrink-0 shadow-2xs font-sans tracking-tight',
+          optSizeClasses,
+          className,
+        )}
+      >
+        CE
+      </div>
+    );
+  }
+
+  if (cleanSym.endsWith(' PE') || cleanSym.endsWith('PE')) {
+    const optSizeClasses = {
+      xs: 'size-[20px] text-[8px]',
+      sm: 'size-[24px] text-[9.5px]',
+      md: 'size-[28px] text-[10.5px]',
+      lg: 'size-[36px] text-xs',
+    }[size];
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-300/80 font-medium shrink-0 shadow-2xs font-sans tracking-tight',
+          optSizeClasses,
+          className,
+        )}
+      >
+        PE
+      </div>
+    );
+  }
+
+  // Handle Futures
+  if (cleanSym.endsWith('-FUT') || cleanSym.endsWith(' FUT') || cleanSym.endsWith('1!')) {
+    const futSizeClasses = {
+      xs: 'size-[20px] text-[7.5px]',
+      sm: 'size-[24px] text-[9px]',
+      md: 'size-[28px] text-[10px]',
+      lg: 'size-[36px] text-xs',
+    }[size];
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-400 border border-sky-300/80 font-medium shrink-0 shadow-2xs font-sans tracking-tight',
+          futSizeClasses,
+          className,
+        )}
+      >
+        FUT
+      </div>
+    );
+  }
+
+  // 1. Prioritize authentic real TradingView SVG CDN logo for verified visual accuracy
+  const primaryUrl = React.useMemo(() => {
+    if (logoid) {
+      if (logoid.startsWith('http')) return logoid;
+      const clean = logoid.replace(/\.svg$/, '');
+      return `https://s3-symbol-logo.tradingview.com/${clean}--big.svg`;
+    }
+    return TRADINGVIEW_KNOWN_LOGOS[cleanSym] || TRADINGVIEW_KNOWN_LOGOS[cleanSym.replace(/\s+/g, '')] || null;
+  }, [logoid, cleanSym]);
+
+  const [currentSrc, setCurrentSrc] = useState<string | null>(primaryUrl);
+  const [hasError, setHasError] = useState(false);
+
+  React.useEffect(() => {
+    setCurrentSrc(primaryUrl);
+    setHasError(false);
+  }, [primaryUrl]);
+
+  const handleImageError = () => {
+    if (currentSrc && currentSrc.includes('--big.svg')) {
+      // Try normal .svg without --big
+      setCurrentSrc(currentSrc.replace('--big.svg', '.svg'));
+    } else if (currentSrc && !currentSrc.startsWith('/market-icons/') && logoid) {
+      // Try local fallback if available
+      setCurrentSrc(`/market-icons/${logoid.replace(/\//g, '_').replace(/\.svg$/, '')}.svg`);
+    } else {
+      setHasError(true);
+    }
+  };
+
+  const sizeClasses = {
+    xs: 'size-[22px] text-[9px]',
+    sm: 'size-[28px] text-[10.5px]',
+    md: 'size-[32px] text-[12px]',
+    lg: 'size-[40px] text-sm',
+  }[size];
+
+  if (currentSrc && !hasError) {
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full overflow-hidden shrink-0 bg-white border border-zinc-200/90 shadow-2xs',
           sizeClasses,
           className,
         )}
       >
         <img
-          src={directLogoUrl}
+          src={currentSrc}
           alt={cleanSym}
-          className="size-full object-contain p-0.5"
-          onError={() => {
-            FAILED_LOGO_URLS.add(directLogoUrl);
-            setImageError(true);
-          }}
+          className="size-full object-cover rounded-full"
+          onError={handleImageError}
           loading="eager"
           decoding="async"
         />
@@ -371,22 +532,18 @@ export const StockSymbolIcon = React.memo(function StockSymbolIcon({
     );
   }
 
-  // Indices: NIFTY 50
-  if (cleanSym === 'NIFTY' || cleanSym === 'NIFTY 50' || cleanSym === 'NIFTY50') {
-    return (
-      <div
-        className={cn(
-          'flex items-center justify-center rounded-full bg-[#1e2749] text-white font-bold shrink-0 shadow-2xs',
-          sizeClasses,
-          className,
-        )}
-      >
-        <span className="text-[9px]">50</span>
-      </div>
-    );
-  }
-
-  // Major Crypto Icons
+  // Fallback badge with ticker initials
+  return (
+    <div
+      className={cn(
+        'flex items-center justify-center rounded-full bg-zinc-900 text-white font-bold text-xs uppercase shrink-0 border border-zinc-800 shadow-2xs font-sans tracking-tight',
+        sizeClasses,
+        className,
+      )}
+    >
+      <span>{cleanSym.slice(0, 2)}</span>
+    </div>
+  );
   if (cleanSym.startsWith('BTC') || cleanSym.includes('BITCOIN')) {
     return (
       <div
