@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'node:fs';
 import path from 'node:path';
+import catalogData from '@/features/connectors/data/catalog-4000.json';
 
 interface ConnectorItem {
   id: string;
@@ -20,15 +21,14 @@ interface ConnectorItem {
   variants?: Array<{ id: string; kind: string; name: string; oneClick?: boolean }>;
 }
 
-let cachedCatalog: ConnectorItem[] | null = null;
-
-const installedFilePath = path.resolve(process.cwd(), 'src/features/connectors/data/installed-connectors.json');
+const inMemoryInstalled = new Set<string>();
 
 function getInstalledSlugs(): Set<string> {
-  const set = new Set<string>();
+  const set = new Set<string>(inMemoryInstalled);
   try {
-    if (fs.existsSync(installedFilePath)) {
-      const data = JSON.parse(fs.readFileSync(installedFilePath, 'utf8'));
+    const p = path.join(process.cwd(), 'src/features/connectors/data/installed-connectors.json');
+    if (fs.existsSync(/*turbopackIgnore: true*/ p)) {
+      const data = JSON.parse(fs.readFileSync(/*turbopackIgnore: true*/ p, 'utf8'));
       if (Array.isArray(data)) {
         for (const item of data) {
           if (typeof item === 'string' && item && !item.startsWith('conn_')) {
@@ -42,10 +42,16 @@ function getInstalledSlugs(): Set<string> {
 }
 
 function saveInstalled(set: Set<string>): void {
+  for (const item of set) {
+    if (!item.startsWith('conn_')) inMemoryInstalled.add(item);
+  }
   try {
-    const dir = path.dirname(installedFilePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(installedFilePath, JSON.stringify(Array.from(set).filter(s => !s.startsWith('conn_')), null, 2), 'utf8');
+    const p = path.join(process.cwd(), 'src/features/connectors/data/installed-connectors.json');
+    const dir = path.dirname(p);
+    if (!fs.existsSync(/*turbopackIgnore: true*/ dir)) {
+      fs.mkdirSync(/*turbopackIgnore: true*/ dir, { recursive: true });
+    }
+    fs.writeFileSync(/*turbopackIgnore: true*/ p, JSON.stringify(Array.from(set).filter(s => !s.startsWith('conn_')), null, 2), 'utf8');
   } catch {}
 }
 
@@ -125,27 +131,7 @@ async function getComposioOAuthLink(slug: string): Promise<string | null> {
 }
 
 function getCatalog(): ConnectorItem[] {
-  if (cachedCatalog) return cachedCatalog;
-
-  const candidates = [
-    path.resolve(process.cwd(), 'src/features/connectors/data/catalog-4000.json'),
-    path.resolve(process.cwd(), 'apps/web/src/features/connectors/data/catalog-4000.json'),
-    path.resolve(process.cwd(), '../../packages/sdk/src/core/connectors/catalog-4000.json'),
-  ];
-
-  for (const p of candidates) {
-    if (fs.existsSync(p)) {
-      try {
-        const raw = fs.readFileSync(p, 'utf8');
-        cachedCatalog = JSON.parse(raw);
-        return cachedCatalog!;
-      } catch (e) {
-        console.error('[Connectors] Failed to parse catalog from', p, e);
-      }
-    }
-  }
-
-  return [];
+  return (catalogData as unknown as ConnectorItem[]) || [];
 }
 
 function findCatalogItem(queryIdOrSlug: string, catalog: ConnectorItem[]): ConnectorItem {

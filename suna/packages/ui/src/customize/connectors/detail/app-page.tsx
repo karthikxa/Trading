@@ -209,14 +209,53 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
   // that one shows progress; the others are disabled until it ends.
   const [pendingControl, setPendingControl] = useState<string | null>(null);
 
+  const fallbackResolved: ResolvedApp = useMemo(() => {
+    const clean = (appSegment || 'connector').replace(/^(composio|kortix|mcp|trading|openapi):/, '');
+    const name = clean.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    return {
+      name,
+      description: `Connect and automate workflows with ${name}.`,
+      logo: { kind: 'image', src: `https://logos.composio.dev/api/${clean}` },
+      surfaces: [
+        {
+          key: `composio:${clean}`,
+          label: `${name} Composio OAuth`,
+          kind: 'composio',
+          target: easyConnectInstallTarget({
+            slug: clean,
+            name,
+            provider: 'composio',
+            categories: ['productivity'],
+            hasActions: true,
+            hasTriggers: false,
+            featuredWeight: 0,
+          }),
+          oneClick: true,
+          recommended: true,
+          variantId: `${clean}-composio`,
+          url: null,
+        },
+      ],
+      references: [],
+    };
+  }, [appSegment]);
+
+  const effectiveResolved = resolved ?? (app ? fallbackResolved : null);
+
+  useEffect(() => {
+    if (appSegment === 'connected') {
+      router.replace(connectorsHref(projectId, 'connected'));
+    }
+  }, [appSegment, projectId, router]);
+
   // One page per app: once the project has exactly one profile of it, the
   // app's page is that connector's page. A Kortix channel keeps its own page.
   const installedOnce =
-    app && resolved && detail?.item?.kind !== 'kortix' && !ways
+    app && effectiveResolved && detail?.item?.kind !== 'kortix' && !ways
       ? catalogEntryConnectors(connectorsQuery.data?.connectors ?? [], {
           source: app.source,
           slug: app.slug,
-          name: resolved.name,
+          name: effectiveResolved.name,
         } as CatalogEntry)
       : [];
   const redirectTo =
@@ -266,7 +305,7 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
     );
   }
 
-  if (!app || !resolved) {
+  if (!app || !effectiveResolved) {
     return (
       <DetailPageShell>
         <EmptyState
@@ -286,10 +325,10 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
 
   const connectors = connectorsQuery.data?.connectors ?? [];
   // `catalogEntryConnectors` reads only `source`, `slug`, and `name`.
-  const entry = { source: app.source, slug: app.slug, name: resolved.name } as CatalogEntry;
+  const entry = { source: app.source, slug: app.slug, name: effectiveResolved.name } as CatalogEntry;
   const inProject = catalogEntryConnectors(connectors, entry);
   // `GMAIL_SEND_EMAIL` reads "Send email" on the Gmail page, as on the Tools tab.
-  const appNames = [app.slug, resolved.name];
+  const appNames = [app.slug, effectiveResolved.name];
   const installing = pendingKey === app.slug;
   /** `name` tells the page's Install controls apart for assistive tech; `key`
    *  tells them apart for the progress indicator. */
@@ -378,15 +417,15 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
       />
     ) : null;
   };
-  const primary = resolved.surfaces[0] ?? null;
+  const primary = effectiveResolved.surfaces[0] ?? null;
   // A Kortix channel's own page draws the channel as its hero; the ways list
   // keeps only the other ways (the vendor's MCP server, Composio, the API).
   // Computer has a page of its own (`ComputerAppPage`).
   const kortixApp = detail?.item?.kind === 'kortix' ? (detail?.item?.kortix?.app ?? null) : null;
   const channelPlatform = kortixApp && kortixApp !== 'computer' ? kortixApp : null;
   const waySurfaces = channelPlatform
-    ? resolved.surfaces.filter((surface) => surface.kind !== 'kortix')
-    : resolved.surfaces;
+    ? effectiveResolved.surfaces.filter((surface) => surface.kind !== 'kortix')
+    : effectiveResolved.surfaces;
   const infoCells: Array<{
     key: string;
     label: string;
@@ -407,8 +446,8 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
     infoCells.push({
       key: 'provider',
       label: t('infoRunsThrough'),
-      labelAddon: <ProviderInfo appName={resolved.name} managedBy={managedBy} />,
-      value: providerName(resolved.name, managedBy),
+      labelAddon: <ProviderInfo appName={effectiveResolved.name} managedBy={managedBy} />,
+      value: providerName(effectiveResolved.name, managedBy),
     });
   if (managed) {
     const signIn = managedSignIn(managed.authType);
@@ -437,21 +476,21 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
 
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-3">
-          <ConnectorLogo source={resolved.logo} size="lg" />
+          <ConnectorLogo source={effectiveResolved.logo} size="lg" />
           <h1 className="text-foreground min-w-0 text-xl font-medium text-balance wrap-break-word">
-            {resolved.name}
+            {effectiveResolved.name}
           </h1>
         </div>
         {primary && !channelPlatform ? (
           <div className="flex shrink-0 items-center gap-2">
-            {resolved.surfaces.length > 1 && !installedFor(primary) ? (
+            {effectiveResolved.surfaces.length > 1 && !installedFor(primary) ? (
               <span className="text-muted-foreground text-xs">
                 {primary.kind === 'kortix'
                   ? t('setUpWhere')
                   : t('installsWay', { kind: wayKindLabel(primary.kind) })}
               </span>
             ) : null}
-            {installMenu('header', primary, 'default', resolved.name) ?? (
+            {installMenu('header', primary, 'default', effectiveResolved.name) ?? (
               // A member without connector write: say who can, not nothing.
               <span className="text-muted-foreground text-xs">{t('askAdminToInstall')}</span>
             )}
@@ -467,7 +506,7 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
         </ChannelHeroLogoInHeader>
       ) : null}
 
-      {!channelPlatform && (infoCells.length > 0 || resolved.description) ? (
+      {!channelPlatform && (infoCells.length > 0 || effectiveResolved.description) ? (
         <div className="bg-popover divide-border divide-y overflow-hidden rounded-md border">
           {infoCells.length > 0 ? (
             <dl className="flex flex-wrap gap-x-8 gap-y-3 px-4 py-3">
@@ -482,10 +521,10 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
               ))}
             </dl>
           ) : null}
-          {resolved.description ? (
+          {effectiveResolved.description ? (
             <div className="space-y-1.5 px-4 py-4">
               <h2 className="text-muted-foreground text-xs">{t('overview')}</h2>
-              <p className="text-foreground text-sm text-pretty">{resolved.description}</p>
+              <p className="text-foreground text-sm text-pretty">{effectiveResolved.description}</p>
             </div>
           ) : null}
         </div>
@@ -531,7 +570,7 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
         </section>
       ) : null}
 
-      {resolved.surfaces.length === 0 && resolved.references.length === 0 ? (
+      {effectiveResolved.surfaces.length === 0 && effectiveResolved.references.length === 0 ? (
         <EmptyState
           icon={GlobeIcon}
           size="sm"
@@ -542,7 +581,7 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
 
       {/* One installable surface and nothing else is no choice: the header's
             Install covers it. */}
-      {waySurfaces.length > (channelPlatform ? 0 : 1) || resolved.references.length > 0 ? (
+      {waySurfaces.length > (channelPlatform ? 0 : 1) || effectiveResolved.references.length > 0 ? (
         <section className="space-y-3">
           <h2 className="text-foreground text-sm font-medium">
             {channelPlatform ? t('otherWaysToConnect') : t('waysToConnect')}
@@ -569,7 +608,7 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
                     ) : null}
                   </span>
                   <span className="text-muted-foreground block text-xs text-pretty">
-                    {wayDescription(t, { kind: surface.kind, oneClick: surface.oneClick }, resolved.name)}
+                    {wayDescription(t, { kind: surface.kind, oneClick: surface.oneClick }, effectiveResolved.name)}
                   </span>
                 </span>
                 {surface.variantId && detail ? (
@@ -592,10 +631,10 @@ function CatalogAppPage({ projectId, appSegment }: { projectId: string; appSegme
           </ul>
           ) : null}
           {/* A way Kortix cannot install is a pointer, not a row with a dead end. */}
-          {resolved.references.length > 0 ? (
+          {effectiveResolved.references.length > 0 ? (
             <p className="text-muted-foreground text-xs text-pretty">
               {t('otherWaysLead')}{' '}
-              {resolved.references.map((reference, index) => (
+              {effectiveResolved.references.map((reference, index) => (
                 <Fragment key={reference.key}>
                   {index > 0 ? ', ' : null}
                   {reference.href ? (

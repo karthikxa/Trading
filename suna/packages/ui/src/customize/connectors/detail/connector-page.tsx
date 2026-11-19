@@ -87,9 +87,9 @@ export function ConnectorPage({
 
   const fallbackConnector = useMemo<AdminConnector | null>(() => {
     if (connector) return connector;
-    const slug = connectorSlug || appSegment;
-    if (!slug || slug === 'connected') return null;
-    const cleanSlug = slug.replace(/^(composio|kortix|mcp|trading|openapi):/, '');
+    const rawSlug = (connectorSlug && connectorSlug !== 'connected') ? connectorSlug : (appSegment && appSegment !== 'connected' ? appSegment : '');
+    if (!rawSlug) return null;
+    const cleanSlug = rawSlug.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
     const displayName = cleanSlug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
     return {
       slug: connectorSlug || cleanSlug,

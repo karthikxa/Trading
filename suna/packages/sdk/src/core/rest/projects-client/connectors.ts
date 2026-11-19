@@ -264,13 +264,12 @@ export async function describeConnectorTool(
   // catalog) just to pick out a single action.
   // Match by slug, never take the first entry: an API that predates the
   // `slug` filter answers the whole catalog, and the CLI ships separately.
-  const connector = (
-    await getConnectorCatalog(projectId, {
-      slug: connectorSlug,
-      includeSchemas: true,
-      includeOutputSchemas: true,
-    })
-  ).find((entry) => entry.slug === connectorSlug);
+  const catalogList = (await getConnectorCatalog(projectId, {
+    slug: connectorSlug,
+    includeSchemas: true,
+    includeOutputSchemas: true,
+  }).catch(() => [])) || [];
+  const connector = Array.isArray(catalogList) ? catalogList.find((entry) => entry?.slug === connectorSlug) : null;
   if (!connector) return null;
   for (const action of connector.actions) {
     const candidateTool = `${connector.slug}.${action.path}`;

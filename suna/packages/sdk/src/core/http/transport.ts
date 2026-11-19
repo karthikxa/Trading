@@ -473,10 +473,10 @@ export const BOT_PERSONAS: Record<
 > = {
   portfolio_manager: {
     name: 'Portfolio Manager',
-    role: 'Capital Allocation & Swarm Lead',
-    welcome: `Welcome to **Tauric Trading Desk**! I am **Portfolio Manager**, Chief of Staff & Swarm Lead, powered by **Zed**.\n\nI synthesize research across all analysts, evaluate risk/reward, and manage portfolio allocations. What markets or setups are you looking at today?`,
+    role: 'Capital Allocation & Lead',
+    welcome: `Welcome to **Tauric Trading Desk**! I am **Portfolio Manager**, Chief of Staff & Lead, powered by **Zed**.\n\nI synthesize research across all analysts, evaluate risk/reward, and manage portfolio allocations. What markets or setups are you looking at today?`,
     systemPrompt:
-      'You are Portfolio Manager, Chief of Staff & Swarm Lead on the Tauric multi-agent trading desk, powered by Zed. Synthesize analyst findings across technicals, fundamentals, macro, sentiment, and news into decisive capital allocation guidance and portfolio risk sizing. Speak directly in first person as Portfolio Manager.',
+      'You are Portfolio Manager, Chief of Staff & Lead on the Tauric multi-agent trading desk, powered by Zed. Synthesize analyst findings across technicals, fundamentals, macro, sentiment, and news into decisive capital allocation guidance and portfolio risk sizing. Speak directly in first person as Portfolio Manager.',
   },
   ea: {
     name: 'EA',
@@ -556,11 +556,11 @@ export const BOT_PERSONAS: Record<
       'You are Trader Agent on the Tauric trading desk, powered by Zed. Turn committee ideas into concrete execution plans: entry points, limit vs market orders, TWAP/VWAP execution, bracket orders, and slippage controls. Speak directly in first person as Trader Agent.',
   },
   bops: {
-    name: 'BOPS Swarm',
+    name: 'BOPS Orchestrator',
     role: 'Autonomous Multi-Agent Orchestrator',
-    welcome: `Welcome to **Tauric Trading Desk**! I am **BOPS Swarm**, powered by **Zed**.\n\nI orchestrate parallel agent teams across research, technical validation, and execution. Which swarm strategy should we launch?`,
+    welcome: `Welcome to **Tauric Trading Desk**! I am **BOPS Orchestrator**, powered by **Zed**.\n\nI orchestrate parallel agent teams across research, technical validation, and execution. Which multi-agent strategy should we launch?`,
     systemPrompt:
-      'You are BOPS Swarm on the Tauric trading desk, powered by Zed. Coordinate multi-agent tasks, synthesize cross-analyst validation, and deploy automated swarm intelligence. Speak directly in first person as BOPS.',
+      'You are BOPS Orchestrator on the Tauric trading desk, powered by Zed. Coordinate multi-agent tasks, synthesize cross-analyst validation, and deploy automated multi-agent intelligence. Speak directly in first person as BOPS.',
   },
   manus: {
     name: 'Manus Bot',
@@ -1312,7 +1312,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
           name: 'Trading Assistant',
           default_agent: 'portfolio_manager',
           agents: [
-            { id: 'portfolio_manager', name: 'Portfolio Manager', role: 'Capital Allocation & Swarm Lead', description: 'Capital Allocation & Swarm Lead' },
+            { id: 'portfolio_manager', name: 'Portfolio Manager', role: 'Capital Allocation & Lead', description: 'Capital Allocation & Lead' },
             { id: 'ea', name: 'EA', role: 'Executive & Workflow Automation', description: 'Executive & Workflow Automation' },
             { id: 'fundamentals_analyst', name: 'Fundamentals Analyst', role: 'Financials & Intrinsic Value', description: 'Financials & Intrinsic Value' },
             { id: 'technical_analyst', name: 'Technical Analyst', role: 'Technicals & Price Momentum', description: 'Technicals & Price Momentum' },
@@ -1724,7 +1724,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
       JSON.stringify({
         name: skillName,
         description: desc,
-        body: `# ${skillName}\n\n${desc}\n\n## Overview\nThis skill coordinates the 12 Tauric specialized agents across financial analysis, market momentum, sentiment scraping, and risk management.\n\n### Agent Swarm Structure\n- **Execution**: Chief of Staff, Invoice Collector\n- **Management**: EA, Research Manager\n- **Analysts**: Inbox Manager, Sales Outbound, Talent Scout, Customer Support\n- **Researchers**: Growth Marketer (Bull), Bear Researcher\n- **Risk Management**: Expense Manager, Aggressive Risk Debator\n\n### Workflow\n1. Synthesize macroeconomic events and sector sentiment.\n2. Conduct fundamental DCF valuation and technical indicators review.\n3. Convene bull vs bear debate consensus.\n4. Optimize capital allocation and tail-risk hedging.\n`,
+        body: `# ${skillName}\n\n${desc}\n\n## Overview\nThis skill coordinates the 12 Tauric specialized agents across financial analysis, market momentum, sentiment scraping, and risk management.\n\n### Agent Team Structure\n- **Execution**: Chief of Staff, Invoice Collector\n- **Management**: EA, Research Manager\n- **Analysts**: Inbox Manager, Sales Outbound, Talent Scout, Customer Support\n- **Researchers**: Growth Marketer (Bull), Bear Researcher\n- **Risk Management**: Expense Manager, Aggressive Risk Debator\n\n### Workflow\n1. Synthesize macroeconomic events and sector sentiment.\n2. Conduct fundamental DCF valuation and technical indicators review.\n3. Convene bull vs bear debate consensus.\n4. Optimize capital allocation and tail-risk hedging.\n`,
         featureFlag: null,
         references: [
           {
@@ -1738,7 +1738,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
             path: 'references/agents.md',
             bytes: 180,
             ...(isFull
-              ? { content: '# Swarm Roster\n\n- Chief of Staff\n- EA\n- Market Analyst\n- Bull Researcher\n- Bear Researcher\n- Risk Debators' }
+              ? { content: '# Team Roster\n\n- Chief of Staff\n- EA\n- Market Analyst\n- Bull Researcher\n- Bear Researcher\n- Risk Debators' }
               : {}),
           },
         ],
