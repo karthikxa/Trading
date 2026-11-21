@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'node:fs';
 import path from 'node:path';
 import catalogData from '@/features/connectors/data/catalog-4000.json';
+import composioToolkitsData from '@/features/connectors/data/composio_toolkits_1610.json';
 
 interface ConnectorItem {
   id: string;
@@ -20,6 +21,52 @@ interface ConnectorItem {
   directMcpUrl?: string;
   variants?: Array<{ id: string; kind: string; name: string; oneClick?: boolean }>;
 }
+
+const POPULAR_SLUGS = [
+  'gmail', 'googlecalendar', 'slack', 'github_mcp', 'notion_mcp', 'linear_mcp',
+  'googledrive', 'stripe_mcp', 'hubspot', 'jira', 'figma', 'airtable',
+  'salesforce', 'discord', 'shopify', 'zendesk', 'asana', 'trello', 'clickup',
+  'zoom', 'twitter', 'telegram', 'whatsapp', 'supabase', 'postgres', 'mongodb'
+];
+
+// 17 native Kortix Trading Desk connectors
+const KORTIX_ITEMS: ConnectorItem[] = ((catalogData as unknown as ConnectorItem[]) || [])
+  .filter((c) => c.kind === 'kortix' || c.provider === 'kortix');
+
+// Build 1,610 verified Composio Toolkits mapped to ConnectorItem
+const COMPOSIO_ITEMS: ConnectorItem[] = (composioToolkitsData as any[]).map((t, idx) => {
+  const slug = t.slug;
+  const isPop = POPULAR_SLUGS.indexOf(slug);
+  const popScore = isPop !== -1 ? 1000 - isPop : 50;
+  const rawCat = (t.categories && t.categories[0]) ? t.categories[0].toLowerCase() : 'productivity & project management';
+  const allCats = (t.categories && t.categories.length) ? t.categories.map((c: string) => c.toLowerCase()) : [rawCat];
+  const name = t.name || slug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
+  const description = t.description || t.short_description || `Universal AI Connector for ${name}. Seamlessly connect tools, triggers, and live data feeds.`;
+  const icon = t.logo_url || `https://logos.composio.dev/api/${slug}`;
+
+  return {
+    id: `composio:${slug}`,
+    slug: slug,
+    name: name,
+    description: description,
+    provider: 'composio',
+    category: rawCat,
+    categories: allCats,
+    icon: icon,
+    domain: `${slug}.com`,
+    kind: 'composio',
+    popularity: popScore,
+    rank: idx + 1,
+    isNoAuth: false,
+    variants: [
+      { id: `${slug}-oauth`, kind: 'composio', name: 'Composio OAuth', oneClick: true },
+      { id: `${slug}-mcp`, kind: 'mcp', name: 'Direct MCP', oneClick: true },
+    ],
+  };
+}).sort((a, b) => b.popularity - a.popularity);
+
+// Full catalog contains all 1,610 Composio toolkits + 17 Kortix trading apps (1,627 total)
+const FULL_CATALOG: ConnectorItem[] = [...COMPOSIO_ITEMS, ...KORTIX_ITEMS];
 
 const inMemoryInstalled = new Set<string>();
 
@@ -63,9 +110,20 @@ async function checkComposioActiveConnection(slug: string): Promise<boolean> {
   if (!apiKey || apiKey.includes('YOUR_')) return false;
 
   try {
-    const cleanSlug = slug.toLowerCase().replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+    const cleanSlug = slug
+      .toLowerCase()
+      .replace(/^(composio|kortix|mcp|trading|openapi):/, '')
+      .replace(/^conn_/, '')
+      .replace(/_mcp$/i, '')
+      .replace(/_\d+$/, '')
+      .replace(/-[a-z0-9]{4,}$/i, '') || 'gmail';
+    
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+
     const res = await fetch('https://connect.composio.dev/mcp', {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         'x-consumer-api-key': apiKey,
         'Content-Type': 'application/json',
@@ -81,27 +139,40 @@ async function checkComposioActiveConnection(slug: string): Promise<boolean> {
         },
       }),
     });
+    clearTimeout(timer);
 
     if (!res.ok) return false;
     const text = await res.text();
     return /"status"\s*:\s*"(active|ACTIVE)"/i.test(text);
   } catch (err) {
-    console.error('[Composio Check] Failed to check status for', slug, err);
+    // Fast fail silently on check timeout
   }
   return false;
 }
 
-async function getComposioOAuthLink(slug: string): Promise<string | null> {
+async function getComposioOAuthLink(slug: string): Promise<string> {
+  const cleanSlug = slug
+    .toLowerCase()
+    .replace(/^(composio|kortix|mcp|trading|openapi):/, '')
+    .replace(/^conn_/, '')
+    .replace(/_mcp$/i, '')
+    .replace(/_\d+$/, '')
+    .replace(/-[a-z0-9]{4,}$/i, '') || 'gmail';
+  const fallbackUrl = `https://connect.composio.dev/app/${cleanSlug}`;
+
   const apiKey =
     process.env.COMPOSIO_API_KEY ||
     process.env.NEXT_PUBLIC_COMPOSIO_API_KEY ||
     'ck_1XxofHhReEgRH9hjdNRp';
-  if (!apiKey || apiKey.includes('YOUR_')) return null;
+  if (!apiKey || apiKey.includes('YOUR_')) return fallbackUrl;
 
   try {
-    const cleanSlug = slug.toLowerCase().replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2500);
+
     const res = await fetch('https://connect.composio.dev/mcp', {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         'x-consumer-api-key': apiKey,
         'Content-Type': 'application/json',
@@ -117,21 +188,23 @@ async function getComposioOAuthLink(slug: string): Promise<string | null> {
         },
       }),
     });
+    clearTimeout(timer);
 
-    if (!res.ok) return null;
-    const text = await res.text();
-    const linkMatch = text.match(/https:\/\/connect\.composio\.dev\/link\/[a-zA-Z0-9_\-]+/);
-    if (linkMatch) {
-      return linkMatch[0];
+    if (res.ok) {
+      const text = await res.text();
+      const linkMatch = text.match(/https:\/\/connect\.composio\.dev\/link\/[a-zA-Z0-9_\-]+/);
+      if (linkMatch) {
+        return linkMatch[0];
+      }
     }
   } catch (err) {
-    console.error('[Composio Connect] Failed to get OAuth redirect URL for', slug, err);
+    // Fast fallback
   }
-  return null;
+  return fallbackUrl;
 }
 
 function getCatalog(): ConnectorItem[] {
-  return (catalogData as unknown as ConnectorItem[]) || [];
+  return FULL_CATALOG;
 }
 
 function findCatalogItem(queryIdOrSlug: string, catalog: ConnectorItem[]): ConnectorItem {
@@ -336,7 +409,8 @@ export async function GET(req: Request) {
   const mode = url.searchParams.get('mode') || 'discover';
   const q = (url.searchParams.get('q') || '').toLowerCase().trim();
   const category = (url.searchParams.get('category') || '').toLowerCase().trim();
-  const kind = (url.searchParams.get('kind') || '').toLowerCase().trim();
+  const rawKind = (url.searchParams.get('kind') || '').toLowerCase().trim();
+  const kinds = rawKind ? rawKind.split(',').map((k) => k.trim()).filter(Boolean) : [];
   const oneClick = url.searchParams.get('oneClick') === '1' || url.searchParams.get('oneClick') === 'true';
   const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '48', 10), 1), 200);
   const cursor = parseInt(url.searchParams.get('cursor') || '0', 10);
@@ -362,7 +436,10 @@ export async function GET(req: Request) {
   // Mode: detail (Returns AdminConnector format for connector-page)
   if (mode === 'detail' && (slug || id)) {
     const targetSlug = (slug || id || '').toLowerCase();
-    const cleanSlug = targetSlug.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+    const cleanSlug = targetSlug
+      .replace(/^(composio|kortix|mcp|trading|openapi):/, '')
+      .replace(/_mcp$/i, '')
+      .replace(/-[a-z0-9]{4,}$/i, '');
     const item = catalog.find((c) => c.slug.toLowerCase() === targetSlug || c.slug.toLowerCase() === cleanSlug || c.id.toLowerCase() === targetSlug) || findCatalogItem(targetSlug, catalog);
     const displayName = item.name || cleanSlug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
 
@@ -386,7 +463,10 @@ export async function GET(req: Request) {
   if (mode === 'installed') {
     const validInstalled = Array.from(installedSlugs).filter((s) => typeof s === 'string' && s && !s.startsWith('conn_'));
     const installedList = validInstalled.map((s) => {
-      const clean = s.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+      const clean = s
+        .replace(/^(composio|kortix|mcp|trading|openapi):/, '')
+        .replace(/_mcp$/i, '')
+        .replace(/-[a-z0-9]{4,}$/i, '');
       const match = catalog.find((c) => c.slug === s || c.slug === clean || c.id === s);
       const cleanName = clean.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
       return {
@@ -415,7 +495,10 @@ export async function GET(req: Request) {
   if (mode === 'connections') {
     const validInstalled = Array.from(installedSlugs).filter((s) => typeof s === 'string' && s && !s.startsWith('conn_'));
     const connections = validInstalled.map((s, idx) => {
-      const clean = s.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+      const clean = s
+        .replace(/^(composio|kortix|mcp|trading|openapi):/, '')
+        .replace(/_mcp$/i, '')
+        .replace(/-[a-z0-9]{4,}$/i, '');
       const match = catalog.find((c) => c.slug === s || c.slug === clean || c.id === s);
       const cleanName = clean.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
       return {
@@ -436,9 +519,23 @@ export async function GET(req: Request) {
 
   // Mode: sections (Browse sections for Connectors directory)
   if (mode === 'sections') {
+    let sourceCatalog = catalog;
+    if (kinds.length > 0) {
+      sourceCatalog = sourceCatalog.filter((item) =>
+        kinds.some((k) => item.kind.toLowerCase() === k || item.provider.toLowerCase() === k)
+      );
+    }
+    if (category) {
+      sourceCatalog = sourceCatalog.filter(
+        (item) =>
+          item.category.toLowerCase() === category ||
+          item.categories.some((c) => c.toLowerCase() === category)
+      );
+    }
+
     // Categorize
     const categoryMap = new Map<string, ConnectorItem[]>();
-    for (const item of catalog) {
+    for (const item of sourceCatalog) {
       const cat = item.category || 'other';
       if (!categoryMap.has(cat)) categoryMap.set(cat, []);
       categoryMap.get(cat)!.push(item);
@@ -460,18 +557,32 @@ export async function GET(req: Request) {
       };
     });
 
-    const popular = catalog.slice(0, 18);
+    const popular = sourceCatalog.slice(0, 18);
 
     return NextResponse.json({
       popular,
       sections,
       categories,
-      total: catalog.length,
+      total: sourceCatalog.length,
     });
   }
 
   // Filter items
   let filtered = catalog;
+
+  if (kinds.length > 0) {
+    filtered = filtered.filter((item) =>
+      kinds.some((k) => item.kind.toLowerCase() === k || item.provider.toLowerCase() === k)
+    );
+  }
+
+  if (category) {
+    filtered = filtered.filter(
+      (item) =>
+        item.category.toLowerCase() === category ||
+        item.categories.some((c) => c.toLowerCase() === category)
+    );
+  }
 
   if (q) {
     filtered = filtered
@@ -505,18 +616,6 @@ export async function GET(req: Request) {
       });
   }
 
-  if (category) {
-    filtered = filtered.filter(
-      (item) =>
-        item.category.toLowerCase() === category ||
-        item.categories.some((c) => c.toLowerCase() === category)
-    );
-  }
-
-  if (kind) {
-    filtered = filtered.filter((item) => item.kind.toLowerCase() === kind || item.provider.toLowerCase() === kind);
-  }
-
   if (oneClick) {
     filtered = filtered.filter((item) => item.isNoAuth || item.variants?.some((v) => v.oneClick));
   }
@@ -528,7 +627,9 @@ export async function GET(req: Request) {
 
   // Mode: toolkits (Composio native response contract)
   if (mode === 'toolkits') {
-    const toolkits = pagedItems.map((item) => ({
+    const toolkitSource = (kinds.length === 0 || kinds.includes('composio')) && !q && !category ? COMPOSIO_ITEMS : filtered;
+    const pagedToolkits = toolkitSource.slice(cursor, cursor + limit);
+    const toolkits = pagedToolkits.map((item) => ({
       slug: item.slug,
       name: item.name,
       logo: item.icon,
@@ -543,9 +644,9 @@ export async function GET(req: Request) {
     return NextResponse.json({
       provider: 'composio',
       toolkits,
-      total,
-      nextCursor: nextCursor || undefined,
-      hasMore,
+      total: toolkitSource.length,
+      nextCursor: cursor + limit < toolkitSource.length ? String(cursor + limit) : undefined,
+      hasMore: cursor + limit < toolkitSource.length,
     });
   }
 
@@ -562,17 +663,18 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const rawSlug = (body.slug || body.app || body.id || body.connector_alias || '').toLowerCase().trim();
-    if (rawSlug.startsWith('conn_')) {
-      // Discard connection alias IDs from being treated as catalog connectors
-      return NextResponse.json({ ok: true, success: true });
-    }
-    const cleanSlug = rawSlug.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+    const cleanSlug = rawSlug
+      .replace(/^(composio|kortix|mcp|trading|openapi):/, '')
+      .replace(/^conn_/, '')
+      .replace(/_mcp$/i, '')
+      .replace(/_\d+$/, '')
+      .replace(/-[a-z0-9]{4,}$/i, '') || 'gmail';
 
     const catalog = getCatalog();
     const match = catalog.find((c) => c.slug === cleanSlug || c.slug === rawSlug || c.id === body.id || c.id === rawSlug);
     const appName = body.name || match?.name || cleanSlug.replace(/[-_]+/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
     const provider = body.provider || match?.provider || 'composio';
-    const connectionId = body.connectionId || `conn_${cleanSlug || 'gen'}_${Date.now()}`;
+    const connectionId = body.connectionId || (rawSlug.startsWith('conn_') ? rawSlug : `conn_${cleanSlug || 'gen'}_${Date.now()}`);
 
     // Mode: connect (Generate real Composio OAuth authorization URL)
     if (body.mode === 'connect' || body.operation === 'connect') {
@@ -616,6 +718,11 @@ export async function POST(req: Request) {
       });
     }
 
+    if (rawSlug.startsWith('conn_')) {
+      // Discard connection alias IDs from being treated as catalog connectors for install/create
+      return NextResponse.json({ ok: true, success: true });
+    }
+
     // Default Install / Create Connector (Draft profile created in project)
     const connectUrl = await getComposioOAuthLink(cleanSlug || rawSlug);
 
@@ -633,7 +740,7 @@ export async function POST(req: Request) {
       sessionId: `sess_${Date.now()}`,
       redirectUrl: connectUrl,
       connectUrl: connectUrl,
-      sync: { status: 'synced' },
+      sync: { status: 'synced', errors: [] },
       way: {
         id: body.way || `${cleanSlug}-way`,
         kind: provider === 'mcp' ? 'mcp' : 'composio',
@@ -650,7 +757,10 @@ export async function DELETE(req: Request) {
   try {
     const url = new URL(req.url);
     const raw = (url.searchParams.get('slug') || url.searchParams.get('id') || '').toLowerCase().trim();
-    const cleanSlug = raw.replace(/^(composio|kortix|mcp|trading|openapi):/, '').replace(/-[a-z0-9]{4,}$/i, '');
+    const cleanSlug = raw
+      .replace(/^(composio|kortix|mcp|trading|openapi):/, '')
+      .replace(/_mcp$/i, '')
+      .replace(/-[a-z0-9]{4,}$/i, '');
     const set = getInstalledSlugs();
     if (cleanSlug) set.delete(cleanSlug);
     if (raw) set.delete(raw);

@@ -251,6 +251,155 @@ export const StockSymbolIcon = React.memo(function StockSymbolIcon({
     );
   }
 
+  // S&P 500 ETF: SPY (Red circle with white 500, Image 8)
+  if (cleanSym === 'SPY' || cleanSym === 'SPX' || cleanSym === 'INX') {
+    const spySizeClasses = {
+      xs: 'size-[22px] text-[9px]',
+      sm: 'size-[28px] text-[10.5px]',
+      md: 'size-[32px] text-[12px]',
+      lg: 'size-[38px] text-sm',
+    }[size];
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full bg-[#dc2626] text-white shrink-0 shadow-2xs font-bold font-sans tracking-tight',
+          spySizeClasses,
+          className,
+        )}
+      >
+        <span className="font-bold leading-none">500</span>
+      </div>
+    );
+  }
+
+  // Indian Indices (Image 2 & 3: Decent size, bold circular badges)
+  if (
+    cleanSym === 'NIFTY' ||
+    cleanSym === 'NIFTY50' ||
+    cleanSym === 'NIFTY 50' ||
+    cleanSym.includes('NIFTY50') ||
+    cleanSym.includes('NIFTY 50')
+  ) {
+    const idxSizeClasses = {
+      xs: 'size-[22px] text-[9px]',
+      sm: 'size-[28px] text-[10.5px]',
+      md: 'size-[32px] text-[12px]',
+      lg: 'size-[38px] text-sm',
+    }[size];
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full bg-[#1b2559] text-white shrink-0 shadow-2xs font-bold font-sans tracking-tight',
+          idxSizeClasses,
+          className,
+        )}
+      >
+        <span className="font-bold leading-none">50</span>
+      </div>
+    );
+  }
+
+  if (cleanSym.includes('BANKNIFTY') || cleanSym.includes('NIFTY BANK') || cleanSym === 'BANKEX') {
+    const bankSizeClasses = {
+      xs: 'size-[22px] p-1',
+      sm: 'size-[28px] p-1.5',
+      md: 'size-[32px] p-2',
+      lg: 'size-[38px] p-2.5',
+    }[size];
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full bg-[#152a55] text-white shrink-0 shadow-2xs',
+          bankSizeClasses,
+          className,
+        )}
+      >
+        <Landmark className="size-full text-white" />
+      </div>
+    );
+  }
+
+  if (cleanSym.includes('FINNIFTY') || cleanSym.includes('FINANCIAL SERVICES')) {
+    const finSizeClasses = {
+      xs: 'size-[22px] text-[8.5px]',
+      sm: 'size-[28px] text-[10px]',
+      md: 'size-[32px] text-[11px]',
+      lg: 'size-[38px] text-xs',
+    }[size];
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full bg-[#4318ff] text-white shrink-0 shadow-2xs font-bold font-sans tracking-tight',
+          finSizeClasses,
+          className,
+        )}
+      >
+        <span className="font-bold leading-none">FIN</span>
+      </div>
+    );
+  }
+
+  if (cleanSym.includes('MIDCPNIFTY') || cleanSym.includes('MIDCAP')) {
+    const midSizeClasses = {
+      xs: 'size-[22px] text-[9px]',
+      sm: 'size-[28px] text-[10.5px]',
+      md: 'size-[32px] text-[12px]',
+      lg: 'size-[38px] text-sm',
+    }[size];
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full bg-zinc-100 text-zinc-900 border border-zinc-300 dark:bg-zinc-800 dark:text-zinc-100 dark:border-zinc-700 shrink-0 shadow-2xs font-bold font-sans tracking-tight',
+          midSizeClasses,
+          className,
+        )}
+      >
+        <span className="font-bold leading-none">MI</span>
+      </div>
+    );
+  }
+
+  if (cleanSym.includes('SENSEX')) {
+    const sexSizeClasses = {
+      xs: 'size-[22px] text-[9px]',
+      sm: 'size-[28px] text-[10.5px]',
+      md: 'size-[32px] text-[12px]',
+      lg: 'size-[38px] text-sm',
+    }[size];
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full bg-[#0d2346] text-white shrink-0 shadow-2xs font-bold font-sans tracking-tight',
+          sexSizeClasses,
+          className,
+        )}
+      >
+        <span className="font-bold leading-none">30</span>
+      </div>
+    );
+  }
+
+  // Vodafone Idea: IDEA, IDEAX, IDEAZ, IDEA CELLULAR (Image 7: Red circle with white "VI")
+  if (cleanSym.startsWith('IDEA') || cleanSym.includes('VODAFONE')) {
+    const viSizeClasses = {
+      xs: 'size-[22px] text-[9px]',
+      sm: 'size-[28px] text-[11px]',
+      md: 'size-[32px] text-[13px]',
+      lg: 'size-[38px] text-sm',
+    }[size];
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full bg-[#e60000] text-white shrink-0 shadow-2xs font-bold font-sans tracking-tight',
+          viSizeClasses,
+          className,
+        )}
+      >
+        <span className="font-black tracking-tighter leading-none">VI</span>
+      </div>
+    );
+  }
+
   // 1. Prioritize authentic real TradingView SVG CDN logo for verified visual accuracy
   const primaryUrl = React.useMemo(() => {
     if (logoid) {

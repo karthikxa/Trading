@@ -63,6 +63,13 @@ export function connectLinkUrl(response: ConnectorConnectResult): string | null 
   return response.connectUrl || response.redirectUrl || null;
 }
 
+let activeAbort: (() => void) | null = null;
+
+export function abortActiveConnectFlow(): void {
+  activeAbort?.();
+  activeAbort = null;
+}
+
 /**
  * Open a blank popup synchronously, request a hosted Connect Link, and poll the
  * normalized finalize endpoint until the provider reports an active account.
@@ -90,17 +97,33 @@ export async function runConnectLinkFlow(
   }
 
   const watcher = watchPopupClosed(popup);
+  let onAbortReject: ((err: Error) => void) | null = null;
+  const abortPromise = new Promise<never>((_, reject) => {
+    onAbortReject = reject;
+  });
+  abortPromise.catch(() => undefined);
+
+  activeAbort = () => {
+    closePopupSafely(popup);
+    onAbortReject?.(new Error('Connection cancelled.'));
+  };
+
   try {
     // The hosted page does not need access to the Kortix tab through window.opener.
     // Setting this on the same-origin blank page prevents reverse-tabnabbing after
     // navigation while keeping our Window reference for polling cleanup.
     try {
       popup.opener = null;
+      if (popup.document) {
+        popup.document.write(
+          '<!DOCTYPE html><html><head><title>Connecting...</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#090d16;color:#f8fafc;font-size:14px;}.loader{width:36px;height:36px;border:3px solid #1e293b;border-top:3px solid #6366f1;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px;}@keyframes spin{to{transform:rotate(360deg)}}p{margin:0;color:#94a3b8;font-weight:500;}</style></head><body><div style="text-align:center"><div class="loader"></div><p>Opening OAuth Authorization...</p></div></body></html>'
+        );
+      }
     } catch {
-      // Some browser WindowProxy implementations expose opener as read-only.
+      // Some browser WindowProxy implementations expose opener or document as restricted.
     }
 
-    const response = await Promise.race([start(), watcher.closed]);
+    const response = await Promise.race([start(), watcher.closed, abortPromise]);
     if (response.connected) return { connected: true };
     const url = connectLinkUrl(response);
     if (!url) throw new Error('The connector did not return a Connect Link. Try again.');
@@ -117,7 +140,7 @@ export async function runConnectLinkFlow(
     const deadline = now() + timeoutMs;
 
     while (true) {
-      const result = await Promise.race([finalize(), watcher.closed]);
+      const result = await Promise.race([finalize(), watcher.closed, abortPromise]);
       if (result.connected) return { connected: true };
       if (popup.closed) {
         throw new Error(POPUP_CLOSED_MESSAGE);
@@ -128,6 +151,7 @@ export async function runConnectLinkFlow(
       await sleep(Math.min(pollIntervalMs, remainingMs));
     }
   } finally {
+    activeAbort = null;
     watcher.stop();
     closePopupSafely(popup);
   }

@@ -8,6 +8,7 @@ import WatchlistButton from './WatchlistButton';
 import { TradingPairIcon } from '../journal/TradingPairIcon';
 import { openSearch } from './SearchCommand';
 import TvTickerTag from './TvTickerTag';
+import DhanAccountBar from './DhanAccountBar';
 import { cn } from '@kortix/ui';
 
 interface WatchlistTableProps {
@@ -26,9 +27,11 @@ export const WatchlistTable = React.memo(function WatchlistTable({ onSelectSymbo
   }, []);
 
   return (
-    <div className="rounded-xl border border-border/70 bg-card shadow-2xs overflow-hidden">
-      {/* Card Header */}
-      <div className="flex items-center justify-between px-5 py-3.5 border-b border-border/60">
+    <div className="flex flex-col gap-3">
+      <DhanAccountBar />
+      <div className="rounded-xl border border-border/70 bg-card shadow-2xs overflow-hidden">
+        {/* Card Header */}
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-border/60">
         <div className="flex items-center gap-2.5">
           <KortixPinIcon className="size-4 text-foreground" />
           <h3 className="text-sm font-semibold tracking-tight text-foreground font-sans">Watchlist</h3>
@@ -100,7 +103,7 @@ export const WatchlistTable = React.memo(function WatchlistTable({ onSelectSymbo
                   >
                     <td className="py-2.5 px-4">
                       <div className="flex items-center gap-2.5">
-                        <TradingPairIcon symbol={item.symbol} size="sm" />
+                        <TradingPairIcon symbol={item.symbol} size="md" />
                         <div>
                           <div className="font-medium text-foreground flex items-center gap-1.5 font-sans tracking-tight text-[13px]">
                             {item.symbol}
@@ -147,6 +150,7 @@ export const WatchlistTable = React.memo(function WatchlistTable({ onSelectSymbo
         </div>
       )}
     </div>
+  </div>
   );
 });
 

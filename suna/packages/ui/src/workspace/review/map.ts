@@ -45,6 +45,21 @@ export function mapApiReviewItem(
   projectName: string,
   sessionLabels: Record<string, string> = {},
 ): ReviewItem {
+  if (!row) {
+    return {
+      id: 'empty',
+      title: 'Review item',
+      kind: 'change',
+      status: 'done',
+      summary: '',
+      detail: {},
+      created_at: new Date().toISOString(),
+      project: projectName,
+      actor: { name: 'AI', initials: 'AI' },
+      primaryAction: PRIMARY_ACTION.change,
+      secondaryAction: SECONDARY_ACTION.change,
+    } as any;
+  }
   const item = mapSdkReviewItem(row, { sessionLabels });
   return {
     ...item,

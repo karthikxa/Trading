@@ -32,7 +32,6 @@ import TvScreener from '@/features/markets/TvScreener';
 import TvEconomicCalendar from '@/features/markets/TvEconomicCalendar';
 import WatchlistTable from '@/features/markets/WatchlistTable';
 import TvLiveChart from '@/features/markets/TvLiveChart';
-import FinceptTerminalView from '@/features/terminal/FinceptTerminalView';
 
 import JournalView from '@/features/journal/JournalView';
 import { getLocalTrades } from '@/features/journal/storage';
@@ -83,18 +82,16 @@ export default function ProjectIndexPage() {
     }
   }, [rawProjectId, searchParams, router]);
 
-  // Active view management: 'chat' | 'overview' | 'stock' | 'journal' | 'chart' | 'terminal'
+  // Active view management: 'chat' | 'overview' | 'stock' | 'journal' | 'chart'
   const queryTab = searchParams.get('tab');
-  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'stock' | 'journal' | 'chart' | 'terminal'>(
+  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'stock' | 'journal' | 'chart'>(
     queryTab === 'overview'
       ? 'overview'
-      : queryTab === 'terminal'
-        ? 'terminal'
-        : queryTab === 'journal'
-          ? 'journal'
-          : queryTab === 'chart'
-            ? 'chart'
-            : 'chat',
+      : queryTab === 'journal'
+        ? 'journal'
+        : queryTab === 'chart'
+          ? 'chart'
+          : 'chat',
   );
 
   const [tradingGoal, setTradingGoal] = useState<{ targetAmount: number; targetDate: string }>({
@@ -156,8 +153,6 @@ export default function ProjectIndexPage() {
       const tab = url.searchParams.get('tab');
       if (tab === 'overview') {
         setActiveView('overview');
-      } else if (tab === 'terminal') {
-        setActiveView('terminal');
       } else if (tab === 'journal') {
         setActiveView('journal');
       } else if (tab === 'chart') {
@@ -190,8 +185,6 @@ export default function ProjectIndexPage() {
   useEffect(() => {
     if (queryTab === 'overview') {
       setActiveView('overview');
-    } else if (queryTab === 'terminal') {
-      setActiveView('terminal');
     } else if (queryTab === 'journal') {
       setActiveView('journal');
     } else if (queryTab === 'chart') {
@@ -812,23 +805,20 @@ export default function ProjectIndexPage() {
         {/* VIEW: CHART (FULLSCREEN ADVANCED TRADINGVIEW CHART ALONE)                 */}
         {/* ========================================================================= */}
         {visitedViews.has('chart') && (
-          <div className={cn("relative w-full h-full flex-1 flex flex-col overflow-hidden bg-background", activeView !== 'chart' && 'hidden')}>
+          <div className={cn("relative w-full h-full min-h-0 flex-1 flex flex-col overflow-hidden bg-background", activeView !== 'chart' && 'hidden')}>
             <TvLiveChart
               symbol={searchParams.get('symbol') || selectedWatchlistStock || 'NASDAQ:AAPL'}
               height="100%"
               className="w-full h-full flex-1 !rounded-none !border-0"
+              onSymbolChange={(sym) => {
+                setSelectedWatchlistStock(sym);
+                const targetUrl = `${pathname}?tab=chart&symbol=${encodeURIComponent(sym)}`;
+                window.history.pushState({}, '', targetUrl);
+              }}
             />
           </div>
         )}
 
-        {/* ========================================================================= */}
-        {/* VIEW: FINCEPT INSTITUTIONAL TERMINAL                                      */}
-        {/* ========================================================================= */}
-        {visitedViews.has('terminal') && (
-          <div className={cn("relative w-full h-full flex-1 flex flex-col overflow-hidden bg-background", activeView !== 'terminal' && 'hidden')}>
-            <FinceptTerminalView />
-          </div>
-        )}
 
         {/* ========================================================================= */}
         {/* VIEW 4: SINGLE-STOCK RESEARCH TERMINAL                                     */}

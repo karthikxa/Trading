@@ -209,10 +209,11 @@ function ChannelsFallback() {
  * view of the same list — it is the other direction of the same job (who can
  * reach the agent, rather than what the agent can reach).
  */
-const SCOPES: readonly ConnectorScope[] = ['all', 'connected', 'channels'];
+const SCOPES: readonly ConnectorScope[] = ['all', 'composio', 'connected', 'channels'];
 
 const SCOPE_LABEL: Record<ConnectorScope, string> = {
   all: 'All',
+  composio: 'Composio (1,610)',
   connected: 'Connected',
   // The tab holds everything Kortix built (Slack, Teams, Email, Telegram and
   // the computer). People call those channels; the catalog type stays "Kortix".
@@ -227,6 +228,7 @@ const SCOPE_LABEL: Record<ConnectorScope, string> = {
  */
 const SCOPE_DESCRIPTION: Record<ConnectorScope, string> = {
   all: 'Give agents access to outside tools and data.',
+  composio: 'Browse, search, and connect all 1,610+ verified Composio toolkits and cloud integrations.',
   connected: 'Give agents access to outside tools and data.',
   channels: 'Talk to your agents from the apps your team uses, and let them work on your computer.',
 };
@@ -317,6 +319,8 @@ export function ConnectorsPage({
   const { search, router, pathname, replaceParams, setScope, rulesOpen, setRulesOpen } =
     useConnectorNavigation(projectId);
 
+  const scope: ConnectorScope = parseScope(search?.get('scope') ?? null) ?? 'all';
+
   // The search lives in `?q=`: opening a connector unmounts this page, and
   // browser Back must bring the same results back (KRTX-3018).
   const [query, setQuery] = useState(() => connectorSearchFromParams(search));
@@ -328,7 +332,10 @@ export function ConnectorsPage({
   // The catalogue opens showing all connectors (Composio 5000+ & MCP servers).
   const [oneClick, setOneClick] = useState(false);
   const [kindFilter, setKindFilter] = useState<CatalogKindFilter>('all');
-  const kinds = useMemo(() => CATALOG_KIND_FILTERS[kindFilter], [kindFilter]);
+  const kinds = useMemo(() => {
+    if (scope === 'composio') return ['composio'] as const;
+    return CATALOG_KIND_FILTERS[kindFilter];
+  }, [scope, kindFilter]);
   const tSharing = useI18nTranslations('accessSharing');
   const tPages = useI18nTranslations('connectorPages');
 
@@ -408,8 +415,7 @@ export function ConnectorsPage({
   // connector than reading the ones already there, and the ones already there
   // are one click away. It also made the landing tab depend on a query, so the
   // page could settle onto a different tab than it first rendered.
-  const scope: ConnectorScope = parseScope(search?.get('scope') ?? null) ?? 'all';
-  const catalogActive = scope === 'all';
+  const catalogActive = scope === 'all' || scope === 'composio';
   // Channels replaces the connector list rather than narrowing it, so the
   // controls that only make sense over that list come off with it: the search
   // box searches the connector catalogue, and Add opens a custom-CONNECTOR

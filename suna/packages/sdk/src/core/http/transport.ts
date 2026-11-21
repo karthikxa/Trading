@@ -36,6 +36,7 @@ import { abortable, createAbortError } from './abort';
 import { ApiError, AuthError } from './api/errors';
 import { platformConfig } from './config';
 import { impersonationHeaders } from './impersonation';
+import { CATALOG } from '@kortix/llm-catalog';
 
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -767,7 +768,7 @@ function getConnectedModels(): Record<string, any> {
     if (id === 'zed') continue;
     const provider = model.provider;
     const apiKey = getStoredApiKey(provider);
-    if (apiKey) {
+    if (apiKey || (model as any).keyless || (model as any).free) {
       connected[id] = {
         ...model,
         enabled: true,
@@ -1350,23 +1351,32 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
 
   // Connect action: POST /connectors/projects/:id/connectors/:slug/connect OR /projects/:id/connections/:connectionId/connect
   if (init?.method === 'POST' && (url.endsWith('/connect') || url.includes('/connect?') || url.includes('/connect/'))) {
+    const parsed = new URL(url, 'http://localhost:3000');
+    const slugMatch = url.match(/\/connectors\/([^/?#]+)\/connect/) || url.match(/\/connections\/([^/?#]+)\/connect/);
+    const rawSlug = slugMatch ? slugMatch[1] : parsed.searchParams.get('slug') || 'app';
+    const cleanSlug = rawSlug
+      .replace(/^(composio|kortix|mcp|trading|openapi):/, '')
+      .replace(/^conn_/, '')
+      .replace(/_\d+$/, '')
+      .replace(/-[a-z0-9]{4,}$/i, '') || 'gmail';
+    const fallbackUrl = `https://connect.composio.dev/app/${cleanSlug}`;
+
     try {
-      const parsed = new URL(url, 'http://localhost:3000');
-      const slugMatch = url.match(/\/connectors\/([^/?#]+)\/connect/) || url.match(/\/connections\/([^/?#]+)\/connect/);
-      const slug = slugMatch ? slugMatch[1] : parsed.searchParams.get('slug') || 'app';
       const body = await parseBody();
       const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
       const res = await fetch(`${origin}/api/connectors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'connect', slug, ...body }),
+        body: JSON.stringify({ mode: 'connect', slug: cleanSlug, connectionId: rawSlug, ...body }),
       });
       if (res.ok) {
         const data = await res.json();
-        return new Response(JSON.stringify(data), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        if (data && (data.connectUrl || data.redirectUrl)) {
+          return new Response(JSON.stringify(data), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
       }
     } catch (e) {
       console.warn('[Connectors] Connect API error:', e);
@@ -1375,11 +1385,13 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
       JSON.stringify({
         ok: true,
         provider: 'composio',
-        status: 'initiated',
+        status: 'needs_auth',
         connected: false,
-        connectionId: `conn_${Date.now()}`,
+        connectionId: rawSlug.startsWith('conn_') ? rawSlug : `conn_${cleanSlug}_${Date.now()}`,
         requestId: `req_${Date.now()}`,
         sessionId: `sess_${Date.now()}`,
+        redirectUrl: fallbackUrl,
+        connectUrl: fallbackUrl,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
@@ -1387,16 +1399,22 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
 
   // Finalize action: POST /connectors/projects/:id/connectors/:slug/finalize OR /projects/:id/connections/:connectionId/finalize
   if (init?.method === 'POST' && (url.endsWith('/finalize') || url.includes('/finalize?') || url.includes('/finalize/'))) {
+    const parsed = new URL(url, 'http://localhost:3000');
+    const slugMatch = url.match(/\/connectors\/([^/?#]+)\/finalize/) || url.match(/\/connections\/([^/?#]+)\/finalize/);
+    const rawSlug = slugMatch ? slugMatch[1] : parsed.searchParams.get('slug') || 'app';
+    const cleanSlug = rawSlug
+      .replace(/^(composio|kortix|mcp|trading|openapi):/, '')
+      .replace(/^conn_/, '')
+      .replace(/_\d+$/, '')
+      .replace(/-[a-z0-9]{4,}$/i, '') || 'gmail';
+
     try {
-      const parsed = new URL(url, 'http://localhost:3000');
-      const slugMatch = url.match(/\/connectors\/([^/?#]+)\/finalize/) || url.match(/\/connections\/([^/?#]+)\/finalize/);
-      const slug = slugMatch ? slugMatch[1] : parsed.searchParams.get('slug') || 'app';
       const body = await parseBody();
       const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
       const res = await fetch(`${origin}/api/connectors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'finalize', slug, ...body }),
+        body: JSON.stringify({ mode: 'finalize', slug: cleanSlug, connectionId: rawSlug, ...body }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -1413,7 +1431,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         ok: true,
         connected: false,
         status: 'initiated',
-        connectionId: `conn_${Date.now()}`,
+        connectionId: rawSlug,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
@@ -1567,7 +1585,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
             slug: data.slug || slug,
             name: data.name || name,
             provider: body.provider || 'composio',
-            sync: { status: 'synced' },
+            sync: { status: 'synced', errors: [] },
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         );
@@ -1748,130 +1766,164 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
   }
 
   if (url.includes('/llm-catalog/providers')) {
-    const allProviders = [
-      {
-        id: 'zed',
-        name: 'zed',
-        env: [],
-        models: [
-          { id: 'zed', name: 'zed' },
-        ],
-      },
-      {
-        id: 'openrouter',
-        name: 'OpenRouter Free',
-        env: ['OPENROUTER_API_KEY'],
-        models: [
-          { id: 'deepseek-r1-free', name: 'DeepSeek R1 (:free)' },
-          { id: 'llama-3.3-70b-free', name: 'Llama 3.3 70B (:free)' },
-          { id: 'gemini-2.0-flash-free', name: 'Gemini 2.0 Flash (:free)' },
-          { id: 'qwen-2.5-72b-free', name: 'Qwen 2.5 72B (:free)' },
-        ],
-      },
-      {
-        id: 'google',
-        name: 'Google AI Studio',
-        env: ['GEMINI_API_KEY'],
-        models: [
-          { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
-          { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
-          { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
-        ],
-      },
-      {
-        id: 'groq',
-        name: 'Groq Cloud',
-        env: ['GROQ_API_KEY'],
-        models: [
-          { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B Versatile' },
-          { id: 'deepseek-r1-distill-llama-70b', name: 'DeepSeek R1 Distill 70B' },
-          { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant' },
-        ],
-      },
-      {
-        id: 'cerebras',
-        name: 'Cerebras Cloud',
-        env: ['CEREBRAS_API_KEY'],
-        models: [
-          { id: 'cerebras-llama-3.3-70b', name: 'Cerebras Llama 3.3 70B' },
-        ],
-      },
-      {
-        id: 'mistral',
-        name: 'Mistral AI',
-        env: ['MISTRAL_API_KEY'],
-        models: [
-          { id: 'codestral-22b', name: 'Codestral 22B' },
-          { id: 'pixtral-12b', name: 'Pixtral 12B' },
-        ],
-      },
-      {
-        id: 'sambanova',
-        name: 'SambaNova Systems',
-        env: ['SAMBANOVA_API_KEY'],
-        models: [
-          { id: 'qwen-2.5-coder-32b', name: 'Qwen 2.5 Coder 32B' },
-        ],
-      },
-      {
-        id: 'cohere',
-        name: 'Cohere Trial',
-        env: ['COHERE_API_KEY'],
-        models: [
-          { id: 'command-r-plus', name: 'Command R+' },
-        ],
-      },
-      {
-        id: 'nvidia',
-        name: 'NVIDIA NIM',
-        env: ['NVIDIA_API_KEY'],
-        models: [
-          { id: 'nvidia-llama-3.3-70b', name: 'NVIDIA Llama 3.3 70B' },
-        ],
-      },
-      {
-        id: 'zhipu',
-        name: 'Zhipu AI (GLM)',
-        env: ['ZHIPU_API_KEY'],
-        models: [
-          { id: 'glm-4-flash', name: 'GLM-4-Flash' },
-        ],
-      },
-      {
-        id: 'local',
-        name: 'Custom / Local',
-        env: ['LOCAL_OPENAI_BASE_URL'],
-        models: [
-          { id: 'ollama-local-llama3.3', name: 'Ollama Llama 3.3' },
-          { id: 'ollama-local-deepseek-r1', name: 'Ollama DeepSeek R1' },
-        ],
-      },
+    const rawCatalogProviders = Array.isArray((CATALOG as any)?.providers) ? (CATALOG as any).providers : [];
+    
+    // Canonical default LLM providers (Anthropic, OpenAI, Google Gemini, Groq, Cerebras, Mistral, etc.)
+    const DEFAULT_PROVIDERS = [
       {
         id: 'anthropic',
         name: 'Anthropic',
         env: ['ANTHROPIC_API_KEY'],
+        doc: 'https://docs.anthropic.com',
+        api: 'https://api.anthropic.com/v1',
         models: [
-          { id: 'claude-3-7-sonnet', name: 'Claude 3.7 Sonnet' },
+          { id: 'claude-3-7-sonnet-20250219', name: 'Claude 3.7 Sonnet', description: 'Hybrid reasoning and instant response flagship model', reasoning: true, tool_call: true, attachment: true },
+          { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', description: 'Industry-standard intelligence for coding and deep analysis', tool_call: true, attachment: true },
+          { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku', description: 'Fast, compact model for rapid interactive workflows', tool_call: true },
         ],
       },
       {
         id: 'openai',
         name: 'OpenAI',
         env: ['OPENAI_API_KEY'],
+        doc: 'https://platform.openai.com/docs',
+        api: 'https://api.openai.com/v1',
         models: [
-          { id: 'gpt-4o', name: 'GPT-4o' },
-          { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
+          { id: 'gpt-4o', name: 'GPT-4o', description: 'Flagship omni model with high-speed multimodal intelligence', tool_call: true, attachment: true },
+          { id: 'gpt-4o-mini', name: 'GPT-4o Mini', description: 'Cost-efficient model for focused, high-throughput tasks', tool_call: true },
+          { id: 'o1', name: 'o1', description: 'Deep reasoning model for math, coding, and difficult analysis', reasoning: true },
+          { id: 'o3-mini', name: 'o3-mini', description: 'Fast, specialized reasoning model for code and problem-solving', reasoning: true },
+        ],
+      },
+      {
+        id: 'google',
+        name: 'Google Gemini',
+        env: ['GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY'],
+        doc: 'https://ai.google.dev',
+        api: 'https://generativelanguage.googleapis.com/v1beta',
+        models: [
+          { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'State-of-the-art multimodal reasoning with large context window', reasoning: true, tool_call: true, attachment: true },
+          { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Optimized high-frequency trading and research model', tool_call: true },
+          { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', description: 'Next-gen multimodal workhorse model with high accuracy', tool_call: true },
+        ],
+      },
+      {
+        id: 'groq',
+        name: 'Groq',
+        env: ['GROQ_API_KEY'],
+        doc: 'https://console.groq.com',
+        api: 'https://api.groq.com/openai/v1',
+        models: [
+          { id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B Versatile', description: 'Meta Llama 3.3 70B served on Groq LPUs at 300+ tok/s', tool_call: true },
+          { id: 'deepseek-r1-distill-llama-70b', name: 'DeepSeek R1 Distill Llama 70B', description: 'DeepSeek reasoning distilled into Llama 70B on Groq LPUs', reasoning: true },
+          { id: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant', description: 'Ultra-low latency model for instant streaming responses', tool_call: true },
+        ],
+      },
+      {
+        id: 'cerebras',
+        name: 'Cerebras Cloud',
+        env: ['CEREBRAS_API_KEY'],
+        doc: 'https://cloud.cerebras.ai',
+        api: 'https://api.cerebras.ai/v1',
+        models: [
+          { id: 'cerebras-llama-3.3-70b', name: 'Cerebras Llama 3.3 70B', description: 'World fastest inference engine on Cerebras Wafer-Scale Engine (2,000 tok/s)', tool_call: true },
+        ],
+      },
+      {
+        id: 'deepseek',
+        name: 'DeepSeek',
+        env: ['DEEPSEEK_API_KEY'],
+        doc: 'https://platform.deepseek.com',
+        api: 'https://api.deepseek.com/v1',
+        models: [
+          { id: 'deepseek-r1', name: 'DeepSeek R1', description: 'Open reasoning model with competitive performance against o1', reasoning: true },
+          { id: 'deepseek-v3', name: 'DeepSeek V3', description: 'General intelligence Mixture-of-Experts 671B model', tool_call: true },
+        ],
+      },
+      {
+        id: 'mistral',
+        name: 'Mistral AI',
+        env: ['MISTRAL_API_KEY'],
+        doc: 'https://console.mistral.ai',
+        api: 'https://api.mistral.ai/v1',
+        models: [
+          { id: 'codestral-22b', name: 'Codestral 22B', description: 'State-of-the-art code generation model from Mistral', tool_call: true },
+          { id: 'pixtral-12b', name: 'Pixtral 12B', description: 'Multimodal vision and text model with 128k context', tool_call: true, attachment: true },
+          { id: 'mistral-small-latest', name: 'Mistral Small Latest', description: 'Cost-effective, responsive reasoning model', tool_call: true },
+        ],
+      },
+      {
+        id: 'xai',
+        name: 'xAI',
+        env: ['XAI_API_KEY'],
+        doc: 'https://x.ai/api',
+        api: 'https://api.x.ai/v1',
+        models: [
+          { id: 'grok-beta', name: 'Grok Beta', description: 'Real-time intelligence from xAI with live knowledge and web ground truth', tool_call: true },
+        ],
+      },
+      {
+        id: 'openrouter',
+        name: 'OpenRouter',
+        env: ['OPENROUTER_API_KEY'],
+        doc: 'https://openrouter.ai',
+        api: 'https://openrouter.ai/api/v1',
+        models: [
+          { id: 'deepseek-r1-free', name: 'DeepSeek R1 (:free)', description: 'DeepSeek R1 reasoning served via OpenRouter Free', reasoning: true },
+          { id: 'llama-3.3-70b-free', name: 'Llama 3.3 70B (:free)', description: 'Meta Llama 3.3 70B Instruct via OpenRouter Free', tool_call: true },
+          { id: 'gemini-2.0-flash-free', name: 'Gemini 2.0 Flash (:free)', description: 'Google Gemini 2.0 Flash via OpenRouter Free', tool_call: true },
+        ],
+      },
+      {
+        id: 'perplexity',
+        name: 'Perplexity',
+        env: ['PERPLEXITY_API_KEY'],
+        doc: 'https://docs.perplexity.ai',
+        api: 'https://api.perplexity.ai',
+        models: [
+          { id: 'sonar-pro', name: 'Sonar Pro', description: 'Real-time web-connected search and research model' },
+        ],
+      },
+      {
+        id: 'ollama',
+        name: 'Ollama',
+        env: [],
+        doc: 'https://ollama.ai',
+        api: 'http://localhost:11434',
+        models: [
+          { id: 'ollama-local-llama3.3', name: 'Llama 3.3 70B Local', description: 'Local offline Llama 3.3 model' },
+          { id: 'ollama-local-deepseek-r1', name: 'DeepSeek R1 Local', description: 'Local offline DeepSeek reasoning model' },
+        ],
+      },
+      {
+        id: 'zed',
+        name: 'zed',
+        env: [],
+        models: [
+          { id: 'zed', name: 'zed', description: 'Autonomous multi-model intelligence via server-llm-1.onrender.com (auto router)' },
         ],
       },
     ];
-    const connectedProviders = allProviders.filter((p) => p.id === 'zed' || !!getStoredApiKey(p.id));
+
+    // Combine canonical defaults with any extra providers from catalog
+    const providerMap = new Map<string, any>();
+    for (const p of DEFAULT_PROVIDERS) {
+      providerMap.set(p.id, p);
+    }
+    for (const p of rawCatalogProviders) {
+      if (!providerMap.has(p.id)) {
+        providerMap.set(p.id, p);
+      }
+    }
+    const allProviders = Array.from(providerMap.values());
+
     return new Response(
       JSON.stringify({
         source: 'local',
         fetched_at: new Date().toISOString(),
-        provider_count: connectedProviders.length,
-        model_count: connectedProviders.reduce((acc, p) => acc + p.models.length, 0),
-        providers: connectedProviders,
+        provider_count: allProviders.length,
+        model_count: allProviders.reduce((acc: number, p: any) => acc + (p.models?.length || 0), 0),
+        providers: allProviders,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );

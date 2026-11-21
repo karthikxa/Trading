@@ -216,7 +216,7 @@ export function bucketLogStats(rows: BucketRow[], count: number): LogBucketStats
     groups[Math.min(count - 1, Math.floor((t - min) / size))].push(row);
   });
   return groups.map((group, i) => {
-    const errors = group.filter((r) => !r.ok).length;
+    const errors = group.filter((r) => r && !r.ok).length;
     const models = new Map<string, number>();
     group.forEach((r) => {
       const model = logTitle(r);
@@ -268,15 +268,16 @@ export function fmtRange(range: LogTimeRange): string {
  */
 export function filterCounts(
   filter: LogFilter,
-  rows: Pick<GatewayLogRow, 'ok'>[],
+  rows: (Pick<GatewayLogRow, 'ok'> | undefined | null)[] | undefined | null,
   loading: boolean,
 ): Record<LogFilter, number | null> {
-  if (loading) return { all: null, ok: null, err: null };
+  if (loading || !rows) return { all: null, ok: null, err: null };
+  const valid = rows.filter((r): r is Pick<GatewayLogRow, 'ok'> => Boolean(r && typeof r === 'object'));
   if (filter === 'all') {
-    const errors = rows.filter((r) => !r.ok).length;
-    return { all: rows.length, ok: rows.length - errors, err: errors };
+    const errors = valid.filter((r) => !r?.ok).length;
+    return { all: valid.length, ok: valid.length - errors, err: errors };
   }
-  return { all: null, ok: null, err: null, [filter]: rows.length } as Record<LogFilter, number | null>;
+  return { all: null, ok: null, err: null, [filter]: valid.length } as Record<LogFilter, number | null>;
 }
 
 /**
@@ -766,7 +767,7 @@ export function LogHistogram({
 }) {
   const t = useTranslations('gatewayLogs');
   const buckets = useMemo(() => bucketLogStats(rows, HISTOGRAM_BUCKETS), [rows]);
-  const errors = useMemo(() => rows.filter((r) => !r.ok).length, [rows]);
+  const errors = useMemo(() => (rows || []).filter((r) => r && !r.ok).length, [rows]);
   const median = useMemo(() => medianLatency(rows), [rows]);
   if (buckets.length === 0) return null;
   const peak = Math.max(1, ...buckets.map((b) => b.total));

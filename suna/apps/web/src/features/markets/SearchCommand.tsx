@@ -343,35 +343,39 @@ export default function SearchCommand({
                   )}
                 >
                   {/* Left: Authentic SVG Logo (Decent size) + Symbol Name + Description */}
-                  <div className="flex items-center gap-2.5 min-w-0 pr-3">
+                  <div className="flex items-center gap-3 min-w-0 pr-3">
                     <TradingPairIcon
                       symbol={displaySymbol}
                       logoid={item.logoid}
-                      size="sm"
+                      size="md"
                     />
 
                     <div className="min-w-0 flex flex-col justify-center">
                       <div className="flex items-center gap-1.5 leading-snug">
-                        <span className="font-medium text-[13px] text-foreground font-sans tracking-tight">
+                        <span className="font-semibold text-[13px] text-foreground font-sans tracking-tight">
                           {displaySymbol}
                         </span>
-                        {item.isIndia && <span className="text-[11px]">🇮🇳</span>}
+                        {item.isIndia && (
+                          <span className="text-[10px] font-mono text-muted-foreground uppercase font-semibold">
+                            IN
+                          </span>
+                        )}
                       </div>
 
-                      <span className="truncate text-[11.5px] text-muted-foreground font-normal font-sans leading-none mt-0.2">
+                      <span className="truncate text-[11.5px] text-muted-foreground font-normal font-sans leading-none mt-0.5">
                         {displayDesc || displaySymbol}
                       </span>
                     </div>
                   </div>
 
-                  {/* Right: Exchange + Category + Quick Pin Button */}
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="font-mono text-[10px] text-muted-foreground uppercase tracking-wider bg-muted/60 px-1.5 py-0.5 rounded">
+                  {/* Right: Exchange + Category + Quick Pin Button (Image 7 style) */}
+                  <div className="flex items-center gap-3 shrink-0">
+                    <span className="text-xs font-sans text-muted-foreground uppercase font-medium">
                       {item.exchange}
                     </span>
 
                     {item.category && (
-                      <span className="text-[9.5px] px-1.5 py-0.2 rounded-md bg-muted/70 text-muted-foreground font-medium font-sans">
+                      <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-[#f4f4f5] dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 font-medium font-sans">
                         {item.category}
                       </span>
                     )}

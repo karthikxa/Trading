@@ -478,7 +478,18 @@ export function mapApiReviewItem(
   row: ApiReviewItem,
   options: MapApiReviewItemOptions = {},
 ): ReviewItem {
-  const detail = asRecord(row.detail);
+  if (!row) {
+    return {
+      id: 'empty',
+      title: 'Review item',
+      kind: 'change',
+      status: 'done',
+      summary: '',
+      detail: {},
+      created_at: new Date().toISOString(),
+    } as any;
+  }
+  const detail = asRecord(row?.detail);
   const sessionId = row.origin_session_id ?? undefined;
   const sessionLabel = sessionId ? options.sessionLabels?.[sessionId] : undefined;
   // An approval's title arrives as the raw tool path (`Approve: gmail.send_email`).

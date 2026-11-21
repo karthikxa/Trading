@@ -28,6 +28,10 @@ export function useAddManagedAccount(
   const addProject = usePipedreamConnectProject(projectId, slug, onConnected);
   return {
     isPending: addMine.isPending || addProject.isPending,
+    reset: () => {
+      addMine.reset();
+      addProject.reset();
+    },
     add: async (draft: NewAccountDraft): Promise<{ connectionId: string | null }> => {
       const label = draft.label.trim();
       if (draft.audience === 'private') return addMine.mutateAsync({ label });

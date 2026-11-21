@@ -37,14 +37,34 @@ export function AgentCoverCard({
 }) {
   const { data: tradingAgents = [] } = useTradingAgents();
   const titleStr = typeof title === 'string' ? title : '';
-  const matchingBot = tradingAgents.find(
-    (b) =>
-      b.id === slug ||
-      (slug === 'neutral_risk' && (b.id === 'trader_agent' || b.name === 'Invoice Collector')) ||
-      b.id.replace(/_/g, '-') === slug.replace(/_/g, '-') ||
-      b.id.replace(/-/g, '_') === slug.replace(/-/g, '_') ||
-      (titleStr && b.name.toLowerCase() === titleStr.toLowerCase())
-  );
+  const slugNorm = slug.toLowerCase().replace(/[-_\s]+/g, '');
+  const titleNorm = titleStr.toLowerCase().replace(/[-_\s]+/g, '');
+
+  const matchingBot = tradingAgents.find((b) => {
+    const bIdNorm = b.id.toLowerCase().replace(/[-_\s]+/g, '');
+    const bNameNorm = b.name.toLowerCase().replace(/[-_\s]+/g, '');
+    return (
+      bIdNorm === slugNorm ||
+      bNameNorm === slugNorm ||
+      bIdNorm === titleNorm ||
+      bNameNorm === titleNorm ||
+      slugNorm.includes(bIdNorm) ||
+      bIdNorm.includes(slugNorm) ||
+      ((slugNorm.includes('portfolio') || titleNorm.includes('portfolio') || slugNorm.includes('chief') || titleNorm.includes('chief') || slugNorm.includes('lead') || titleNorm.includes('lead')) &&
+        (bIdNorm.includes('portfolio') || bNameNorm.includes('portfolio') || bNameNorm.includes('chief'))) ||
+      ((slugNorm === 'ea' || titleNorm === 'ea' || slugNorm.includes('ea') || titleNorm.includes('ea') || slugNorm.includes('executive') || titleNorm.includes('executive') || slugNorm.includes('assistant') || titleNorm.includes('assistant')) &&
+        (bIdNorm === 'ea' || bNameNorm.includes('executive') || bNameNorm === 'ea')) ||
+      (slugNorm === 'neutralrisk' && (bIdNorm === 'traderagent' || bNameNorm === 'invoicecollector'))
+    );
+  });
+
+  const isEa = slugNorm === 'ea' || titleNorm === 'ea' || slugNorm.includes('ea') || titleNorm.includes('ea') || slugNorm.includes('executive');
+  const isPm = slugNorm.includes('portfolio') || titleNorm.includes('portfolio') || slugNorm.includes('chief') || titleNorm.includes('lead');
+  const fallbackShape = isEa ? 'droplet' : isPm ? 'circle' : 'squircle';
+  const fallbackColor = isEa ? '#3B82F6' : isPm ? '#8B5CF6' : '#6366F1';
+  const effectiveColor = matchingBot?.color || fallbackColor;
+  const effectiveShape = matchingBot?.shape || fallbackShape;
+  const effectiveExpr = matchingBot?.expression || 'attentive';
 
   return (
     <div className="group/card relative flex">
@@ -63,20 +83,16 @@ export function AgentCoverCard({
         <span
           className="relative flex h-31 items-center justify-center overflow-hidden"
           style={{
-            backgroundColor: matchingBot ? `${matchingBot.color}15` : 'var(--mark-tile)',
+            backgroundColor: `${effectiveColor}15`,
           }}
         >
-          {matchingBot ? (
-            <BotAvatar
-              shape={matchingBot.shape}
-              color={matchingBot.color}
-              expression={matchingBot.expression}
-              size={64}
-              isAnimated={true}
-            />
-          ) : (
-            <AgentMarkGlyph slug={slug} size={56} />
-          )}
+          <BotAvatar
+            shape={effectiveShape}
+            color={effectiveColor}
+            expression={effectiveExpr}
+            size={64}
+            isAnimated={true}
+          />
           {coverLabel ? (
             <span className="bg-background/80 border border-zinc-200/50 absolute top-2.5 left-2.5 rounded-full px-2.5 py-0.5 text-xs font-medium text-zinc-900 shadow-2xs backdrop-blur-sm font-sans">
               {coverLabel}

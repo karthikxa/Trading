@@ -112,13 +112,13 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
       <button
         type="button"
         onClick={() => setIsOpen((prev) => !prev)}
-        className="w-full h-10 flex items-center justify-between px-3 py-1.5 bg-background border border-border/80 rounded-xl hover:border-border hover:bg-muted/20 focus:outline-none focus:ring-1 focus:ring-ring transition-all shadow-2xs text-left cursor-pointer font-sans"
+        className="w-full h-11 flex items-center justify-between px-3 py-1.5 bg-background border border-border/80 rounded-xl hover:border-border hover:bg-muted/20 focus:outline-none focus:ring-1 focus:ring-ring transition-all shadow-2xs text-left cursor-pointer font-sans"
       >
-        <div className="flex items-center gap-2.5 overflow-hidden min-w-0">
-          <TradingPairIcon symbol={value || 'NIFTY 50'} logoid={selectedItem?.logoid} size="sm" />
+        <div className="flex items-center gap-3 overflow-hidden min-w-0">
+          <TradingPairIcon symbol={value || 'NIFTY 50'} logoid={selectedItem?.logoid} size="md" />
           <div className="flex flex-col min-w-0 justify-center">
             <div className="flex items-center gap-1.5 leading-none">
-              <span className="font-medium text-[13px] text-foreground tracking-tight font-sans">
+              <span className="font-semibold text-[13px] text-foreground tracking-tight font-sans">
                 {value || 'Select symbol'}
               </span>
               {selectedItem?.exchange && (
@@ -128,7 +128,7 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
               )}
             </div>
             {selectedItem?.name && (
-              <span className="text-[11px] text-muted-foreground font-sans truncate mt-0.5 leading-none">
+              <span className="text-[11.5px] text-muted-foreground font-sans truncate mt-0.5 leading-none">
                 {selectedItem.name}
               </span>
             )}
@@ -212,25 +212,25 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
                         : 'hover:bg-muted/50 text-foreground/90'
                     )}
                   >
-                    <div className="flex items-center gap-2.5 overflow-hidden min-w-0 pr-2">
-                      <TradingPairIcon symbol={item.symbol} logoid={item.logoid} size="sm" />
+                    <div className="flex items-center gap-3 overflow-hidden min-w-0 pr-2">
+                      <TradingPairIcon symbol={item.symbol} logoid={item.logoid} size="md" />
                       <div className="flex flex-col min-w-0 justify-center">
                         <div className="flex items-center gap-1.5 leading-snug">
-                          <span className="font-medium text-[13px] text-foreground tracking-tight font-sans">
+                          <span className="font-semibold text-[13px] text-foreground tracking-tight font-sans">
                             {item.symbol}
                           </span>
                           <span className="text-[10px] text-muted-foreground font-mono uppercase tracking-wider">
                             {item.exchange}
                           </span>
                         </div>
-                        <span className="text-[11px] text-muted-foreground font-sans truncate mt-0.2 leading-none">
+                        <span className="text-[11.5px] text-muted-foreground font-sans truncate mt-0.5 leading-none">
                           {item.name}
                         </span>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0 ml-1.5">
-                      <span className="text-[9.5px] px-1.5 py-0.2 rounded-md bg-muted/70 text-muted-foreground font-medium font-sans">
+                      <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-[#f4f4f5] dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 font-medium font-sans">
                         {item.category}
                       </span>
                       {isSelected && <Check className="size-3.5 text-foreground" />}

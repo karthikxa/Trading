@@ -48,6 +48,9 @@ kortix components/
 
 freellmapi/
 fincept_terminal_repo/
+cloudflared.exe
+scripts/test_*.js
+scripts/test_*.py
 
 tv-data/
 *.mjs

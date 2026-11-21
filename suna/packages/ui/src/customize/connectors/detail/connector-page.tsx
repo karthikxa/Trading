@@ -83,7 +83,7 @@ export function ConnectorPage({
     ...contract(FRESHNESS.connectors),
   });
   const connector =
-    connectorsQuery.data?.connectors.find((candidate) => candidate.slug === connectorSlug || candidate.slug === appSegment) ?? null;
+    connectorsQuery.data?.connectors?.find((candidate) => candidate.slug === connectorSlug || candidate.slug === appSegment) ?? null;
 
   const fallbackConnector = useMemo<AdminConnector | null>(() => {
     if (connector) return connector;

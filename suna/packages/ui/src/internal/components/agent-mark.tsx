@@ -85,12 +85,20 @@ export function AgentMark({
   className?: string;
 }) {
   const { data: tradingAgents = [] } = useTradingAgents();
-  const match = tradingAgents.find(
-    (b) =>
-      b.id === slug ||
-      b.id.replace(/_/g, '-') === slug.replace(/_/g, '-') ||
-      b.id.replace(/-/g, '_') === slug.replace(/-/g, '_')
-  );
+  const slugNorm = slug.toLowerCase().replace(/[-_\s]+/g, '');
+  const match = tradingAgents.find((b) => {
+    const bIdNorm = b.id.toLowerCase().replace(/[-_\s]+/g, '');
+    const bNameNorm = b.name.toLowerCase().replace(/[-_\s]+/g, '');
+    return (
+      bIdNorm === slugNorm ||
+      bNameNorm === slugNorm ||
+      ((slugNorm === 'portfoliomanager' || slugNorm === 'chiefofstaff') &&
+        (bIdNorm === 'portfoliomanager' || bNameNorm.includes('portfolio') || bNameNorm.includes('chief'))) ||
+      ((slugNorm === 'ea' || slugNorm === 'executiveassistant') &&
+        (bIdNorm === 'ea' || bNameNorm.includes('executive') || bNameNorm === 'ea')) ||
+      (slugNorm === 'neutralrisk' && (bIdNorm === 'traderagent' || bNameNorm === 'invoicecollector'))
+    );
+  });
 
   if (match) {
     return (

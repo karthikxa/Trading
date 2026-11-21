@@ -45,7 +45,8 @@ export function connectorSyncErrorForSlug(
   result: { sync?: ConnectorSyncResult },
   slug: string,
 ): string | null {
-  return result.sync?.errors.find((error) => error.slug === slug)?.error ?? null;
+  if (!result?.sync?.errors || !Array.isArray(result.sync.errors)) return null;
+  return result.sync.errors.find((error) => error?.slug === slug)?.error ?? null;
 }
 
 /** A sync error that is the server asking for sign-in: HTTP 401 or 403. */

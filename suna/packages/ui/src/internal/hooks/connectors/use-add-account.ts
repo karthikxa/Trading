@@ -14,6 +14,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { errorToast, warningToast } from '../../../primitives/toast';
 import { proposeAccountLabel } from '../../../customize/connectors/install/install';
 import { isManagedConnectorProvider } from '../../../customize/connectors/provider-label';
+import { abortActiveConnectFlow } from './use-connect-link';
 import {
   signInOrReason,
   startDiscoveredSignIn,
@@ -158,7 +159,13 @@ export function useAddAccount({
     }
   };
 
-  return { submit, pending, proposedLabel };
+  const reset = () => {
+    abortActiveConnectFlow();
+    createAccount.reset();
+    addManaged.reset();
+  };
+
+  return { submit, pending, proposedLabel, reset };
 }
 
 /**

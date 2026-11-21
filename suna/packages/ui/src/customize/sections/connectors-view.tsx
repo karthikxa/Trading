@@ -575,7 +575,10 @@ export function ConnectionsList({
   // opens before this account list has loaded, so the proposal follows the
   // list until the user types a name of their own.
   const [labelEdited, setLabelEdited] = useState(false);
-  const closeAdd = () => setAddOpen(false);
+  const closeAdd = () => {
+    setAddOpen(false);
+    addAccount.reset?.();
+  };
   const addAccount = useAddAccount({
     projectId,
     connector,
@@ -804,7 +807,7 @@ export function ConnectionsList({
       <Modal
         open={addOpen}
         onOpenChange={(open) => {
-          if (!open && !adding) closeAdd();
+          if (!open) closeAdd();
         }}
       >
         <ModalContent className="lg:max-w-md">
@@ -836,7 +839,7 @@ export function ConnectionsList({
               />
             </ModalBody>
             <ModalFooter className="sm:justify-between">
-              <Button type="button" variant="outline-ghost" onClick={closeAdd} disabled={adding}>
+              <Button type="button" variant="outline-ghost" onClick={closeAdd}>
                 {tI18nComplete.raw('text19766ed6ccb2')}
               </Button>
               <Button type="submit" disabled={!canSubmitAdd}>

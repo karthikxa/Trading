@@ -24,7 +24,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { lazyClient } from '../../../lib/lazy-client';
 import { UiLink as Link, useUiRouter, useUiSearchParams } from '../../../providers/ui-provider';
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, useMemo, type ReactNode } from 'react';
 
 import { Badge } from '../../../primitives/badge';
 import {
@@ -804,7 +804,7 @@ function useAppData(projectId: string, app: ReturnType<typeof appRefFromLocation
         q: twinName ?? '',
         limit: 10,
       }).catch(() => null);
-      if (!page?.apps) return null;
+      if (!page?.apps || !Array.isArray(page.apps)) return null;
       const key = appNameKey(twinName ?? '');
       return page.apps.find((candidate) => appNameKey(candidate?.name || '') === key) ?? null;
     },

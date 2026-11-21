@@ -45,7 +45,6 @@ import {
   NavigationArrowIcon,
   ChartLineUp,
   TrendUp,
-  TerminalWindow,
   Notebook,
   ChatCircleDots,
   Sliders,
@@ -342,22 +341,6 @@ export function ProjectSidebar({
                             <TrendUp className="size-4" />
                           </span>
                           <span>Overview</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-
-                    {/* Fincept Institutional Terminal */}
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        asChild
-                        isActive={currentTab === 'terminal'}
-                        className="group/menu-button text-sidebar-foreground relative cursor-pointer font-sans"
-                      >
-                        <Link href={`/projects/${projectId}?tab=terminal`}>
-                          <span className="shrink-0">
-                            <TerminalWindow className="size-4" />
-                          </span>
-                          <span>Terminal</span>
                         </Link>
                       </SidebarMenuButton>
                     </SidebarMenuItem>

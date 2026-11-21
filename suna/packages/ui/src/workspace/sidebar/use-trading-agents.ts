@@ -130,7 +130,7 @@ export function mapBackendAgentToDef(row: BackendTradingAgent): TradingAgentDef 
 export const DEFAULT_CANONICAL_TRADING_AGENTS: TradingAgentDef[] = [
   {
     id: 'portfolio_manager',
-    name: 'Chief of Staff',
+    name: 'Portfolio Manager',
     role: 'Capital Allocation & Lead',
     group: 'Management',
     shape: 'circle',
@@ -252,8 +252,8 @@ export const DEFAULT_CANONICAL_TRADING_AGENTS: TradingAgentDef[] = [
   },
   {
     id: 'ea',
-    name: 'Executive Assistant',
-    role: 'Operational Briefing & Notes',
+    name: 'EA',
+    role: 'Executive & Workflow Automation',
     group: 'Management',
     shape: 'droplet',
     color: '#3B82F6',
