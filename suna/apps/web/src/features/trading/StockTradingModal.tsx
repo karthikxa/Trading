@@ -285,6 +285,47 @@ function renderTvCircularBadge(item: TradingViewModalItem) {
     );
   }
 
+  if (sym === 'CENTRALBK' || sym.includes('CENTRAL BANK') || sym.includes('CENTRALBANK')) {
+    return (
+      <div className="size-8.5 rounded-full bg-[#F0F3FA] p-0.5 flex items-center justify-center shrink-0 border border-zinc-200/80 shadow-2xs overflow-hidden">
+        <svg viewBox="0 0 56 56" className="size-full">
+          <path fill="#F0F3FA" d="M0 0h56v56H0z" />
+          <path
+            fillRule="evenodd"
+            d="M28.2 10H28L15.95 22H10v6l12 12.05V46h6l12.05-12H46v-6L34 15.96V10h-5.8zM28 43.53l10-9.5V28h-1v5.53l-9 9v1zm0-2.85l7-6.65V28h-1v5.53l-6 6v1.15zM28 34l6-6-6-6-6 6v-5.5l6-6v-1.15L21 22v6h1.03L28 34zm-10-6h1v-5.5l9-9v-1.3L18 22v6zm-1.5 0h-1.15L23 35h5v-1h-4.7l-6.8-6zm-3 0h-1l10 10H28v-1h-5l-9.5-9zM28 22h5.2l6.58 6h1.11l-7.59-7H28v1zm0-3h5.3l9.37 9h.97L33.5 18H28v1z"
+            fill="#CC103D"
+          />
+        </svg>
+      </div>
+    );
+  }
+
+  if (sym === 'IOB' || sym.includes('INDIAN OVERSEAS') || sym.includes('INDIANOVERSEAS')) {
+    return (
+      <div className="size-8.5 rounded-full bg-[#06329F] p-0.5 flex items-center justify-center shrink-0 shadow-2xs overflow-hidden">
+        <svg viewBox="0 0 56 56" className="size-full">
+          <path d="M0 28a28 28 0 1156 0 28 28 0 01-56 0z" fill="#06329F" />
+          <path
+            d="M19.3 37.98L11 29.66v-1.42l8.3 8.32 8.2-8.22v1.42l-8.2 8.22zM11 32.67l8.3 8.32 8.2-8.22v-1.42l-8.2 8.22-8.3-8.32v1.42zm0 3L19.3 44l8.2-8.22v-1.42l-8.2 8.22-8.3-8.32v1.42zm25.8 2.31l-8.3-8.32v-1.42l8.3 8.33 8.2-8.22v1.41l-8.2 8.22zm-8.3-5.31l8.3 8.32 8.2-8.22v-1.42l-8.2 8.22-8.3-8.32v1.42zm0 3L36.8 44l8.2-8.22v-1.42l-8.2 8.22-8.3-8.32v1.42zm-2.3-7.48l.7-.7-7.72-7.76-7.6 7.63.7.7 6.9-6.91 7.02 7.04z"
+            fill="#fff"
+          />
+          <path d="M25.4 28.98l-6.22-6.24-6.1 6.12.7.7 5.4-5.4 5.52 5.53.7-.7z" fill="#fff" />
+          <path d="M23.9 30.49l-4.72-4.74-4.6 4.61.7.7 3.9-3.9 4.02 4.03.7-.7zm19.86-2.39l.7-.7-7.64-7.67-7.68 7.7.7.71 6.98-7 6.94 6.96z" fill="#fff" />
+          <path d="M42.97 28.9l-6.15-6.16-6.18 6.2.7.7 5.48-5.48 5.44 5.45.7-.71z" fill="#fff" />
+          <path d="M41.47 30.4l-4.65-4.65-4.68 4.69.71.7 3.97-3.98 3.94 3.95.7-.71zm-6.15-10.64l.71-.7L28 11l-8.03 8.05.7.71L28 12.42l7.32 7.34zm-.79.8L28 14l-6.53 6.55.7.7L28 15.43l5.82 5.83.71-.7zm-1.5 1.5L28 17.02l-5.03 5.04.7.7L28 18.44l4.32 4.34.7-.71z" fill="#fff" />
+        </svg>
+      </div>
+    );
+  }
+
+  if (sym === 'IDEA' || sym.includes('VODAFONE')) {
+    return (
+      <div className="size-8.5 rounded-full bg-[#E60000] flex items-center justify-center shrink-0 text-white font-black text-[12px] tracking-tighter shadow-2xs">
+        VI
+      </div>
+    );
+  }
+
   return (
     <div className="size-8.5 rounded-full bg-zinc-800 flex items-center justify-center shrink-0 text-white font-bold text-[12px] uppercase">
       {sym.slice(0, 2)}

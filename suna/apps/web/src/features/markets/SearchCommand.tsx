@@ -84,6 +84,7 @@ export default function SearchCommand({
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const requestIdRef = useRef<number>(0);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -111,6 +112,7 @@ export default function SearchCommand({
   const fetchSymbols = useCallback(async (query: string, catValue: string) => {
     const trimmed = query.trim();
     const catLabel = TV_CATEGORIES.find((c) => c.value === catValue)?.label || 'All';
+    const thisRequestId = ++requestIdRef.current;
 
     // 1. If empty query, show top curated symbols for this category
     if (!trimmed) {
@@ -134,28 +136,31 @@ export default function SearchCommand({
 
     setLoading(true);
     try {
-      // Query local 12,500+ Indian catalog API first for instant, complete results
+      // Query local Indian catalog first for instant complete results
       const catParam = catValue !== 'all' ? `&category=${encodeURIComponent(catLabel)}` : '';
       const localPromise = fetch(`/api/markets/symbols?q=${encodeURIComponent(trimmed)}${catParam}`)
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []);
 
-      // Also query TradingView remote search in parallel for global symbols
+      // Query TradingView remote search in parallel for global symbols
       const tvType = TV_CATEGORIES.find((c) => c.value === catValue)?.tvType ?? '';
       const tvPromise = searchTradingViewSymbols(trimmed, tvType, '', 0).catch(() => []);
 
       const [localResults, tvResults] = await Promise.all([localPromise, tvPromise]);
 
-      const seen = new Set<string>();
-      const combined: SearchModalItem[] = [];
+      // If a newer request has already fired, ignore this one
+      if (thisRequestId !== requestIdRef.current) return;
 
-      // Add local results first (prioritizes authentic Indian Equities, Indices, F&O)
+      const seen = new Set<string>();
+      const rawList: SearchModalItem[] = [];
+
+      // Add local results first
       if (Array.isArray(localResults)) {
         for (const item of localResults) {
           const k = `${item.symbol}:${item.exchange}`;
           if (!seen.has(k)) {
             seen.add(k);
-            combined.push({
+            rawList.push({
               symbol: item.symbol,
               description: item.name,
               category: item.category,
@@ -175,7 +180,7 @@ export default function SearchCommand({
           const k = `${sym}:${ex}`;
           if (!seen.has(k)) {
             seen.add(k);
-            combined.push({
+            rawList.push({
               symbol: sym,
               description: (r.description || '').replace(/<[^>]*>/g, ''),
               category: r.type || 'Stock',
@@ -187,12 +192,61 @@ export default function SearchCommand({
         }
       }
 
-      setSymbols(combined.slice(0, 80));
+      // 1. Deduplicate: if an equity is present on both NSE and BSE, prioritize NSE and drop the BSE duplicate
+      const nseSymbols = new Set<string>();
+      for (const item of rawList) {
+        if (item.exchange === 'NSE') {
+          nseSymbols.add(item.symbol.toUpperCase());
+        }
+      }
+
+      const deduplicated: SearchModalItem[] = [];
+      for (const item of rawList) {
+        const symUpper = item.symbol.toUpperCase();
+        if (item.exchange === 'BSE' && nseSymbols.has(symUpper)) {
+          continue; // Skip BSE duplicate of NSE stock
+        }
+        deduplicated.push(item);
+      }
+
+      // 2. Intelligently Rank:
+      // Exact ticker match at the top (#1)
+      // Prefix match at #2
+      // Standard equities before distant dated monthly futures (IDEAF2027, etc.)
+      const queryUpper = trimmed.toUpperCase();
+      deduplicated.sort((a, b) => {
+        const aSym = a.symbol.toUpperCase();
+        const bSym = b.symbol.toUpperCase();
+
+        const aExact = aSym === queryUpper;
+        const bExact = bSym === queryUpper;
+        if (aExact && !bExact) return -1;
+        if (!aExact && bExact) return 1;
+
+        const aStarts = aSym.startsWith(queryUpper);
+        const bStarts = bSym.startsWith(queryUpper);
+        if (aStarts && !bStarts) return -1;
+        if (!aStarts && bStarts) return 1;
+
+        // Push distant monthly dated contracts (e.g. IDEAF2027, IDEAX2026) below main stock/continuous contracts
+        const aDated = /\d{4}$/.test(aSym);
+        const bDated = /\d{4}$/.test(bSym);
+        if (!aDated && bDated) return -1;
+        if (aDated && !bDated) return 1;
+
+        return 0;
+      });
+
+      setSymbols(deduplicated.slice(0, 60));
     } catch {
-      setSymbols([]);
+      if (thisRequestId === requestIdRef.current) {
+        setSymbols([]);
+      }
     } finally {
-      setLoading(false);
-      setSelectedIndex(0);
+      if (thisRequestId === requestIdRef.current) {
+        setLoading(false);
+        setSelectedIndex(0);
+      }
     }
   }, []);
 
@@ -200,7 +254,7 @@ export default function SearchCommand({
     if (!open) return;
     const timer = setTimeout(() => {
       fetchSymbols(searchTerm, category);
-    }, searchTerm ? 100 : 0);
+    }, searchTerm ? 180 : 0);
     return () => clearTimeout(timer);
   }, [open, searchTerm, category, fetchSymbols]);
 
@@ -264,6 +318,9 @@ export default function SearchCommand({
             className="flex-1 bg-transparent text-sm font-medium text-foreground placeholder:text-muted-foreground outline-none font-sans"
             autoFocus
           />
+          {loading && (
+            <Loader2 className="size-3.5 text-muted-foreground animate-spin shrink-0 mr-1" />
+          )}
           {searchTerm && (
             <button
               type="button"
@@ -311,7 +368,7 @@ export default function SearchCommand({
           ref={listRef}
           className="max-h-[55vh] min-h-[380px] overflow-y-auto p-1.5 space-y-0.5 font-sans [scrollbar-width:thin] scrollbar-thin"
         >
-          {loading && (
+          {loading && symbols.length === 0 && (
             <div className="flex items-center justify-center py-16 text-muted-foreground gap-2 font-sans">
               <Loader2 className="size-4 animate-spin" />
               <span className="text-xs font-medium">Searching live markets...</span>
@@ -325,8 +382,7 @@ export default function SearchCommand({
             </div>
           )}
 
-          {!loading &&
-            symbols.map((item, idx) => {
+          {symbols.map((item, idx) => {
               const displaySymbol = item.symbol.replace(/<[^>]*>/g, '');
               const displayDesc = item.description.replace(/<[^>]*>/g, '');
               const isSelected = selectedIndex === idx;

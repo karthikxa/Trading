@@ -9,6 +9,7 @@ import {
   getLocalTrades,
   sortJournalTrades,
 } from './storage';
+import { syncDhanTradesToJournal } from './dhanSync';
 import { TradingCalendar } from './TradingCalendar';
 import { MonthlySummaryCard } from './MonthlySummaryCard';
 import { WeeklyBreakdownCard } from './WeeklyBreakdownCard';
@@ -48,8 +49,10 @@ export default function JournalView({ projectId }: JournalViewProps) {
   // Trade being edited (pre-fills AddTradeView)
   const [editingTrade, setEditingTrade] = useState<JournalTrade | null>(null);
 
-  // Currency Mode: '$' | '%' | 'R'
-  const [currencyMode, setCurrencyMode] = useState<CurrencyMode>('$');
+  // Currency Mode: '₹' | '%' | 'R'
+  const [currencyMode, setCurrencyMode] = useState<CurrencyMode>('₹');
+
+  const [isSyncingDhan, setIsSyncingDhan] = useState(false);
 
   const handledDeepLinkRef = useRef(false);
 
@@ -80,12 +83,42 @@ export default function JournalView({ projectId }: JournalViewProps) {
     }
   }, []);
 
+  const handleSyncDhan = useCallback(async () => {
+    setIsSyncingDhan(true);
+    try {
+      const res = await syncDhanTradesToJournal(projectId);
+      if (res && res.trades) {
+        setTrades(sortJournalTrades(res.trades));
+        if (res.trades.length > 0 && res.trades[0].entryDate) {
+          setSelectedDate(res.trades[0].entryDate);
+          syncCalendarToDate(res.trades[0].entryDate);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to sync Dhan trades:', err);
+    } finally {
+      setIsSyncingDhan(false);
+    }
+  }, [projectId, syncCalendarToDate]);
+
   // Load trades on mount
   useEffect(() => {
     let isMounted = true;
     async function loadData() {
       try {
         const loaded = await getJournalTrades(projectId);
+        const hasMock = loaded.some((t) => t.instrument === 'EURUSD' || !t.id.startsWith('dhan_'));
+        if (loaded.length === 0 || hasMock) {
+          const synced = await syncDhanTradesToJournal(projectId);
+          if (isMounted && Array.isArray(synced.trades) && synced.trades.length > 0) {
+            setTrades(sortJournalTrades(synced.trades));
+            if (synced.trades[0].entryDate) {
+              setSelectedDate(synced.trades[0].entryDate);
+              syncCalendarToDate(synced.trades[0].entryDate);
+            }
+            return;
+          }
+        }
         if (isMounted && Array.isArray(loaded)) {
           setTrades(sortJournalTrades(loaded));
         }
@@ -97,7 +130,7 @@ export default function JournalView({ projectId }: JournalViewProps) {
     return () => {
       isMounted = false;
     };
-  }, [projectId]);
+  }, [projectId, syncCalendarToDate]);
 
   // Open ?trade=<id> deep-link if present once trades are available
   useEffect(() => {

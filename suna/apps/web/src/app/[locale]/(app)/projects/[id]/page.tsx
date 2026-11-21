@@ -20,6 +20,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigat
 import {
   Pin,
   Bell,
+  Sparkles,
 } from 'lucide-react';
 
 import MarketSwitcher from '@/features/markets/MarketSwitcher';
@@ -35,6 +36,7 @@ import TvLiveChart from '@/features/markets/TvLiveChart';
 
 import JournalView from '@/features/journal/JournalView';
 import { getLocalTrades } from '@/features/journal/storage';
+import { syncDhanTradesToJournal } from '@/features/journal/dhanSync';
 import type { JournalTrade } from '@/features/journal/types';
 import SearchCommand, { openSearch, SearchButton } from '@/features/markets/SearchCommand';
 import StockSymbolIcon from '@/features/markets/StockSymbolIcon';
@@ -50,6 +52,7 @@ import {
   TrendUp,
   ChartLineUp,
   Target,
+  Coins,
 } from '@phosphor-icons/react';
 import KortixPinIcon from '@/features/markets/KortixPinIcon';
 import '@/features/markets/terminal.css';
@@ -273,14 +276,78 @@ export default function ProjectIndexPage() {
     return [];
   });
 
+  const [dhanFunds, setDhanFunds] = useState<{ availabelBalance?: number; withdrawableBalance?: number; utilizedAmount?: number } | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const saved = window.localStorage.getItem('kortix_trading_dhan_funds');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const [dhanPositions, setDhanPositions] = useState<any[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const saved = window.localStorage.getItem('kortix_trading_dhan_positions');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
   useEffect(() => {
     setJournalTrades(getLocalTrades());
     const onJournalUpdate = () => {
       setJournalTrades(getLocalTrades());
     };
     window.addEventListener('trading-journal-updated', onJournalUpdate);
-    return () => window.removeEventListener('trading-journal-updated', onJournalUpdate);
-  }, []);
+
+    // Live continuous polling of Dhan funds and positions every 3 seconds
+    const fetchDhanLive = async () => {
+      try {
+        const [fundsRes, posRes] = await Promise.all([
+          fetch('/api/dhan?action=funds').then((r) => r.json()).catch(() => null),
+          fetch('/api/dhan?action=positions').then((r) => r.json()).catch(() => null),
+        ]);
+
+        if (fundsRes?.data?.availabelBalance != null) {
+          setDhanFunds(fundsRes.data);
+          try {
+            window.localStorage.setItem('kortix_trading_dhan_funds', JSON.stringify(fundsRes.data));
+          } catch {}
+        }
+
+        if (Array.isArray(posRes?.data)) {
+          setDhanPositions(posRes.data);
+          try {
+            window.localStorage.setItem('kortix_trading_dhan_positions', JSON.stringify(posRes.data));
+          } catch {}
+        }
+      } catch {}
+    };
+
+    fetchDhanLive();
+    const liveTimer = setInterval(fetchDhanLive, 3000);
+
+    // 2. Auto-sync Dhan trades if trades are empty or have old mock trades
+    const local = getLocalTrades();
+    const hasMock = local.some((t) => t.instrument === 'EURUSD' || !t.id.startsWith('dhan_'));
+    if (local.length === 0 || hasMock) {
+      syncDhanTradesToJournal(projectId)
+        .then((res) => {
+          if (res?.trades) {
+            setJournalTrades(res.trades);
+          }
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      window.removeEventListener('trading-journal-updated', onJournalUpdate);
+      clearInterval(liveTimer);
+    };
+  }, [projectId]);
 
   const [startingCapital, setStartingCapital] = useState<number>(() => {
     if (typeof window === 'undefined') return 100000;
@@ -317,8 +384,21 @@ export default function ProjectIndexPage() {
   const lossJournalTrades = journalTrades.filter((t) => (t.pnl ?? 0) < 0).length;
   const winRateJournal = totalJournalTrades > 0 ? ((winJournalTrades / totalJournalTrades) * 100).toFixed(1) : '0.0';
   const totalJournalPnl = journalTrades.reduce((acc, t) => acc + (t.pnl ?? 0), 0);
-  const totalAccountMoney = startingCapital + totalJournalPnl;
-  const pnlPercent = ((totalJournalPnl / (startingCapital || 1)) * 100).toFixed(2);
+  const displayBalance = dhanFunds?.availabelBalance != null ? dhanFunds.availabelBalance : (startingCapital + totalJournalPnl);
+  const pnlPercent = displayBalance > 0 ? ((totalJournalPnl / displayBalance) * 100).toFixed(2) : '0.00';
+
+  // Live fluctuating Unrealized PnL from Dhan active positions
+  const totalUnrealizedPnl = Array.isArray(dhanPositions)
+    ? dhanPositions.reduce((acc: number, p: any) => acc + (typeof p.unrealizedProfit === 'number' ? p.unrealizedProfit : 0), 0)
+    : 0;
+
+  // Live Margin Used from Dhan funds utilizedAmount
+  const marginUsed = Number(dhanFunds?.utilizedAmount || 0);
+
+  // Active open positions count
+  const openPositionsCount = Array.isArray(dhanPositions)
+    ? dhanPositions.filter((p: any) => Number(p.netQty || 0) !== 0).length
+    : 0;
 
   useEffect(() => {
     if (!isBillingEnabled() || !accountState || !projectAccountId) return;
@@ -482,7 +562,7 @@ export default function ProjectIndexPage() {
               <div className="absolute inset-0 pointer-events-none opacity-85 overflow-hidden">
                 <WallpaperBackground />
               </div>
-              <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
+              <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3.5 sm:gap-4">
                 {/* 1. Total Balance */}
                 <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
                   <div className="flex items-center gap-2 text-muted-foreground">
@@ -493,7 +573,7 @@ export default function ProjectIndexPage() {
                   </div>
                   <div className="mt-3">
                     <div className="text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
-                      ${totalAccountMoney.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      ₹{displayBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
                   <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
@@ -527,7 +607,7 @@ export default function ProjectIndexPage() {
                           ? 'text-rose-600 dark:text-rose-400'
                           : 'text-foreground'
                     )}>
-                      {totalJournalPnl > 0 ? '+' : ''}${totalJournalPnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {totalJournalPnl > 0 ? '+' : totalJournalPnl < 0 ? '-' : ''}₹{Math.abs(totalJournalPnl).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
                   <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
@@ -545,7 +625,61 @@ export default function ProjectIndexPage() {
                   </div>
                 </div>
 
-                {/* 3. Win / Loss Record */}
+                {/* 3. Unrealized PnL (Live Fluctuating) */}
+                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
+                      <Sparkles className="size-3.5 text-muted-foreground" />
+                    </span>
+                    <span className="text-xs font-medium text-muted-foreground font-sans">Unrealized PnL</span>
+                  </div>
+                  <div className="mt-3">
+                    <div className={cn(
+                      'text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums font-sans',
+                      totalUnrealizedPnl > 0
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : totalUnrealizedPnl < 0
+                          ? 'text-rose-600 dark:text-rose-400'
+                          : 'text-foreground'
+                    )}>
+                      {totalUnrealizedPnl > 0 ? '+' : totalUnrealizedPnl < 0 ? '-' : ''}₹{Math.abs(totalUnrealizedPnl).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
+                    {openPositionsCount > 0 ? (
+                      <span className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-sans">
+                        <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                        {openPositionsCount} {openPositionsCount === 1 ? 'Open Position' : 'Open Positions'}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium bg-muted text-muted-foreground font-sans">
+                        No open positions
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* 4. Margin Used */}
+                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
+                      <Coins className="size-3.5 text-muted-foreground" />
+                    </span>
+                    <span className="text-xs font-medium text-muted-foreground font-sans">Margin Used</span>
+                  </div>
+                  <div className="mt-3">
+                    <div className="text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
+                      ₹{marginUsed.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
+                    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium bg-muted text-muted-foreground font-sans">
+                      Available: ₹{displayBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 5. Win / Loss Record */}
                 <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
@@ -567,7 +701,7 @@ export default function ProjectIndexPage() {
                   </div>
                 </div>
 
-                {/* 4. Target */}
+                {/* 6. Target */}
                 <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
@@ -577,13 +711,13 @@ export default function ProjectIndexPage() {
                   </div>
                   <div className="mt-3">
                     <div className="text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
-                      ${tradingGoal.targetAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      ₹{tradingGoal.targetAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
                   <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
                     <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-sans">
-                      {totalAccountMoney > 0
-                        ? `+${(((tradingGoal.targetAmount - totalAccountMoney) / totalAccountMoney) * 100).toFixed(1)}% Goal`
+                      {displayBalance > 0
+                        ? `+${(((tradingGoal.targetAmount - displayBalance) / displayBalance) * 100).toFixed(1)}% Goal`
                         : '+25.0% Goal'}
                     </span>
                   </div>
@@ -593,6 +727,8 @@ export default function ProjectIndexPage() {
 
             {/* Pinned Watchlist Section (Clean Kortix Card) */}
             <WatchlistTable
+              positions={dhanPositions}
+              journalTrades={journalTrades}
               selectedSymbol={selectedWatchlistStock}
               onSelectSymbol={(sym) => {
                 setSelectedWatchlistStock(sym);
@@ -639,6 +775,7 @@ export default function ProjectIndexPage() {
                           noTimeScale: false,
                         }}
                         height={220}
+                        lazy={true}
                       />
                     </div>
                   </div>
@@ -673,6 +810,7 @@ export default function ProjectIndexPage() {
                           noTimeScale: false,
                         }}
                         height={220}
+                        lazy={true}
                       />
                     </div>
                   </div>
@@ -704,6 +842,7 @@ export default function ProjectIndexPage() {
                       })),
                     }}
                     height={560}
+                    lazy={true}
                   />
                 </div>
               </div>
@@ -731,6 +870,7 @@ export default function ProjectIndexPage() {
                       isTransparent: true,
                     }}
                     height={560}
+                    lazy={true}
                   />
                 </div>
               </div>
@@ -771,6 +911,7 @@ export default function ProjectIndexPage() {
                       locale: 'en',
                     }}
                     height={520}
+                    lazy={true}
                   />
                 </div>
               </div>
@@ -962,6 +1103,7 @@ export default function ProjectIndexPage() {
                       colorTheme: 'light',
                     }}
                     height={560}
+                    lazy={true}
                   />
                 </div>
               </div>
@@ -984,6 +1126,7 @@ export default function ProjectIndexPage() {
                     locale: 'en',
                   }}
                   height={480}
+                  lazy={true}
                 />
               </div>
             </div>
@@ -1082,6 +1225,7 @@ export default function ProjectIndexPage() {
                     locale: 'en',
                   }}
                   height={550}
+                  lazy={true}
                 />
               </div>
             </div>

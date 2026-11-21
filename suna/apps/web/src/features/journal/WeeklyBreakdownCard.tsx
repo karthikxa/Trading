@@ -57,9 +57,9 @@ export function WeeklyBreakdownCard({
 
   const formatCurrency = (val: number, tradeCount: number) => {
     if (tradeCount === 0) return '-';
-    if (val === 0) return '$0.00';
+    if (val === 0) return '₹0.00';
     const sign = val > 0 ? '+' : '-';
-    return `${sign}$${Math.abs(val).toLocaleString('en-US', {
+    return `${sign}₹${Math.abs(val).toLocaleString('en-IN', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`;

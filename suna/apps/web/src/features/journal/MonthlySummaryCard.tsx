@@ -45,9 +45,9 @@ export function MonthlySummaryCard({ trades, monthLabel }: MonthlySummaryCardPro
   const maxCount = Math.max(...buckets.map((b) => b.count), 1);
 
   const formatCurrency = (val: number) => {
-    if (val === 0) return '$0.00';
+    if (val === 0) return '₹0.00';
     const sign = val > 0 ? '+' : '-';
-    return `${sign}$${Math.abs(val).toLocaleString('en-US', {
+    return `${sign}₹${Math.abs(val).toLocaleString('en-IN', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`;

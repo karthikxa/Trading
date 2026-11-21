@@ -31,8 +31,69 @@ export async function GET(req: NextRequest) {
       endpoint = `${DHAN_BASE_URL}/holdings`;
     } else if (action === 'orders') {
       endpoint = `${DHAN_BASE_URL}/orders`;
-    } else if (action === 'trades') {
-      endpoint = `${DHAN_BASE_URL}/trades`;
+    } else if (action === 'trades' || action === 'all_trades' || action === 'past_trades') {
+      const fromDate = searchParams.get('from') || searchParams.get('fromDate') || '2026-01-01';
+      const toDate = searchParams.get('to') || searchParams.get('toDate') || new Date().toISOString().split('T')[0];
+      const page = searchParams.get('page');
+
+      if (action === 'all_trades' || action === 'past_trades') {
+        // Automatically fetch all pages and today's trades
+        const allExecutions: any[] = [];
+        const seen = new Set<string>();
+
+        // 1. Fetch today's trades
+        try {
+          const todayRes = await fetch(`${DHAN_BASE_URL}/trades`, { headers, cache: 'no-store' });
+          const todayData = await todayRes.json().catch(() => []);
+          if (Array.isArray(todayData)) {
+            for (const t of todayData) {
+              const key = `${t.orderId}_${t.exchangeTradeId}_${t.exchangeTime}`;
+              if (!seen.has(key)) {
+                seen.add(key);
+                allExecutions.push(t);
+              }
+            }
+          }
+        } catch {}
+
+        // 2. Fetch past trade pages
+        for (let p = 0; p < 20; p++) {
+          try {
+            const pageRes = await fetch(`${DHAN_BASE_URL}/trades/${fromDate}/${toDate}/${p}`, {
+              headers,
+              cache: 'no-store',
+            });
+            const pageData = await pageRes.json().catch(() => []);
+            if (!Array.isArray(pageData) || pageData.length === 0) break;
+
+            let addedCount = 0;
+            for (const t of pageData) {
+              const key = `${t.orderId}_${t.exchangeTradeId}_${t.exchangeTime}`;
+              if (!seen.has(key)) {
+                seen.add(key);
+                allExecutions.push(t);
+                addedCount++;
+              }
+            }
+            if (addedCount === 0) break;
+          } catch {
+            break;
+          }
+        }
+
+        return NextResponse.json({
+          ok: true,
+          action,
+          status: 200,
+          data: allExecutions,
+        });
+      }
+
+      if (page !== null) {
+        endpoint = `${DHAN_BASE_URL}/trades/${fromDate}/${toDate}/${page}`;
+      } else {
+        endpoint = `${DHAN_BASE_URL}/trades`;
+      }
     } else if (action === 'profile') {
       endpoint = `${DHAN_BASE_URL}/profile`;
     }

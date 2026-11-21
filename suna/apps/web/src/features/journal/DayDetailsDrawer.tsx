@@ -210,7 +210,7 @@ export function DayDetailsDrawer({
 
   const formatCurrency = (val: number) => {
     const sign = val >= 0 ? '+' : '-';
-    return `${sign}$${Math.abs(val).toLocaleString('en-US', {
+    return `${sign}₹${Math.abs(val).toLocaleString('en-IN', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`;
@@ -219,14 +219,17 @@ export function DayDetailsDrawer({
   const formatCompactCurrency = (val: number) => {
     const sign = val >= 0 ? '+' : '-';
     const abs = Math.abs(val);
-    if (abs >= 1000000) {
-      return `${sign}$${(abs / 1000000).toFixed(1)}M`;
+    if (abs >= 10000000) {
+      return `${sign}₹${(abs / 10000000).toFixed(2)}Cr`;
+    }
+    if (abs >= 100000) {
+      return `${sign}₹${(abs / 100000).toFixed(2)}L`;
     }
     if (abs >= 1000) {
       const kVal = (abs / 1000).toFixed(1);
-      return `${sign}$${kVal.endsWith('.0') ? kVal.slice(0, -2) : kVal}K`;
+      return `${sign}₹${kVal.endsWith('.0') ? kVal.slice(0, -2) : kVal}K`;
     }
-    return `${sign}$${abs.toFixed(2)}`;
+    return `${sign}₹${abs.toFixed(2)}`;
   };
 
   return (

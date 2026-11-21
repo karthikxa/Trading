@@ -291,6 +291,11 @@ function CurrencyBadge({ code, size = 32 }: { code: string; size?: number }) {
   }
 }
 
+const KNOWN_FIAT_CURRENCIES = new Set([
+  'USD', 'EUR', 'GBP', 'JPY', 'INR', 'AUD', 'CAD', 'CHF', 'NZD',
+  'SGD', 'HKD', 'CNH', 'CNY', 'ZAR', 'MXN', 'SEK', 'NOK', 'TRY', 'KRW', 'BRL'
+]);
+
 export function TradingPairIcon({
   symbol,
   logoid,
@@ -299,6 +304,39 @@ export function TradingPairIcon({
 }: TradingPairIconProps) {
   const clean = symbol.toUpperCase().replace(/^.*:/, '').trim();
   const badgeSize = size === 'xs' ? 22 : size === 'sm' ? 28 : size === 'md' ? 32 : 38;
+
+  // Central Bank of India (Image 6 fix: Always authentic vector logo)
+  if (
+    clean === 'CENTRALBK' ||
+    clean.includes('CENTRAL BANK') ||
+    clean.includes('CENTRALBANK') ||
+    clean.includes('CENTRAL BK')
+  ) {
+    return (
+      <StockSymbolIcon
+        symbol="CENTRALBK"
+        logoid="central-bank-of-india"
+        size={size}
+        className={className}
+      />
+    );
+  }
+
+  // Indian Overseas Bank (IOB) (Always authentic vector logo)
+  if (
+    clean === 'IOB' ||
+    clean.includes('INDIAN OVERSEAS') ||
+    clean.includes('INDIANOVERSEAS')
+  ) {
+    return (
+      <StockSymbolIcon
+        symbol="IOB"
+        logoid="indian-overseas-bank"
+        size={size}
+        className={className}
+      />
+    );
+  }
 
   // S&P 500 ETF: SPY (Red circle with white 500, Image 8)
   if (clean === 'SPY' || clean === 'SPX' || clean === 'INX') {
@@ -386,30 +424,38 @@ export function TradingPairIcon({
     );
   }
 
-  // Standard 6-character Forex currency pairs: EURUSD, USDINR, GBPUSD, USDJPY, GBPJPY, etc. (Image 1 & 4)
-  if (clean.length === 6 && !clean.startsWith('BTC') && !clean.startsWith('ETH')) {
+  // Standard 6-character Forex currency pairs: ONLY if both are real fiat currencies (e.g. EURUSD, GBPUSD, USDINR)
+  if (
+    clean.length === 6 &&
+    !clean.includes('!') &&
+    !clean.includes('-') &&
+    !clean.startsWith('BTC') &&
+    !clean.startsWith('ETH')
+  ) {
     const base = clean.slice(0, 3);
     const quote = clean.slice(3, 6);
 
-    return (
-      <div className={cn('flex items-center -space-x-2 shrink-0', className)}>
-        <div
-          style={{ width: badgeSize, height: badgeSize }}
-          className="rounded-full overflow-hidden ring-2 ring-background shadow-xs z-10 shrink-0 flex items-center justify-center bg-white"
-        >
-          <CurrencyBadge code={base} size={badgeSize} />
+    if (KNOWN_FIAT_CURRENCIES.has(base) && KNOWN_FIAT_CURRENCIES.has(quote)) {
+      return (
+        <div className={cn('flex items-center -space-x-2 shrink-0', className)}>
+          <div
+            style={{ width: badgeSize, height: badgeSize }}
+            className="rounded-full overflow-hidden ring-2 ring-background shadow-xs z-10 shrink-0 flex items-center justify-center bg-white"
+          >
+            <CurrencyBadge code={base} size={badgeSize} />
+          </div>
+          <div
+            style={{ width: badgeSize, height: badgeSize }}
+            className="rounded-full overflow-hidden ring-2 ring-background shadow-xs z-0 shrink-0 flex items-center justify-center bg-white"
+          >
+            <CurrencyBadge code={quote} size={badgeSize} />
+          </div>
         </div>
-        <div
-          style={{ width: badgeSize, height: badgeSize }}
-          className="rounded-full overflow-hidden ring-2 ring-background shadow-xs z-0 shrink-0 flex items-center justify-center bg-white"
-        >
-          <CurrencyBadge code={quote} size={badgeSize} />
-        </div>
-      </div>
-    );
+      );
+    }
   }
 
-  // Otherwise, use StockSymbolIcon for single stocks, indices, ETFs
+  // Otherwise, use StockSymbolIcon for single stocks, indices, ETFs, futures
   return (
     <StockSymbolIcon
       symbol={clean}

@@ -8,16 +8,24 @@ import WatchlistButton from './WatchlistButton';
 import { TradingPairIcon } from '../journal/TradingPairIcon';
 import { openSearch } from './SearchCommand';
 import TvTickerTag from './TvTickerTag';
-import DhanAccountBar from './DhanAccountBar';
+import { getLocalTrades } from '../journal/storage';
 import { cn } from '@kortix/ui';
 
 interface WatchlistTableProps {
   onSelectSymbol?: (symbol: string) => void;
   selectedSymbol?: string;
+  positions?: any[];
+  journalTrades?: any[];
 }
 
-export const WatchlistTable = React.memo(function WatchlistTable({ onSelectSymbol, selectedSymbol }: WatchlistTableProps) {
+export const WatchlistTable = React.memo(function WatchlistTable({
+  onSelectSymbol,
+  selectedSymbol,
+  positions = [],
+  journalTrades,
+}: WatchlistTableProps) {
   const [items, setItems] = useState<WatchlistEntry[]>(() => getStoredWatchlist());
+  const [trades, setTrades] = useState<any[]>(() => journalTrades || getLocalTrades());
 
   useEffect(() => {
     setItems(getStoredWatchlist());
@@ -26,9 +34,69 @@ export const WatchlistTable = React.memo(function WatchlistTable({ onSelectSymbo
     return () => window.removeEventListener('watchlist-updated', onUpdate);
   }, []);
 
+  useEffect(() => {
+    if (journalTrades) {
+      setTrades(journalTrades);
+    } else {
+      const onTrades = () => setTrades(getLocalTrades());
+      window.addEventListener('trading-journal-updated', onTrades);
+      return () => window.removeEventListener('trading-journal-updated', onTrades);
+    }
+  }, [journalTrades]);
+
+  // Compute profit/loss for a watchlist symbol
+  const getSymbolPnl = (item: WatchlistEntry): number => {
+    const symUpper = item.symbol.toUpperCase().trim();
+    const nameUpper = (item.name || '').toUpperCase().trim();
+
+    // 1. Check live open/recent positions from Dhan API
+    if (Array.isArray(positions) && positions.length > 0) {
+      const match = positions.find((p: any) => {
+        const pSym = (p.tradingSymbol || p.customSymbol || '').toUpperCase().trim();
+        return (
+          pSym === symUpper ||
+          (symUpper === 'CENTRALBK' && pSym.includes('CENTRAL')) ||
+          (symUpper === 'IOB' && pSym.includes('INDIAN OVERSEAS')) ||
+          (symUpper === 'IDEA' && pSym.includes('VODAFONE'))
+        );
+      });
+      if (match) {
+        if (typeof match.unrealizedProfit === 'number' && match.unrealizedProfit !== 0) {
+          return match.unrealizedProfit;
+        }
+        if (typeof match.realizedProfit === 'number' && match.realizedProfit !== 0) {
+          return match.realizedProfit;
+        }
+      }
+    }
+
+    // 2. Check journal trades for this symbol
+    if (Array.isArray(trades) && trades.length > 0) {
+      const matchingTrades = trades.filter((t: any) => {
+        const tInst = (t.instrument || '').toUpperCase().trim();
+        return (
+          tInst === symUpper ||
+          tInst === nameUpper ||
+          (symUpper === 'CENTRALBK' && tInst.includes('CENTRAL')) ||
+          (symUpper === 'IOB' && tInst.includes('INDIAN OVERSEAS')) ||
+          (symUpper === 'IDEA' && tInst.includes('VODAFONE'))
+        );
+      });
+      if (matchingTrades.length > 0) {
+        return matchingTrades.reduce((acc: number, t: any) => acc + (t.pnl || 0), 0);
+      }
+    }
+
+    return 0;
+  };
+
+  const isIndianExchange = (ex?: string) => {
+    const e = (ex || '').toUpperCase();
+    return e === 'NSE' || e === 'BSE' || e === 'MCX' || e === 'NFO';
+  };
+
   return (
     <div className="flex flex-col gap-3">
-      <DhanAccountBar />
       <div className="rounded-xl border border-border/70 bg-card shadow-2xs overflow-hidden">
         {/* Card Header */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-border/60">
@@ -75,6 +143,7 @@ export const WatchlistTable = React.memo(function WatchlistTable({ onSelectSymbo
                 <th className="py-2.5 px-5 font-medium">Symbol / Name</th>
                 <th className="py-2.5 px-5 font-medium">Exchange</th>
                 <th className="py-2.5 px-5 text-right font-medium">Price</th>
+                <th className="py-2.5 px-5 text-right font-medium">PnL</th>
                 <th className="py-2.5 px-5 text-right font-medium">Change</th>
                 <th className="py-2.5 px-5 text-center w-16 font-medium">Pin</th>
               </tr>
@@ -83,6 +152,12 @@ export const WatchlistTable = React.memo(function WatchlistTable({ onSelectSymbo
               {items.map((item) => {
                 const isSelected = selectedSymbol === item.symbol;
                 const isPositive = (item.change ?? 0) >= 0;
+                const pnl = getSymbolPnl(item);
+                const isPnlPositive = pnl > 0;
+                const isPnlNegative = pnl < 0;
+                const isIndian = isIndianExchange(item.exchange);
+                const currencyPrefix = isIndian ? '₹' : '$';
+
                 return (
                   <tr
                     key={item.symbol}
@@ -117,11 +192,25 @@ export const WatchlistTable = React.memo(function WatchlistTable({ onSelectSymbo
                     </td>
                     <td className="py-3 px-5">
                       <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-sans font-medium text-muted-foreground bg-muted/60">
-                        {item.exchange || 'NASDAQ'}
+                        {item.exchange || 'NSE'}
                       </span>
                     </td>
                     <td className="py-3 px-5 text-right font-normal tabular-nums text-sm text-foreground font-sans tracking-tight">
-                      ${item.price?.toFixed(2) ?? '189.20'}
+                      {currencyPrefix}{item.price?.toFixed(2) ?? '0.00'}
+                    </td>
+                    <td className="py-3 px-5 text-right font-normal tabular-nums text-xs font-sans tracking-tight">
+                      <span
+                        className={cn(
+                          'tabular-nums font-medium',
+                          isPnlPositive
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : isPnlNegative
+                              ? 'text-rose-600 dark:text-rose-400'
+                              : 'text-muted-foreground'
+                        )}
+                      >
+                        {isPnlPositive ? '+' : isPnlNegative ? '-' : ''}₹{Math.abs(pnl).toFixed(2)}
+                      </span>
                     </td>
                     <td className="py-3 px-5 text-right font-normal tabular-nums text-xs font-sans tracking-tight">
                       <div className="flex items-center justify-end gap-1.5">
@@ -130,7 +219,7 @@ export const WatchlistTable = React.memo(function WatchlistTable({ onSelectSymbo
                           'text-xs font-sans tabular-nums',
                           isPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
                         )}>
-                          {isPositive ? '+' : ''}{item.changePercent?.toFixed(2) ?? '+1.24'}%
+                          {isPositive ? '+' : ''}{item.changePercent?.toFixed(2) ?? '+0.00'}%
                         </span>
                       </div>
                     </td>

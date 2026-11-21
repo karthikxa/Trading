@@ -100,9 +100,20 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
   // Look up current selected item for the trigger header
   const selectedItem = useMemo(() => {
     const clean = (value || '').toUpperCase().trim();
+    if (!clean) return null;
     return (
-      TOP_MARKET_SYMBOLS.find((s) => s.symbol.toUpperCase() === clean) ||
-      searchResults.find((s) => s.symbol.toUpperCase() === clean)
+      TOP_MARKET_SYMBOLS.find(
+        (s) =>
+          s.symbol.toUpperCase() === clean ||
+          s.name.toUpperCase() === clean ||
+          s.name.toUpperCase().includes(clean)
+      ) ||
+      searchResults.find(
+        (s) =>
+          s.symbol.toUpperCase() === clean ||
+          s.name.toUpperCase() === clean ||
+          s.name.toUpperCase().includes(clean)
+      )
     );
   }, [value, searchResults]);
 
@@ -115,7 +126,11 @@ export function InstrumentPicker({ value, onChange }: InstrumentPickerProps) {
         className="w-full h-11 flex items-center justify-between px-3 py-1.5 bg-background border border-border/80 rounded-xl hover:border-border hover:bg-muted/20 focus:outline-none focus:ring-1 focus:ring-ring transition-all shadow-2xs text-left cursor-pointer font-sans"
       >
         <div className="flex items-center gap-3 overflow-hidden min-w-0">
-          <TradingPairIcon symbol={value || 'NIFTY 50'} logoid={selectedItem?.logoid} size="md" />
+          <TradingPairIcon
+            symbol={selectedItem?.symbol || value || 'NIFTY 50'}
+            logoid={selectedItem?.logoid}
+            size="md"
+          />
           <div className="flex flex-col min-w-0 justify-center">
             <div className="flex items-center gap-1.5 leading-none">
               <span className="font-semibold text-[13px] text-foreground tracking-tight font-sans">

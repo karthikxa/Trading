@@ -95,7 +95,7 @@ export function TradeDetailView({
 
   const formatCurrency = (amount: number) => {
     const sign = amount >= 0 ? '+' : '-';
-    return `${sign}$${Math.abs(amount).toLocaleString('en-US', {
+    return `${sign}₹${Math.abs(amount).toLocaleString('en-IN', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`;
@@ -458,17 +458,26 @@ export function TradeDetailView({
 
             {/* Costs: Fees, Swap */}
             <div className="flex flex-col gap-2.5 pb-4 border-b border-zinc-100 text-xs">
-              <span className="font-semibold text-zinc-400 uppercase text-[10px] tracking-wider">Costs:</span>
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">Fees</span>
+                <span className="font-semibold text-zinc-400 uppercase text-[10px] tracking-wider">Costs</span>
+                <span className="text-[10px] text-zinc-400">Statutory & Brokerage</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-500">Fees & Commissions</span>
                 <span className="text-zinc-950 font-sans tabular-nums font-medium">
-                  {formatCurrency(currentTrade.commission || 0)}
+                  ₹{Math.abs(currentTrade.commission || 0).toLocaleString('en-IN', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
                 </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-zinc-500">Swap</span>
                 <span className="text-zinc-950 font-sans tabular-nums font-medium">
-                  {formatCurrency(currentTrade.swap || 0)}
+                  ₹{Math.abs(currentTrade.swap || 0).toLocaleString('en-IN', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
                 </span>
               </div>
             </div>

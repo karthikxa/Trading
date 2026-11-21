@@ -20,13 +20,43 @@ let cachedWatchlistInMemory: WatchlistEntry[] | null = null;
 let cachedWatchlistSet: Set<string> | null = null;
 
 const DEFAULT_WATCHLIST: WatchlistEntry[] = [
+  { symbol: 'CENTRALBK', name: 'Central Bank of India', exchange: 'NSE', type: 'stock', price: 34.40, change: 0.12, changePercent: 0.35, addedAt: new Date().toISOString() },
+  { symbol: 'IOB', name: 'Indian Overseas Bank', exchange: 'NSE', type: 'stock', price: 32.05, change: -0.05, changePercent: -0.16, addedAt: new Date().toISOString() },
+  { symbol: 'IDEA', name: 'Vodafone Idea', exchange: 'NSE', type: 'stock', price: 12.20, change: 0.10, changePercent: 0.83, addedAt: new Date().toISOString() },
+  { symbol: 'RELIANCE', name: 'Reliance Industries Ltd.', exchange: 'NSE', type: 'stock', price: 2980.50, change: 18.20, changePercent: 0.61, addedAt: new Date().toISOString() },
   { symbol: 'SPY', name: 'S&P 500 ETF', exchange: 'AMEX', type: 'fund', price: 586.20, change: -1.23, changePercent: -0.21, addedAt: new Date().toISOString() },
   { symbol: 'BTCUSD', name: 'Bitcoin / U.S. Dollar', exchange: 'CRYPTO', type: 'crypto', price: 91450.0, change: 1042.0, changePercent: 1.15, addedAt: new Date().toISOString() },
-  { symbol: 'EURUSD', name: 'Euro / U.S. Dollar', exchange: 'FOREXCOM', type: 'forex', price: 1.0850, change: 0.0009, changePercent: 0.08, addedAt: new Date().toISOString() },
-  { symbol: 'TSLA', name: 'Tesla, Inc.', exchange: 'NASDAQ', type: 'stock', price: 218.40, change: -3.20, changePercent: -1.45, addedAt: new Date().toISOString() },
-  { symbol: 'NVDA', name: 'NVIDIA Corporation', exchange: 'NASDAQ', type: 'stock', price: 138.25, change: 3.75, changePercent: 2.80, addedAt: new Date().toISOString() },
-  { symbol: 'AAPL', name: 'Apple Inc.', exchange: 'NASDAQ', type: 'stock', price: 228.60, change: 1.48, changePercent: 0.65, addedAt: new Date().toISOString() },
 ];
+
+const TOP_ORDER_SYMBOLS = ['CENTRALBK', 'IOB', 'IDEA'];
+
+function sortWithTopPriority(items: WatchlistEntry[]): WatchlistEntry[] {
+  const topMap = new Map<string, WatchlistEntry>();
+  const others: WatchlistEntry[] = [];
+
+  // Index existing items
+  for (const item of items) {
+    const sym = item.symbol.toUpperCase().trim();
+    if (TOP_ORDER_SYMBOLS.includes(sym)) {
+      topMap.set(sym, item);
+    } else {
+      others.push(item);
+    }
+  }
+
+  // Ensure all top order symbols exist, using DEFAULT_WATCHLIST as fallback
+  const topList: WatchlistEntry[] = [];
+  for (const sym of TOP_ORDER_SYMBOLS) {
+    if (topMap.has(sym)) {
+      topList.push(topMap.get(sym)!);
+    } else {
+      const def = DEFAULT_WATCHLIST.find((d) => d.symbol.toUpperCase() === sym);
+      if (def) topList.push(def);
+    }
+  }
+
+  return [...topList, ...others];
+}
 
 let hasSyncedSupabase = false;
 
@@ -45,10 +75,11 @@ export function getStoredWatchlist(): WatchlistEntry[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        items = parsed;
+        items = sortWithTopPriority(parsed);
       }
     } else {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_WATCHLIST));
+      items = sortWithTopPriority(DEFAULT_WATCHLIST);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
     }
 
     cachedWatchlistInMemory = items;

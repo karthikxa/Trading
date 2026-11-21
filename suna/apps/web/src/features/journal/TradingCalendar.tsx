@@ -7,6 +7,7 @@ import {
   ChevronDown,
   Calendar as CalendarIcon,
   Plus,
+  RefreshCw,
 } from 'lucide-react';
 import { CurrencyMode, JournalTrade } from './types';
 import { Button } from '@/components/ui/button';
@@ -26,6 +27,8 @@ interface TradingCalendarProps {
   selectedDate: string | null;
   currencyMode: CurrencyMode;
   drawerOpen?: boolean;
+  isSyncingDhan?: boolean;
+  onSyncDhan?: () => void;
   onSelectDate: (date: string) => void;
   onPrevMonth: () => void;
   onNextMonth: () => void;
@@ -48,6 +51,8 @@ export const TradingCalendar = React.memo(function TradingCalendar({
   selectedDate,
   currencyMode,
   drawerOpen,
+  isSyncingDhan,
+  onSyncDhan,
   onSelectDate,
   onPrevMonth,
   onNextMonth,
@@ -86,7 +91,7 @@ export const TradingCalendar = React.memo(function TradingCalendar({
       return `${sign}${pct.toFixed(2)}%`;
     }
     const sign = pnl >= 0 ? '+' : '-';
-    return `${sign}$${Math.abs(pnl).toLocaleString('en-US', {
+    return `${sign}₹${Math.abs(pnl).toLocaleString('en-IN', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`;
@@ -256,16 +261,16 @@ export const TradingCalendar = React.memo(function TradingCalendar({
           <Group aria-label="Currency and return mode">
             <Button
               type="button"
-              variant={currencyMode === '$' ? 'default' : 'ghost'}
+              variant={currencyMode === '₹' || currencyMode === '$' ? 'default' : 'ghost'}
               size="xs"
-              onClick={() => onCurrencyModeChange('$')}
+              onClick={() => onCurrencyModeChange('₹')}
               className={`font-sans tabular-nums text-xs px-2.5 h-7 rounded-sm transition-colors ${
-                currencyMode === '$'
+                currencyMode === '₹' || currencyMode === '$'
                   ? 'bg-zinc-950 text-white shadow-xs'
                   : 'text-zinc-600 hover:text-zinc-950'
               }`}
             >
-              $
+              ₹
             </Button>
             <GroupSeparator />
             <Button

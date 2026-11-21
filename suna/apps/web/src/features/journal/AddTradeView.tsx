@@ -1007,7 +1007,7 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
 
               return (
                 <Field>
-                  <FieldLabel>Net P&L ($)</FieldLabel>
+                  <FieldLabel>Net P&L (₹)</FieldLabel>
                   <Input
                     type="text"
                     inputMode="decimal"
@@ -1141,7 +1141,7 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
 
             <div className="grid grid-cols-2 gap-4">
               <Field>
-                <FieldLabel>Fees & Commission ($)</FieldLabel>
+                <FieldLabel>Fees & Commission (₹)</FieldLabel>
                 <Input
                   type="text"
                   inputMode="decimal"
@@ -1154,7 +1154,7 @@ export function AddTradeView({ onBack, onSave, initialDate, editTrade }: AddTrad
                 />
               </Field>
               <Field>
-                <FieldLabel>Swap ($)</FieldLabel>
+                <FieldLabel>Swap (₹)</FieldLabel>
                 <Input
                   type="text"
                   inputMode="decimal"

@@ -1,5 +1,5 @@
 export type Direction = 'Buy' | 'Sell';
-export type CurrencyMode = '$' | '%' | 'R';
+export type CurrencyMode = '₹' | '$' | '%' | 'R';
 
 export interface SplitOrder {
   id: string;
