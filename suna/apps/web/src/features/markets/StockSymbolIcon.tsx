@@ -198,6 +198,56 @@ export const StockSymbolIcon = React.memo(function StockSymbolIcon({
 }: StockSymbolIconProps) {
   const cleanSym = symbol.toUpperCase().replace(/^.*:/, '').trim();
 
+  const sizeClasses = {
+    xs: 'size-[22px] text-[9px]',
+    sm: 'size-[28px] text-[10.5px]',
+    md: 'size-[32px] text-[12px]',
+    lg: 'size-[40px] text-sm',
+  }[size];
+
+  // 1. Prioritize authentic real TradingView SVG CDN logo for verified visual accuracy
+  const primaryUrl = React.useMemo(() => {
+    if (logoid) {
+      if (logoid.startsWith('http')) return logoid;
+      const clean = logoid.replace(/\.svg$/, '');
+      return `https://s3-symbol-logo.tradingview.com/${clean}--big.svg`;
+    }
+    if (cleanSym.includes('CENTRAL BANK') || cleanSym === 'CENTRALBK') {
+      return 'https://s3-symbol-logo.tradingview.com/central-bank-of-india--big.svg';
+    }
+    if (cleanSym.includes('INDIAN OVERSEAS') || cleanSym === 'IOB') {
+      return 'https://s3-symbol-logo.tradingview.com/indian-overseas-bank--big.svg';
+    }
+    if (
+      (cleanSym.includes('VODAFONE') || cleanSym === 'IDEA' || cleanSym === 'IDEA1!') &&
+      !cleanSym.includes('FORGE') &&
+      !cleanSym.includes('IDEAL')
+    ) {
+      return 'https://s3-symbol-logo.tradingview.com/vodafone-idea--big.svg';
+    }
+    return TRADINGVIEW_KNOWN_LOGOS[cleanSym] || TRADINGVIEW_KNOWN_LOGOS[cleanSym.replace(/\s+/g, '')] || null;
+  }, [logoid, cleanSym]);
+
+  const [currentSrc, setCurrentSrc] = useState<string | null>(primaryUrl);
+  const [hasError, setHasError] = useState(false);
+
+  React.useEffect(() => {
+    setCurrentSrc(primaryUrl);
+    setHasError(false);
+  }, [primaryUrl]);
+
+  const handleImageError = () => {
+    if (currentSrc && currentSrc.includes('--big.svg')) {
+      // Try normal .svg without --big
+      setCurrentSrc(currentSrc.replace('--big.svg', '.svg'));
+    } else if (currentSrc && !currentSrc.startsWith('/market-icons/') && logoid) {
+      // Try local fallback if available
+      setCurrentSrc(`/market-icons/${logoid.replace(/\//g, '_').replace(/\.svg$/, '')}.svg`);
+    } else {
+      setHasError(true);
+    }
+  };
+
   // Handle Options (CE / PE) contracts
   if (cleanSym.endsWith(' CE') || /\b\d+\s*CE$/.test(cleanSym)) {
     const optSizeClasses = {
@@ -479,56 +529,6 @@ export const StockSymbolIcon = React.memo(function StockSymbolIcon({
       </div>
     );
   }
-
-  // 1. Prioritize authentic real TradingView SVG CDN logo for verified visual accuracy
-  const primaryUrl = React.useMemo(() => {
-    if (logoid) {
-      if (logoid.startsWith('http')) return logoid;
-      const clean = logoid.replace(/\.svg$/, '');
-      return `https://s3-symbol-logo.tradingview.com/${clean}--big.svg`;
-    }
-    if (cleanSym.includes('CENTRAL BANK') || cleanSym === 'CENTRALBK') {
-      return 'https://s3-symbol-logo.tradingview.com/central-bank-of-india--big.svg';
-    }
-    if (cleanSym.includes('INDIAN OVERSEAS') || cleanSym === 'IOB') {
-      return 'https://s3-symbol-logo.tradingview.com/indian-overseas-bank--big.svg';
-    }
-    if (
-      (cleanSym.includes('VODAFONE') || cleanSym === 'IDEA' || cleanSym === 'IDEA1!') &&
-      !cleanSym.includes('FORGE') &&
-      !cleanSym.includes('IDEAL')
-    ) {
-      return 'https://s3-symbol-logo.tradingview.com/vodafone-idea--big.svg';
-    }
-    return TRADINGVIEW_KNOWN_LOGOS[cleanSym] || TRADINGVIEW_KNOWN_LOGOS[cleanSym.replace(/\s+/g, '')] || null;
-  }, [logoid, cleanSym]);
-
-  const [currentSrc, setCurrentSrc] = useState<string | null>(primaryUrl);
-  const [hasError, setHasError] = useState(false);
-
-  React.useEffect(() => {
-    setCurrentSrc(primaryUrl);
-    setHasError(false);
-  }, [primaryUrl]);
-
-  const handleImageError = () => {
-    if (currentSrc && currentSrc.includes('--big.svg')) {
-      // Try normal .svg without --big
-      setCurrentSrc(currentSrc.replace('--big.svg', '.svg'));
-    } else if (currentSrc && !currentSrc.startsWith('/market-icons/') && logoid) {
-      // Try local fallback if available
-      setCurrentSrc(`/market-icons/${logoid.replace(/\//g, '_').replace(/\.svg$/, '')}.svg`);
-    } else {
-      setHasError(true);
-    }
-  };
-
-  const sizeClasses = {
-    xs: 'size-[22px] text-[9px]',
-    sm: 'size-[28px] text-[10.5px]',
-    md: 'size-[32px] text-[12px]',
-    lg: 'size-[40px] text-sm',
-  }[size];
 
   if (currentSrc && !hasError) {
     return (
