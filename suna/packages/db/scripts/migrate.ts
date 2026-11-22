@@ -43,6 +43,7 @@ import { RUNNER_TRANSACTION_MODE, migrationBootstrapsPrerequisites, migrationChe
 const MIGRATIONS_DIR = join(import.meta.dir, '..', 'migrations');
 const BOOTSTRAP_SQL = join(import.meta.dir, '..', 'drizzle', '0000_bootstrap.sql');
 const DOTENV = join(import.meta.dir, '..', '..', '..', 'apps', 'api', '.env');
+const DOTENV_LOCAL = join(import.meta.dir, '..', '..', '..', 'apps', 'api', '.env.local');
 
 function readEnvKey(path: string, key: string): string | null {
   if (!existsSync(path)) return null;
@@ -77,6 +78,10 @@ function resolveUrl(argv: string[]): string {
     return v;
   }
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  const localUrl = readEnvKey(DOTENV_LOCAL, 'DATABASE_URL');
+  if (localUrl && !localUrl.startsWith('encrypted:')) return localUrl;
+  const envUrl = readEnvKey(DOTENV, 'DATABASE_URL');
+  if (envUrl && !envUrl.startsWith('encrypted:')) return envUrl;
   console.error('No DB URL. Set $DATABASE_URL or pass --target=<env>.');
   process.exit(1);
 }

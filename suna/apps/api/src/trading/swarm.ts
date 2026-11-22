@@ -14,6 +14,7 @@ import { db } from '../shared/db';
 import { chatComplete, type FlmMessage } from './freellm';
 import { loadMarketData } from './market-data';
 import { DEFAULT_ANALYST_IDS, personaSystemPrompt } from './personas';
+import { emitBotEvent } from './events';
 
 /** db.execute returns an array-RowList in this driver — normalize both shapes. */
 function resultRows<T>(result: unknown): T[] {
@@ -30,6 +31,10 @@ export interface SwarmAgentRow {
   expression: string;
   description: string | null;
   system_prompt: string | null;
+  is_admin?: boolean;
+  is_pinned?: boolean;
+  is_archived?: boolean;
+  model?: string | null;
 }
 
 let cachedAgentsList: SwarmAgentRow[] | null = null;
@@ -47,9 +52,14 @@ export async function listAgents(): Promise<SwarmAgentRow[]> {
   }
   const result = await db.execute(sql`
     select id, name, role, group_category, shape, color, expression,
-           description, system_prompt
+           description, system_prompt,
+           coalesce(is_admin, false) as is_admin,
+           coalesce(is_pinned, false) as is_pinned,
+           coalesce(is_archived, false) as is_archived,
+           coalesce(model, 'zed') as model
     from trading.agents
-    order by case when is_admin then 0 else 1 end, id
+    where is_archived is not true
+    order by case when is_admin then 0 else 1 end, case when is_pinned then 0 else 1 end, id
   `);
   cachedAgentsList = resultRows<SwarmAgentRow>(result);
   cachedAgentsExpiresAt = now + 30000; // 30s ultra-fast in-memory cache
@@ -87,10 +97,18 @@ function asNum(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function normalizeSignal(v: unknown): 'BUY' | 'SELL' | 'HOLD' | null {
-  if (typeof v !== 'string') return null;
-  const u = v.trim().toUpperCase();
-  return u === 'BUY' || u === 'SELL' || u === 'HOLD' ? u : null;
+function normalizeSignal(v: unknown, text?: string): 'BUY' | 'SELL' | 'HOLD' | null {
+  if (typeof v === 'string') {
+    const u = v.trim().toUpperCase();
+    if (u === 'BUY' || u === 'SELL' || u === 'HOLD') return u;
+  }
+  if (text) {
+    const upper = text.toUpperCase();
+    if (/\bBUY\b/.test(upper) && !/\bSELL\b/.test(upper)) return 'BUY';
+    if (/\bSELL\b/.test(upper) && !/\bBUY\b/.test(upper)) return 'SELL';
+    if (/\bHOLD\b/.test(upper)) return 'HOLD';
+  }
+  return null;
 }
 
 export interface SwarmPhaseLog {
@@ -167,6 +185,11 @@ function findAgent(id: string, agents: SwarmAgentRow[]): SwarmAgentRow | null {
   return agents.find((a) => a.id === id) ?? null;
 }
 
+export function evaluateQuorum(validSignals: Array<{ signal: 'BUY' | 'SELL' | 'HOLD' | null }>): boolean {
+  const filtered = validSignals.filter((v) => v.signal !== null);
+  return filtered.length >= 2;
+}
+
 export async function runSwarmAnalysis(input: SwarmRunInput, analysisDate?: string): Promise<SwarmRunReport> {
   const ticker = input.ticker.trim().toUpperCase();
   const analystIds = (input.analystIds?.length ? input.analystIds : DEFAULT_ANALYST_IDS).filter(
@@ -190,38 +213,58 @@ export async function runSwarmAnalysis(input: SwarmRunInput, analysisDate?: stri
   if (input.note?.trim()) brief += `\nUSER NOTE: ${input.note.trim()}`;
   if (analysisDate) brief += `\nANALYSIS DATE: ${analysisDate}`;
 
-  // ── analyst team (parallel) ──────────────────────────────────────────────
+  // ── analyst team (capped at 2 parallel calls to prevent connection exhaustion) ──
   const votes: SwarmVote[] = [];
   const analystRows = analystIds
     .map((id) => findAgent(id, agents))
     .filter((r): r is SwarmAgentRow => Boolean(r));
 
-  const analystSettled = await Promise.allSettled(
-    analystRows.map(async (row) => {
-      const res = await callAgent(row, `${brief}\n\nProduce your analyst JSON now.`);
-      if ('error' in res) {
-        phases.push({ phase: 'analyst', agent: row.id, model: null, provider: null, latencyMs: null, status: 'failed', summary: res.error });
-        const vote: SwarmVote = { agentId: row.id, agentName: row.name, signal: null, confidence: null, note: 'model call failed', model: null };
+  const BATCH_SIZE = 2;
+  for (let i = 0; i < analystRows.length; i += BATCH_SIZE) {
+    const chunk = analystRows.slice(i, i + BATCH_SIZE);
+    await Promise.allSettled(
+      chunk.map(async (row) => {
+        const res = await callAgent(row, `${brief}\n\nProduce your analyst JSON now. Must return JSON with "signal": "BUY" | "SELL" | "HOLD", "confidence": 0-100, "note": string.`);
+        if ('error' in res) {
+          phases.push({ phase: 'analyst', agent: row.id, model: null, provider: null, latencyMs: null, status: 'failed', summary: res.error });
+          const vote: SwarmVote = { agentId: row.id, agentName: row.name, signal: null, confidence: null, note: 'model call failed', model: null };
+          votes.push(vote);
+          return vote;
+        }
+        const parsed = parseJsonLoose(res.text);
+        const vote: SwarmVote = {
+          agentId: row.id,
+          agentName: row.name,
+          signal: normalizeSignal(parsed?.['signal'], res.text),
+          confidence: asNum(parsed?.['confidence']),
+          note: asStr(parsed?.['note'], res.text.slice(0, 240)),
+          model: res.model,
+        };
+        console.log(`[SwarmAnalystVote] ${row.id}: signal=${vote.signal}, conf=${vote.confidence}, model=${res.model}`);
+        phases.push({ phase: 'analyst', agent: row.id, model: res.model, provider: res.provider, latencyMs: res.latencyMs, status: 'ok', summary: `${vote.signal ?? '?'} (${vote.confidence ?? '?'})` });
         votes.push(vote);
         return vote;
-      }
-      const parsed = parseJsonLoose(res.text);
-      const vote: SwarmVote = {
-        agentId: row.id,
-        agentName: row.name,
-        signal: normalizeSignal(parsed?.['signal']),
-        confidence: asNum(parsed?.['confidence']),
-        note: asStr(parsed?.['note'], res.text.slice(0, 240)),
-        model: res.model,
-      };
-      phases.push({ phase: 'analyst', agent: row.id, model: res.model, provider: res.provider, latencyMs: res.latencyMs, status: 'ok', summary: `${vote.signal ?? '?'} (${vote.confidence ?? '?'})` });
-      votes.push(vote);
-      return vote;
-    }),
-  );
-  const analystErrors = analystSettled.filter((r) => r.status === 'rejected').length;
-  if (analystErrors) {
-    phases.push({ phase: 'analyst-loop', agent: '(dispatch)', model: null, provider: null, latencyMs: null, status: 'failed', summary: `${analystErrors} analyst promise(s) rejected` });
+      }),
+    );
+  }
+
+  // Quorum check: ensure at least 2 analysts agreed or returned valid signals
+  const validSignals = votes.filter((v) => v.signal !== null);
+  const buyVotes = validSignals.filter((v) => v.signal === 'BUY').length;
+  const sellVotes = validSignals.filter((v) => v.signal === 'SELL').length;
+  const holdVotes = validSignals.filter((v) => v.signal === 'HOLD').length;
+  const hasQuorum = evaluateQuorum(votes);
+  if (!hasQuorum) {
+    phases.push({
+      phase: 'analyst-quorum',
+      agent: '(consensus)',
+      model: null,
+      provider: null,
+      latencyMs: null,
+      status: 'failed',
+      summary: `Quorum refusal: fewer than 2 reporting analyst signals (${validSignals.length} returned). Minimum 2 required.`,
+    });
+    throw new Error(`Analyst quorum not reached: minimum 2 reporting analysts required (got ${validSignals.length}). Pipeline halted.`);
   }
 
   const analystDigest = votes.length
@@ -257,34 +300,43 @@ export async function runSwarmAnalysis(input: SwarmRunInput, analysisDate?: stri
 
   // ── synthesis (portfolio manager) ────────────────────────────────────────
   const pm = findAgent('portfolio_manager', agents);
+  if (!pm) {
+    phases.push({ phase: 'synthesis', agent: 'portfolio_manager', model: null, provider: null, latencyMs: null, status: 'skipped', summary: 'agent row missing' });
+    throw new Error('Portfolio manager agent missing from registry');
+  }
+
   let decision: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
-  let confidence = 50;
-  let reasoning = 'Synthesis unavailable — defaulting to HOLD.';
-  let riskScore = 50;
+  let confidence = 0;
+  let reasoning = '';
+  let riskScore = 0;
   let executionNote = '';
   let riskResult: SwarmRunReport['risk'] = null;
 
-  if (pm) {
-    const debateBlock = debate.map((d) => `${d.side.toUpperCase()} (conf ${d.confidence}): ${d.argument}`).join('\n');
-    const res = await callAgent(
-      pm,
-      `${brief}\n\nANALYST REPORTS:\n${analystDigest}\n\nDEBATE:\n${debateBlock || '(no debate ran)'}\n\nProduce your investment-committee JSON now.`,
-      { maxTokens: 450 },
-    );
-    if ('error' in res) {
-      phases.push({ phase: 'synthesis', agent: pm.id, model: null, provider: null, latencyMs: null, status: 'failed', summary: res.error });
-    } else {
-      const parsed = parseJsonLoose(res.text);
-      decision = normalizeSignal(parsed?.['decision']) ?? decision;
-      confidence = asNum(parsed?.['confidence']) ?? confidence;
-      reasoning = asStr(parsed?.['reasoning'], res.text.slice(0, 300));
-      riskScore = asNum(parsed?.['risk_score']) ?? riskScore;
-      executionNote = asStr(parsed?.['execution_note']);
-      phases.push({ phase: 'synthesis', agent: pm.id, model: res.model, provider: res.provider, latencyMs: res.latencyMs, status: 'ok', summary: `${decision} (conf ${confidence})` });
+  const debateBlock = debate.map((d) => `${d.side.toUpperCase()} (conf ${d.confidence}): ${d.argument}`).join('\n');
+  const res = await callAgent(
+    pm,
+    `${brief}\n\nANALYST REPORTS:\n${analystDigest}\n\nDEBATE:\n${debateBlock || '(no debate ran)'}\n\nProduce your investment-committee JSON now. Must return JSON with "decision": "BUY" | "SELL" | "HOLD", "confidence": 0-100, "reasoning": string, "risk_score": 0-100, "execution_note": string.`,
+    { maxTokens: 450 },
+  );
+  if ('error' in res) {
+    phases.push({ phase: 'synthesis', agent: pm.id, model: null, provider: null, latencyMs: null, status: 'failed', summary: res.error });
+    throw new Error(`Synthesis failed: portfolio manager error (${res.error})`);
+  }
+  const parsed = parseJsonLoose(res.text);
+  const synthDecision = normalizeSignal(parsed?.['decision'], res.text);
+  if (!synthDecision) {
+    throw new Error('Synthesis failed: portfolio manager returned invalid or missing decision signal');
+  }
+  decision = synthDecision;
+  confidence = asNum(parsed?.['confidence']) ?? 50;
+  reasoning = asStr(parsed?.['reasoning'], res.text.slice(0, 300));
+  riskScore = asNum(parsed?.['risk_score']) ?? 0;
+  executionNote = asStr(parsed?.['execution_note']);
+  phases.push({ phase: 'synthesis', agent: pm.id, model: res.model, provider: res.provider, latencyMs: res.latencyMs, status: 'ok', summary: `${decision} (conf ${confidence})` });
 
-      // ── risk gate ──────────────────────────────────────────────────────
-      const rm = findAgent('risk_manager', agents);
-      if (rm) {
+  // ── risk gate ──────────────────────────────────────────────────────
+  const rm = findAgent('risk_manager', agents);
+  if (rm) {
         const riskRes = await callAgent(
           rm,
           `${brief}\n\nPROPOSED COMMITTEE DECISION: ${decision} (confidence ${confidence}) — ${reasoning}\n\nProduce your risk-gate JSON now.`,
@@ -322,10 +374,6 @@ export async function runSwarmAnalysis(input: SwarmRunInput, analysisDate?: stri
           }
         }
       }
-    }
-  } else {
-    phases.push({ phase: 'synthesis', agent: 'portfolio_manager', model: null, provider: null, latencyMs: null, status: 'skipped', summary: 'agent row missing' });
-  }
 
   // ── execution desk note ────────────────────────────────────────────────
   const trader = findAgent(input.executor ?? 'trader_agent', agents);
@@ -358,6 +406,56 @@ export async function runSwarmAnalysis(input: SwarmRunInput, analysisDate?: stri
     persisted = true;
   } catch {
     persisted = false;
+  }
+
+  // Persist run to trading.swarm_runs (pending migration safe)
+  try {
+    await db.execute(sql`
+      insert into trading.swarm_runs (
+        id, ticker, status, debate_rounds, signal, confidence, note,
+        phase_logs, votes, created_at, updated_at
+      ) values (
+        ${runId}, ${ticker}, 'completed', ${debateRounds}, ${decision}, ${confidence},
+        ${reasoning}, ${JSON.stringify(phases)}::jsonb, ${JSON.stringify(votes)}::jsonb,
+        now(), now()
+      )
+    `);
+  } catch (err) {
+    // Graceful fallback if migration not yet applied
+  }
+
+  // F7: OpenMausBot proactive event: run_finished
+  await emitBotEvent({
+    bot_id: 'portfolio_manager',
+    event_type: 'run_finished',
+    payload: {
+      ticker,
+      decision,
+      confidence,
+      reasoning,
+      risk_score: riskScore,
+      run_id: runId,
+    },
+  }).catch(() => {});
+
+  // F7: Store message in bot's thread (trading.bot_messages)
+  try {
+    await db.execute(sql`
+      insert into trading.bot_messages (
+        project_id, session_id, agent_id, agent_name, sender, content, metadata, created_at
+      ) values (
+        'b0000000-0000-0000-0000-000000000001',
+        'session-portfolio_manager',
+        'portfolio_manager',
+        'Portfolio Manager',
+        'agent',
+        ${`[Swarm Consensus Report: ${ticker}] Decision: ${decision} (Confidence: ${confidence}%). Reasoning: ${reasoning}`},
+        ${JSON.stringify({ ticker, decision, confidence, risk_score: riskScore, run_id: runId })}::jsonb,
+        now()
+      )
+    `);
+  } catch (err) {
+    console.warn('[BotMessages] Error persisting swarm run message:', err);
   }
 
   return {

@@ -19,6 +19,7 @@ export interface CreateMentionSuggestionOptions {
   getAgents: () => Agent[];
   getSessions: () => Session[];
   getCurrentSessionId: () => string | undefined;
+  getCurrentAgentName?: () => string | undefined;
   /**
    * Fires ONLY on the false<->true boundary of "does at least one row exist
    * right now" — NOT "is a trigger match active". See `MenuNavState`'s own
@@ -101,6 +102,8 @@ export function createMentionSuggestion(
           agents: opts.getAgents(),
           sessions: opts.getSessions(),
           currentSessionId: opts.getCurrentSessionId(),
+        currentAgentName: opts.getCurrentAgentName?.(),
+          currentAgentName: opts.getCurrentAgentName?.(),
           // Fixed for the lifetime of this open menu — see
           // `MentionMenuHostProps.now`'s own doc comment.
           now: Date.now(),
@@ -123,6 +126,7 @@ export function createMentionSuggestion(
         agents: opts.getAgents(),
         sessions: opts.getSessions(),
         currentSessionId: opts.getCurrentSessionId(),
+        currentAgentName: opts.getCurrentAgentName?.(),
         selectedIndex: nav.getSelectedIndex(),
         onSelect,
         onHover,

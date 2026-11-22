@@ -244,12 +244,13 @@ export function FreeLlmKeysPanel({
     }
   }, [keys, masterKey]);
 
-  // Sync keys from Render Server (server-llm-1.onrender.com)
+  // Sync keys from upstream server (if configured via env)
   useEffect(() => {
-    const RENDER_ORIGIN = 'https://server-llm-1.onrender.com';
-    const RENDER_AUTH = 'Bearer rnd_UfnwbkZKhhZJe2cZrhpsnSMkpMqz';
+    const RENDER_ORIGIN = process.env.NEXT_PUBLIC_FLM_REMOTE_BASE_URL || '';
+    const RENDER_AUTH = process.env.NEXT_PUBLIC_FLM_REMOTE_API_KEY ? `Bearer ${process.env.NEXT_PUBLIC_FLM_REMOTE_API_KEY}` : '';
+    if (!RENDER_ORIGIN) return;
     fetch(`${RENDER_ORIGIN}/api/keys`, {
-      headers: { Authorization: RENDER_AUTH },
+      headers: RENDER_AUTH ? { Authorization: RENDER_AUTH } : {},
     })
       .then((res) => (res.ok ? res.json() : null))
       .then((remoteKeys) => {
@@ -351,13 +352,15 @@ export function FreeLlmKeysPanel({
       prev.map((k) => {
         if (k.id === keyId) {
           const nextEnabled = !k.enabled;
-          // Sync toggle to Render server
-          if (/^\d+$/.test(keyId)) {
-            fetch(`https://server-llm-1.onrender.com/api/keys/${keyId}`, {
+          // Sync toggle to remote server if configured
+          const remoteOrigin = process.env.NEXT_PUBLIC_FLM_REMOTE_BASE_URL || '';
+          const remoteAuth = process.env.NEXT_PUBLIC_FLM_REMOTE_API_KEY ? `Bearer ${process.env.NEXT_PUBLIC_FLM_REMOTE_API_KEY}` : '';
+          if (remoteOrigin && /^\d+$/.test(keyId)) {
+            fetch(`${remoteOrigin}/api/keys/${keyId}`, {
               method: 'PATCH',
               headers: {
                 'Content-Type': 'application/json',
-                Authorization: 'Bearer rnd_UfnwbkZKhhZJe2cZrhpsnSMkpMqz',
+                ...(remoteAuth ? { Authorization: remoteAuth } : {}),
               },
               body: JSON.stringify({ enabled: nextEnabled }),
             }).catch(() => {});
@@ -371,11 +374,13 @@ export function FreeLlmKeysPanel({
 
   const handleDeleteKey = (keyId: string) => {
     setKeys((prev) => prev.filter((k) => k.id !== keyId));
-    // Sync delete to Render server
-    if (/^\d+$/.test(keyId)) {
-      fetch(`https://server-llm-1.onrender.com/api/keys/${keyId}`, {
+    // Sync delete to remote server if configured
+    const remoteOrigin = process.env.NEXT_PUBLIC_FLM_REMOTE_BASE_URL || '';
+    const remoteAuth = process.env.NEXT_PUBLIC_FLM_REMOTE_API_KEY ? `Bearer ${process.env.NEXT_PUBLIC_FLM_REMOTE_API_KEY}` : '';
+    if (remoteOrigin && /^\d+$/.test(keyId)) {
+      fetch(`${remoteOrigin}/api/keys/${keyId}`, {
         method: 'DELETE',
-        headers: { Authorization: 'Bearer rnd_UfnwbkZKhhZJe2cZrhpsnSMkpMqz' },
+        headers: remoteAuth ? { Authorization: remoteAuth } : {},
       }).catch(() => {});
     }
   };
@@ -393,26 +398,28 @@ export function FreeLlmKeysPanel({
       priority: parseInt(newKeyPriority, 10) || 5,
       enabled: true,
       health: 'healthy',
-      lastPingMs: Math.floor(Math.random() * 70 + 70),
-      lastChecked: 'Just now',
+      lastPingMs: 0,
+      lastChecked: new Date().toISOString(),
     };
 
     setKeys((prev) => [newItem, ...prev]);
     setShowAddModal(false);
 
-    // Sync added key to Render server
-    fetch('https://server-llm-1.onrender.com/api/keys', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer rnd_UfnwbkZKhhZJe2cZrhpsnSMkpMqz',
-      },
-      body: JSON.stringify({
-        platform: plat.id,
-        key: newKeyInput.trim() || undefined,
-        label: newKeyLabel.trim() || `${plat.name} Free Key`,
-      }),
-    })
+    // Sync added key to remote server if configured
+    if (remoteOrigin) {
+      fetch(`${remoteOrigin}/api/keys`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(remoteAuth ? { Authorization: remoteAuth } : {}),
+        },
+        body: JSON.stringify({
+          platform: plat.id,
+          key: newKeyInput.trim() || undefined,
+          label: newKeyLabel.trim() || `${plat.name} Free Key`,
+        }),
+      }).catch(() => {});
+    }
       .then((res) => (res.ok ? res.json() : null))
       .then((created) => {
         if (created?.id) {

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
+import { resolveTradingViewSymbol } from './symbol-resolver';
 
 interface TvMiniChartProps {
   symbol: string;
@@ -25,7 +26,8 @@ export default function TvMiniChart({
       if (!containerRef.current) return;
       containerRef.current.innerHTML = '';
       const chartEl = document.createElement('tv-mini-chart');
-      const cleanSymbol = symbol.includes(':') ? symbol : `NASDAQ:${symbol}`;
+      const resolved = resolveTradingViewSymbol(symbol);
+      const cleanSymbol = resolved.fullSymbol || (symbol.includes(':') ? symbol : `NSE:${symbol}`);
       chartEl.setAttribute('symbol', cleanSymbol);
       chartEl.style.width = '100%';
       chartEl.style.height = '100%';

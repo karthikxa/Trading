@@ -209,16 +209,6 @@ export function TradeDetailView({
               <span className="text-zinc-300 font-normal">·</span>
               <span className="text-zinc-600 font-normal">{formattedDateTitle}</span>
             </h1>
-
-            {currentTrade.source === 'auto' && (
-              <Badge
-                variant="secondary"
-                className="text-[10px] font-sans font-bold flex items-center gap-1 bg-amber-50 text-amber-700 border-amber-200"
-              >
-                <Zap className="size-3 text-amber-500 fill-amber-500" />
-                <span>Auto</span>
-              </Badge>
-            )}
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
@@ -231,8 +221,8 @@ export function TradeDetailView({
             >
               {copiedShare ? (
                 <>
-                  <Check className="size-3.5 text-emerald-600" />
-                  <span className="text-emerald-700">Copied Link</span>
+                  <Check className="size-3.5 text-zinc-900" />
+                  <span className="text-zinc-900 font-medium">Copied</span>
                 </>
               ) : (
                 <>

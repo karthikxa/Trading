@@ -105,7 +105,8 @@ export function materializeMigrationRuntimeDirectory(
   if (auditSource) {
     const expectedSha256 = options.expectedSha256 ?? AUDIT_V2_SHA256;
     const actualSha256 = sha256(auditSource);
-    if (actualSha256 !== expectedSha256) {
+    const normalizedActualSha256 = sha256(auditSource.replace(/\r\n/g, '\n'));
+    if (actualSha256 !== expectedSha256 && normalizedActualSha256 !== expectedSha256) {
       throw new Error(
         `${AUDIT_V2_MIGRATION} checksum mismatch: expected ${expectedSha256}, received ${actualSha256}`,
       );
@@ -120,7 +121,8 @@ export function materializeMigrationRuntimeDirectory(
   if (removeLocalDockerSource) {
     const expectedSha256 = options.removeLocalDockerExpectedSha256 ?? REMOVE_LOCAL_DOCKER_SHA256;
     const actualSha256 = sha256(removeLocalDockerSource);
-    if (actualSha256 !== expectedSha256) {
+    const normalizedActualSha256 = sha256(removeLocalDockerSource.replace(/\r\n/g, '\n'));
+    if (actualSha256 !== expectedSha256 && normalizedActualSha256 !== expectedSha256) {
       throw new Error(
         `${REMOVE_LOCAL_DOCKER_MIGRATION} checksum mismatch: expected ${expectedSha256}, received ${actualSha256}`,
       );
@@ -136,7 +138,8 @@ export function materializeMigrationRuntimeDirectory(
   if (rbacCutoverViewsSource) {
     const expectedSha256 = options.rbacCutoverViewsExpectedSha256 ?? RBAC_CUTOVER_VIEWS_SHA256;
     const actualSha256 = sha256(rbacCutoverViewsSource);
-    if (actualSha256 !== expectedSha256) {
+    const normalizedActualSha256 = sha256(rbacCutoverViewsSource.replace(/\r\n/g, '\n'));
+    if (actualSha256 !== expectedSha256 && normalizedActualSha256 !== expectedSha256) {
       throw new Error(
         `${RBAC_CUTOVER_VIEWS_MIGRATION} checksum mismatch: expected ${expectedSha256}, received ${actualSha256}`,
       );

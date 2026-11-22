@@ -112,6 +112,36 @@ export function AgentSelector({
 
   const { data: serverAgents = [] } = useTradingAgents();
 
+  const [agentOverrides, setAgentOverrides] = useState<Record<string, Partial<TradingAgentDef>>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('kortix_trading_agent_overrides_v1');
+        if (saved) return JSON.parse(saved);
+      } catch {}
+    }
+    return {};
+  });
+
+  useEffect(() => {
+    const handleOverrides = () => {
+      if (typeof window !== 'undefined') {
+        try {
+          const saved = localStorage.getItem('kortix_trading_agent_overrides_v1');
+          if (saved) setAgentOverrides(JSON.parse(saved));
+        } catch {}
+      }
+    };
+    window.addEventListener('trading-agents-updated', handleOverrides);
+    return () => window.removeEventListener('trading-agents-updated', handleOverrides);
+  }, []);
+
+  const mergedAgents = useMemo(() => {
+    return serverAgents.map((bot) => ({
+      ...bot,
+      ...(agentOverrides[bot.id] || {}),
+    }));
+  }, [serverAgents, agentOverrides]);
+
   const [dynamicGroups, setDynamicGroups] = useState<any[]>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -185,7 +215,7 @@ export function AgentSelector({
     role: 'Capital Allocation & Lead',
     group: 'Execution',
     shape: 'circle',
-    color: '#8B5CF6',
+    color: '#F97316',
     expression: 'attentive',
     status: 'idle',
     description: 'Lead Portfolio Manager and Workspace Administrator.',
@@ -193,15 +223,18 @@ export function AgentSelector({
   };
 
   const activeSwarmBot = useMemo(() => {
-    const found = serverAgents.find((b) => b.id === selectedBotId);
+    const found = mergedAgents.find((b) => b.id === selectedBotId);
     if (found) {
       return {
         ...found,
         name: formatCleanAgentName(found.name || found.id),
       };
     }
-    return DEFAULT_SWARM_LEAD;
-  }, [serverAgents, selectedBotId]);
+    return {
+      ...DEFAULT_SWARM_LEAD,
+      ...(agentOverrides['portfolio_manager'] || {}),
+    };
+  }, [mergedAgents, selectedBotId, agentOverrides]);
 
   const flatAgentItems = useMemo(() => {
     return [
@@ -226,7 +259,7 @@ export function AgentSelector({
         expression: 'attentive' as const,
         isGroup: true,
       })),
-      ...serverAgents.map((bot) => ({
+      ...mergedAgents.map((bot) => ({
         id: bot.id,
         value: bot.id,
         name: formatCleanAgentName(bot.name || bot.id),
@@ -237,7 +270,7 @@ export function AgentSelector({
         expression: bot.expression,
       })),
     ];
-  }, [dynamicGroups, serverAgents]);
+  }, [dynamicGroups, mergedAgents]);
 
   const handleCommandItemClick = (item: any) => {
     if (item.isGroup) {

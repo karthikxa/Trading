@@ -8,6 +8,7 @@ import {
   Calendar as CalendarIcon,
   Plus,
   RefreshCw,
+  Filter,
 } from 'lucide-react';
 import { CurrencyMode, JournalTrade } from './types';
 import { Button } from '@/components/ui/button';
@@ -258,49 +259,43 @@ export const TradingCalendar = React.memo(function TradingCalendar({
             This Month
           </Button>
 
-          <Group aria-label="Currency and return mode">
-            <Button
+          {/* Filter Popover for Currency, Perc, Ratio (% RS R) */}
+          <Popover>
+            <PopoverTrigger
               type="button"
-              variant={currencyMode === '₹' || currencyMode === '$' ? 'default' : 'ghost'}
-              size="xs"
-              onClick={() => onCurrencyModeChange('₹')}
-              className={`font-sans tabular-nums text-xs px-2.5 h-7 rounded-sm transition-colors ${
-                currencyMode === '₹' || currencyMode === '$'
-                  ? 'bg-zinc-950 text-white shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-950'
-              }`}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-lg border border-border/70 bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer font-sans h-8'
+              )}
             >
-              ₹
-            </Button>
-            <GroupSeparator />
-            <Button
-              type="button"
-              variant={currencyMode === '%' ? 'default' : 'ghost'}
-              size="xs"
-              onClick={() => onCurrencyModeChange('%')}
-              className={`font-sans tabular-nums text-xs px-2.5 h-7 rounded-sm transition-colors ${
-                currencyMode === '%'
-                  ? 'bg-zinc-950 text-white shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-950'
-              }`}
-            >
-              %
-            </Button>
-            <GroupSeparator />
-            <Button
-              type="button"
-              variant={currencyMode === 'R' ? 'default' : 'ghost'}
-              size="xs"
-              onClick={() => onCurrencyModeChange('R')}
-              className={`font-sans tabular-nums text-xs px-2.5 h-7 rounded-sm transition-colors ${
-                currencyMode === 'R'
-                  ? 'bg-zinc-950 text-white shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-950'
-              }`}
-            >
-              R
-            </Button>
-          </Group>
+              <Filter className="size-3.5 text-muted-foreground" />
+              <span>Filter</span>
+            </PopoverTrigger>
+            <PopoverPopup align="end" className="w-56 p-3 flex flex-col gap-2.5 border border-border/80 bg-card shadow-xl rounded-xl font-sans z-50">
+              <span className="text-xs font-semibold text-foreground">Return / Currency Filter</span>
+              <div className="flex flex-col gap-1">
+                {[
+                  { mode: '₹' as CurrencyMode, label: 'Currency (₹ / RS)', desc: 'Show absolute net rupee profit and loss' },
+                  { mode: '%' as CurrencyMode, label: 'Perc (%)', desc: 'Show percentage return on trading capital' },
+                  { mode: 'R' as CurrencyMode, label: 'Ratio (R)', desc: 'Show risk-multiple return relative to R' },
+                ].map((item) => (
+                  <button
+                    key={item.mode}
+                    type="button"
+                    onClick={() => onCurrencyModeChange(item.mode)}
+                    className={cn(
+                      'flex flex-col text-left px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer',
+                      (currencyMode === item.mode || (item.mode === '₹' && currencyMode === '$'))
+                        ? 'bg-primary/10 text-primary font-semibold'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                    )}
+                  >
+                    <span className="text-xs font-medium">{item.label}</span>
+                    <span className="text-[10px] text-muted-foreground font-normal">{item.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </PopoverPopup>
+          </Popover>
 
           <Button
             type="button"

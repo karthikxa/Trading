@@ -7,7 +7,7 @@ import { ArtifactFramePreloader } from '@/features/artifacts/artifact-frame-prel
 import { useTranslations } from '@/i18n/use-translations';
 import { useQuery } from '@tanstack/react-query';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { Suspense, lazy, useCallback, useEffect, useLayoutEffect } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 
 import { TITLEBAR_CONTROL_CLASS } from '@kortix/ui/internal/desktop/titlebar-control';
 import { PersonalOnboardingWelcome } from '@/components/projects/personal-onboarding-welcome';
@@ -310,17 +310,23 @@ const ProjectSheelLayout = ({ children }: { children: React.ReactNode }) => {
   const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
   const { state, isMobile, toggleSidebar, peek, peekEnter, peekLeave } = useSidebar();
   const isExpanded = !isMobile && state === 'expanded';
-  // The sidebar hides fully when collapsed (offcanvas everywhere, no icon
-  // rail), so a hidden sidebar means no seam border and no way back from the
-  // panel itself. On the desktop shell the reopen control lives HERE, in the
-  // OS title-bar band; on the web each view draws its own. Shared gate so the
-  // two can never both render — see sidebar-opener.ts.
   const desktopShell = useDesktopShell();
+  const [isEditDrawerOpen, setIsEditDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    const handler = (e: any) => {
+      setIsEditDrawerOpen(Boolean(e.detail?.open));
+    };
+    window.addEventListener('edit-agent-drawer-toggle', handler);
+    return () => window.removeEventListener('edit-agent-drawer-toggle', handler);
+  }, []);
+
   return (
     <div
       className={cn(
-        'bg-background relative flex min-h-0 flex-1 flex-col overflow-hidden',
+        'bg-background relative flex min-h-0 flex-1 flex-col overflow-hidden transition-[margin] duration-300 ease-in-out',
         isExpanded && 'border-border border-l',
+        isEditDrawerOpen && 'mr-[420px]',
       )}
       // The sidebar navigates and the toggle below owns the band's corner, so
       // the window's desktop Back (root layout) steps aside on every project view.

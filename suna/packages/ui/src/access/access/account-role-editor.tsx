@@ -70,8 +70,12 @@ export function useAccountRoleEditor({
 
   const policiesQuery = useQuery({
     queryKey: ['iam-policies', accountId],
-    queryFn: () => listPolicies(accountId),
-    enabled: rbacEnabled && canReadPolicies === true,
+    queryFn: async () => {
+      if (!accountId) return [];
+      const res = await listPolicies(accountId);
+      return res ?? [];
+    },
+    enabled: !!accountId && rbacEnabled && canReadPolicies === true,
     staleTime: 30_000,
   });
   const accountPolicyByUser = useMemo(() => {

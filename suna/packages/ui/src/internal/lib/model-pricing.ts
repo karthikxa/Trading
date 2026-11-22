@@ -9,7 +9,7 @@ import {
 import type { ProviderListResponse } from '@kortix/sdk/react';
 import { useQuery } from '@tanstack/react-query';
 import { useSessionIds } from '../../providers/session-ids';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /**
  * Per-million-token rates for a session's turns.
@@ -139,11 +139,23 @@ export function useModelPricingLookup(
   const catalog = catalogQuery.data as CatalogPricingSource | undefined;
   const cachedPricing = useMemo(() => (catalog ? pricingMapFor(catalog) : undefined), [catalog]);
 
+  const isMountedRef = useRef(false);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   // Called during a consumer's render (inside `useMemo`), so the state update
-  // is deferred to a microtask instead of running mid-render.
+  // is deferred until after the component has mounted to avoid unmounted state updates.
   const onCatalogMiss = useCallback(() => {
     if (catalogWanted || !projectId) return;
-    queueMicrotask(() => setCatalogWanted(true));
+    setTimeout(() => {
+      if (isMountedRef.current) {
+        setCatalogWanted(true);
+      }
+    }, 0);
   }, [catalogWanted, projectId]);
 
   return useMemo(

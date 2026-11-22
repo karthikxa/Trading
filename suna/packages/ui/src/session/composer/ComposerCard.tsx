@@ -349,6 +349,7 @@ export function ComposerCard({
                 onEmptyChange={setIsEmpty}
                 onDocChange={handleDocChange}
                 agents={agents}
+                currentAgentName={selectedAgent}
                 sessions={allSessions ?? []}
                 currentSessionId={sessionId}
                 commands={commands}

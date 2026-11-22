@@ -16,12 +16,22 @@ export function IdentityIntro({ accountId }: { accountId: string }) {
   const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
   const providerQuery = useQuery({
     queryKey: ['iam-sso-provider', accountId],
-    queryFn: () => getSsoProvider(accountId),
+    queryFn: async () => {
+      if (!accountId) return null;
+      const res = await getSsoProvider(accountId);
+      return res ?? null;
+    },
+    enabled: !!accountId,
     staleTime: 30_000,
   });
   const tokensQuery = useQuery({
     queryKey: ['scim-tokens', accountId],
-    queryFn: () => listScimTokens(accountId),
+    queryFn: async () => {
+      if (!accountId) return [];
+      const res = await listScimTokens(accountId);
+      return res ?? [];
+    },
+    enabled: !!accountId,
     staleTime: 30_000,
   });
 

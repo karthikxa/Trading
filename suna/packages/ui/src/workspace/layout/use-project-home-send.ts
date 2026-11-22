@@ -179,6 +179,31 @@ export function useProjectHomeSend(projectId: string, { beforeSend, space }: Use
               model: options?.model ?? null,
               variant: options?.variant ?? null,
             });
+
+            // Map session to agent so clicking the agent returns to this session
+            const targetAgent = options?.agent || 'portfolio_manager';
+            if (typeof window !== 'undefined') {
+              try {
+                const existing = JSON.parse(localStorage.getItem('tauric_agent_sessions_v1') || '{}');
+                existing[targetAgent] = sessionId;
+                localStorage.setItem('tauric_agent_sessions_v1', JSON.stringify(existing));
+              } catch {}
+              window.dispatchEvent(
+                new CustomEvent('bot-typing-status', {
+                  detail: { agentId: targetAgent, isTyping: true },
+                }),
+              );
+              window.dispatchEvent(
+                new CustomEvent('bot-message-activity', {
+                  detail: {
+                    agentId: targetAgent,
+                    lastMessage: text.length > 60 ? text.slice(0, 60) + '...' : text,
+                    lastMessageAt: Date.now(),
+                    time: 'Just now',
+                  },
+                }),
+              );
+            }
             // RENDER-only copy for the boot shell, so the bubble is on screen
             // from the session page's first frame.
             useFirstPromptPreviewStore.getState().setFirstPromptPreview(sessionId, text, files ?? []);

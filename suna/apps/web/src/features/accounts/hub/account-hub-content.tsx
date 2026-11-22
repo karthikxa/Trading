@@ -211,29 +211,12 @@ export function AccountHubContent() {
   // header above it live.
   useBrandingScope(accountId);
   const entitlements = accountStateQuery.data?.tier?.entitlements;
-  const enterpriseIdentityEnabled = !!(entitlements?.sso || entitlements?.scim);
-  // Audit and SSO/SCIM have no free-tier content — the server has nothing to
-  // list until the account is entitled, so the EnterpriseUpsell card stands
-  // in for the whole feature. Groups and Roles are different: `GET
-  // .../groups` and `GET .../roles` carry NO entitlement check
-  // (`apps/api/src/accounts/iam/groups.ts` / `custom-roles.ts` — only the
-  // mutating routes call `requireEntitlement(..., 'rbac')`), because the six
-  // built-in roles and an account's real (if empty) group list are product,
-  // not upsell. `GroupsTab`/`RolesTab` already render that list unconditionally
-  // and gate only "Create a group" / "New role" behind `rbacEnabled` — a
-  // disabled control with an inline "Enterprise feature" tooltip/banner,
-  // mirroring the server's 403 so an admin never submits a mutation the
-  // backend will reject. Blocking the whole tab behind `rbacEnabled` here (as
-  // this used to) hid that free content behind an upsell card for no reason;
-  // see `enterprise-upsell.tsx`'s own header comment, which already said the
-  // intent was to "keep the tab/section visible for discoverability" — the
-  // page-level gate below just never let that happen. Audit/Identity keep the
-  // outer gate; Groups/Roles no longer do. While the account state is still
-  // loading we render nothing gated (skeleton) to avoid flashing.
-  const rbacEnabled = !!entitlements?.rbac;
-  const auditEnabled = !!entitlements?.auditAccess;
-  const brandingEnabled = !!entitlements?.branding;
-  const entitlementsLoading = !entitlements && accountStateQuery.isLoading;
+  // Unlocked as free without requiring Enterprise tier
+  const enterpriseIdentityEnabled = true;
+  const rbacEnabled = true;
+  const auditEnabled = true;
+  const brandingEnabled = true;
+  const entitlementsLoading = false;
   // Forms open in the hub's split sheet beside the pane. A sheet belongs to
   // the pane that opened it, so leaving the pane closes it.
   const hubSheet = useAccountHubSheet();
@@ -871,10 +854,10 @@ function GeneralCard({
   canWrite: boolean;
 }) {
   const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
-  const [name, setName] = useState(account.name);
+  const [name, setName] = useState(account.name || '');
 
   useEffect(() => {
-    setName(account.name);
+    setName(account.name || '');
   }, [account.name]);
 
   const renameMutation = useMutation({
@@ -890,8 +873,8 @@ function GeneralCard({
     onError: (err: Error) => errorToast(err.message || tI18nComplete.raw('textf8b3ddaa27a4')),
   });
 
-  const trimmed = name.trim();
-  const canSubmit = canWrite && trimmed.length > 0 && trimmed !== account.name;
+  const trimmed = (name || '').trim();
+  const canSubmit = canWrite && trimmed.length > 0 && trimmed !== (account.name || '');
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1447,7 +1430,7 @@ function MembersCard({
                 }
               />
               <div role="rowgroup">
-                {sorted.map((member) => {
+                {sorted.map((member, index) => {
                   const isSelf = member.user_id === currentUserId;
                   const isLastOwner = member.account_role === 'owner' && ownerCount === 1;
                   const label = principalLabel(member);
@@ -1496,7 +1479,7 @@ function MembersCard({
                   const checked = selectedIds.has(member.user_id);
                   return (
                     <MemberTableRow
-                      key={member.user_id}
+                      key={member.user_id || member.email || `member-${index}`}
                       selected={checked}
                       pending={pendingUserIds.has(member.user_id)}
                       onOpen={() => onSelectMember(member.user_id)}

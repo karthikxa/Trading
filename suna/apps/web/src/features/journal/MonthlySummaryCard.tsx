@@ -68,9 +68,9 @@ export function MonthlySummaryCard({ trades, monthLabel }: MonthlySummaryCardPro
         </Badge>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-end flex-1">
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-stretch flex-1">
         {/* Left: Bar Chart of R-distribution in black & white (7 cols) */}
-        <div className="md:col-span-7 flex flex-col justify-end h-48 pt-2">
+        <div className="md:col-span-7 flex flex-col justify-end min-h-[190px] pt-2">
           <div className="flex items-end justify-between gap-3 h-36 px-2 border-b border-zinc-200/80 pb-2">
             {buckets.map((b) => {
               const heightPct = b.count > 0 ? Math.max(16, Math.round((b.count / maxCount) * 100)) : 4;

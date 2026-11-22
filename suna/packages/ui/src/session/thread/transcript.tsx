@@ -2080,18 +2080,30 @@ function TurnFooter(
     connectProviderOpen, onConnectProviderOpenChange, servedModel, stoppedBy, modelOptions,
     projectId, projectSessionId,
   } = props;
-  const { working, response } = model;
+  const { working, response, blocks, openText } = model;
   const { turnError, turnErrorRow, turnErrorRowDetails, turnErrorRaw } = errors;
   const { statusPhrase, statusElapsedLabel } = status;
   const { retryInfo, retryMessage, retrySecondsLeft } = retry;
   const { turnEndedAt, turnDurationMs, costInfo } = meta;
+
+  // Suppress "Gathering thoughts..." once reply has completed and no active tools are running
+  const hasRunningTool = blocks.some((b) => b.type === 'tool' && (b.state === 'running' || b.state === 'call'));
+  const isReplyFinished = Boolean(response.trim().length > 0 && !openText);
+  const effectiveWorking = working && (!isReplyFinished || hasRunningTool);
+
+  const assistantMsg = props.turn.assistant.at(-1);
+  const rawAgent = assistantMsg?.agent || (props.sessionId.includes('-') && !props.sessionId.startsWith('session-group-') ? props.sessionId.replace(/^session-/, '') : 'portfolio_manager');
+  const activeAgentName = rawAgent.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+
   return (
     <>
       <TurnBusyRow
         {...props}
-        working={working}
+        working={effectiveWorking}
         turnError={turnError}
         tHardcodedUi={tHardcodedUi}
+        activeAgentName={activeAgentName}
+        rawAgent={rawAgent}
       />
     {/* ── Error (abort / failure banner) ──
         An automatic provider-error recovery chain (KRTX-2597) renders ONE
@@ -2134,7 +2146,7 @@ function TurnFooter(
           On touch there is no hover, so Copy and the turn's finished-at /
           duration / cost would be permanently invisible, and tap-emulated
           `:hover` would leave exactly one arbitrary turn's bar lit. */}
-      {!working && !props.hideActionBar && (
+      {!effectiveWorking && !props.hideActionBar && (
         <TurnActionBar
           response={response}
           inlineContentParts={answered.inlineContentParts}
@@ -2173,11 +2185,23 @@ function TurnBusyRow(
     retry: TurnRetryState;
     status: TurnStatusState;
     tHardcodedUi: ReturnType<typeof useTranslations>;
+    activeAgentName?: string;
+    rawAgent?: string;
   },
 ) {
-  const { working, turnError, suppressBusyIndicator, awaitingUser, sessionId, retry, status, tHardcodedUi } = props;
+  const { working, turnError, suppressBusyIndicator, awaitingUser, sessionId, retry, status, tHardcodedUi, activeAgentName, rawAgent } = props;
   const { retryInfo, retryMessage, retrySecondsLeft } = retry;
   const { statusPhrase, statusElapsedLabel } = status;
+  const isCustomPhrase = Boolean(statusPhrase && statusPhrase.trim().length > 0);
+  const displayStatus = isCustomPhrase ? statusPhrase : `${activeAgentName || 'Agent'} is typing...`;
+  const agentColor = (rawAgent || '').includes('risk')
+    ? '#DC2626'
+    : (rawAgent || '').includes('trader')
+      ? '#14B8A6'
+      : (rawAgent || '').includes('manus') || (rawAgent || '').includes('maus')
+        ? '#8B5CF6'
+        : '#F97316';
+
   return (
     <>
     {showTurnBusyIndicator({
@@ -2197,8 +2221,10 @@ function TurnBusyRow(
         )}
         <SessionBusyIndicator
           sessionId={sessionId}
-          statusText={statusPhrase || undefined}
+          statusText={displayStatus}
           elapsedLabel={statusElapsedLabel}
+          agentName={activeAgentName}
+          agentColor={agentColor}
           retryLabel={
             retryInfo
               ? String(

@@ -245,13 +245,76 @@ export function matchDhanExecutions(
 
 /**
  * Fetch and sync all trades from Dhan account into the Journal
+ * Prioritizes Supabase cache to avoid unnecessary calls to Dhan API
  */
-export async function syncDhanTradesToJournal(projectId?: string): Promise<{
+export async function syncDhanTradesToJournal(
+  projectId?: string,
+  forceRefresh = false
+): Promise<{
   syncedCount: number;
   trades: JournalTrade[];
 }> {
   try {
-    // 1. Fetch all trades and funds concurrently from Dhan API
+    // 1. Check Supabase first (if not force refresh)
+    if (!forceRefresh) {
+      try {
+        const supabaseRes = await fetch('/api/journal/supabase')
+          .then((r) => r.json())
+          .catch(() => null);
+
+        if (supabaseRes?.ok && Array.isArray(supabaseRes.data) && supabaseRes.data.length > 0) {
+          const cachedTrades: JournalTrade[] = supabaseRes.data.map((r: any) => ({
+            id: r.id,
+            projectId: r.project_id || projectId,
+            instrument: r.instrument,
+            direction: (r.direction || 'Buy') as Direction,
+            lots: Number(r.lots || 1),
+            entryPrice: Number(r.entry_price || 0),
+            exitPrice: Number(r.exit_price || 0),
+            entryDate: r.entry_date,
+            entryTime: r.entry_time || '09:30',
+            exitDate: r.exit_date || r.entry_date,
+            exitTime: r.exit_time || '15:30',
+            pnl: Number(r.pnl || 0),
+            commission: Number(r.commission || 0),
+            swap: Number(r.swap || 0),
+            stopLoss: r.stop_loss,
+            takeProfit: r.take_profit,
+            riskR: r.risk_r,
+            returnR: r.return_r,
+            session: r.session || 'Asian (Tokyo & Sydney)',
+            followedPlan: r.followed_plan ?? true,
+            planName: r.plan_name || 'DhanHQ Execution',
+            confluences: Array.isArray(r.confluences) ? r.confluences : [],
+            mistakes: Array.isArray(r.mistakes) ? r.mistakes : [],
+            notes: r.notes || '',
+            chartHtf: r.chart_htf,
+            chartMtf: r.chart_mtf,
+            chartLtf: r.chart_ltf,
+            source: r.source || 'auto',
+          }));
+
+          if (typeof window !== 'undefined') {
+            localStorage.setItem(
+              'kortix_trading_journal_trades_v2',
+              JSON.stringify(cachedTrades)
+            );
+            window.dispatchEvent(
+              new CustomEvent('trading-journal-updated', { detail: cachedTrades })
+            );
+          }
+
+          return {
+            syncedCount: cachedTrades.length,
+            trades: cachedTrades,
+          };
+        }
+      } catch (err) {
+        console.warn('Failed to load trades from Supabase cache, fallback to Dhan API:', err);
+      }
+    }
+
+    // 2. Fetch all trades and funds concurrently from Dhan API
     const [allTradesRes, fundsRes] = await Promise.all([
       fetch('/api/dhan?action=all_trades').then((r) => r.json()).catch(() => ({ data: [] })),
       fetch('/api/dhan?action=funds').then((r) => r.json()).catch(() => ({ data: {} })),
@@ -259,19 +322,18 @@ export async function syncDhanTradesToJournal(projectId?: string): Promise<{
 
     const executions = Array.isArray(allTradesRes?.data) ? allTradesRes.data : [];
 
-    // 2. Fetch existing trades from local storage
+    // 3. Fetch existing trades from local storage
     const currentTrades = getLocalTrades().filter(
       (t) => t.source === 'auto' || t.id.startsWith('dhan_')
     );
 
-    // 3. Match round-trip trades
+    // 4. Match round-trip trades
     const matchedTrades = matchDhanExecutions(executions, currentTrades, projectId);
 
-    // 4. Save to localStorage
+    // 5. Save to localStorage and persist to Supabase
     if (typeof window !== 'undefined') {
       localStorage.setItem('kortix_trading_journal_trades_v2', JSON.stringify(matchedTrades));
 
-      // Update starting capital if funds exist
       const avail = Number(fundsRes?.data?.availabelBalance || fundsRes?.data?.sodLimit || 0);
       if (avail > 0) {
         localStorage.setItem('kortix_trading_dhan_funds', JSON.stringify(fundsRes.data));
@@ -279,7 +341,7 @@ export async function syncDhanTradesToJournal(projectId?: string): Promise<{
 
       window.dispatchEvent(new CustomEvent('trading-journal-updated', { detail: matchedTrades }));
 
-      // 5. Persist to Supabase database for mitigation
+      // Persist to Supabase database so future visits never need to call Dhan again
       try {
         fetch('/api/journal/supabase', {
           method: 'POST',

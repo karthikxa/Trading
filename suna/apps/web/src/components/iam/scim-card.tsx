@@ -178,7 +178,12 @@ export function ScimCard({ accountId, canManage }: ScimCardProps) {
 
   const tokensQuery = useQuery({
     queryKey: ['scim-tokens', accountId],
-    queryFn: () => listScimTokens(accountId),
+    queryFn: async () => {
+      if (!accountId) return [];
+      const res = await listScimTokens(accountId);
+      return res ?? [];
+    },
+    enabled: !!accountId,
     staleTime: 30_000,
     // Poll so "Last sync activity" (last_used_at, stamped by every IdP call)
     // stays current while the card is open — a sync run shows up live.
@@ -190,7 +195,12 @@ export function ScimCard({ accountId, canManage }: ScimCardProps) {
   // this card stays fully usable either way (copy, not a hard gate).
   const providerQuery = useQuery({
     queryKey: ['iam-sso-provider', accountId],
-    queryFn: () => getSsoProvider(accountId),
+    queryFn: async () => {
+      if (!accountId) return null;
+      const res = await getSsoProvider(accountId);
+      return res ?? null;
+    },
+    enabled: !!accountId,
     staleTime: 30_000,
   });
 

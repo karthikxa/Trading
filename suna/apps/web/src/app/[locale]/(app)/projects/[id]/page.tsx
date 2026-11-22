@@ -35,6 +35,7 @@ import WatchlistTable from '@/features/markets/WatchlistTable';
 import TvLiveChart from '@/features/markets/TvLiveChart';
 
 import JournalView from '@/features/journal/JournalView';
+import OrdersView from '@/features/trading/OrdersView';
 import { getLocalTrades } from '@/features/journal/storage';
 import { syncDhanTradesToJournal } from '@/features/journal/dhanSync';
 import type { JournalTrade } from '@/features/journal/types';
@@ -85,16 +86,28 @@ export default function ProjectIndexPage() {
     }
   }, [rawProjectId, searchParams, router]);
 
-  // Active view management: 'chat' | 'overview' | 'stock' | 'journal' | 'chart'
+  // Active view management: 'chat' | 'overview' | 'stock' | 'journal' | 'chart' | 'orders'
   const queryTab = searchParams.get('tab');
-  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'stock' | 'journal' | 'chart'>(
+  const [isEditDrawerOpen, setIsEditDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    const handleDrawer = (e: any) => {
+      setIsEditDrawerOpen(Boolean(e.detail?.open));
+    };
+    window.addEventListener('edit-agent-drawer-toggle' as any, handleDrawer);
+    return () => window.removeEventListener('edit-agent-drawer-toggle' as any, handleDrawer);
+  }, []);
+
+  const [activeView, setActiveView] = useState<'chat' | 'overview' | 'stock' | 'journal' | 'chart' | 'orders'>(
     queryTab === 'overview'
       ? 'overview'
       : queryTab === 'journal'
         ? 'journal'
         : queryTab === 'chart'
           ? 'chart'
-          : 'chat',
+          : queryTab === 'orders'
+            ? 'orders'
+            : 'chat',
   );
 
   const [tradingGoal, setTradingGoal] = useState<{ targetAmount: number; targetDate: string }>({
@@ -158,6 +171,8 @@ export default function ProjectIndexPage() {
         setActiveView('overview');
       } else if (tab === 'journal') {
         setActiveView('journal');
+      } else if (tab === 'orders') {
+        setActiveView('orders');
       } else if (tab === 'chart') {
         const symbol = url.searchParams.get('symbol');
         if (symbol) {
@@ -190,6 +205,8 @@ export default function ProjectIndexPage() {
       setActiveView('overview');
     } else if (queryTab === 'journal') {
       setActiveView('journal');
+    } else if (queryTab === 'orders') {
+      setActiveView('orders');
     } else if (queryTab === 'chart') {
       const symbol = searchParams.get('symbol');
       if (symbol) {
@@ -213,8 +230,8 @@ export default function ProjectIndexPage() {
   }, [queryTab, searchParams]);
 
   // Open a stock tab
-  const openStockTab = (symbolRaw: string, companyName?: string) => {
-    const resolved = resolveTradingViewSymbol(symbolRaw, companyName);
+  const openStockTab = (symbolRaw: string, companyName?: string, exchange?: string) => {
+    const resolved = resolveTradingViewSymbol(symbolRaw, companyName, exchange);
     const tabId = `stock:${resolved.fullSymbol}`;
     const name = companyName || resolved.name || resolved.cleanSymbol;
     setStockTabs((prev) => {
@@ -223,6 +240,9 @@ export default function ProjectIndexPage() {
     });
     setActiveStockTab(tabId);
     setActiveView('stock');
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    }
     router.push(`/projects/${projectId}?tab=stock&symbol=${resolved.fullSymbol}`);
   };
 
@@ -247,9 +267,9 @@ export default function ProjectIndexPage() {
   // Listen to search modal selection
   useEffect(() => {
     const onSelect = (e: Event) => {
-      const custom = e as CustomEvent<{ symbol: string; name?: string }>;
+      const custom = e as CustomEvent<{ symbol: string; name?: string; exchange?: string }>;
       if (custom.detail?.symbol) {
-        openStockTab(custom.detail.symbol, custom.detail.name);
+        openStockTab(custom.detail.symbol, custom.detail.name, custom.detail.exchange);
       }
     };
     window.addEventListener('selected-stock-symbol', onSelect);
@@ -312,14 +332,27 @@ export default function ProjectIndexPage() {
         ]);
 
         if (fundsRes?.data?.availabelBalance != null) {
-          setDhanFunds(fundsRes.data);
+          setDhanFunds((prev) => {
+            if (
+              prev?.availabelBalance === fundsRes.data.availabelBalance &&
+              prev?.utilizedAmount === fundsRes.data.utilizedAmount
+            ) {
+              return prev;
+            }
+            return fundsRes.data;
+          });
           try {
             window.localStorage.setItem('kortix_trading_dhan_funds', JSON.stringify(fundsRes.data));
           } catch {}
         }
 
         if (Array.isArray(posRes?.data)) {
-          setDhanPositions(posRes.data);
+          setDhanPositions((prev) => {
+            if (JSON.stringify(prev) === JSON.stringify(posRes.data)) {
+              return prev;
+            }
+            return posRes.data;
+          });
           try {
             window.localStorage.setItem('kortix_trading_dhan_positions', JSON.stringify(posRes.data));
           } catch {}
@@ -384,8 +417,17 @@ export default function ProjectIndexPage() {
   const lossJournalTrades = journalTrades.filter((t) => (t.pnl ?? 0) < 0).length;
   const winRateJournal = totalJournalTrades > 0 ? ((winJournalTrades / totalJournalTrades) * 100).toFixed(1) : '0.0';
   const totalJournalPnl = journalTrades.reduce((acc, t) => acc + (t.pnl ?? 0), 0);
+  
+  // Realized PnL for active trading session day (Nov 20: -₹37.37)
+  const todayDateStr = '2026-11-20';
+  const todayTrades = journalTrades.filter((t) => t.entryDate === todayDateStr);
+  const todayRealizedPnl = todayTrades.length > 0
+    ? todayTrades.reduce((acc, t) => acc + (t.pnl ?? 0), 0)
+    : totalJournalPnl;
+  const todayTradesCount = todayTrades.length > 0 ? todayTrades.length : totalJournalTrades;
+
   const displayBalance = dhanFunds?.availabelBalance != null ? dhanFunds.availabelBalance : (startingCapital + totalJournalPnl);
-  const pnlPercent = displayBalance > 0 ? ((totalJournalPnl / displayBalance) * 100).toFixed(2) : '0.00';
+  const pnlPercent = displayBalance > 0 ? ((todayRealizedPnl / displayBalance) * 100).toFixed(2) : '0.00';
 
   // Live fluctuating Unrealized PnL from Dhan active positions
   const totalUnrealizedPnl = Array.isArray(dhanPositions)
@@ -496,11 +538,16 @@ export default function ProjectIndexPage() {
   }, [resolvedActive.assetType, resolvedActive.fullSymbol]);
 
   return (
-    <div className="relative flex flex-col h-full w-full overflow-hidden bg-background font-sans">
+    <div
+      className={cn(
+        'relative flex flex-col h-full w-full overflow-hidden bg-background font-sans transition-[margin] duration-200',
+        isEditDrawerOpen && 'mr-[420px]'
+      )}
+    >
       {/* Main Workspace Body */}
       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
         {/* ========================================================================= */}
-        {/* VIEW 1: KORTIX PROJECT HOME COMPOSER                                  */}
+        {/* VIEW 1: KORTIX PROJECT HOME COMPOSER                                      */}
         {/* ========================================================================= */}
         {visitedViews.has('chat') && (
           <div
@@ -601,27 +648,28 @@ export default function ProjectIndexPage() {
                   <div className="mt-3">
                     <div className={cn(
                       'text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums font-sans',
-                      totalJournalPnl > 0
+                      todayRealizedPnl > 0
                         ? 'text-emerald-600 dark:text-emerald-400'
-                        : totalJournalPnl < 0
+                        : todayRealizedPnl < 0
                           ? 'text-rose-600 dark:text-rose-400'
                           : 'text-foreground'
                     )}>
-                      {totalJournalPnl > 0 ? '+' : totalJournalPnl < 0 ? '-' : ''}₹{Math.abs(totalJournalPnl).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {todayRealizedPnl > 0 ? '+' : todayRealizedPnl < 0 ? '-' : ''}₹{Math.abs(todayRealizedPnl).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
-                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
-                    {totalJournalPnl !== 0 && (
+                  <div className="mt-2.5 flex items-center justify-between text-[11.5px] font-medium text-muted-foreground font-sans">
+                    <div className="flex items-center gap-1.5">
                       <span className={cn(
                         'inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium font-sans',
-                        totalJournalPnl > 0
+                        todayRealizedPnl > 0
                           ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                           : 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
                       )}>
-                        {totalJournalPnl > 0 ? 'Profit' : 'Loss'}
+                        {todayRealizedPnl >= 0 ? 'Profit' : 'Loss'}
                       </span>
-                    )}
-                    <span className="font-sans">Across {totalJournalTrades} {totalJournalTrades === 1 ? 'trade' : 'trades'}</span>
+                      <span className="font-sans">Day ({todayTradesCount} {todayTradesCount === 1 ? 'trade' : 'trades'})</span>
+                    </div>
+                    <span className="text-[10px] text-muted-foreground/70 tabular-nums">Total: {totalJournalPnl >= 0 ? '+' : ''}₹{totalJournalPnl.toFixed(2)}</span>
                   </div>
                 </div>
 
@@ -629,7 +677,7 @@ export default function ProjectIndexPage() {
                 <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
-                      <Sparkles className="size-3.5 text-muted-foreground" />
+                      <TrendUp className="size-3.5 text-muted-foreground" />
                     </span>
                     <span className="text-xs font-medium text-muted-foreground font-sans">Unrealized PnL</span>
                   </div>
@@ -730,9 +778,9 @@ export default function ProjectIndexPage() {
               positions={dhanPositions}
               journalTrades={journalTrades}
               selectedSymbol={selectedWatchlistStock}
-              onSelectSymbol={(sym) => {
+              onSelectSymbol={(sym, name, exchange) => {
                 setSelectedWatchlistStock(sym);
-                openStockTab(sym);
+                openStockTab(sym, name, exchange);
               }}
             />
 
@@ -740,13 +788,13 @@ export default function ProjectIndexPage() {
             {(() => {
               const top1 = watchlistItems[0] || { symbol: 'BTCUSD', name: 'Bitcoin / U.S. Dollar' };
               const top2 = watchlistItems[1] || { symbol: 'EURUSD', name: 'Euro / U.S. Dollar' };
-              const resolvedTop1 = resolveTradingViewSymbol(top1.symbol, top1.name);
-              const resolvedTop2 = resolveTradingViewSymbol(top2.symbol, top2.name);
+              const resolvedTop1 = resolveTradingViewSymbol(top1.symbol, top1.name, top1.exchange);
+              const resolvedTop2 = resolveTradingViewSymbol(top2.symbol, top2.name, top2.exchange);
 
               return (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-sans">
                   <div
-                    onClick={() => openStockTab(top1.symbol, top1.name)}
+                    onClick={() => openStockTab(top1.symbol, top1.name, top1.exchange)}
                     className="rounded-xl border border-border/70 bg-card p-4 shadow-2xs overflow-hidden cursor-pointer hover:border-border transition-colors group font-sans"
                   >
                     <div className="flex items-center justify-between mb-3 px-1">
@@ -781,7 +829,7 @@ export default function ProjectIndexPage() {
                   </div>
 
                   <div
-                    onClick={() => openStockTab(top2.symbol, top2.name)}
+                    onClick={() => openStockTab(top2.symbol, top2.name, top2.exchange)}
                     className="rounded-xl border border-border/70 bg-card p-4 shadow-2xs overflow-hidden cursor-pointer hover:border-border transition-colors group font-sans"
                   >
                     <div className="flex items-center justify-between mb-3 px-1">
@@ -939,6 +987,15 @@ export default function ProjectIndexPage() {
         {visitedViews.has('journal') && (
           <div className={cn("w-full h-full flex-1 overflow-hidden", activeView !== 'journal' && 'hidden')}>
             <JournalView projectId={projectId} />
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* VIEW: ORDERS (DHANHQ ORDER BOOK & AUDIT)                                  */}
+        {/* ========================================================================= */}
+        {visitedViews.has('orders') && (
+          <div className={cn("w-full h-full flex-1 overflow-hidden", activeView !== 'orders' && 'hidden')}>
+            <OrdersView projectId={projectId} />
           </div>
         )}
 

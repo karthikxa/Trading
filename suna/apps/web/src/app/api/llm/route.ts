@@ -23,13 +23,17 @@ export async function POST(req: Request) {
       lastUserMessage: messages[messages.length - 1]?.content?.slice(0, 80)
     });
 
-    const res = await fetch('https://server-llm-1.onrender.com/v1/chat/completions', {
+    const remoteUrl = process.env.FLM_REMOTE_BASE_URL
+      ? `${process.env.FLM_REMOTE_BASE_URL}/v1/chat/completions`
+      : 'http://localhost:8008/v1/trading/chat';
+
+    const res = await fetch(remoteUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(5000)
+      signal: AbortSignal.timeout(45000)
     });
 
     if (!res.ok) {

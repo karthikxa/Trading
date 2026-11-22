@@ -29,7 +29,7 @@ import { ProjectMemoryNavItem } from './footer/project-memory-nav';
 import { ProjectNavItems } from './project-nav-items';
 import { ProjectSessionList } from './project-session-list';
 import { ProjectSpacesNav } from './project-spaces-nav';
-import { TradingAgentsSidebarNav, AgentsSidebarView } from './trading-agents-nav';
+import { TradingAgentsSessionsList } from './trading-agents-nav';
 import { useIsCreatingProjectSession } from '../../internal/hooks/projects/new-session-guard';
 import { useNewProjectSession } from '../../internal/hooks/projects/use-new-project-session';
 import { useIsMobile } from '../../internal/hooks';
@@ -46,6 +46,7 @@ import {
   ChartLineUp,
   TrendUp,
   Notebook,
+  Receipt,
   ChatCircleDots,
   Sliders,
   HardDrives,
@@ -95,48 +96,6 @@ export function ProjectSidebar({
   const pathname = useUiPathname();
   const searchParams = useUiSearchParams();
   const currentTab = searchParams.get('tab');
-
-  const [sidebarView, setSidebarView] = useState<'main' | 'agents'>(() => {
-    if (typeof window !== 'undefined') {
-      const sp = new URLSearchParams(window.location.search);
-      const tab = sp.get('tab');
-      const path = window.location.pathname;
-      if (
-        tab === 'overview' ||
-        tab === 'journal' ||
-        tab === 'chart' ||
-        path.includes('/admin') ||
-        path.includes('/customize') ||
-        path.includes('/apps') ||
-        path.includes('/drive')
-      ) {
-        return 'main';
-      }
-      if (tab === 'chat' || tab === 'agent' || path.includes('/sessions') || !tab) return 'agents';
-    }
-    return 'agents';
-  });
-
-  useEffect(() => {
-    if (
-      currentTab === 'overview' ||
-      currentTab === 'journal' ||
-      currentTab === 'chart' ||
-      pathname.includes('/admin') ||
-      pathname.includes('/customize') ||
-      pathname.includes('/apps') ||
-      pathname.includes('/drive')
-    ) {
-      setSidebarView('main');
-    } else if (
-      currentTab === 'chat' ||
-      currentTab === 'agent' ||
-      pathname.includes('/sessions') ||
-      !currentTab
-    ) {
-      setSidebarView('agents');
-    }
-  }, [currentTab, pathname]);
 
   const accountId = useBillingAccountId();
   // Channels replace New session and the session list (fail-closed: off until the project answers).
@@ -213,17 +172,10 @@ export function ProjectSidebar({
         // square fill behind the flyout card and it showed at all four corners.
         className="[scrollbar-width:'none'] [-ms-overflow-style:'none'] [&::-webkit-scrollbar]:hidden"
       >
-        {sidebarView === 'agents' ? (
-          <AgentsSidebarView
-            projectId={projectId}
-            onBackToMainSidebar={() => setSidebarView('main')}
-          />
-        ) : (
-          <>
-            <SidebarHeader
-              className="kx-project-sidebar-header space-y-2"
-              data-peek={peek ? '' : undefined}
-            >
+        <SidebarHeader
+          className="kx-project-sidebar-header space-y-2"
+          data-peek={peek ? '' : undefined}
+        >
               <div
                 className={cn(
                   'flex w-full items-center gap-1',
@@ -291,30 +243,7 @@ export function ProjectSidebar({
               <div className="flex h-full min-h-0 flex-col space-y-2">
                 <SidebarGroup className="py-0">
                   <SidebarMenu>
-                    {channels ? null : (
-                      <SidebarMenuItem>
-                        {creatingSession ? (
-                          <SidebarMenuButton
-                            disabled
-                            aria-busy
-                            className="group/menu-button text-sidebar-foreground relative"
-                          >
-                            {newSessionRowBody}
-                          </SidebarMenuButton>
-                        ) : (
-                          <SidebarMenuButton
-                            asChild
-                            className="group/menu-button text-sidebar-foreground relative"
-                          >
-                            <Link href={uiRoutes().project(projectId)} prefetch onClick={handleNewSessionClick}>
-                              {newSessionRowBody}
-                            </Link>
-                          </SidebarMenuButton>
-                        )}
-                      </SidebarMenuItem>
-                    )}
-
-                    {/* Dedicated Chart menu item below New session */}
+                    {/* Dedicated Chart menu item */}
                     <SidebarMenuItem>
                       <SidebarMenuButton
                         asChild
@@ -360,11 +289,20 @@ export function ProjectSidebar({
                       </SidebarMenuButton>
                     </SidebarMenuItem>
 
-                    {/* TauricResearch / TradingAgents Multi-Agent Team */}
-                    <TradingAgentsSidebarNav
-                      projectId={projectId}
-                      onOpenAgentsSidebar={() => setSidebarView('agents')}
-                    />
+                    <SidebarMenuItem>
+                      <SidebarMenuButton
+                        asChild
+                        isActive={currentTab === 'orders'}
+                        className="group/menu-button text-sidebar-foreground relative cursor-pointer"
+                      >
+                        <Link href={`/projects/${projectId}?tab=orders`}>
+                          <span className="shrink-0">
+                            <Receipt className="size-4" />
+                          </span>
+                          <span>Orders</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
 
               {/* Connectors (Gmail, GitHub, Slack, Notion, Google Drive, Composio) */}
               <SidebarMenuItem>
@@ -440,7 +378,7 @@ export function ProjectSidebar({
                   {channels ? (
                     <ProjectSpacesNav projectId={projectId} />
                   ) : (
-                    <ProjectSessionList projectId={projectId} />
+                    <TradingAgentsSessionsList projectId={projectId} />
                   )}
                 </SidebarGroup>
 
@@ -481,8 +419,6 @@ export function ProjectSidebar({
             </SidebarContent>
 
             <SidebarRail aria-label={t('resize')} title={t('resizeHelp')} />
-          </>
-        )}
       </Sidebar>
       <ComputerConnectModal
         projectId={projectId}

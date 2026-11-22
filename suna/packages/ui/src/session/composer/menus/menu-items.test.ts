@@ -113,4 +113,16 @@ describe('buildMentionSections', () => {
     });
     expect(sections).toEqual([]);
   });
+
+  test('excludes the agent the user is currently chatting with', () => {
+    const sections = buildMentionSections({
+      agents: [agent('portfolio_manager'), agent('risk_manager'), agent('trader_agent')],
+      sessions: [],
+      files: [],
+      query: '',
+      currentSessionId: undefined,
+      currentAgentName: 'risk_manager',
+    });
+    expect(sections[0].items.map((i) => i.value)).toEqual(['portfolio_manager', 'trader_agent']);
+  });
 });

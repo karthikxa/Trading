@@ -162,6 +162,22 @@ export function BasicsSection({
           />
         </div>
       </SettingRow>
+
+      {/* Interactive Orb Avatar: toggle gaze tracking and lively blinking */}
+      <SettingRow
+        label="Interactive Orb / Eyes"
+        help="Enable lively pointer gaze tracking and blinking for the agent's Orb avatar."
+      >
+        <div className="flex sm:justify-end">
+          <Switch
+            aria-label="Interactive Orb / Eyes"
+            checked={(oc.options?.interactive as boolean) !== false}
+            onCheckedChange={(v) =>
+              setOc('options', { ...(oc.options ?? {}), interactive: v })
+            }
+          />
+        </div>
+      </SettingRow>
     </EditorSection>
   );
 }

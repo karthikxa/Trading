@@ -256,7 +256,7 @@ export async function GET(req: NextRequest) {
       ok: true,
       service: 'Dhan Live Webhook Feed Bridge',
       status: 'active',
-      publicWebhookUrl: 'https://zed-workspace.onrender.com/api/webhook/dhan',
+      publicWebhookUrl: process.env.PUBLIC_APP_URL ? `${process.env.PUBLIC_APP_URL}/api/webhook/dhan` : '/api/webhook/dhan',
       activeSseListeners: sseClients.size,
       totalSymbolsTracked: ticksStore.size,
       recentAlerts: alertsLog.slice(0, 10),

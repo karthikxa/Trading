@@ -7,6 +7,7 @@ export interface MentionAttrs {
   kind: ChipKind;
   label: string;
   value: string;
+  color?: string;
 }
 
 // `chipPrefix` / `chipText` / `chipClass` / `chipAriaLabel` used to live here.
@@ -64,6 +65,11 @@ export const MentionNode = Node.create({
         parseHTML: (element) => element.getAttribute('data-mention-value'),
         renderHTML: (attrs) => ({ 'data-mention-value': attrs.value }),
       },
+      color: {
+        default: '',
+        parseHTML: (element) => element.getAttribute('data-mention-color') || '',
+        renderHTML: (attrs) => ({ 'data-mention-color': attrs.color }),
+      },
     };
   },
 
@@ -74,6 +80,29 @@ export const MentionNode = Node.create({
   renderHTML({ HTMLAttributes, node }) {
     const label = String(node.attrs.label ?? '');
     const kind = String(node.attrs.kind ?? 'file');
+    if (kind === 'agent' || kind === 'group') {
+      const color =
+        (node.attrs.color as string) ||
+        (kind === 'group' || label.toLowerCase().includes('crew') || label.toLowerCase().includes('group')
+          ? '#10B981'
+          : '#F97316');
+      return [
+        'span',
+        mergeAttributes(HTMLAttributes, {
+          'aria-label': `${kind}: ${label}`,
+          class:
+            'inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-muted/70 px-2 py-0.5 align-baseline text-xs font-medium text-foreground select-none mx-0.5',
+        }),
+        [
+          'span',
+          {
+            class: 'size-2 shrink-0 rounded-full inline-block',
+            style: `background-color: ${color}; box-shadow: 0 0 0 1px rgba(0,0,0,0.1);`,
+          },
+        ],
+        ['span', { class: 'truncate' }, label],
+      ];
+    }
     return [
       'span',
       mergeAttributes(HTMLAttributes, {

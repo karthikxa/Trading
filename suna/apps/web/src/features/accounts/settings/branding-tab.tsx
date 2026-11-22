@@ -94,7 +94,12 @@ export function BrandingTab({ accountId, canManage }: { accountId: string; canMa
   const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: brandingQueryKey(accountId),
-    queryFn: () => getAccountBranding(accountId),
+    queryFn: async () => {
+      if (!accountId) return { branding: null };
+      const res = await getAccountBranding(accountId);
+      return res ?? { branding: null };
+    },
+    enabled: !!accountId,
     staleTime: 20_000,
   });
 
@@ -115,7 +120,15 @@ export function BrandingTab({ accountId, canManage }: { accountId: string; canMa
     );
   }
 
-  const { branding } = query.data;
+  const branding = query.data.branding ?? {
+    app_name: null,
+    logo_url: null,
+    logo_dark_url: null,
+    icon_url: null,
+    icon_dark_url: null,
+    favicon_url: null,
+    favicon_dark_url: null,
+  };
   const isDefault = Object.values(branding).every((v) => v === null);
 
   return (

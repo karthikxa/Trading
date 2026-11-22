@@ -1261,6 +1261,47 @@ export function SessionChat({
     () => (messages ?? []).findLast((m) => m.role === 'assistant')?.message_id ?? '',
     [messages],
   );
+
+  // Sync typing status and latest response activity to sidebar Sessions list
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const currentAgent = boundAgentName || composerAgentName || 'portfolio_manager';
+    window.dispatchEvent(
+      new CustomEvent('bot-typing-status', {
+        detail: {
+          agentId: currentAgent,
+          isTyping: effectiveBusy,
+        },
+      }),
+    );
+  }, [effectiveBusy, boundAgentName, composerAgentName]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !messages) return;
+    const lastAssistant = (messages ?? []).findLast((m) => m.role === 'assistant');
+    if (!lastAssistant) return;
+
+    const currentAgent = boundAgentName || composerAgentName || 'portfolio_manager';
+    const textPieces = promptTexts(lastAssistant)
+      .filter((t) => !t.synthetic)
+      .map((t) => t.text)
+      .join(' ')
+      .trim();
+
+    if (!textPieces) return;
+    const preview = textPieces.length > 80 ? textPieces.slice(0, 80) + '...' : textPieces;
+
+    window.dispatchEvent(
+      new CustomEvent('bot-message-activity', {
+        detail: {
+          agentId: currentAgent,
+          lastMessage: preview,
+          lastMessageAt: Date.now(),
+          time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+        },
+      }),
+    );
+  }, [newestAssistantMessageId, effectiveBusy, boundAgentName, composerAgentName]);
   const { data: modelUsage, refetch: refetchModelUsage } = useSessionModelUsage(projectId, projectSessionId);
   useEffect(() => {
     // `refetch` ignores `enabled`: a chat with no project session (the sub-agent modal) asks nothing.

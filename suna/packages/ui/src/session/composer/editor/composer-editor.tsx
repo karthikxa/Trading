@@ -150,6 +150,8 @@ export interface ComposerEditorProps {
   sessions?: Session[];
   /** Excluded from the `@` session list — you can't mention the session you're in. */
   currentSessionId?: string;
+  /** Excluded from the `@` agent list — you can't mention the agent you're talking to. */
+  currentAgentName?: string;
 
   /** `/` menu data + the two things a row selection can produce — see `menus/slash-controller.ts`. */
   commands?: Command[];
@@ -380,6 +382,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       agents,
       sessions,
       currentSessionId,
+      currentAgentName,
       commands,
       onSelectCommand,
       onSelectAction,
@@ -418,6 +421,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
     const agentsRef = useLatestRef(agents ?? []);
     const sessionsRef = useLatestRef(sessions ?? []);
     const currentSessionIdRef = useLatestRef(currentSessionId);
+    const currentAgentNameRef = useLatestRef(currentAgentName);
     const commandsRef = useLatestRef(commands ?? []);
 
     // Same live-getter reasoning as commandsRef — defaults to SLASH_ACTIONS
@@ -548,6 +552,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
             getAgents: () => agentsRef.current,
             getSessions: () => sessionsRef.current,
             getCurrentSessionId: () => currentSessionIdRef.current,
+            getCurrentAgentName: () => currentAgentNameRef.current,
             onOwnsEnterChange: (ownsEnter) => {
               mentionOwnsEnterRef.current = ownsEnter;
             },

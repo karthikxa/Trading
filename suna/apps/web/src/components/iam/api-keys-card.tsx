@@ -171,7 +171,12 @@ export function ApiKeysList({ accountId, canManage, footnote }: ApiKeysListProps
 
   const serviceAccountsQuery = useQuery({
     queryKey: SERVICE_ACCOUNTS_KEY(accountId),
-    queryFn: () => listServiceAccountsApi(accountId),
+    queryFn: async () => {
+      if (!accountId) return [];
+      const res = await listServiceAccountsApi(accountId);
+      return res ?? [];
+    },
+    enabled: !!accountId,
     staleTime: 30_000,
   });
 

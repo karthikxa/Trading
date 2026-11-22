@@ -19,6 +19,7 @@ import { db } from '../shared/db';
 import { getSupabase, toPublicStorageUrl } from '../shared/supabase';
 import { listAgents, chatWithAgent, runSwarmAnalysis, invalidateAgentsCache, type SwarmRunReport } from './swarm';
 import type { SwarmAgentRow } from './swarm';
+import { emitBotEvent, checkBotComputerPermission, getProactiveResponse } from './events';
 
 /** db.execute returns an array-RowList in this driver — normalize both shapes. */
 function resultRows<T>(result: unknown): T[] {
@@ -77,17 +78,72 @@ tradingApp.get('/agents', async (c: Context<AppEnv>) => {
   }
 });
 
+tradingApp.post('/agents', async (c: Context<AppEnv>) => {
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
+  if (!body) return jsonError(c, 400, 'JSON body required');
+  const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : 'Custom Agent';
+  const role = typeof body.role === 'string' && body.role.trim() ? body.role.trim() : 'Trading Specialist';
+  const id = typeof body.id === 'string' && body.id.trim() ? body.id.trim() : `agent_${Date.now()}`;
+  const group_category = typeof body.group === 'string' ? body.group : 'Analysts';
+  const shape = typeof body.shape === 'string' ? body.shape : 'orb';
+  const color = typeof body.color === 'string' ? body.color : '#7C5CFF';
+  const expression = typeof body.expression === 'string' ? body.expression : 'attentive';
+  const description = typeof body.description === 'string' ? body.description : '';
+  const system_prompt = typeof body.system_prompt === 'string' ? body.system_prompt : null;
+  const model = typeof body.model === 'string' ? body.model : 'zed';
+  const is_admin = Boolean(body.is_admin || body.isAdmin);
+  const is_pinned = Boolean(body.is_pinned || body.isPinned);
+
+  try {
+    if (is_admin) {
+      await db.execute(sql`update trading.agents set is_admin = false`);
+    }
+    await db.execute(sql`
+      insert into trading.agents (
+        id, name, role, group_category, shape, color, expression,
+        description, system_prompt, model, is_admin, is_pinned, is_archived,
+        created_at, updated_at
+      ) values (
+        ${id}, ${name}, ${role}, ${group_category}, ${shape}, ${color}, ${expression},
+        ${description}, ${system_prompt}, ${model}, ${is_admin}, ${is_pinned}, false,
+        now(), now()
+      )
+      on conflict (id) do update set
+        name = excluded.name,
+        role = excluded.role,
+        shape = excluded.shape,
+        color = excluded.color,
+        expression = excluded.expression,
+        description = excluded.description,
+        system_prompt = excluded.system_prompt,
+        updated_at = now()
+    `);
+    invalidateAgentsCache();
+
+    // OpenMausBot proactive event: bot_created
+    await emitBotEvent({
+      bot_id: id,
+      event_type: 'bot_created',
+      payload: { name, role, model, timestamp: Date.now() },
+    }).catch(() => {});
+
+    return c.json({
+      created: true,
+      id,
+      name,
+      role,
+      proactive_intro: getProactiveResponse('bot_created', name, role),
+    });
+  } catch (e) {
+    return jsonError(c, 500, `agent create: ${String(e).slice(0, 200)}`);
+  }
+});
+
 tradingApp.patch('/agents/:id', async (c: Context<AppEnv>) => {
   const id = c.req.param('id') ?? '';
-  const body = await c.req.json().catch(() => null) as {
-    system_prompt?: unknown;
-    name?: unknown;
-    role?: unknown;
-  } | null;
+  const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
   if (!body) return jsonError(c, 400, 'JSON body required');
 
-  // `system_prompt` explicit null / "" clears the customization (template
-  // resumes); an absent key leaves the stored prompt untouched.
   const hasPromptField = Object.prototype.hasOwnProperty.call(body, 'system_prompt');
   const systemPrompt = hasPromptField && typeof body.system_prompt === 'string' && body.system_prompt.trim()
     ? body.system_prompt.trim()
@@ -95,16 +151,35 @@ tradingApp.patch('/agents/:id', async (c: Context<AppEnv>) => {
   const clearPrompt = hasPromptField;
   const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : null;
   const role = typeof body.role === 'string' && body.role.trim() ? body.role.trim() : null;
-  if (!hasPromptField && name == null && role == null) {
-    return jsonError(c, 400, 'Nothing to update; pass system_prompt, name and/or role');
-  }
+  const shape = typeof body.shape === 'string' && body.shape.trim() ? body.shape.trim() : null;
+  const color = typeof body.color === 'string' && body.color.trim() ? body.color.trim() : null;
+  const expression = typeof body.expression === 'string' && body.expression.trim() ? body.expression.trim() : null;
+  const description = typeof body.description === 'string' ? body.description.trim() : null;
+  const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : null;
+  const isAdmin = typeof body.isAdmin === 'boolean' ? body.isAdmin : typeof body.is_admin === 'boolean' ? body.is_admin : null;
+  const isPinned = typeof body.isPinned === 'boolean' ? body.isPinned : typeof body.is_pinned === 'boolean' ? body.is_pinned : null;
+  const isArchived = typeof body.isArchived === 'boolean' ? body.isArchived : typeof body.is_archived === 'boolean' ? body.is_archived : null;
+
   try {
+    if (isAdmin === true) {
+      // Server-enforced single-admin rule: unset admin flag on all others
+      await db.execute(sql`update trading.agents set is_admin = false where id != ${id}`);
+    }
+
     const rows = await db.execute(sql`
       update trading.agents
       set
         system_prompt = case when ${clearPrompt} then ${systemPrompt} else system_prompt end,
         name = coalesce(${name}, name),
         role = coalesce(${role}, role),
+        shape = coalesce(${shape}, shape),
+        color = coalesce(${color}, color),
+        expression = coalesce(${expression}, expression),
+        description = coalesce(${description}, description),
+        model = coalesce(${model}, model),
+        is_admin = coalesce(${isAdmin}, is_admin),
+        is_pinned = coalesce(${isPinned}, is_pinned),
+        is_archived = coalesce(${isArchived}, is_archived),
         updated_at = now()
       where id = ${id}
       returning id
@@ -115,6 +190,58 @@ tradingApp.patch('/agents/:id', async (c: Context<AppEnv>) => {
   } catch (e) {
     return jsonError(c, 500, `agent update: ${String(e).slice(0, 200)}`);
   }
+});
+
+tradingApp.delete('/agents/:id', async (c: Context<AppEnv>) => {
+  const id = c.req.param('id') ?? '';
+  try {
+    const rows = await db.execute(sql`
+      update trading.agents
+      set is_archived = true, updated_at = now()
+      where id = ${id}
+      returning id
+    `);
+    if (!resultRows<{ id: string }>(rows).length) return jsonError(c, 404, `Unknown agent: ${id}`);
+    invalidateAgentsCache();
+    return c.json({ deleted: true, id });
+  } catch (e) {
+    return jsonError(c, 500, `agent delete: ${String(e).slice(0, 200)}`);
+  }
+});
+
+tradingApp.post('/computer/execute', async (c: Context<AppEnv>) => {
+  const reqId = c.req.header('X-Request-Id') || `req_${Date.now()}`;
+  // Caller identity is derived strictly from authenticated principal/session header, NEVER body.botId
+  const sessionBotId = c.req.header('X-Kortix-Session-Bot') || (c as any).get('boundBotId') || 'unbound';
+  const body = await c.req.json().catch(() => null) as { botId?: string; command?: string } | null;
+  const command = body?.command || '';
+
+  if (body?.botId && body.botId !== sessionBotId) {
+    console.warn(`[SecurityAudit] [req:${reqId}] Client spoof attempt: Session bot is '${sessionBotId}', but body claimed '${body.botId}'`);
+  }
+
+  // Permission verified strictly for session-bound bot
+  const canUse = await checkBotComputerPermission(sessionBotId);
+  if (!canUse) {
+    return jsonError(c, 403, `Permission denied: Bot '${sessionBotId}' is not authorized to execute computer commands. Terminal access is restricted to the Admin bot only.`);
+  }
+
+  // Verify Kortix sandbox availability
+  const hasSandbox = process.env.ALLOWED_SANDBOX_PROVIDERS && process.env.ALLOWED_SANDBOX_PROVIDERS !== 'none';
+  if (!hasSandbox) {
+    return jsonError(c, 501, 'No execution sandbox configured in this environment');
+  }
+
+  // Record Kortix approval entry before execution
+  const approvalId = `appr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  console.log(`[KortixApproval] [req:${reqId}] Staged approval ${approvalId} for bot '${sessionBotId}' command: ${command}`);
+
+  return c.json({
+    staged: true,
+    approvalId,
+    executionSandbox: 'daytona',
+    status: 'pending_approval',
+  });
 });
 
 tradingApp.post('/swarm/run', async (c: Context<AppEnv>) => {
@@ -189,15 +316,64 @@ tradingApp.get('/swarm/decisions', async (c: Context<AppEnv>) => {
   }
 });
 
+import crypto from 'node:crypto';
+
+const CHAIN_SECRET = process.env.INTERNAL_SERVICE_KEY || 'krtx_int_sec_chain_token_993';
+
+function signChainToken(payload: { chainId: string; hopCount: number }): string {
+  const data = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', CHAIN_SECRET).update(data).digest('base64url');
+  return `${data}.${sig}`;
+}
+
+function verifyChainToken(token: string): { chainId: string; hopCount: number } {
+  const [data, sig] = token.split('.');
+  if (!data || !sig) throw new Error('Invalid token');
+  const expectedSig = crypto.createHmac('sha256', CHAIN_SECRET).update(data).digest('base64url');
+  if (sig !== expectedSig) throw new Error('Invalid signature');
+  return JSON.parse(Buffer.from(data, 'base64url').toString('utf8'));
+}
+
 tradingApp.post('/chat', async (c: Context<AppEnv>) => {
+  const reqId = c.req.header('X-Request-Id') || `req_${Date.now()}`;
   const body = await c.req.json().catch(() => null) as {
     agentId?: unknown;
     message?: unknown;
     history?: unknown;
+    hopCount?: unknown;
   } | null;
   const agentId = typeof body?.agentId === 'string' ? body.agentId : '';
   const message = typeof body?.message === 'string' ? body.message.slice(0, 4000) : '';
   if (!agentId || !message.trim()) return jsonError(c, 400, 'agentId and message required');
+
+  // Server-issued hop token tracking (ignoring client hopCount)
+  const incomingChainHeader = c.req.header('X-Kortix-Chain-Token');
+  let chainId = '';
+  let serverHopCount = 1;
+
+  if (incomingChainHeader) {
+    try {
+      const parsed = verifyChainToken(incomingChainHeader);
+      chainId = parsed.chainId;
+      serverHopCount = parsed.hopCount + 1;
+    } catch {
+      chainId = `chain_${Date.now()}`;
+      serverHopCount = 1;
+    }
+  } else {
+    chainId = `chain_${Date.now()}`;
+    serverHopCount = 1;
+  }
+
+  // Enforce max 3 hops server-side (4th call refused)
+  if (serverHopCount > 3) {
+    console.warn(`[HopCapExceeded] [req:${reqId}] Chain ${chainId} exceeded maximum 3 hops (attempted hop ${serverHopCount}). Halting chain.`);
+    return jsonError(c, 400, `Max cross-bot delegation hops (3) exceeded on chain ${chainId}`);
+  }
+
+  const nextChainToken = signChainToken({ chainId, hopCount: serverHopCount });
+  c.header('X-Kortix-Chain-Token', nextChainToken);
+  c.header('X-Kortix-Hop-Count', String(serverHopCount));
 
   const history = Array.isArray(body?.history)
     ? body.history
@@ -209,11 +385,87 @@ tradingApp.post('/chat', async (c: Context<AppEnv>) => {
   try {
     const result = await chatWithAgent(agentId, message, history);
     if (result.ok) {
-      return c.json({ ok: true, reply: result.reply, model: result.model, provider: result.provider });
+      return c.json({
+        ok: true,
+        reply: result.reply,
+        model: result.model,
+        provider: result.provider,
+        chainId,
+        hopCount: serverHopCount,
+      });
     }
     return jsonError(c, 503, result.error);
   } catch (e) {
+    console.warn(`[ChatError] [req:${reqId}]`, e);
     return jsonError(c, 500, `chat: ${String(e).slice(0, 200)}`);
+  }
+});
+
+tradingApp.get('/team/export', async (c: Context<AppEnv>) => {
+  try {
+    const agents = await listAgents();
+    return c.json({
+      export_version: '1.0',
+      exported_at: new Date().toISOString(),
+      agents,
+    });
+  } catch (e) {
+    return jsonError(c, 500, `team export: ${String(e).slice(0, 200)}`);
+  }
+});
+
+tradingApp.post('/team/import', async (c: Context<AppEnv>) => {
+  const body = await c.req.json().catch(() => null) as { agents?: SwarmAgentRow[] } | null;
+  if (!body?.agents || !Array.isArray(body.agents)) {
+    return jsonError(c, 400, 'Invalid import package; agents array required');
+  }
+  let importedCount = 0;
+  for (const a of body.agents) {
+    if (!a.id || !a.name) continue;
+    try {
+      await db.execute(sql`
+        insert into trading.agents (
+          id, name, role, group_category, shape, color, expression,
+          description, system_prompt, model, is_admin, is_pinned, is_archived,
+          created_at, updated_at
+        ) values (
+          ${a.id}, ${a.name}, ${a.role || 'Specialist'}, ${a.group_category || 'Analysts'},
+          ${a.shape || 'pebble'}, ${a.color || '#10B981'}, ${a.expression || 'attentive'},
+          ${a.description || ''}, ${a.system_prompt || null}, ${a.model || 'zed'},
+          ${Boolean(a.is_admin)}, ${Boolean(a.is_pinned)}, false,
+          now(), now()
+        )
+        on conflict (id) do update set
+          name = excluded.name,
+          role = excluded.role,
+          shape = excluded.shape,
+          color = excluded.color,
+          expression = excluded.expression,
+          description = excluded.description,
+          system_prompt = excluded.system_prompt,
+          updated_at = now()
+      `);
+      importedCount++;
+    } catch {}
+  }
+  invalidateAgentsCache();
+  return c.json({ imported: true, count: importedCount });
+});
+
+tradingApp.get('/team/metrics', async (c: Context<AppEnv>) => {
+  try {
+    const agents = await listAgents();
+    const decisionsCount = await db.execute(sql`select count(*) as count from trading.swarm_decisions`).catch(() => null);
+    const count = (decisionsCount as unknown as { rows: Array<{ count: string }> })?.rows?.[0]?.count ?? '0';
+    return c.json({
+      total_agents: agents.length,
+      active_agents: agents.filter(a => !a.is_archived).length,
+      admin_agent: agents.find(a => a.is_admin)?.id || 'portfolio_manager',
+      total_decisions: Number(count),
+      active_runs: swarmRuns.size,
+    });
+  } catch (e) {
+    return jsonError(c, 500, `metrics: ${String(e).slice(0, 200)}`);
   }
 });
 

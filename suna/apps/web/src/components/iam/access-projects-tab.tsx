@@ -565,23 +565,32 @@ function ProjectListRow({ project, onSelect }: { project: KortixProject; onSelec
 
   const accessQuery = useQuery({
     queryKey: qk.project.access(project.project_id),
-    queryFn: () => listProjectAccess(project.project_id),
+    queryFn: async () => {
+      if (!project.project_id) return { members: [] };
+      const res = await listProjectAccess(project.project_id);
+      return res ?? { members: [] };
+    },
+    enabled: !!project.project_id,
     staleTime: 30_000,
     retry: false,
   });
   const requestsQuery = useQuery({
     queryKey: qk.project.accessRequests(project.project_id),
-    queryFn: () => listProjectAccessRequests(project.project_id),
+    queryFn: async () => {
+      if (!project.project_id) return { requests: [] };
+      const res = await listProjectAccessRequests(project.project_id);
+      return res ?? { requests: [] };
+    },
     staleTime: 30_000,
     retry: false,
-    enabled: canSeePendingRequests,
+    enabled: !!project.project_id && canSeePendingRequests,
   });
 
-  const memberCount = accessQuery.data?.members.length;
+  const memberCount = accessQuery.data?.members?.length ?? 0;
   const locale = useLocale();
 
   const pendingCount =
-    requestsQuery.data?.requests.filter((r) => r.status === 'pending').length ?? 0;
+    requestsQuery.data?.requests?.filter((r) => r.status === 'pending')?.length ?? 0;
 
   return (
     <div

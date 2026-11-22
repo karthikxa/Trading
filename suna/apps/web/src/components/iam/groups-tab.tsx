@@ -156,7 +156,12 @@ function GroupsList({
 
   const groupsQuery = useQuery({
     queryKey: ['account-groups', accountId],
-    queryFn: () => listGroups(accountId),
+    queryFn: async () => {
+      if (!accountId) return [];
+      const res = await listGroups(accountId);
+      return res ?? [];
+    },
+    enabled: !!accountId,
     ...contract('directory'),
   });
 

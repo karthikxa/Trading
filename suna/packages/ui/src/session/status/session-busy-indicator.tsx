@@ -45,24 +45,17 @@ export function SessionBusyIndicator({
   ambient = false,
   sessionId,
   className,
+  agentName,
+  agentColor,
 }: {
   statusText?: string;
-  /**
-   * Live elapsed time for the current status, e.g. `"24s"`. Rendered beside the
-   * phrase in its OWN non-animated span: it ticks once a second, and folding it
-   * into `statusText` would change the `AnimatePresence` key every second and
-   * replay the roll-swap forever during long tool calls.
-   */
   elapsedLabel?: string;
   retryLabel?: string;
   ambient?: boolean;
-  /**
-   * Keys the dot-matrix glyph: each session hashes to its own variant
-   * (`SessionDotMatrix`), stable for that session's whole life. Session-less
-   * surfaces (home demo, debug harness) omit it and keep the default glyph.
-   */
   sessionId?: string;
   className?: string;
+  agentName?: string;
+  agentColor?: string;
 }): React.ReactElement {
   const reduceMotion = useReducedMotion() ?? false;
   const retryText = retryLabel?.trim();
@@ -104,6 +97,12 @@ export function SessionBusyIndicator({
       )}
     >
       <SessionDotMatrix sessionId={sessionId} size={14} className="shrink-0" />
+      {agentName ? (
+        <span
+          className="size-2 shrink-0 rounded-full inline-block"
+          style={{ backgroundColor: agentColor || '#F97316', boxShadow: '0 0 0 1px rgba(0,0,0,0.1)' }}
+        />
+      ) : null}
       <span className="relative min-w-0 flex-1" aria-hidden>
         {isRetrying ? (
           <span className="text-muted-foreground/70 block truncate text-sm leading-5 tabular-nums">
@@ -121,7 +120,7 @@ export function SessionBusyIndicator({
                   transition={swap.transition}
                   className="block min-w-0 whitespace-nowrap"
                 >
-                  <TextShimmer className="truncate text-center align-middle text-sm leading-5">
+                  <TextShimmer className="truncate text-left align-middle text-sm leading-5 font-medium">
                     {label}
                   </TextShimmer>
                 </m.span>

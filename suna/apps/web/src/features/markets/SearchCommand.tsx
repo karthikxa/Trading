@@ -321,21 +321,17 @@ export default function SearchCommand({
           {loading && (
             <Loader2 className="size-3.5 text-muted-foreground animate-spin shrink-0 mr-1" />
           )}
-          {searchTerm && (
-            <button
-              type="button"
-              onClick={() => setSearchTerm('')}
-              className="p-1 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer mr-1"
-              title="Clear search"
-            >
-              <X className="size-3.5" />
-            </button>
-          )}
           <button
             type="button"
-            onClick={() => setOpen(false)}
+            onClick={() => {
+              if (searchTerm) {
+                setSearchTerm('');
+              } else {
+                setOpen(false);
+              }
+            }}
             className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
-            title="Close (Esc)"
+            title={searchTerm ? 'Clear search' : 'Close (Esc)'}
           >
             <X className="size-3.5" />
           </button>

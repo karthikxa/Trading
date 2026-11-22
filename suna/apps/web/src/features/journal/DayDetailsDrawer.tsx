@@ -154,10 +154,10 @@ export function DayDetailsDrawer({
   const losses = trades.filter((t) => (t.pnl || 0) < 0).length;
   const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
 
-  const validRTrades = trades.filter((t) => typeof t.riskMultiple === 'number');
+  const validRTrades = trades.filter((t) => typeof t.returnR === 'number');
   const avgR =
     validRTrades.length > 0
-      ? validRTrades.reduce((acc, t) => acc + (t.riskMultiple || 0), 0) / validRTrades.length
+      ? validRTrades.reduce((acc, t) => acc + (t.returnR || 0), 0) / validRTrades.length
       : 0;
 
   // Plan compliance & Violations calculation
@@ -233,7 +233,7 @@ export function DayDetailsDrawer({
   };
 
   return (
-    <aside className="w-full sm:w-[360px] md:w-[380px] shrink-0 bg-sidebar text-sidebar-foreground flex flex-col h-full font-sans z-20 select-none shadow-none overflow-hidden">
+    <aside className="w-full sm:w-[360px] md:w-[380px] shrink-0 bg-sidebar text-sidebar-foreground border-l border-sidebar-border/40 flex flex-col h-full font-sans z-20 select-none shadow-none overflow-hidden">
       {/* 1. DRAWER TOP BAR (Kortix Sidebar Header style) */}
       <div className="flex items-center justify-between px-3.5 h-[49px] border-b border-sidebar-border/30 bg-sidebar shrink-0">
         <div className="flex items-center gap-1 text-sidebar-foreground min-w-0">
@@ -293,7 +293,7 @@ export function DayDetailsDrawer({
       </div>
 
       {/* 2. DRAWER BODY (Kortix Sidebar Content) */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 pt-4 pb-24 flex flex-col gap-4 [scrollbar-width:thin]">
         {/* Net Daily P&L Card */}
         <div className="p-3.5 rounded-xl bg-card border border-border/80 flex flex-col gap-1 shadow-2xs">
           <div className="flex items-baseline justify-between">
@@ -467,8 +467,8 @@ export function DayDetailsDrawer({
         </div>
 
         {/* 3. TRADES LIST SECTION */}
-        <div className="flex flex-col gap-2.5 pt-1">
-          <div className="flex items-center justify-between">
+        <div className="flex-1 min-h-0 flex flex-col gap-2.5 pt-1">
+          <div className="flex items-center justify-between shrink-0">
             <div>
               <h3 className="text-xs font-semibold text-foreground">Trades</h3>
               <p className="text-[11px] text-muted-foreground">Tap a trade to see details</p>
@@ -489,7 +489,7 @@ export function DayDetailsDrawer({
           </div>
 
           {/* Filter Bar with Kortix Tabs & Search */}
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-2 shrink-0">
             <Tabs value={filterMode} onValueChange={(v) => setFilterMode(v as any)}>
               <TabsList size="xs" className="h-7 bg-muted/60 p-0.5">
                 <TabsTrigger size="xs" value="all" className="text-xs px-2.5 h-6">All</TabsTrigger>
@@ -511,7 +511,7 @@ export function DayDetailsDrawer({
           </div>
 
           {/* Table Header */}
-          <div className="grid grid-cols-12 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-1 pt-1 border-b border-border/60 pb-1 gap-1">
+          <div className="grid grid-cols-12 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider px-1 pt-1 border-b border-border/60 pb-1 gap-1 shrink-0">
             <div className="col-span-3">Instrument</div>
             <div className="col-span-2 text-center">Time</div>
             <div className="col-span-2 text-center">Dir</div>
@@ -519,13 +519,13 @@ export function DayDetailsDrawer({
             <div className="col-span-3 text-right">PnL</div>
           </div>
 
-          {/* Trade Rows */}
+          {/* Trade Rows - stretches cleanly all the way to the bottom without clipping */}
           {filteredTrades.length === 0 ? (
             <div className="py-6 text-center text-xs text-muted-foreground">
               No trades found
             </div>
           ) : (
-            <div className="flex flex-col divide-y divide-border/40">
+            <div className="flex flex-col divide-y divide-border/40 pr-1 pb-16 select-text">
               {filteredTrades.map((t) => {
                 const isWin = t.pnl >= 0;
                 return (

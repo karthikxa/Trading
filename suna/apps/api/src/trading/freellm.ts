@@ -43,6 +43,7 @@ export type FlmProviderId =
   | 'upstage'
   | 'friendli'
   | 'pollinations'
+  | 'remote'
   | 'local';
 
 interface FlmProviderDef {
@@ -90,6 +91,8 @@ export const PROVIDERS: Record<FlmProviderId, FlmProviderDef> = {
   friendli: { id: 'friendli', name: 'FriendliAI', baseUrl: 'https://inference.friendli.ai/v1', envVar: 'FRIENDLI_TOKEN' },
   /** Truly keyless — no API key required; uses public OpenAI-compatible endpoint */
   pollinations: { id: 'pollinations', name: 'Pollinations.AI', baseUrl: 'https://text.pollinations.ai/openai', envVar: '', keyless: true },
+  /** Optional remote upstream provider configured via environment variables */
+  remote: { id: 'remote', name: 'Remote LLM Upstream', baseUrl: process.env.FLM_REMOTE_BASE_URL || '', envVar: 'FLM_REMOTE_API_KEY' },
   local: { id: 'local', name: 'Custom / Local', baseUrl: process.env.LOCAL_OPENAI_BASE_URL || 'http://localhost:11434/v1', envVar: 'LOCAL_OPENAI_BASE_URL' },
 };
 
@@ -106,6 +109,8 @@ export interface FlmModelDef {
 }
 
 export const FLM_MODELS: FlmModelDef[] = [
+  // Optional remote upstream provider (enabled only when FLM_REMOTE_BASE_URL is set in env)
+  { id: 'remote-default', upstreamId: 'auto', provider: 'remote', tier: 'fast', priority: 15 },
   // Keyless models — no API key required (always available)
   { id: 'pollinations-mistral', upstreamId: 'mistral', provider: 'pollinations', tier: 'fast', priority: 11, keyless: true },
   { id: 'pollinations-openai', upstreamId: 'openai', provider: 'pollinations', tier: 'fast', priority: 10, keyless: true },
@@ -217,6 +222,7 @@ export function enabledModels(): FlmModelDef[] {
   // Keyless models are always enabled; keyed models require a set env var
   return FLM_MODELS.filter((m) => {
     if (m.keyless || PROVIDERS[m.provider]?.keyless) return true;
+    if (m.provider === 'remote') return !!PROVIDERS.remote.baseUrl;
     return !!providerApiKey(m.provider);
   });
 }
@@ -250,6 +256,26 @@ async function dispatchOne(
   const key = providerApiKey(model.provider);
   const flooredTokens = Math.max(maxTokens, 320);
 
+  // Remote upstream provider handler (FLM_REMOTE_BASE_URL)
+  if (model.provider === 'remote') {
+    if (!provider?.baseUrl) {
+      return new Response('Remote provider baseUrl not configured', { status: 503 });
+    }
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (key) headers['authorization'] = `Bearer ${key}`;
+    return fetch(`${provider.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: model.upstreamId || 'auto',
+        messages: bodyMessages,
+        max_tokens: flooredTokens,
+        temperature,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  }
+
   // Pollinations uses direct text endpoint with openai-fast model
   if (model.provider === 'pollinations') {
     try {
@@ -265,7 +291,7 @@ async function dispatchOne(
       });
       if (pollRes.ok) {
         const text = await pollRes.text();
-        if (text && !text.includes('FREE_LIMIT') && !text.includes('Free limit reached')) {
+        if (text && !text.includes('FREE_LIMIT') && !text.includes('Free limit reached') && !text.includes('402')) {
           return new Response(
             JSON.stringify({
               choices: [{ message: { role: 'assistant', content: text.trim() } }],
@@ -273,6 +299,7 @@ async function dispatchOne(
             { status: 200, headers: { 'content-type': 'application/json' } }
           );
         }
+        return new Response(text || 'Pollinations free rate limit', { status: 429 });
       }
       return pollRes;
     } catch (err: any) {
@@ -299,7 +326,7 @@ async function dispatchOne(
 
 /** Failover triggers: status code suggesting this route is unable to answer. */
 function shouldFailOver(status: number): boolean {
-  return status === 401 || status === 403 || status === 408 || status === 429 || status >= 500;
+  return status === 401 || status === 402 || status === 403 || status === 408 || status === 429 || status >= 500;
 }
 
 /**

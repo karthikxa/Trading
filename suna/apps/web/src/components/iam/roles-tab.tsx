@@ -135,7 +135,12 @@ function RolesSection({ accountId, canManage, rbacEnabled }: RolesTabProps) {
 
   const rolesQuery = useQuery({
     queryKey: ['iam-roles', accountId],
-    queryFn: () => listRoles(accountId),
+    queryFn: async () => {
+      if (!accountId) return [];
+      const res = await listRoles(accountId);
+      return res ?? [];
+    },
+    enabled: !!accountId,
     staleTime: 30_000,
   });
 

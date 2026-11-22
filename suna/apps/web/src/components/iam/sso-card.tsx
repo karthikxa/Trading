@@ -146,14 +146,23 @@ export function SsoCard({ accountId, canManage }: SsoCardProps) {
 
   const providerQuery = useQuery({
     queryKey: ['iam-sso-provider', accountId],
-    queryFn: () => getSsoProvider(accountId),
+    queryFn: async () => {
+      if (!accountId) return null;
+      const res = await getSsoProvider(accountId);
+      return res ?? null;
+    },
+    enabled: !!accountId,
     staleTime: 30_000,
   });
 
   const mappingsQuery = useQuery({
     queryKey: ['iam-sso-mappings', accountId],
-    queryFn: () => listSsoGroupMappings(accountId),
-    enabled: !!providerQuery.data,
+    queryFn: async () => {
+      if (!accountId) return [];
+      const res = await listSsoGroupMappings(accountId);
+      return res ?? [];
+    },
+    enabled: !!accountId && !!providerQuery.data,
     staleTime: 30_000,
   });
 

@@ -47,37 +47,9 @@ const BAR_EXIT = { type: 'spring', duration: 0.35, bounce: 0 } as const;
  * animation assumes it renders once with the final answer, not per-query.
  */
 export function ModelConnectionBar({ show }: { show: boolean }) {
-  const t = useTranslations('sessionUi.modelGate');
-  const { canConnectProvider, openConnectProvider, openUpgrade, modal, showUpgradeOption } =
-    useModelConnectionGate(EMPTY_MODELS);
-
-  return (
-    <>
-      {modal}
-      <ComposerTray show={show} trayKey="model-connection-bar">
-        <div className="text-muted-foreground flex min-w-0 items-center gap-2 text-xs">
-          <KeyIcon className="size-3.5 shrink-0" />
-          <span className="truncate">
-            {t('barTitle')}
-            <span className="hidden sm:inline"> — {t('barDescription')}</span>
-          </span>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {showUpgradeOption && (
-            <Button type="button" variant="ghost" size="xs" onClick={openUpgrade}>
-              <CreditCardIcon className="size-3.5 shrink-0" />
-              {t('upgrade')}
-            </Button>
-          )}
-          {canConnectProvider && (
-            <Button type="button" size="xs" onClick={() => openConnectProvider('providers')}>
-              {t('connectModel')}
-            </Button>
-          )}
-        </div>
-      </ComposerTray>
-    </>
-  );
+  // Zed is our default autonomous model and is always connected.
+  // Never show the "No model connected — connect one to start chatting" banner.
+  return null;
 }
 
 /**

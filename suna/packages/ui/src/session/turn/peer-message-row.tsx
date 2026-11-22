@@ -13,6 +13,8 @@ import {
 import { useId, useState } from 'react';
 import { useTranslations } from '../../i18n';
 import { cn } from '../../lib/utils';
+import { BotAvatar, type BotShape, type BotExpression } from '../../workspace/sidebar/bot-avatar';
+import { useTradingAgents, type TradingAgentDef } from '../../workspace/sidebar/use-trading-agents';
 
 /**
  * A message another Kortix session sent this one (`send_message`), as Claude
@@ -54,30 +56,84 @@ export function peerMessagePreview(info: Pick<PeerMessagePromptInfo, 'summary' |
   return lines[0] ?? '';
 }
 
+function getFallbackColor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const colors = ['#10B981', '#E11D48', '#8B5CF6', '#F59E0B', '#3B82F6', '#EC4899', '#06B6D4'];
+  return colors[Math.abs(hash) % colors.length];
+}
+
 export function PeerMessageRow({ info, actions }: { info: PeerMessagePromptInfo; actions?: React.ReactNode }) {
   const t = useTranslations('multiAgent.peer');
   const [open, setOpen] = useState(false);
   const bodyId = useId();
-  const KindIcon = KIND_ICON[info.kind];
   const preview = peerMessagePreview(info);
-  const headline = t(KIND_KEY[info.kind], { from: peerHandleLabel(info.from) });
+
+  let agents: TradingAgentDef[] = [];
+  try {
+    const res = useTradingAgents();
+    agents = res?.agents || [];
+  } catch {
+    agents = [];
+  }
+
+  const cleanFrom = (info.from || '').toLowerCase().replace(/^@/, '').trim();
+  const senderAgent = agents.find((a) => {
+    return (
+      a.id.toLowerCase() === cleanFrom ||
+      a.name.toLowerCase() === cleanFrom ||
+      a.id.toLowerCase().replace(/_/g, ' ') === cleanFrom ||
+      a.name.toLowerCase().replace(/\s+/g, '_') === cleanFrom
+    );
+  });
+
+  const senderName = senderAgent?.name || peerHandleLabel(info.from);
+  const isAdmin = senderAgent?.isAdmin;
+  const avatarShape = senderAgent?.shape || 'pebble';
+  const avatarColor = senderAgent?.color || getFallbackColor(info.from || 'bot');
+  const avatarExpression = senderAgent?.expression || 'attentive';
+
+  // Check if this peer row represents a multi-bot exchange summary
+  const multiMatch = (info.summary || info.text || '').match(/(\d+)\s+messages?\s+with\s+(.*?)\s+(?:and|&)\s+(.*)/i);
+  let multiRender: React.ReactNode = null;
+  if (multiMatch) {
+    const count = multiMatch[1];
+    const nameA = multiMatch[2].replace(/·\s*Admin/i, '').trim();
+    const nameB = multiMatch[3].split('\n')[0].trim();
+    const agentA = agents.find(a => a.name.toLowerCase() === nameA.toLowerCase() || a.id.toLowerCase() === nameA.toLowerCase());
+    const agentB = agents.find(a => a.name.toLowerCase() === nameB.toLowerCase() || a.id.toLowerCase() === nameB.toLowerCase());
+    multiRender = (
+      <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+        <span className="shrink-0">{count} messages with</span>
+        <BotAvatar shape={agentA?.shape || 'pebble'} color={agentA?.color || '#10B981'} expression={agentA?.expression || 'attentive'} size={14} className="shrink-0 inline-flex align-middle" />
+        <span className="shrink-0 font-medium text-foreground">{agentA?.name || nameA}{agentA?.isAdmin ? ' · Admin' : ''}</span>
+        <span className="shrink-0 text-muted-foreground">and</span>
+        <BotAvatar shape={agentB?.shape || 'pebble'} color={agentB?.color || '#EC4899'} expression={agentB?.expression || 'attentive'} size={14} className="shrink-0 inline-flex align-middle" />
+        <span className="shrink-0 font-medium text-foreground">{agentB?.name || nameB}{agentB?.isAdmin ? ' · Admin' : ''}</span>
+      </div>
+    );
+  }
+
   // Nothing more to read than the line says: the row is not a disclosure.
   const expandable = info.text.trim().length > 0 && info.text.trim() !== preview;
-  const line = (
-    <>
-      <KindIcon aria-hidden className="size-3.5 shrink-0" />
-      <span className="shrink-0">{headline}</span>
+  const line = multiRender ? multiRender : (
+    <div className="flex items-center gap-1.5 min-w-0 truncate">
+      <span className="shrink-0 text-muted-foreground">Message from</span>
+      <BotAvatar shape={avatarShape} color={avatarColor} expression={avatarExpression} size={14} className="shrink-0 inline-flex align-middle" />
+      <span className="shrink-0 font-medium text-foreground">{senderName}{isAdmin ? ' · Admin' : ''}</span>
       {preview && (
         <>
-          <span aria-hidden className="shrink-0">
+          <span aria-hidden className="shrink-0 text-muted-foreground">
             ·
           </span>
-          <span className="min-w-0 truncate" title={preview}>
+          <span className="min-w-0 truncate text-muted-foreground" title={preview}>
             {preview}
           </span>
         </>
       )}
-    </>
+    </div>
   );
   return (
     <div

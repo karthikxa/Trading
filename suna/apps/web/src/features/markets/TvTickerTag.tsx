@@ -32,7 +32,7 @@ export default function TvTickerTag({ symbol, className }: TvTickerTagProps) {
     let script = document.querySelector(`script[src="${scriptSrc}"]`) as HTMLScriptElement;
 
     const resolved = resolveTradingViewSymbol(symbol);
-    const full = resolved.fullSymbol || (symbol.includes(':') ? symbol : `NASDAQ:${symbol}`);
+    const full = resolved.fullSymbol || (symbol.includes(':') ? symbol : `NSE:${symbol}`);
 
     const mountTag = () => {
       if (!containerRef.current) return;

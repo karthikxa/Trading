@@ -23,6 +23,7 @@ export interface TradingAgentDef {
   chatPreview?: string;
   timeText?: string;
   description: string;
+  directives?: string;
   isAdmin?: boolean;
   isPinned?: boolean;
   unread?: boolean;
@@ -34,95 +35,47 @@ export function tradingAgentQueryKey() {
   return ['trading-agents'] as const;
 }
 
-function resolveAgentGrokInfo(id: string, name?: string): {
+function resolveAgentStatus(row: BackendTradingAgent): {
   status: TradingAgentStatus;
   chatPreview: string;
   timeText: string;
 } {
-  const key = `${id} ${name || ''}`.toLowerCase();
-
-  if (key.includes('sales_outbound') || key.includes('sales outbound')) {
-    return {
-      status: 'typing',
-      chatPreview: 'Typing...',
-      timeText: '5:21 PM',
-    };
-  }
-  if (key.includes('chief') || key.includes('portfolio') || key.includes('lead')) {
-    return {
-      status: 'idle',
-      chatPreview: 'booked the venue and sent the calendar invite...',
-      timeText: 'Yesterday',
-    };
-  }
-  if (key.includes('inbox')) {
-    return {
-      status: 'idle',
-      chatPreview: 'sent. inbox at zero, 5 drafts parked for review...',
-      timeText: '2:20 PM',
-    };
-  }
-  if (key.includes('account') || key.includes('billing') || key.includes('risk')) {
-    return {
-      status: 'idle',
-      chatPreview: "invite's out to vicky. globex note uploaded...",
-      timeText: '12:20 PM',
-    };
-  }
-  if (key.includes('talent') || key.includes('scout')) {
-    return {
-      status: 'idle',
-      chatPreview: '3 intros drafted in your voice, held for review...',
-      timeText: '9:20 AM',
-    };
-  }
-  if (key.includes('expense') || key.includes('designer') || key.includes('valuation')) {
-    return {
-      status: 'idle',
-      chatPreview: 'report filed. 9 receipts, nothing outstanding...',
-      timeText: '1:20 PM',
-    };
-  }
-  if (key.includes('trader') || key.includes('execution') || key.includes('marketing') || key.includes('growth')) {
+  // Real status: default to idle unless real pending approval exists
+  const hasPendingApproval = Boolean(row.pending_approvals_count && row.pending_approvals_count > 0);
+  if (hasPendingApproval) {
     return {
       status: 'waiting for approval',
       chatPreview: 'Waiting for approval...',
-      timeText: 'Just now',
+      timeText: '',
     };
   }
-  if (key.includes('technical') || key.includes('ea') || key.includes('support')) {
-    return {
-      status: 'typing',
-      chatPreview: 'Typing...',
-      timeText: '3:45 PM',
-    };
-  }
-
   return {
     status: 'idle',
-    chatPreview: 'synced workspace pipeline and updated watchlist...',
-    timeText: '10:15 AM',
+    chatPreview: '',
+    timeText: '',
   };
 }
 
 export function mapBackendAgentToDef(row: BackendTradingAgent): TradingAgentDef {
   const isPm = row.id === 'portfolio_manager' || row.is_admin;
-  const grok = resolveAgentGrokInfo(row.id, row.name);
+  const statusInfo = resolveAgentStatus(row);
   return {
     id: row.id,
     name: row.name,
     role: row.role,
     group: (row.group_category as TradingAgentDef['group']) || (isPm ? 'Execution' : 'Analysts'),
     shape: (row.shape as BotShape) || (isPm ? 'circle' : 'square'),
-    color: row.color || (isPm ? '#8B5CF6' : '#10B981'),
+    color: row.color || (isPm ? '#F97316' : '#10B981'),
     expression: (row.expression as BotExpression) || 'attentive',
-    status: grok.status,
-    chatPreview: grok.chatPreview,
-    timeText: grok.timeText,
-    lastAction: grok.chatPreview,
-    time: grok.timeText,
+    status: statusInfo.status,
+    chatPreview: statusInfo.chatPreview,
+    timeText: statusInfo.timeText,
+    lastAction: statusInfo.chatPreview,
+    time: statusInfo.timeText,
     description: row.description || '',
     isAdmin: Boolean(row.is_admin),
+    isPinned: Boolean(row.is_pinned),
+    isArchived: Boolean(row.is_archived),
     system_prompt: row.system_prompt,
   };
 }
@@ -134,7 +87,7 @@ export const DEFAULT_CANONICAL_TRADING_AGENTS: TradingAgentDef[] = [
     role: 'Capital Allocation & Lead',
     group: 'Management',
     shape: 'circle',
-    color: '#8B5CF6',
+    color: '#F97316',
     expression: 'attentive',
     status: 'idle',
     description: 'Lead Portfolio Manager and Workspace Administrator. Directs multi-agent execution.',
@@ -261,7 +214,33 @@ export const DEFAULT_CANONICAL_TRADING_AGENTS: TradingAgentDef[] = [
     status: 'idle',
     description: 'Produces executive summaries and synchronizes watchlist briefs.',
   },
+  {
+    id: 'manus',
+    name: 'Maus Bot',
+    role: 'Autonomous Proactive Intelligence',
+    group: 'Researchers',
+    shape: 'orb',
+    color: '#8B5CF6',
+    expression: 'attentive',
+    status: 'idle',
+    description: 'Autonomous proactive trading desk intelligence modeled after OpenMausBot / Grok. Proactively monitors desk telemetry and initiates check-ins.',
+  },
 ];
+
+export function getAgentColorByName(name?: string): string {
+  if (!name) return '#3B82F6';
+  const clean = name.toLowerCase().replace(/[\s_-]+/g, '');
+  if (clean.includes('manus') || clean.includes('maus')) return '#8B5CF6';
+  for (const bot of DEFAULT_CANONICAL_TRADING_AGENTS) {
+    if (
+      bot.name.toLowerCase().replace(/[\s_-]+/g, '') === clean ||
+      bot.id.replace(/[\s_-]+/g, '') === clean
+    ) {
+      return bot.color;
+    }
+  }
+  return '#3B82F6';
+}
 
 export function useTradingAgents() {
   return useQuery({

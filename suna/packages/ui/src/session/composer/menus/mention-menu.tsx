@@ -163,6 +163,7 @@ export interface MentionMenuHostProps {
   agents: Agent[];
   sessions: Session[];
   currentSessionId: string | undefined;
+  currentAgentName?: string;
   /** Fixed at the moment the menu opened (`Date.now()`, computed in
    *  `mention-controller.ts`'s `onStart` — never inside this component's
    *  render, and never refreshed on every keystroke) so this prop's identity
@@ -190,6 +191,7 @@ export function MentionMenuHost({
   agents,
   sessions,
   currentSessionId,
+  currentAgentName,
   now,
   selectedIndex,
   onSelect,
@@ -197,19 +199,43 @@ export function MentionMenuHost({
   onRowsChange,
 }: MentionMenuHostProps) {
   const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
+  const { data: serverAgents = [] } = useTradingAgents();
   const { files, isLoading } = useFileSearch(query, true);
+
+  // Merge runtime agents with all desk agents from the trading roster
+  const allAgents = useMemo(() => {
+    const list: Agent[] = [...agents];
+    for (const sa of serverAgents) {
+      if (!list.some((a) => a.name?.toLowerCase() === sa.name.toLowerCase())) {
+        list.push({ name: sa.name, role: sa.role } as any);
+      }
+    }
+    return list;
+  }, [agents, serverAgents]);
+
+  const allGroups = useMemo(() => {
+    if (typeof window === 'undefined') return [{ id: 'offsite_crew', name: 'Offsite crew', agentIds: ['fundamentals_analyst', 'trader_agent', 'portfolio_manager'] }];
+    try {
+      const saved = localStorage.getItem('tauric_agent_groups_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [{ id: 'offsite_crew', name: 'Offsite crew', agentIds: ['fundamentals_analyst', 'trader_agent', 'portfolio_manager'] }];
+  }, []);
+
   const sections = useMemo(
     () =>
       buildMentionSections({
-        agents,
+        agents: allAgents,
+        groups: allGroups,
         sessions,
         files,
         query,
         currentSessionId,
+        currentAgentName,
         now,
         tI18nComplete,
       }),
-    [agents, sessions, files, query, currentSessionId, now, tI18nComplete],
+    [allAgents, allGroups, sessions, files, query, currentSessionId, currentAgentName, now, tI18nComplete],
   );
   const rows = useMemo(() => sections.flatMap((s) => s.items), [sections]);
 

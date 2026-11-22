@@ -6,6 +6,7 @@ export type BotShape =
   | 'circle'
   | 'pebble'
   | 'squircle'
+  | 'square'
   | 'capsule'
   | 'triangle'
   | 'hexagon'
@@ -54,21 +55,21 @@ function BotAvatarInner({
   const [isBlinking, setIsBlinking] = useState(false);
 
   // Shape-specific bounds and vertical offsets to keep eyes perfectly centered and inside the silhouette
-  const shapeOffsets: Record<BotShape, { offsetY: number; maxGaze: number }> = {
-    circle: { offsetY: 0, maxGaze: 7.5 },
-    squircle: { offsetY: 0, maxGaze: 7.5 },
-    capsule: { offsetY: 0, maxGaze: 6.5 },
-    triangle: { offsetY: 16, maxGaze: 3.2 }, // Lower eyes comfortably into wide belly of triangle
-    hexagon: { offsetY: 0, maxGaze: 6.5 },
-    cloud: { offsetY: 3, maxGaze: 6 },
-    pebble: { offsetY: 0, maxGaze: 6.5 },
-    droplet: { offsetY: 8, maxGaze: 5.5 },
+  const shapeOffsets: Record<BotShape, { offsetY: number; maxGaze: number; span: number }> = {
+    circle: { offsetY: 0, maxGaze: 4.5, span: 1.0 },
+    squircle: { offsetY: 0, maxGaze: 4.5, span: 1.0 },
+    square: { offsetY: 0, maxGaze: 4.5, span: 1.0 },
+    capsule: { offsetY: 0, maxGaze: 3.5, span: 0.95 },
+    triangle: { offsetY: 18, maxGaze: 2.0, span: 0.78 }, // Low into wide base of triangle
+    hexagon: { offsetY: 0, maxGaze: 3.5, span: 0.95 },
+    cloud: { offsetY: 3, maxGaze: 2.2, span: 0.82 },     // Centered in main cloud puff
+    pebble: { offsetY: 0, maxGaze: 3.0, span: 0.90 },
+    droplet: { offsetY: 14, maxGaze: 2.2, span: 0.82 },   // Centered in round belly
   };
 
-  const currentShapeOffset = shapeOffsets[shape] || { offsetY: 0, maxGaze: 7 };
+  const currentShapeOffset = shapeOffsets[shape] || { offsetY: 0, maxGaze: 4, span: 1.0 };
 
   // 360-degree continuous circular gaze tracking with angle & distance
-  // Directly transforms DOM via ref to eliminate 60 FPS React re-renders and SVG clipPath flickering
   useEffect(() => {
     if (!isAnimated) return;
 
@@ -94,9 +95,11 @@ function BotAvatarInner({
         const dx = e.clientX - centerX;
         const dy = e.clientY - centerY;
         const distance = Math.sqrt(dx * dx + dy * dy);
-        if (distance === 0) return;
+        if (distance === 0) {
+          eyesGazeRef.current.style.transform = `translate3d(0px, 0px, 0)`;
+          return;
+        }
 
-        // Continuous 360 degree polar rotation
         const angle = Math.atan2(dy, dx);
         const maxDist = currentShapeOffset.maxGaze;
         const r = Math.min(distance / 70, 1) * maxDist;
@@ -132,7 +135,7 @@ function BotAvatarInner({
         setTimeout(() => {
           setIsBlinking(false);
           scheduleNextBlink();
-        }, 150); // 150ms blink duration
+        }, 150);
       }, delay);
     };
 
@@ -150,12 +153,14 @@ function BotAvatarInner({
         return <circle cx="50" cy="50" r="47.5" fill={color} {...strokeProps} />;
       case 'squircle':
         return <rect x="4" y="4" width="92" height="92" rx="28" fill={color} {...strokeProps} />;
+      case 'square':
+        return <rect x="5" y="5" width="90" height="90" rx="22" fill={color} {...strokeProps} />;
       case 'capsule':
         return <rect x="4" y="16" width="92" height="68" rx="34" fill={color} {...strokeProps} />;
       case 'droplet':
         return (
           <path
-            d="M 50 4 C 50 4, 94 54, 94 72 A 44 44 0 1 1 6 72 C 6 54, 50 4, 50 4 Z"
+            d="M 50 10 C 50 10, 84 46, 84 64 A 34 34 0 1 1 16 64 C 16 46, 50 10, 50 10 Z"
             fill={color}
             {...strokeProps}
           />
@@ -163,7 +168,7 @@ function BotAvatarInner({
       case 'triangle':
         return (
           <path
-            d="M 50 6 C 56 6, 62 14, 92 70 C 98 82, 90 94, 76 94 L 24 94 C 10 94, 2 82, 8 70 Z"
+            d="M 50 8 C 55 8, 60 14, 90 74 C 95 84, 88 94, 76 94 L 24 94 C 12 94, 5 84, 10 74 Z"
             fill={color}
             {...strokeProps}
           />
@@ -198,135 +203,138 @@ function BotAvatarInner({
   };
 
   const renderEyes = () => {
+    const span = currentShapeOffset.span;
+    const lx = 50 - 10 * span;
+    const rx = 50 + 10 * span;
+
     if (isBlinking) {
       return (
         <g stroke="white" strokeWidth="4" strokeLinecap="round">
-          <line x1="34" y1="48" x2="48" y2="48" />
-          <line x1="52" y1="48" x2="66" y2="48" />
+          <line x1={lx - 7} y1="48" x2={lx + 7} y2="48" />
+          <line x1={rx - 7} y1="48" x2={rx + 7} y2="48" />
         </g>
       );
     }
-
     switch (expression) {
       case 'neutral':
         return (
           <g fill="white">
-            <rect x="36" y="38" width="8.5" height="19" rx="4.25" />
-            <rect x="56" y="38" width="8.5" height="19" rx="4.25" />
+            <rect x={lx - 4.25} y="38" width="8.5" height="19" rx="4.25" />
+            <rect x={rx - 4.25} y="38" width="8.5" height="19" rx="4.25" />
           </g>
         );
       case 'attentive':
         return (
           <g fill="white">
-            <rect x="36" y="38" width="8.5" height="19" rx="4.25" transform="rotate(-15 40 48)" />
-            <rect x="56" y="38" width="8.5" height="19" rx="4.25" transform="rotate(-15 60 48)" />
+            <rect x={lx - 4.25} y="38" width="8.5" height="19" rx="4.25" transform={`rotate(-15 ${lx} 48)`} />
+            <rect x={rx - 4.25} y="38" width="8.5" height="19" rx="4.25" transform={`rotate(-15 ${rx} 48)`} />
           </g>
         );
       case 'surprised':
         return (
           <g fill="white">
-            <circle cx="40" cy="46" r="7.5" />
-            <circle cx="60" cy="46" r="7.5" />
+            <circle cx={lx} cy="46" r="7" />
+            <circle cx={rx} cy="46" r="7" />
           </g>
         );
       case 'excited':
         return (
           <g fill="white">
-            <rect x="36" y="38" width="8.5" height="19" rx="4.25" transform="rotate(15 40 46)" />
-            <rect x="56" y="38" width="8.5" height="19" rx="4.25" transform="rotate(-15 60 46)" />
+            <rect x={lx - 4.25} y="38" width="8.5" height="19" rx="4.25" transform={`rotate(15 ${lx} 46)`} />
+            <rect x={rx - 4.25} y="38" width="8.5" height="19" rx="4.25" transform={`rotate(-15 ${rx} 46)`} />
           </g>
         );
       case 'happy':
         return (
           <g stroke="white" strokeWidth="4.5" strokeLinecap="round" fill="none">
-            <path d="M 34 50 C 34 40, 46 40, 46 50" />
-            <path d="M 54 50 C 54 40, 66 40, 66 50" />
+            <path d={`M ${lx - 6} 50 C ${lx - 6} 40, ${lx + 6} 40, ${lx + 6} 50`} />
+            <path d={`M ${rx - 6} 50 C ${rx - 6} 40, ${rx + 6} 40, ${rx + 6} 50`} />
           </g>
         );
       case 'laughing':
         return (
           <g stroke="white" strokeWidth="5" strokeLinecap="round" fill="none">
-            <path d="M 34 48 Q 40 40 46 48" />
-            <path d="M 54 48 Q 60 40 66 48" />
+            <path d={`M ${lx - 6} 48 Q ${lx} 40 ${lx + 6} 48`} />
+            <path d={`M ${rx - 6} 48 Q ${rx} 40 ${rx + 6} 48`} />
           </g>
         );
       case 'angry':
         return (
           <g fill="white">
-            <rect x="36" y="38" width="8.5" height="19" rx="4.25" transform="rotate(22 40 46)" />
-            <rect x="56" y="38" width="8.5" height="19" rx="4.25" transform="rotate(-22 60 46)" />
+            <rect x={lx - 4.25} y="38" width="8.5" height="19" rx="4.25" transform={`rotate(22 ${lx} 46)`} />
+            <rect x={rx - 4.25} y="38" width="8.5" height="19" rx="4.25" transform={`rotate(-22 ${rx} 46)`} />
           </g>
         );
       case 'sad':
         return (
           <g fill="white">
-            <rect x="36" y="38" width="8.5" height="19" rx="4.25" transform="rotate(-22 40 48)" />
-            <rect x="56" y="38" width="8.5" height="19" rx="4.25" transform="rotate(22 60 48)" />
+            <rect x={lx - 4.25} y="38" width="8.5" height="19" rx="4.25" transform={`rotate(-22 ${lx} 48)`} />
+            <rect x={rx - 4.25} y="38" width="8.5" height="19" rx="4.25" transform={`rotate(22 ${rx} 48)`} />
           </g>
         );
       case 'scared':
         return (
           <g fill="white">
-            <circle cx="40" cy="47" r="4.5" />
-            <circle cx="60" cy="47" r="4.5" />
+            <circle cx={lx} cy="47" r="4.5" />
+            <circle cx={rx} cy="47" r="4.5" />
           </g>
         );
       case 'suspicious':
         return (
           <g fill="white">
-            <rect x="34" y="45" width="13" height="5" rx="2.5" />
-            <rect x="53" y="45" width="13" height="5" rx="2.5" />
+            <rect x={lx - 6} y="45" width="12" height="5" rx="2.5" />
+            <rect x={rx - 6} y="45" width="12" height="5" rx="2.5" />
           </g>
         );
       case 'confused':
         return (
           <g fill="white">
-            <rect x="36" y="34" width="8.5" height="19" rx="4.25" transform="rotate(-15 40 44)" />
-            <rect x="56" y="44" width="8.5" height="15" rx="4.25" />
+            <circle cx={lx} cy="46" r="6.5" />
+            <rect x={rx - 4.25} y="42" width="8.5" height="14" rx="4.25" transform={`rotate(-18 ${rx} 49)`} />
           </g>
         );
       case 'curious':
         return (
           <g fill="white">
-            <rect x="36" y="34" width="8.5" height="19" rx="4.25" transform="rotate(-10 40 44)" />
-            <rect x="56" y="43" width="8.5" height="17" rx="4.25" />
+            <rect x={lx - 4.25} y="34" width="8.5" height="19" rx="4.25" transform={`rotate(-10 ${lx} 44)`} />
+            <circle cx={rx} cy="47" r="6.5" />
           </g>
         );
       case 'proud':
         return (
-          <g fill="white">
-            <rect x="36" y="39" width="8.5" height="18" rx="4.25" transform="rotate(-12 40 47)" />
-            <rect x="56" y="39" width="8.5" height="18" rx="4.25" transform="rotate(-12 60 47)" />
+          <g stroke="white" strokeWidth="4.5" strokeLinecap="round" fill="none">
+            <path d={`M ${lx - 6} 50 C ${lx - 6} 43, ${lx + 6} 43, ${lx + 6} 50`} />
+            <path d={`M ${rx - 6} 50 C ${rx - 6} 43, ${rx + 6} 43, ${rx + 6} 50`} />
           </g>
         );
       case 'shy':
         return (
           <g>
-            <rect x="36" y="44" width="7.5" height="15" rx="3.75" fill="white" />
-            <rect x="56" y="44" width="7.5" height="15" rx="3.75" fill="white" />
-            <circle cx="28" cy="56" r="3" fill="#FDA4AF" opacity="0.8" />
-            <circle cx="72" cy="56" r="3" fill="#FDA4AF" opacity="0.8" />
+            <rect x={lx - 3.75} y="44" width="7.5" height="15" rx="3.75" fill="white" />
+            <rect x={rx - 3.75} y="44" width="7.5" height="15" rx="3.75" fill="white" />
+            <circle cx={lx - 10} cy="56" r="3" fill="#FDA4AF" opacity="0.8" />
+            <circle cx={rx + 10} cy="56" r="3" fill="#FDA4AF" opacity="0.8" />
           </g>
         );
       case 'unimpressed':
         return (
           <g fill="white">
-            <rect x="34" y="44" width="13" height="6" rx="3" />
-            <rect x="53" y="44" width="13" height="6" rx="3" />
+            <rect x={lx - 6} y="44" width="12" height="6" rx="3" />
+            <rect x={rx - 6} y="44" width="12" height="6" rx="3" />
           </g>
         );
       case 'sleepy':
         return (
           <g stroke="white" strokeWidth="4.5" strokeLinecap="round">
-            <line x1="33" y1="48" x2="47" y2="48" />
-            <line x1="53" y1="48" x2="67" y2="48" />
+            <line x1={lx - 7} y1="48" x2={lx + 7} y2="48" />
+            <line x1={rx - 7} y1="48" x2={rx + 7} y2="48" />
           </g>
         );
       default:
         return (
           <g fill="white">
-            <rect x="36" y="38" width="8.5" height="19" rx="4.25" transform="rotate(-15 40 48)" />
-            <rect x="56" y="38" width="8.5" height="19" rx="4.25" transform="rotate(-15 60 48)" />
+            <rect x={lx - 4.25} y="38" width="8.5" height="19" rx="4.25" transform={`rotate(-15 ${lx} 48)`} />
+            <rect x={rx - 4.25} y="38" width="8.5" height="19" rx="4.25" transform={`rotate(-15 ${rx} 48)`} />
           </g>
         );
     }
@@ -379,3 +387,4 @@ function BotAvatarInner({
 }
 
 export const BotAvatar = React.memo(BotAvatarInner);
+export default BotAvatar;

@@ -248,46 +248,6 @@ export const StockSymbolIcon = React.memo(function StockSymbolIcon({
     }
   };
 
-  // Handle Options (CE / PE) contracts
-  if (cleanSym.endsWith(' CE') || /\b\d+\s*CE$/.test(cleanSym)) {
-    const optSizeClasses = {
-      xs: 'size-[20px] text-[8px]',
-      sm: 'size-[24px] text-[9.5px]',
-      md: 'size-[28px] text-[10.5px]',
-      lg: 'size-[36px] text-xs',
-    }[size];
-    return (
-      <div
-        className={cn(
-          'flex items-center justify-center rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-300/80 font-medium shrink-0 shadow-2xs font-sans tracking-tight',
-          optSizeClasses,
-          className,
-        )}
-      >
-        CE
-      </div>
-    );
-  }
-
-  if (cleanSym.endsWith(' PE') || /\b\d+\s*PE$/.test(cleanSym)) {
-    const optSizeClasses = {
-      xs: 'size-[20px] text-[8px]',
-      sm: 'size-[24px] text-[9.5px]',
-      md: 'size-[28px] text-[10.5px]',
-      lg: 'size-[36px] text-xs',
-    }[size];
-    return (
-      <div
-        className={cn(
-          'flex items-center justify-center rounded-full bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-300/80 font-medium shrink-0 shadow-2xs font-sans tracking-tight',
-          optSizeClasses,
-          className,
-        )}
-      >
-        PE
-      </div>
-    );
-  }
 
   // Handle Futures
   if (cleanSym.endsWith('-FUT') || cleanSym.endsWith(' FUT') || cleanSym.endsWith('1!')) {

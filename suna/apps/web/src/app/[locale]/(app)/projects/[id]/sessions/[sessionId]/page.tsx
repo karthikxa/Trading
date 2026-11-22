@@ -326,6 +326,18 @@ function ProjectSessionView({ projectId, sessionId }: { projectId: string; sessi
   const switchingToSessionId = useSessionSwitchStore((state) => state.targetSessionId);
   const completeSessionSwitch = useSessionSwitchStore((state) => state.completeSwitch);
 
+  // Persist session mapping so switching between agents returns to this agent's active chat session
+  useEffect(() => {
+    if (typeof window === 'undefined' || !sessionId) return;
+    const sp = new URLSearchParams(window.location.search);
+    const targetAgent = boundAgentName || sp.get('agentId') || 'portfolio_manager';
+    try {
+      const existing = JSON.parse(localStorage.getItem('tauric_agent_sessions_v1') || '{}');
+      existing[targetAgent] = sessionId;
+      localStorage.setItem('tauric_agent_sessions_v1', JSON.stringify(existing));
+    } catch {}
+  }, [sessionId, boundAgentName]);
+
   // ── Auto-resume a hibernated-but-resumable sandbox ────────────────────────
   // On the first /start of an idle-stopped session the backend can race into a
   // TERMINAL 'stopped' (openSession's self-preserve path on a transient provider

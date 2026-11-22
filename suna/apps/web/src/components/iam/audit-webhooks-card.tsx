@@ -70,7 +70,12 @@ export function AuditWebhooksCard({ accountId, canManage }: AuditWebhooksCardPro
 
   const hooksQuery = useQuery({
     queryKey: ['audit-webhooks', accountId],
-    queryFn: () => listAuditWebhooks(accountId),
+    queryFn: async () => {
+      if (!accountId) return [];
+      const res = await listAuditWebhooks(accountId);
+      return res ?? [];
+    },
+    enabled: !!accountId,
     staleTime: 30_000,
   });
 

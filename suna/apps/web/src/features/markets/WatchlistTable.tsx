@@ -8,11 +8,12 @@ import WatchlistButton from './WatchlistButton';
 import { TradingPairIcon } from '../journal/TradingPairIcon';
 import { openSearch } from './SearchCommand';
 import TvTickerTag from './TvTickerTag';
+import { resolveTradingViewSymbol } from './symbol-resolver';
 import { getLocalTrades } from '../journal/storage';
 import { cn } from '@kortix/ui';
 
 interface WatchlistTableProps {
-  onSelectSymbol?: (symbol: string) => void;
+  onSelectSymbol?: (symbol: string, name?: string, exchange?: string) => void;
   selectedSymbol?: string;
   positions?: any[];
   journalTrades?: any[];
@@ -162,12 +163,15 @@ export const WatchlistTable = React.memo(function WatchlistTable({
                   <tr
                     key={item.symbol}
                     onClick={() => {
+                      const effectiveEx = item.exchange || 'NSE';
+                      const resolved = resolveTradingViewSymbol(item.symbol, item.name, effectiveEx);
+                      const fullSym = resolved.fullSymbol || `${effectiveEx}:${item.symbol}`;
                       if (onSelectSymbol) {
-                        onSelectSymbol(item.symbol);
+                        onSelectSymbol(fullSym, item.name, effectiveEx);
                       }
                       window.dispatchEvent(
                         new CustomEvent('selected-stock-symbol', {
-                          detail: { symbol: item.symbol, name: item.name },
+                          detail: { symbol: fullSym, name: item.name, exchange: effectiveEx },
                         }),
                       );
                     }}
@@ -213,15 +217,12 @@ export const WatchlistTable = React.memo(function WatchlistTable({
                       </span>
                     </td>
                     <td className="py-3 px-5 text-right font-normal tabular-nums text-xs font-sans tracking-tight">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <TvTickerTag symbol={item.symbol} />
-                        <span className={cn(
-                          'text-xs font-sans tabular-nums',
-                          isPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
-                        )}>
-                          {isPositive ? '+' : ''}{item.changePercent?.toFixed(2) ?? '+0.00'}%
-                        </span>
-                      </div>
+                      <span className={cn(
+                        'text-xs font-sans tabular-nums font-medium',
+                        isPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                      )}>
+                        {isPositive ? '+' : ''}{item.changePercent?.toFixed(2) ?? '+0.00'}%
+                      </span>
                     </td>
                     <td className="py-3 px-5 text-center">
                       <WatchlistButton

@@ -62,6 +62,8 @@ export { type MemoryLayerRef, useMemoryPageHref } from '../internal/lib/memory-h
 export { CompanyMemoryPage } from './memory/company-memory-page';
 export { ProjectSessionList } from './sidebar/project-session-list';
 export { ProjectSidebar } from './sidebar/project-sidebar';
+export { BotAvatar, type BotShape, type BotExpression, type BotAvatarProps } from './sidebar/bot-avatar';
+export { useTradingAgents, DEFAULT_CANONICAL_TRADING_AGENTS, type TradingAgentDef } from './sidebar/use-trading-agents';
 export { ShareSessionModal } from './sidebar/modal/share-session-modal';
 export {
   formatGoalTime,

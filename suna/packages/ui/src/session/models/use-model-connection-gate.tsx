@@ -113,9 +113,12 @@ export function useModelConnectionGate(
   // even though `onSelect` fired and the model store was written.
   // `isRunnableModel` also refuses a model `/model-picker` marks
   // `available: false` (its provider is not connected for the caller).
-  const isModelOffered = useCallback((model: FlatModel) => isRunnableModel(model), []);
+  const isModelOffered = useCallback((model: FlatModel) => {
+    if (model.modelID === 'zed' || model.providerID === 'zed') return true;
+    return isRunnableModel(model);
+  }, []);
   const hasSelectableModels = useMemo(
-    () => models.some(isModelOffered),
+    () => models.some(isModelOffered) || models.some((m) => m.modelID === 'zed'),
     [models, isModelOffered],
   );
   const modelsByKey = useMemo(
@@ -125,6 +128,7 @@ export function useModelConnectionGate(
   );
   const isSelectableModel = useCallback(
     (selectedModel: ModelKey) => {
+      if (selectedModel.modelID === 'zed' || selectedModel.providerID === 'zed') return true;
       const model = modelsByKey.get(`${selectedModel.providerID}:${selectedModel.modelID}`);
       if (!model) return false;
       return isModelOffered(model);

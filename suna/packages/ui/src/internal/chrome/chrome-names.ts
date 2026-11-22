@@ -5,11 +5,12 @@ import type { ChromeConnection } from '@kortix/sdk';
  * the list tells them apart: the profile label when it has one, else a count
  * in connection order. The stored name never changes; this is display only.
  */
-export function chromeDisplayNames(list: readonly ChromeConnection[]): Map<string, string> {
+export function chromeDisplayNames(list?: readonly ChromeConnection[] | null): Map<string, string> {
+  const safeList = Array.isArray(list) ? list : [];
   const byName = new Map<string, ChromeConnection[]>();
-  for (const chrome of list) byName.set(chrome.name, [...(byName.get(chrome.name) ?? []), chrome]);
+  for (const chrome of safeList) byName.set(chrome.name, [...(byName.get(chrome.name) ?? []), chrome]);
   const out = new Map<string, string>();
-  for (const chrome of list) {
+  for (const chrome of safeList) {
     const same = byName.get(chrome.name) ?? [];
     if (same.length < 2) {
       out.set(chrome.id, chrome.name);
@@ -23,8 +24,9 @@ export function chromeDisplayNames(list: readonly ChromeConnection[]): Map<strin
 }
 
 /** "N browsers · M online" for the Apps modal. */
-export function chromeCounts(list: readonly ChromeConnection[]): { count: number; online: number } {
-  return { count: list.length, online: list.filter((chrome) => chrome.online).length };
+export function chromeCounts(list?: readonly ChromeConnection[] | null): { count: number; online: number } {
+  const safeList = Array.isArray(list) ? list : [];
+  return { count: safeList.length, online: safeList.filter((chrome) => chrome.online).length };
 }
 
 /** Offline for longer than `thresholdMs`: only then is "last seen" worth saying. */

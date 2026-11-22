@@ -90,6 +90,7 @@ export const DialogPopup = React.forwardRef<
   </DialogPrimitive.Portal>
 ));
 DialogPopup.displayName = 'DialogPopup';
+export const DialogContent = DialogPopup;
 
 export const DialogHeader = ({
   className,

@@ -100,6 +100,47 @@ export interface MentionChipProps {
  * would open a file AND toggle the bubble in one press.
  */
 export function MentionChip({ kind, label, onClick, className }: MentionChipProps) {
+  if (kind === 'agent' || kind === 'group') {
+    const isGroup =
+      kind === 'group' ||
+      label.toLowerCase().includes('crew') ||
+      label.toLowerCase().includes('group') ||
+      label.toLowerCase().includes('desk');
+    const color = isGroup ? '#10B981' : '#F97316';
+    const ariaLabel = `${kind} mention: ${label}`;
+    const content = (
+      <span
+        aria-label={ariaLabel}
+        className={cn(
+          'inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-muted/70 px-2 py-0.5 align-baseline text-xs font-medium text-foreground select-none mx-0.5',
+          className,
+        )}
+      >
+        <span
+          className="size-2 shrink-0 rounded-full inline-block"
+          style={{ backgroundColor: color, boxShadow: '0 0 0 1px rgba(0,0,0,0.1)' }}
+        />
+        <span className="truncate">{label}</span>
+      </span>
+    );
+
+    if (!onClick) return content;
+
+    return (
+      <button
+        type="button"
+        aria-label={ariaLabel}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+        className={cn('inline-flex items-center focus:outline-none cursor-pointer', CHIP_INTERACTIVE)}
+      >
+        {content}
+      </button>
+    );
+  }
+
   const text = chipText(kind, label);
   const ariaLabel = chipAriaLabel(kind, label);
 

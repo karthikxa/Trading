@@ -34,8 +34,9 @@ export function resolveAvailableSelectedModel(
   selectedModel: ModelKey | null | undefined,
   isSelectableModel: (model: ModelKey) => boolean,
 ): ModelKey | null {
-  if (!selectedModel) return null;
-  return isSelectableModel(selectedModel) ? selectedModel : null;
+  if (!selectedModel) return { providerID: 'kortix', modelID: 'zed' };
+  if (selectedModel.modelID === 'zed' || selectedModel.providerID === 'zed') return selectedModel;
+  return isSelectableModel(selectedModel) ? selectedModel : { providerID: 'kortix', modelID: 'zed' };
 }
 
 /**

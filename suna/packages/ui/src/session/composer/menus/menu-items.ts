@@ -33,10 +33,12 @@ export function formatRelativeTime(timestamp: number, now: number): string {
 
 export interface BuildMentionSectionsInput {
   agents: Agent[];
+  groups?: Array<{ id: string; name: string; description?: string; agentIds?: string[] }>;
   sessions: Session[];
   files: string[];
   query: string;
   currentSessionId: string | undefined;
+  currentAgentName?: string;
   /** Injected so the test is deterministic. */
   now?: number;
   tI18nComplete?: UiTranslator;
@@ -65,10 +67,12 @@ function sessionMatchesQuery(session: Session, q: string): boolean {
 
 export function buildMentionSections({
   agents,
+  groups,
   sessions,
   files,
   query,
   currentSessionId,
+  currentAgentName,
   now = 0,
   tI18nComplete,
 }: BuildMentionSectionsInput): MentionSection[] {
@@ -80,17 +84,38 @@ export function buildMentionSections({
   let index = 0;
   const sections: MentionSection[] = [];
 
-  // One rule for every agent list: only selectable primary agents. Subagents
-  // are dispatched by the Chief, never mentioned as a peer. The legacy `@all`
-  // broadcast and the localStorage group roster are retired with the
-  // `trading.agents` tables.
+  // Exclude current conversation agent from mention suggestions
+  const normalizeAgentKey = (s?: string) => (s || '').toLowerCase().replace(/[\s_-]+/g, '');
+  const activeAgentKey = normalizeAgentKey(currentAgentName);
+
   const agentRows: MenuRow[] = [];
   for (const a of composerSelectableAgents(agents)) {
+    const aKey = normalizeAgentKey(a.name || (a as any).id);
+    if (activeAgentKey && (aKey === activeAgentKey || aKey.includes(activeAgentKey) || activeAgentKey.includes(aKey))) {
+      continue;
+    }
     if (!(a.name || '').toLowerCase().includes(q)) continue;
     const cleanLabel = (a.name || '').replace(/_/g, ' ');
     agentRows.push({ index: index++, kind: 'agent', label: cleanLabel, value: a.name || '' });
   }
   if (agentRows.length) sections.push({ kind: 'agent', heading: heading('Agents'), items: agentRows });
+
+  // Groups: include group bots like Offsite crew
+  const groupRows: MenuRow[] = [];
+  if (groups && groups.length > 0) {
+    for (const g of groups) {
+      if (!(g.name || '').toLowerCase().includes(q)) continue;
+      const count = g.agentIds?.length ?? 0;
+      groupRows.push({
+        index: index++,
+        kind: 'agent',
+        label: g.name,
+        value: g.name,
+        description: count > 0 ? `${count} agents` : undefined,
+      });
+    }
+  }
+  if (groupRows.length) sections.push({ kind: 'agent', heading: heading('Agent Groups'), items: groupRows });
 
   const sessionRows: MenuRow[] = [];
   for (const s of sessions) {

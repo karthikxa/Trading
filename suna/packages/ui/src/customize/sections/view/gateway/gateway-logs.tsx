@@ -1051,25 +1051,30 @@ export function GatewayLogs({ projectId }: { projectId: string }) {
             ) : (
               <>
                 <LogListHeader />
-                {logs.map((row, i) => (
-                  <Fragment key={row.log_id}>
-                    {/* The date, once, above the run of rows it covers. */}
-                    {(i === 0 || !sameDay(logs[i - 1].created_at, row.created_at)) && (
-                      <DayDivider iso={row.created_at} />
-                    )}
-                    <LogRow
-                      ref={i === focusedIndex ? focusedRowRef : undefined}
-                      row={row}
-                      focused={i === focusedIndex}
-                      selected={row.log_id === selectedLogId}
-                      onHover={() => setFocused(i)}
-                      onClick={() => {
-                        setFocused(i);
-                        setSelectedLogId(row.log_id);
-                      }}
-                    />
-                  </Fragment>
-                ))}
+                {logs.map((row, i) => {
+                  const prevIso = logs[i - 1]?.created_at;
+                  const currIso = row?.created_at;
+                  const isNewDay = i === 0 || (Boolean(prevIso && currIso) && !sameDay(prevIso!, currIso!));
+                  return (
+                    <Fragment key={row?.log_id ?? i}>
+                      {/* The date, once, above the run of rows it covers. */}
+                      {isNewDay && currIso && (
+                        <DayDivider iso={currIso} />
+                      )}
+                      <LogRow
+                        ref={i === focusedIndex ? focusedRowRef : undefined}
+                        row={row}
+                        focused={i === focusedIndex}
+                        selected={row?.log_id === selectedLogId}
+                        onHover={() => setFocused(i)}
+                        onClick={() => {
+                          setFocused(i);
+                          if (row?.log_id) setSelectedLogId(row.log_id);
+                        }}
+                      />
+                    </Fragment>
+                  );
+                })}
                 {hasNextPage && (
                   <div className="flex justify-center px-4 py-3">
                     <Button

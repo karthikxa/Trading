@@ -99,21 +99,8 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
         </div>
       </div>
 
-      {/* Actions: Open tv.dhan.co and Kill Switch */}
+      {/* Actions: Kill Switch */}
       <div className="flex items-center gap-2">
-        <a
-          href="https://tv.dhan.co"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 transition-colors text-[11px] font-sans flex items-center gap-1"
-          title="Open official Dhan TradingView live terminal in new tab"
-        >
-          <span>Open tv.dhan.co</span>
-          <svg className="size-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-          </svg>
-        </a>
-
         <button
           type="button"
           onClick={handleKillSwitch}

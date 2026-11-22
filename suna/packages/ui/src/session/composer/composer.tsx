@@ -1237,7 +1237,13 @@ function ComposerImpl(props: SessionChatInputProps) {
   const availableSelectedModel = entitlementsPending
     ? selectedModel
     : resolveAvailableSelectedModel(selectedModel, isSelectableModel);
-  const modelUnavailable = isModelRequiredButUnavailable({
+  const isZedSelected =
+    !selectedModel ||
+    selectedModel?.modelID === 'zed' ||
+    selectedModel?.providerID === 'zed' ||
+    availableSelectedModel?.modelID === 'zed' ||
+    availableSelectedModel?.providerID === 'zed';
+  const modelUnavailable = isZedSelected ? false : isModelRequiredButUnavailable({
     modelRequired,
     selectedModel: availableSelectedModel,
     lockForQuestion,
@@ -1249,6 +1255,7 @@ function ComposerImpl(props: SessionChatInputProps) {
     entitlementsPending,
   });
   const noModelsConnected =
+    !isZedSelected &&
     modelRequired &&
     !lockForQuestion &&
     !modelsLoading &&
