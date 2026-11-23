@@ -66,7 +66,7 @@ export function WeeklyBreakdownCard({
   };
 
   return (
-    <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-full">
+    <Card className="bg-white border-zinc-200/90 rounded-2xl p-4 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-full">
       <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
         <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Weekly Breakdown</h2>
         <Badge variant="secondary" className="font-sans text-xs font-medium text-zinc-600 bg-zinc-100/90 border border-zinc-200/80 px-2.5 py-0.5 rounded-lg tracking-normal">
@@ -74,12 +74,12 @@ export function WeeklyBreakdownCard({
         </Badge>
       </div>
 
-      <div className="grid grid-cols-2 gap-3.5 flex-1 items-stretch">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3.5 flex-1 items-stretch">
         {weeks.map((w) => {
           return (
             <Card
               key={w.name}
-              className={`p-4 rounded-xl border flex flex-col justify-between transition-all select-none shadow-none ${
+              className={`p-3.5 sm:p-4 rounded-xl border flex flex-col justify-between transition-all select-none shadow-none ${
                 w.active
                   ? 'border-zinc-950/25 bg-white shadow-2xs'
                   : 'border-zinc-200/70 bg-zinc-50/40 hover:bg-zinc-50 hover:border-zinc-300'

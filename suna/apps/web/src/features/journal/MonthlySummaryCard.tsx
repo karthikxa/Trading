@@ -60,7 +60,7 @@ export function MonthlySummaryCard({ trades, monthLabel }: MonthlySummaryCardPro
   };
 
   return (
-    <Card className="bg-white border-zinc-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-full">
+    <Card className="bg-white border-zinc-200/90 rounded-2xl p-4 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-full">
       <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
         <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Monthly Summary</h2>
         <Badge variant="secondary" className="font-sans text-xs font-medium text-zinc-600 bg-zinc-100/90 border border-zinc-200/80 px-2.5 py-0.5 rounded-lg tracking-normal">
@@ -68,7 +68,7 @@ export function MonthlySummaryCard({ trades, monthLabel }: MonthlySummaryCardPro
         </Badge>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-stretch flex-1">
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 sm:gap-6 items-stretch flex-1">
         {/* Left: Bar Chart of R-distribution in black & white (7 cols) */}
         <div className="md:col-span-7 flex flex-col justify-end pt-1">
           {/* Bars area */}

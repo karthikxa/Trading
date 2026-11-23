@@ -142,15 +142,15 @@ export default function TradingViewSymbolPage({
   ];
 
   return (
-    <div className="w-full flex-1 flex flex-col gap-6 p-4 sm:p-6 lg:p-8 bg-background text-foreground font-sans overflow-y-auto">
+    <div className="w-full flex-1 flex flex-col gap-4 sm:gap-6 p-3 sm:p-6 lg:p-8 bg-background text-foreground font-sans overflow-y-auto">
       {/* 1. Header Banner */}
-      <div className="flex flex-col gap-4 p-5 sm:p-6 bg-card rounded-2xl border border-border/70 shadow-2xs">
+      <div className="flex flex-col gap-4 p-3.5 sm:p-6 bg-card rounded-2xl border border-border/70 shadow-2xs">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-start gap-4">
+          <div className="flex items-start gap-3 sm:gap-4">
             <StockSymbolIcon symbol={cleanSym} size="lg" />
             <div>
-              <div className="flex items-center gap-2.5">
-                <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground font-sans">
+              <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap">
+                <h1 className="text-xl sm:text-3xl font-bold tracking-tight text-foreground font-sans">
                   {companyTitle}
                 </h1>
                 <span className="px-2 py-0.5 rounded text-xs font-semibold bg-muted text-muted-foreground uppercase tracking-wide">
@@ -160,13 +160,13 @@ export default function TradingViewSymbolPage({
                   {resolved.exchange}
                 </span>
               </div>
-              <div className="flex items-baseline gap-3 mt-1.5">
-                <span className="text-3xl sm:text-4xl font-bold tracking-tight tabular-nums text-foreground font-sans">
+              <div className="flex items-baseline gap-2 sm:gap-3 mt-1.5 flex-wrap">
+                <span className="text-2xl sm:text-4xl font-bold tracking-tight tabular-nums text-foreground font-sans">
                   {cleanSym === 'AAPL' ? '$356.27' : cleanSym === 'QQQ' ? '$498.75' : '$235.40'}
                 </span>
-                <span className="text-sm font-semibold text-muted-foreground">USD</span>
-                <span className="inline-flex items-center gap-0.5 text-sm font-semibold text-emerald-600 dark:text-emerald-400">
-                  <TrendingUp className="size-4" />
+                <span className="text-xs sm:text-sm font-semibold text-muted-foreground">USD</span>
+                <span className="inline-flex items-center gap-0.5 text-xs sm:text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                  <TrendingUp className="size-3.5 sm:size-4" />
                   +1.39 (+0.39%)
                 </span>
                 <span className="text-xs text-muted-foreground ml-2 hidden sm:inline">

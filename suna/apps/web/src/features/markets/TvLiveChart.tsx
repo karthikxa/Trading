@@ -65,6 +65,14 @@ export default function TvLiveChart({
   const lastMountedSymbolRef = useRef<string>('');
 
   const [currentSymbol, setCurrentSymbol] = useState<string>(symbol);
+  const [isMobile, setIsMobile] = useState<boolean>(false);
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(typeof window !== 'undefined' && window.innerWidth < 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   useEffect(() => {
     const res = resolveTradingViewSymbol(symbol);
@@ -107,15 +115,15 @@ export default function TvLiveChart({
       calendar: true,
       support_host: 'https://www.tradingview.com',
       hide_top_toolbar: false,
-      hide_side_toolbar: false,
+      hide_side_toolbar: isMobile ? true : false,
       withdateranges: true,
-      details: details,
-      hotlist: true,
-      news: ['headlines'],
-      watchlist: watchlist,
+      details: isMobile ? false : details,
+      hotlist: isMobile ? false : true,
+      news: isMobile ? [] : ['headlines'],
+      watchlist: isMobile ? [] : watchlist,
       container_id: containerId,
     };
-  }, [resolved.fullSymbol, isIndian, theme, details, watchlist, containerId]);
+  }, [resolved.fullSymbol, isIndian, theme, details, watchlist, containerId, isMobile]);
 
   // Mount TradingView Advanced Chart Widget - only remounts when symbol changes
   useEffect(() => {

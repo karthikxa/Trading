@@ -176,27 +176,27 @@ export const TradingCalendar = React.memo(function TradingCalendar({
       {/* ========================================================================= */}
       {/* CALENDAR CONTROLS BAR (COSS UI Components)                                */}
       {/* ========================================================================= */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 border-b border-zinc-200/80 bg-white">
-        <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 px-3 sm:px-5 py-2.5 sm:py-3.5 border-b border-zinc-200/80 bg-white">
+        <div className="flex items-center gap-1 sm:gap-1.5">
           <Button
             type="button"
             variant="outline"
             size="xs"
             onClick={onPrevMonth}
-            className="h-8 w-8 p-0 rounded-lg text-zinc-600 hover:text-zinc-950 border-zinc-200"
+            className="h-7 w-7 sm:h-8 sm:w-8 p-0 rounded-lg text-zinc-600 hover:text-zinc-950 border-zinc-200"
             title="Previous month"
           >
-            <ChevronLeft className="size-4" />
+            <ChevronLeft className="size-3.5 sm:size-4" />
           </Button>
           <Button
             type="button"
             variant="outline"
             size="xs"
             onClick={onNextMonth}
-            className="h-8 w-8 p-0 rounded-lg text-zinc-600 hover:text-zinc-950 border-zinc-200"
+            className="h-7 w-7 sm:h-8 sm:w-8 p-0 rounded-lg text-zinc-600 hover:text-zinc-950 border-zinc-200"
             title="Next month"
           >
-            <ChevronRight className="size-4" />
+            <ChevronRight className="size-3.5 sm:size-4" />
           </Button>
 
           <Popover open={monthPickerOpen} onOpenChange={setMonthPickerOpen}>
@@ -205,11 +205,11 @@ export const TradingCalendar = React.memo(function TradingCalendar({
                 <button
                   type="button"
                   aria-label="Open calendar date picker"
-                  className="ml-1 inline-flex h-8 items-center gap-2 rounded-lg px-2.5 text-sm sm:text-base font-bold text-zinc-950 tracking-tight hover:bg-zinc-100/90 data-[popup-open]:bg-zinc-100 transition-colors cursor-pointer"
+                  className="ml-0.5 sm:ml-1 inline-flex h-7 sm:h-8 items-center gap-1.5 sm:gap-2 rounded-lg px-2 sm:px-2.5 text-xs sm:text-base font-bold text-zinc-950 tracking-tight hover:bg-zinc-100/90 data-[popup-open]:bg-zinc-100 transition-colors cursor-pointer"
                 >
-                  <CalendarIcon className="size-4 text-zinc-500 shrink-0" />
-                  <span>{monthName}</span>
-                  <ChevronDown className="size-3.5 text-zinc-400 shrink-0" />
+                  <CalendarIcon className="size-3.5 sm:size-4 text-zinc-500 shrink-0" />
+                  <span className="truncate">{monthName}</span>
+                  <ChevronDown className="size-3 sm:size-3.5 text-zinc-400 shrink-0" />
                 </button>
               }
             />
@@ -248,13 +248,13 @@ export const TradingCalendar = React.memo(function TradingCalendar({
           </Popover>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 sm:gap-2">
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={onJumpThisMonth}
-            className="h-8 px-3 rounded-lg bg-white hover:bg-zinc-50 text-zinc-800 font-semibold border-zinc-200 shadow-2xs cursor-pointer"
+            className="hidden xs:inline-flex h-7 sm:h-8 px-2 sm:px-3 text-xs rounded-lg bg-white hover:bg-zinc-50 text-zinc-800 font-semibold border-zinc-200 shadow-2xs cursor-pointer"
           >
             This Month
           </Button>
@@ -264,10 +264,10 @@ export const TradingCalendar = React.memo(function TradingCalendar({
             <PopoverTrigger
               type="button"
               className={cn(
-                'inline-flex items-center gap-1.5 rounded-lg border border-border/70 bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer font-sans h-8'
+                'inline-flex items-center gap-1 sm:gap-1.5 rounded-lg border border-border/70 bg-card px-2 sm:px-3 py-1 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer font-sans h-7 sm:h-8'
               )}
             >
-              <Filter className="size-3.5 text-muted-foreground" />
+              <Filter className="size-3 sm:size-3.5 text-muted-foreground" />
               <span>Filter</span>
             </PopoverTrigger>
             <PopoverPopup align="end" className="w-56 p-3 flex flex-col gap-2.5 border border-border/80 bg-card shadow-xl rounded-xl font-sans z-50">
@@ -313,10 +313,11 @@ export const TradingCalendar = React.memo(function TradingCalendar({
       {/* ========================================================================= */}
       {/* 7-COLUMN WEEKDAY HEADERS (Boxed Strip)                                    */}
       {/* ========================================================================= */}
-      <div className="grid grid-cols-7 border-b border-zinc-200 bg-zinc-50/75 text-center text-xs font-semibold text-zinc-500 divide-x divide-zinc-200/70">
+      <div className="grid grid-cols-7 border-b border-zinc-200 bg-zinc-50/75 text-center text-[11px] sm:text-xs font-semibold text-zinc-500 divide-x divide-zinc-200/70">
         {weekHeaders.map((day) => (
-          <div key={day} className="py-2.5">
-            {day}
+          <div key={day} className="py-1.5 sm:py-2.5">
+            <span className="sm:hidden">{day[0]}</span>
+            <span className="hidden sm:inline">{day}</span>
           </div>
         ))}
       </div>
@@ -324,8 +325,8 @@ export const TradingCalendar = React.memo(function TradingCalendar({
       {/* ========================================================================= */}
       {/* BOXED CALENDAR GRID (Mon - Sun)                                           */}
       {/* ========================================================================= */}
-      <div className="p-3 sm:p-4 bg-zinc-50/30">
-        <div className="grid grid-cols-7 gap-2">
+      <div className="p-1 sm:p-4 bg-zinc-50/30">
+        <div className="grid grid-cols-7 gap-1 sm:gap-2">
           {calendarCells.map((cell) => {
             const dayTrades = tradesByDate[cell.dateStr] || [];
             const hasTrades = dayTrades.length > 0;
@@ -339,7 +340,7 @@ export const TradingCalendar = React.memo(function TradingCalendar({
               <div
                 key={cell.cellId}
                 onClick={() => onSelectDate(cell.dateStr)}
-                className={`min-h-[110px] sm:min-h-[125px] p-2.5 rounded-xl border flex flex-col justify-between transition-all cursor-pointer relative select-none ${
+                className={`min-h-[58px] sm:min-h-[125px] p-1 sm:p-2.5 rounded-lg sm:rounded-xl border flex flex-col justify-between transition-all cursor-pointer relative select-none ${
                   !cell.isCurrentMonth
                     ? 'bg-zinc-100/40 border-zinc-200/50 text-zinc-400 opacity-40'
                     : hasTrades
@@ -358,28 +359,32 @@ export const TradingCalendar = React.memo(function TradingCalendar({
                 {/* Day Number and Today badge */}
                 <div className="flex items-center justify-between">
                   <span
-                    className={`text-xs font-sans tabular-nums font-normal ${
-                      cell.isCurrentMonth ? 'text-zinc-600' : 'text-zinc-400'
-                    }`}
+                    className={cn(
+                      'text-[10px] sm:text-xs font-sans tabular-nums font-normal',
+                      cell.isCurrentMonth ? 'text-zinc-600' : 'text-zinc-400',
+                      isToday && 'font-bold text-zinc-950 sm:font-normal sm:text-zinc-600'
+                    )}
                   >
                     {cell.dayNumber}
                   </span>
 
                   {isToday && (
-                    <span className="text-[10px] font-medium px-2 py-0.5 rounded-sm bg-black text-white shadow-2xs">
-                      Today {cell.dayNumber}
+                    <span className="text-[9px] sm:text-[10px] font-medium px-1 sm:px-2 py-0.5 rounded-full sm:rounded-sm bg-black text-white shadow-2xs">
+                      <span className="hidden sm:inline">Today {cell.dayNumber}</span>
+                      <span className="sm:hidden size-1.5 rounded-full bg-white inline-block" title="Today" />
                     </span>
                   )}
                 </div>
 
                 {/* Day Trades and Net P&L (Slim/Light Red & Green) */}
                 {hasTrades && (
-                  <div className="flex flex-col mt-auto pt-2 gap-0.5">
-                    <span className="text-[10px] font-normal text-zinc-500">
-                      {dayTrades.length} {dayTrades.length === 1 ? 'Trade' : 'Trades'}
+                  <div className="flex flex-col mt-auto pt-0.5 sm:pt-2 gap-0 sm:gap-0.5">
+                    <span className="text-[8px] sm:text-[10px] font-normal text-zinc-500 truncate">
+                      <span className="hidden sm:inline">{dayTrades.length} {dayTrades.length === 1 ? 'Trade' : 'Trades'}</span>
+                      <span className="sm:hidden">{dayTrades.length}T</span>
                     </span>
                     <span
-                      className={`text-xs sm:text-[13px] font-sans tabular-nums font-normal tracking-tight truncate ${
+                      className={`text-[9px] sm:text-[13px] font-sans tabular-nums font-normal tracking-tight truncate ${
                         isProfitable ? 'text-emerald-600' : 'text-rose-600'
                       }`}
                     >

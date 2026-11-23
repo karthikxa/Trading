@@ -1060,7 +1060,7 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
   }
 
   return (
-    <div className="w-full h-full flex-1 p-4 sm:p-6 lg:p-8 flex flex-col gap-6 overflow-y-auto bg-background text-foreground font-sans">
+    <div className="w-full h-full flex-1 p-3 sm:p-6 lg:p-8 flex flex-col gap-4 sm:gap-6 overflow-y-auto bg-background text-foreground font-sans">
       {/* 1. Header Section (Cleaned: removed long subtitle, 64 orders badge, Dhan Live Connected, and Sync button) */}
       <div className="flex items-center justify-between pb-2 border-b border-border/40 font-sans">
         <div className="flex items-center gap-2.5">
@@ -1075,69 +1075,69 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
         <div className="absolute inset-0 pointer-events-none opacity-85 overflow-hidden">
           <WallpaperBackground />
         </div>
-        <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5 sm:gap-4 font-sans">
+        <div className="relative z-10 grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 sm:gap-4 font-sans">
           {/* Total Orders */}
-          <div className="rounded-xl border border-border/70 bg-card/85 backdrop-blur-md p-4 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+          <div className="rounded-xl border border-border/70 bg-card/85 backdrop-blur-md p-3 sm:p-4 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
             <div className="flex items-center gap-2 text-muted-foreground">
               <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
                 <Receipt className="size-3.5 text-muted-foreground" />
               </span>
               <span className="text-xs font-medium text-muted-foreground font-sans">Total Orders</span>
             </div>
-            <div className="mt-3">
-              <div className="text-2xl font-normal tracking-tight tabular-nums text-foreground font-sans">
+            <div className="mt-2.5 sm:mt-3">
+              <div className="text-xl sm:text-2xl font-normal tracking-tight tabular-nums text-foreground font-sans">
                 {metrics.total}
               </div>
             </div>
           </div>
 
           {/* Executed (Fills) */}
-          <div className="rounded-xl border border-border/70 bg-card/85 backdrop-blur-md p-4 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+          <div className="rounded-xl border border-border/70 bg-card/85 backdrop-blur-md p-3 sm:p-4 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
             <div className="flex items-center gap-2 text-muted-foreground">
               <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
                 <CheckCircle className="size-3.5 text-muted-foreground" />
               </span>
               <span className="text-xs font-medium text-muted-foreground font-sans">Executed (Fills)</span>
             </div>
-            <div className="mt-3">
-              <div className="text-2xl font-normal tracking-tight tabular-nums text-foreground font-sans">
+            <div className="mt-2.5 sm:mt-3">
+              <div className="text-xl sm:text-2xl font-normal tracking-tight tabular-nums text-foreground font-sans">
                 {metrics.tradedCount}
               </div>
             </div>
           </div>
 
           {/* Open / Pending */}
-          <div className="rounded-xl border border-border/70 bg-card/85 backdrop-blur-md p-4 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+          <div className="rounded-xl border border-border/70 bg-card/85 backdrop-blur-md p-3 sm:p-4 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
             <div className="flex items-center gap-2 text-muted-foreground">
               <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
                 <Clock className="size-3.5 text-muted-foreground" />
               </span>
               <span className="text-xs font-medium text-muted-foreground font-sans">Open / Pending</span>
             </div>
-            <div className="mt-3">
-              <div className="text-2xl font-normal tracking-tight tabular-nums text-foreground font-sans">
+            <div className="mt-2.5 sm:mt-3">
+              <div className="text-xl sm:text-2xl font-normal tracking-tight tabular-nums text-foreground font-sans">
                 {metrics.pendingCount}
               </div>
             </div>
           </div>
 
           {/* Day PnL (Calculated strictly for current/selected day) */}
-          <div className="rounded-xl border border-border/70 bg-card/85 backdrop-blur-md p-4 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+          <div className="rounded-xl border border-border/70 bg-card/85 backdrop-blur-md p-3 sm:p-4 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
             <div className="flex items-center justify-between text-muted-foreground">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2">
                 <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
                   <TrendUp className="size-3.5 text-muted-foreground" />
                 </span>
                 <span className="text-xs font-medium text-muted-foreground font-sans">Day PnL</span>
               </div>
-              <span className="text-[10px] text-muted-foreground font-mono font-medium">
+              <span className="text-[10px] text-muted-foreground font-mono font-medium hidden xs:inline">
                 {metrics.activeDateStr}
               </span>
             </div>
-            <div className="mt-3">
+            <div className="mt-2.5 sm:mt-3">
               <div
                 className={cn(
-                  'text-2xl font-normal tracking-tight tabular-nums font-sans',
+                  'text-lg sm:text-2xl font-normal tracking-tight tabular-nums font-sans',
                   metrics.dayPnl > 0
                     ? 'text-emerald-600 dark:text-emerald-400 font-medium'
                     : metrics.dayPnl < 0
@@ -1151,13 +1151,21 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
           </div>
 
           {/* Total Charges & Fees */}
-          <div className="rounded-xl border border-border/70 bg-card/85 backdrop-blur-md p-4 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+          <div className="col-span-2 sm:col-span-1 rounded-xl border border-border/70 bg-card/85 backdrop-blur-md p-3 sm:p-4 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
             <div className="flex items-center gap-2 text-muted-foreground">
               <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
                 <ShieldCheck className="size-3.5 text-muted-foreground" />
               </span>
               <span className="text-xs font-medium text-muted-foreground font-sans">Fees & Statutory</span>
             </div>
+            <div className="mt-2.5 sm:mt-3">
+              <div className="text-xl sm:text-2xl font-normal tracking-tight tabular-nums text-foreground font-sans">
+                ₹{metrics.totalCharges.toFixed(2)}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
             <div className="mt-3">
               <div className="text-2xl font-normal tracking-tight tabular-nums text-foreground font-sans">
                 ₹{metrics.totalCharges.toFixed(2)}
@@ -1362,189 +1370,191 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
       </div>
 
       {/* 4. Table UI Built with components/ui/table & components/ui/badge */}
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Date</TableHead>
-            <TableHead>Time</TableHead>
-            <TableHead>Symbol</TableHead>
-            <TableHead>Side</TableHead>
-            <TableHead>Product</TableHead>
-            <TableHead className="text-right">Qty</TableHead>
-            <TableHead className="text-right">Order Price</TableHead>
-            <TableHead className="text-right">Avg Price</TableHead>
-            <TableHead className="text-right">PnL</TableHead>
-            <TableHead className="text-right">Charges</TableHead>
-            <TableHead className="text-center">Status</TableHead>
-            <TableHead className="text-center w-14">Action</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {filteredOrders.length === 0 ? (
+      <div className="w-full overflow-x-auto rounded-xl border border-border/70 bg-card shadow-2xs [scrollbar-width:thin] [-webkit-overflow-scrolling:touch]">
+        <Table>
+          <TableHeader>
             <TableRow>
-              <TableCell colSpan={12} className="py-12 text-center text-muted-foreground font-sans">
-                <Receipt className="size-8 mx-auto mb-2 text-muted-foreground/50" />
-                <p className="text-sm font-medium text-foreground">No orders match the selected filters</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Try adjusting your search query, side, product or date filter.
-                </p>
-              </TableCell>
+              <TableHead className="hidden sm:table-cell">Date</TableHead>
+              <TableHead className="whitespace-nowrap">Time</TableHead>
+              <TableHead className="min-w-[120px]">Symbol</TableHead>
+              <TableHead>Side</TableHead>
+              <TableHead className="hidden sm:table-cell">Product</TableHead>
+              <TableHead className="text-right">Qty</TableHead>
+              <TableHead className="hidden lg:table-cell text-right">Order Price</TableHead>
+              <TableHead className="text-right">Avg Price</TableHead>
+              <TableHead className="text-right">PnL</TableHead>
+              <TableHead className="hidden sm:table-cell text-right">Charges</TableHead>
+              <TableHead className="text-center">Status</TableHead>
+              <TableHead className="text-center w-14">Action</TableHead>
             </TableRow>
-          ) : (
-            filteredOrders.map((order: DhanOrderItem) => {
-              const ist = formatToKolkataIST(order.exchangeTime);
-              const isBuy = order.transactionType === 'BUY';
-              const isTraded = order.orderStatus === 'TRADED';
-              const isPending = order.orderStatus === 'PENDING' || order.orderStatus === 'TRANSIT';
-              const isRejected = order.orderStatus === 'REJECTED';
-              const pnlValue = order.pnl != null ? order.pnl : 0;
-              const pnlText = `${pnlValue >= 0 ? '+' : ''}${pnlValue.toFixed(2)} RS`;
+          </TableHeader>
+          <TableBody>
+            {filteredOrders.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={12} className="py-12 text-center text-muted-foreground font-sans">
+                  <Receipt className="size-8 mx-auto mb-2 text-muted-foreground/50" />
+                  <p className="text-sm font-medium text-foreground">No orders match the selected filters</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Try adjusting your search query, side, product or date filter.
+                  </p>
+                </TableCell>
+              </TableRow>
+            ) : (
+              filteredOrders.map((order: DhanOrderItem) => {
+                const ist = formatToKolkataIST(order.exchangeTime);
+                const isBuy = order.transactionType === 'BUY';
+                const isTraded = order.orderStatus === 'TRADED';
+                const isPending = order.orderStatus === 'PENDING' || order.orderStatus === 'TRANSIT';
+                const isRejected = order.orderStatus === 'REJECTED';
+                const pnlValue = order.pnl != null ? order.pnl : 0;
+                const pnlText = `${pnlValue >= 0 ? '+' : ''}${pnlValue.toFixed(2)} RS`;
 
-              return (
-                <TableRow key={order.orderId}>
-                  {/* 1. Date */}
-                  <TableCell className="font-normal text-muted-foreground tabular-nums">
-                    {ist.dateStr}
-                  </TableCell>
+                return (
+                  <TableRow key={order.orderId}>
+                    {/* 1. Date */}
+                    <TableCell className="hidden sm:table-cell font-normal text-muted-foreground tabular-nums">
+                      {ist.dateStr}
+                    </TableCell>
 
-                  {/* 2. Time */}
-                  <TableCell className="font-medium text-foreground tabular-nums">
-                    {ist.timeStr}
-                  </TableCell>
+                    {/* 2. Time */}
+                    <TableCell className="font-medium text-foreground tabular-nums whitespace-nowrap">
+                      {ist.timeStr}
+                    </TableCell>
 
-                  {/* 3. Instrument (NSE_EQ removed) */}
-                  <TableCell>
-                    <div className="flex items-center gap-2.5">
-                      <StockSymbolIcon symbol={order.tradingSymbol} size="md" />
-                      <div className="min-w-0">
-                        <div className="font-semibold text-foreground text-[13px] tracking-tight">
-                          {order.tradingSymbol}
-                        </div>
-                        <div className="text-[11px] text-muted-foreground truncate max-w-[170px]">
-                          {order.customSymbol || order.tradingSymbol}
+                    {/* 3. Instrument (NSE_EQ removed) */}
+                    <TableCell>
+                      <div className="flex items-center gap-2.5 min-w-[120px]">
+                        <StockSymbolIcon symbol={order.tradingSymbol} size="md" />
+                        <div className="min-w-0">
+                          <div className="font-semibold text-foreground text-[13px] tracking-tight truncate max-w-[110px] sm:max-w-none">
+                            {order.tradingSymbol}
+                          </div>
+                          <div className="text-[11px] text-muted-foreground truncate max-w-[110px] sm:max-w-[170px]">
+                            {order.customSymbol || order.tradingSymbol}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </TableCell>
+                    </TableCell>
 
-                  {/* 4. Side Badge with Kortix Component Badge */}
-                  <TableCell>
-                    <Badge variant="outline" className="font-sans text-xs">
+                    {/* 4. Side Badge with Kortix Component Badge */}
+                    <TableCell>
+                      <Badge variant="outline" className="font-sans text-xs">
+                        <span
+                          aria-hidden="true"
+                          className={cn('size-1.5 rounded-full mr-1.5', isBuy ? 'bg-emerald-500' : 'bg-rose-500')}
+                        />
+                        {isBuy ? 'Buy' : 'Sell'}
+                      </Badge>
+                    </TableCell>
+
+                    {/* 5. Product (MARKET removed, only Intraday or Delivery in Kortix font) */}
+                    <TableCell className="hidden sm:table-cell font-medium text-foreground text-xs">
+                      {order.productType === 'INTRADAY'
+                        ? 'Intraday'
+                        : order.productType === 'CNC'
+                          ? 'Delivery'
+                          : order.productType}
+                    </TableCell>
+
+                    {/* 6. Quantity */}
+                    <TableCell className="text-right tabular-nums text-xs whitespace-nowrap">
+                      <span className="font-semibold text-foreground">
+                        {order.tradedQuantity > 0 ? order.tradedQuantity : order.quantity}
+                      </span>
+                      <span className="text-muted-foreground text-[11px]"> / {order.quantity}</span>
+                    </TableCell>
+
+                    {/* 7. Order Price */}
+                    <TableCell className="hidden lg:table-cell text-right tabular-nums text-xs text-muted-foreground">
+                      {order.price > 0 ? `₹${order.price.toFixed(2)}` : 'MKT'}
+                    </TableCell>
+
+                    {/* 8. Avg Traded Price */}
+                    <TableCell className="text-right tabular-nums text-xs font-semibold text-foreground whitespace-nowrap">
+                      ₹{order.avgTradedPrice.toFixed(2)}
+                    </TableCell>
+
+                    {/* 9. PnL (Replaced Turnover, e.g. +1.32 RS) */}
+                    <TableCell className="text-right tabular-nums text-xs font-medium whitespace-nowrap">
                       <span
-                        aria-hidden="true"
-                        className={cn('size-1.5 rounded-full mr-1.5', isBuy ? 'bg-emerald-500' : 'bg-rose-500')}
-                      />
-                      {isBuy ? 'Buy' : 'Sell'}
-                    </Badge>
-                  </TableCell>
-
-                  {/* 5. Product (MARKET removed, only Intraday or Delivery in Kortix font) */}
-                  <TableCell className="font-medium text-foreground text-xs">
-                    {order.productType === 'INTRADAY'
-                      ? 'Intraday'
-                      : order.productType === 'CNC'
-                        ? 'Delivery'
-                        : order.productType}
-                  </TableCell>
-
-                  {/* 6. Quantity */}
-                  <TableCell className="text-right tabular-nums text-xs">
-                    <span className="font-semibold text-foreground">
-                      {order.tradedQuantity > 0 ? order.tradedQuantity : order.quantity}
-                    </span>
-                    <span className="text-muted-foreground text-[11px]"> / {order.quantity}</span>
-                  </TableCell>
-
-                  {/* 7. Order Price */}
-                  <TableCell className="text-right tabular-nums text-xs text-muted-foreground">
-                    {order.price > 0 ? `₹${order.price.toFixed(2)}` : 'MKT'}
-                  </TableCell>
-
-                  {/* 8. Avg Traded Price */}
-                  <TableCell className="text-right tabular-nums text-xs font-semibold text-foreground">
-                    ₹{order.avgTradedPrice.toFixed(2)}
-                  </TableCell>
-
-                  {/* 9. PnL (Replaced Turnover, e.g. +1.32 RS) */}
-                  <TableCell className="text-right tabular-nums text-xs font-medium">
-                    <span
-                      className={cn(
-                        pnlValue > 0
-                          ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
-                          : pnlValue < 0
-                            ? 'text-rose-600 dark:text-rose-400 font-semibold'
-                            : 'text-muted-foreground'
-                      )}
-                    >
-                      {pnlText}
-                    </span>
-                  </TableCell>
-
-                  {/* 10. Charges */}
-                  <TableCell className="text-right tabular-nums text-xs text-muted-foreground">
-                    ₹{order.totalCharges.toFixed(2)}
-                  </TableCell>
-
-                  {/* 11. Status Badge with Kortix Component Badge */}
-                  <TableCell className="text-center">
-                    <Badge variant="outline" className="font-sans text-xs">
-                      <span
-                        aria-hidden="true"
                         className={cn(
-                          'size-1.5 rounded-full mr-1.5',
-                          isTraded
-                            ? 'bg-emerald-500'
-                            : isPending
-                              ? 'bg-amber-500'
-                              : isRejected
-                                ? 'bg-red-500'
-                                : 'bg-muted-foreground/64'
+                          pnlValue > 0
+                            ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                            : pnlValue < 0
+                              ? 'text-rose-600 dark:text-rose-400 font-semibold'
+                              : 'text-muted-foreground'
                         )}
-                      />
-                      {isTraded ? 'Traded' : isPending ? 'Pending' : isRejected ? 'Rejected' : 'Cancelled'}
-                    </Badge>
-                  </TableCell>
+                      >
+                        {pnlText}
+                      </span>
+                    </TableCell>
 
-                  {/* 12. Action Column with Three Dots Menu */}
-                  <TableCell className="text-center">
-                    <Menu>
-                      <MenuTrigger asChild>
-                        <button
-                          type="button"
-                          className="inline-flex items-center justify-center size-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
-                          title="Actions"
-                        >
-                          <DotsThreeVertical className="size-4" weight="bold" />
-                        </button>
-                      </MenuTrigger>
-                      <MenuPopup align="end" className="w-32 font-sans">
-                        <MenuItem
-                          onSelect={() => setViewingOrder(order)}
-                          className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
-                        >
-                          View
-                        </MenuItem>
-                        <MenuItem
-                          onSelect={() => setSharingOrder(order)}
-                          className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
-                        >
-                          Share
-                        </MenuItem>
-                        <MenuItem
-                          onSelect={() => downloadOrderPdf(order)}
-                          className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
-                        >
-                          Download
-                        </MenuItem>
-                      </MenuPopup>
-                    </Menu>
-                  </TableCell>
-                </TableRow>
-              );
-            })
-          )}
-        </TableBody>
-      </Table>
+                    {/* 10. Charges */}
+                    <TableCell className="hidden sm:table-cell text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">
+                      ₹{order.totalCharges.toFixed(2)}
+                    </TableCell>
+
+                    {/* 11. Status Badge with Kortix Component Badge */}
+                    <TableCell className="text-center">
+                      <Badge variant="outline" className="font-sans text-xs">
+                        <span
+                          aria-hidden="true"
+                          className={cn(
+                            'size-1.5 rounded-full mr-1.5',
+                            isTraded
+                              ? 'bg-emerald-500'
+                              : isPending
+                                ? 'bg-amber-500'
+                                : isRejected
+                                  ? 'bg-red-500'
+                                  : 'bg-muted-foreground/64'
+                          )}
+                        />
+                        {isTraded ? 'Traded' : isPending ? 'Pending' : isRejected ? 'Rejected' : 'Cancelled'}
+                      </Badge>
+                    </TableCell>
+
+                    {/* 12. Action Column with Three Dots Menu */}
+                    <TableCell className="text-center">
+                      <Menu>
+                        <MenuTrigger asChild>
+                          <button
+                            type="button"
+                            className="inline-flex items-center justify-center size-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
+                            title="Actions"
+                          >
+                            <DotsThreeVertical className="size-4" weight="bold" />
+                          </button>
+                        </MenuTrigger>
+                        <MenuPopup align="end" className="w-32 font-sans">
+                          <MenuItem
+                            onSelect={() => setViewingOrder(order)}
+                            className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
+                          >
+                            View
+                          </MenuItem>
+                          <MenuItem
+                            onSelect={() => setSharingOrder(order)}
+                            className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
+                          >
+                            Share
+                          </MenuItem>
+                          <MenuItem
+                            onSelect={() => downloadOrderPdf(order)}
+                            className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
+                          >
+                            Download
+                          </MenuItem>
+                        </MenuPopup>
+                      </Menu>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
 
       {/* Share Order Dialog */}
       <Dialog open={!!sharingOrder} onOpenChange={(open) => !open && setSharingOrder(null)}>

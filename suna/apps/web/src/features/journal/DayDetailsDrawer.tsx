@@ -233,8 +233,16 @@ export function DayDetailsDrawer({
   };
 
   return (
-    <aside className="w-full sm:w-[360px] md:w-[380px] shrink-0 bg-sidebar text-sidebar-foreground border-l border-sidebar-border/40 flex flex-col h-full font-sans z-20 select-none shadow-none overflow-hidden">
-      {/* 1. DRAWER TOP BAR (Kortix Sidebar Header style) */}
+    <>
+      {/* Mobile Backdrop */}
+      <div
+        className="fixed inset-0 bg-black/50 backdrop-blur-xs z-40 sm:hidden transition-opacity"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+
+      <aside className="fixed inset-y-0 right-0 z-50 w-[88vw] max-w-[380px] sm:static sm:z-20 sm:w-[360px] md:w-[380px] shrink-0 bg-sidebar text-sidebar-foreground border-l border-sidebar-border/40 flex flex-col h-full font-sans select-none shadow-2xl sm:shadow-none overflow-hidden transition-transform">
+        {/* 1. DRAWER TOP BAR (Kortix Sidebar Header style) */}
       <div className="flex items-center justify-between px-3.5 h-[49px] border-b border-sidebar-border/30 bg-sidebar shrink-0">
         <div className="flex items-center gap-1 text-sidebar-foreground min-w-0">
           <Hint label="Previous Day">
@@ -588,6 +596,7 @@ export function DayDetailsDrawer({
         </div>
       </div>
     </aside>
+    </>
   );
 }
 

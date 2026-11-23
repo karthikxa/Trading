@@ -520,7 +520,7 @@ export default function ProjectIndexPage() {
     <div
       className={cn(
         'relative flex flex-col h-full w-full overflow-hidden bg-background font-sans transition-[margin] duration-200',
-        isEditDrawerOpen && 'mr-[420px]'
+        isEditDrawerOpen && 'md:mr-[420px]'
       )}
     >
       {/* Main Workspace Body */}
@@ -568,7 +568,7 @@ export default function ProjectIndexPage() {
         {/* VIEW 2: MARKETS OVERVIEW (KORTIX DESIGN SYSTEM)                            */}
         {/* ========================================================================= */}
         {visitedViews.has('overview') && (
-          <div id="overview-scroll-container" className={cn("w-full h-full flex-1 p-4 sm:p-6 lg:p-8 flex flex-col gap-6 overflow-y-auto bg-background text-foreground", activeView !== 'overview' && 'hidden')}>
+          <div id="overview-scroll-container" className={cn("w-full h-full flex-1 p-3 sm:p-6 lg:p-8 flex flex-col gap-4 sm:gap-6 overflow-y-auto bg-background text-foreground", activeView !== 'overview' && 'hidden')}>
             {/* Kortix Page Header */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border/40 font-sans">
               <div className="flex flex-col gap-1">
@@ -588,23 +588,23 @@ export default function ProjectIndexPage() {
               <div className="absolute inset-0 pointer-events-none opacity-85 overflow-hidden">
                 <WallpaperBackground />
               </div>
-              <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3.5 sm:gap-4">
+              <div className="relative z-10 grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2.5 sm:gap-4">
                 {/* 1. Total Balance */}
-                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                <div className="rounded-xl border border-border/70 bg-card p-3 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
                       <Wallet className="size-3.5 text-muted-foreground" />
                     </span>
                     <span className="text-xs font-medium text-muted-foreground font-sans">Total Balance</span>
                   </div>
-                  <div className="mt-3">
-                    <div className="text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
+                  <div className="mt-2.5 sm:mt-3">
+                    <div className="text-lg sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
                       ₹{displayBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
-                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
+                  <div className="mt-2 sm:mt-2.5 flex items-center gap-1.5 text-[11px] sm:text-[11.5px] font-medium text-muted-foreground font-sans">
                     <span className={cn(
-                      'inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-medium font-sans',
+                      'inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10.5px] sm:text-[11px] font-medium font-sans',
                       totalJournalPnl > 0
                         ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                         : totalJournalPnl < 0
@@ -617,16 +617,16 @@ export default function ProjectIndexPage() {
                 </div>
 
                 {/* 2. Realized PnL */}
-                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                <div className="rounded-xl border border-border/70 bg-card p-3 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
                       <ChartLineUp className="size-3.5 text-muted-foreground" />
                     </span>
                     <span className="text-xs font-medium text-muted-foreground font-sans">Realized PnL</span>
                   </div>
-                  <div className="mt-3">
+                  <div className="mt-2.5 sm:mt-3">
                     <div className={cn(
-                      'text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums font-sans',
+                      'text-lg sm:text-[23px] font-normal tracking-tight tabular-nums font-sans',
                       todayRealizedPnl > 0
                         ? 'text-emerald-600 dark:text-emerald-400'
                         : todayRealizedPnl < 0
@@ -636,33 +636,33 @@ export default function ProjectIndexPage() {
                       {todayRealizedPnl > 0 ? '+' : todayRealizedPnl < 0 ? '-' : ''}₹{Math.abs(todayRealizedPnl).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
-                  <div className="mt-2.5 flex items-center justify-between text-[11.5px] font-medium text-muted-foreground font-sans">
+                  <div className="mt-2 sm:mt-2.5 flex items-center justify-between text-[11px] sm:text-[11.5px] font-medium text-muted-foreground font-sans">
                     <div className="flex items-center gap-1.5">
                       <span className={cn(
-                        'inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium font-sans',
+                        'inline-flex items-center rounded px-1.5 py-0.5 text-[10.5px] sm:text-[11px] font-medium font-sans',
                         todayRealizedPnl > 0
                           ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                           : 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
                       )}>
                         {todayRealizedPnl >= 0 ? 'Profit' : 'Loss'}
                       </span>
-                      <span className="font-sans">Day ({todayTradesCount} {todayTradesCount === 1 ? 'trade' : 'trades'})</span>
+                      <span className="font-sans hidden xs:inline">Day ({todayTradesCount})</span>
                     </div>
-                    <span className="text-[10px] text-muted-foreground/70 tabular-nums">Total: {totalJournalPnl >= 0 ? '+' : ''}₹{totalJournalPnl.toFixed(2)}</span>
+                    <span className="text-[10px] text-muted-foreground/70 tabular-nums hidden sm:inline">Total: {totalJournalPnl >= 0 ? '+' : ''}₹{totalJournalPnl.toFixed(2)}</span>
                   </div>
                 </div>
 
                 {/* 3. Unrealized PnL (Live Fluctuating) */}
-                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                <div className="rounded-xl border border-border/70 bg-card p-3 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
                       <TrendUp className="size-3.5 text-muted-foreground" />
                     </span>
                     <span className="text-xs font-medium text-muted-foreground font-sans">Unrealized PnL</span>
                   </div>
-                  <div className="mt-3">
+                  <div className="mt-2.5 sm:mt-3">
                     <div className={cn(
-                      'text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums font-sans',
+                      'text-lg sm:text-[23px] font-normal tracking-tight tabular-nums font-sans',
                       totalUnrealizedPnl > 0
                         ? 'text-emerald-600 dark:text-emerald-400'
                         : totalUnrealizedPnl < 0
@@ -672,82 +672,83 @@ export default function ProjectIndexPage() {
                       {totalUnrealizedPnl > 0 ? '+' : totalUnrealizedPnl < 0 ? '-' : ''}₹{Math.abs(totalUnrealizedPnl).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
-                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
+                  <div className="mt-2 sm:mt-2.5 flex items-center gap-1.5 text-[11px] sm:text-[11.5px] font-medium text-muted-foreground font-sans">
                     {openPositionsCount > 0 ? (
-                      <span className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-sans">
+                      <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] sm:text-[11px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-sans">
                         <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                        {openPositionsCount} {openPositionsCount === 1 ? 'Open Position' : 'Open Positions'}
+                        {openPositionsCount} Open
                       </span>
                     ) : (
-                      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium bg-muted text-muted-foreground font-sans">
-                        No open positions
+                      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10.5px] sm:text-[11px] font-medium bg-muted text-muted-foreground font-sans">
+                        0 open
                       </span>
                     )}
                   </div>
                 </div>
 
                 {/* 4. Margin Used */}
-                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                <div className="rounded-xl border border-border/70 bg-card p-3 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
                       <Coins className="size-3.5 text-muted-foreground" />
                     </span>
                     <span className="text-xs font-medium text-muted-foreground font-sans">Margin Used</span>
                   </div>
-                  <div className="mt-3">
-                    <div className="text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
+                  <div className="mt-2.5 sm:mt-3">
+                    <div className="text-lg sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
                       ₹{marginUsed.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
-                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
-                    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium bg-muted text-muted-foreground font-sans">
-                      Available: ₹{displayBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  <div className="mt-2 sm:mt-2.5 flex items-center gap-1.5 text-[11px] sm:text-[11.5px] font-medium text-muted-foreground font-sans">
+                    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10.5px] sm:text-[11px] font-medium bg-muted text-muted-foreground font-sans truncate">
+                      Avail: ₹{displayBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                 </div>
 
                 {/* 5. Win / Loss Record */}
-                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                <div className="rounded-xl border border-border/70 bg-card p-3 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
                       <TrendUp className="size-3.5 text-muted-foreground" />
                     </span>
-                    <span className="text-xs font-medium text-muted-foreground font-sans">Win / Loss Record</span>
+                    <span className="text-xs font-medium text-muted-foreground font-sans">Win / Loss</span>
                   </div>
-                  <div className="mt-3 flex items-baseline gap-2 font-sans">
-                    <span className="text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
+                  <div className="mt-2.5 sm:mt-3 flex items-baseline gap-2 font-sans">
+                    <span className="text-lg sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
                       <span className={winJournalTrades > 0 ? 'text-emerald-600 dark:text-emerald-400 font-normal' : 'text-foreground'}>{winJournalTrades}W</span>
-                      <span className="text-muted-foreground/40 font-normal mx-1">/</span>
+                      <span className="text-muted-foreground/40 font-normal mx-0.5">/</span>
                       <span className={lossJournalTrades > 0 ? 'text-rose-600 dark:text-rose-400 font-normal' : 'text-foreground'}>{lossJournalTrades}L</span>
                     </span>
                   </div>
-                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
-                    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium bg-muted text-foreground font-sans">
+                  <div className="mt-2 sm:mt-2.5 flex items-center gap-1.5 text-[11px] sm:text-[11.5px] font-medium text-muted-foreground font-sans">
+                    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10.5px] sm:text-[11px] font-medium bg-muted text-foreground font-sans">
                       {winRateJournal}% Win Rate
                     </span>
                   </div>
                 </div>
 
                 {/* 6. Target */}
-                <div className="rounded-xl border border-border/70 bg-card p-4 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
+                <div className="rounded-xl border border-border/70 bg-card p-3 sm:p-5 shadow-2xs transition-all hover:border-border flex flex-col justify-between font-sans">
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <span className="size-6 rounded-full bg-muted/80 text-muted-foreground flex items-center justify-center shrink-0">
                       <Target className="size-3.5 text-muted-foreground" />
                     </span>
                     <span className="text-xs font-medium text-muted-foreground font-sans">Target</span>
                   </div>
-                  <div className="mt-3">
-                    <div className="text-2xl sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
+                  <div className="mt-2.5 sm:mt-3">
+                    <div className="text-lg sm:text-[23px] font-normal tracking-tight tabular-nums text-foreground font-sans">
                       ₹{tradingGoal.targetAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
-                  <div className="mt-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground font-sans">
-                    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-sans">
+                  <div className="mt-2 sm:mt-2.5 flex items-center gap-1.5 text-[11px] sm:text-[11.5px] font-medium text-muted-foreground font-sans">
+                    <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10.5px] sm:text-[11px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-sans">
                       {displayBalance > 0
                         ? `+${(((tradingGoal.targetAmount - displayBalance) / displayBalance) * 100).toFixed(1)}% Goal`
                         : '+25.0% Goal'}
                     </span>
                   </div>
+                </div>
                 </div>
               </div>
             </div>

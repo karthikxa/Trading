@@ -338,8 +338,8 @@ export default function JournalView({ projectId }: JournalViewProps) {
         ) : (
           /* ==================== VIEW 1: BIG CALENDAR & SIDEBAR (LOAD AT SAME TIME) ==================== */
           <>
-            <main className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:pt-6 sm:pb-12 lg:px-6 lg:pt-6 lg:pb-12 min-w-0 w-full [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-              <div className="flex flex-col gap-6 w-full max-w-full">
+            <main className="flex-1 overflow-y-auto px-2 sm:px-6 sm:pt-6 sm:pb-12 lg:px-6 lg:pt-6 lg:pb-12 min-w-0 w-full [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+              <div className="flex flex-col gap-4 sm:gap-6 w-full max-w-full">
                 {/* Big Monthly Calendar with Boxes */}
                 <TradingCalendar
                   currentYear={currentYear}

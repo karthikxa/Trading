@@ -137,16 +137,16 @@ export const WatchlistTable = React.memo(function WatchlistTable({
           </button>
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto [scrollbar-width:thin] [-webkit-overflow-scrolling:touch]">
           <table className="w-full text-left text-sm font-sans">
             <thead className="bg-muted/30 border-b border-border/50 text-xs font-medium text-muted-foreground font-sans">
               <tr>
-                <th className="py-2.5 px-5 font-medium">Symbol / Name</th>
-                <th className="py-2.5 px-5 font-medium">Exchange</th>
-                <th className="py-2.5 px-5 text-right font-medium">Price</th>
-                <th className="py-2.5 px-5 text-right font-medium">PnL</th>
-                <th className="py-2.5 px-5 text-right font-medium">Change</th>
-                <th className="py-2.5 px-5 text-center w-16 font-medium">Pin</th>
+                <th className="py-2.5 px-3 sm:px-5 font-medium">Symbol / Name</th>
+                <th className="hidden sm:table-cell py-2.5 px-5 font-medium">Exchange</th>
+                <th className="py-2.5 px-3 sm:px-5 text-right font-medium">Price</th>
+                <th className="hidden md:table-cell py-2.5 px-5 text-right font-medium">PnL</th>
+                <th className="py-2.5 px-3 sm:px-5 text-right font-medium">Change</th>
+                <th className="hidden sm:table-cell py-2.5 px-5 text-center w-16 font-medium">Pin</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/40 font-sans">
@@ -180,29 +180,29 @@ export const WatchlistTable = React.memo(function WatchlistTable({
                       isSelected && 'bg-muted/60 font-medium',
                     )}
                   >
-                    <td className="py-2.5 px-4">
-                      <div className="flex items-center gap-2.5">
+                    <td className="py-2.5 px-3 sm:px-4">
+                      <div className="flex items-center gap-2 sm:gap-2.5">
                         <TradingPairIcon symbol={item.symbol} size="md" />
-                        <div>
+                        <div className="min-w-0">
                           <div className="font-medium text-foreground flex items-center gap-1.5 font-sans tracking-tight text-[13px]">
                             {item.symbol}
                             <ArrowUpRight className="size-3 opacity-0 group-hover:opacity-100 text-muted-foreground transition-opacity" />
                           </div>
-                          <div className="text-[11.5px] font-normal text-muted-foreground truncate max-w-[220px] font-sans">
+                          <div className="text-[11px] sm:text-[11.5px] font-normal text-muted-foreground truncate max-w-[110px] sm:max-w-[220px] font-sans">
                             {item.name}
                           </div>
                         </div>
                       </div>
                     </td>
-                    <td className="py-3 px-5">
+                    <td className="hidden sm:table-cell py-3 px-5">
                       <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-sans font-medium text-muted-foreground bg-muted/60">
                         {item.exchange || 'NSE'}
                       </span>
                     </td>
-                    <td className="py-3 px-5 text-right font-normal tabular-nums text-sm text-foreground font-sans tracking-tight">
+                    <td className="py-2.5 px-3 sm:px-5 text-right font-normal tabular-nums text-xs sm:text-sm text-foreground font-sans tracking-tight whitespace-nowrap">
                       {currencyPrefix}{item.price?.toFixed(2) ?? '0.00'}
                     </td>
-                    <td className="py-3 px-5 text-right font-normal tabular-nums text-xs font-sans tracking-tight">
+                    <td className="hidden md:table-cell py-3 px-5 text-right font-normal tabular-nums text-xs font-sans tracking-tight whitespace-nowrap">
                       <span
                         className={cn(
                           'tabular-nums font-medium',
@@ -216,7 +216,7 @@ export const WatchlistTable = React.memo(function WatchlistTable({
                         {isPnlPositive ? '+' : isPnlNegative ? '-' : ''}₹{Math.abs(pnl).toFixed(2)}
                       </span>
                     </td>
-                    <td className="py-3 px-5 text-right font-normal tabular-nums text-xs font-sans tracking-tight">
+                    <td className="py-2.5 px-3 sm:px-5 text-right font-normal tabular-nums text-xs font-sans tracking-tight whitespace-nowrap">
                       <span className={cn(
                         'text-xs font-sans tabular-nums font-medium',
                         isPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
@@ -224,7 +224,7 @@ export const WatchlistTable = React.memo(function WatchlistTable({
                         {isPositive ? '+' : ''}{item.changePercent?.toFixed(2) ?? '+0.00'}%
                       </span>
                     </td>
-                    <td className="py-3 px-5 text-center">
+                    <td className="hidden sm:table-cell py-3 px-5 text-center">
                       <WatchlistButton
                         symbol={item.symbol}
                         name={item.name}
