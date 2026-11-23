@@ -107,7 +107,28 @@ export function getTradingSessionForTime(dateString: string): string {
 }
 
 /**
- * Formats an ISO / Dhan time string to user-friendly Kolkata IST
+ * Simple 12-hour time formatter (e.g. 14:35 -> 2:35, 09:15 -> 9:15)
+ */
+export function formatSimpleTime(timeStr?: string): string {
+  if (!timeStr) return '';
+  let clean = timeStr.trim();
+  if (clean.includes('T')) {
+    clean = clean.split('T')[1];
+  }
+  const match = clean.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return clean;
+  let h = parseInt(match[1], 10);
+  const m = match[2];
+  const ampm = clean.match(/\b(AM|PM)\b/i)?.[1]?.toUpperCase();
+  if (ampm === 'PM' && h < 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${h}:${m}`;
+}
+
+/**
+ * Formats an ISO / Dhan time string to user-friendly Kolkata IST (14:35 -> 2:35)
  */
 export function formatToKolkataIST(dateString: string): { dateStr: string; timeStr: string; fullStr: string } {
   try {
@@ -123,7 +144,7 @@ export function formatToKolkataIST(dateString: string): { dateStr: string; timeS
       year: 'numeric',
     });
 
-    const timeStr = d.toLocaleTimeString('en-IN', {
+    const rawTime = d.toLocaleTimeString('en-IN', {
       timeZone: 'Asia/Kolkata',
       hour: '2-digit',
       minute: '2-digit',
@@ -131,10 +152,12 @@ export function formatToKolkataIST(dateString: string): { dateStr: string; timeS
       hour12: true,
     });
 
+    const timeStr = formatSimpleTime(rawTime);
+
     return {
       dateStr,
       timeStr,
-      fullStr: `${dateStr}, ${timeStr} IST`,
+      fullStr: `${dateStr}, ${timeStr}`,
     };
   } catch {
     return { dateStr: 'Today', timeStr: '--:--', fullStr: 'Pending' };
@@ -380,9 +403,9 @@ export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderIte
         const entryParts = (openOrder.time || '').split('T');
         const exitParts = (time || '').split('T');
         const entryDate = entryParts[0] || new Date().toISOString().split('T')[0];
-        const entryTime = (entryParts[1] || '09:30').slice(0, 5);
+        const entryTime = formatSimpleTime(entryParts[1] || '09:30');
         const exitDate = exitParts[0] || entryDate;
-        const exitTime = (exitParts[1] || '15:30').slice(0, 5);
+        const exitTime = formatSimpleTime(exitParts[1] || '15:30');
 
         const riskPerShare = Math.max(0.5, entryPrice * 0.01);
         const riskR = Number((riskPerShare * matchQty).toFixed(2));

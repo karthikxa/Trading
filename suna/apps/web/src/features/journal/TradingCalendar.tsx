@@ -98,6 +98,25 @@ export const TradingCalendar = React.memo(function TradingCalendar({
     })}`;
   };
 
+  // Ultra-compact formatter for mobile phones (< 430px) so 7-column calendar strictly fits without blowout
+  const formatCompactValue = (pnl: number, r: number) => {
+    if (currencyMode === 'R') {
+      const sign = r >= 0 ? '+' : '';
+      return `${sign}${r.toFixed(1)}R`;
+    }
+    if (currencyMode === '%') {
+      const pct = (pnl / 100000) * 100;
+      const sign = pct >= 0 ? '+' : '';
+      return `${sign}${pct.toFixed(1)}%`;
+    }
+    const sign = pnl >= 0 ? '+' : '-';
+    const abs = Math.abs(pnl);
+    if (abs >= 10000000) return `${sign}₹${(abs / 10000000).toFixed(1)}Cr`;
+    if (abs >= 100000) return `${sign}₹${(abs / 100000).toFixed(1)}L`;
+    if (abs >= 1000) return `${sign}₹${(abs / 1000).toFixed(1)}k`;
+    return `${sign}₹${Math.round(abs)}`;
+  };
+
   // Group trades by date (YYYY-MM-DD) with sub-0.05ms memoization
   const tradesByDate = useMemo(() => {
     const map: Record<string, JournalTrade[]> = {};
@@ -340,21 +359,20 @@ export const TradingCalendar = React.memo(function TradingCalendar({
               <div
                 key={cell.cellId}
                 onClick={() => onSelectDate(cell.dateStr)}
-                className={`min-h-[58px] sm:min-h-[125px] p-1 sm:p-2.5 rounded-lg sm:rounded-xl border flex flex-col justify-between transition-all cursor-pointer relative select-none ${
-                  !cell.isCurrentMonth
+                className={`min-h-[58px] sm:min-h-[125px] p-1 sm:p-2.5 rounded-lg sm:rounded-xl border flex flex-col justify-between transition-all cursor-pointer relative select-none ${!cell.isCurrentMonth
                     ? 'bg-zinc-100/40 border-zinc-200/50 text-zinc-400 opacity-40'
                     : hasTrades
-                    ? isProfitable
-                      ? isSelected
-                        ? 'bg-emerald-50/80 border-emerald-300 text-emerald-900 ring-1 ring-emerald-300/40 shadow-xs'
-                        : 'bg-emerald-50/50 hover:bg-emerald-50/80 border-emerald-200/70 text-emerald-900 shadow-2xs hover:border-emerald-300'
+                      ? isProfitable
+                        ? isSelected
+                          ? 'bg-emerald-50/80 border-emerald-300 text-emerald-900 ring-1 ring-emerald-300/40 shadow-xs'
+                          : 'bg-emerald-50/50 hover:bg-emerald-50/80 border-emerald-200/70 text-emerald-900 shadow-2xs hover:border-emerald-300'
+                        : isSelected
+                          ? 'bg-rose-50/80 border-rose-300 text-rose-900 ring-1 ring-rose-300/40 shadow-xs'
+                          : 'bg-rose-50/50 hover:bg-rose-50/80 border-rose-200/70 text-rose-900 shadow-2xs hover:border-rose-300'
                       : isSelected
-                      ? 'bg-rose-50/80 border-rose-300 text-rose-900 ring-1 ring-rose-300/40 shadow-xs'
-                      : 'bg-rose-50/50 hover:bg-rose-50/80 border-rose-200/70 text-rose-900 shadow-2xs hover:border-rose-300'
-                    : isSelected
-                    ? 'bg-zinc-50 border-zinc-300 ring-1 ring-zinc-200 shadow-xs'
-                    : 'bg-white hover:bg-zinc-50/80 border-zinc-200/70 hover:border-zinc-300'
-                }`}
+                        ? 'bg-zinc-50 border-zinc-300 ring-1 ring-zinc-200 shadow-xs'
+                        : 'bg-white hover:bg-zinc-50/80 border-zinc-200/70 hover:border-zinc-300'
+                  }`}
               >
                 {/* Day Number and Today badge */}
                 <div className="flex items-center justify-between">
@@ -384,11 +402,11 @@ export const TradingCalendar = React.memo(function TradingCalendar({
                       <span className="sm:hidden">{dayTrades.length}T</span>
                     </span>
                     <span
-                      className={`text-[9px] sm:text-[13px] font-sans tabular-nums font-normal tracking-tight truncate ${
-                        isProfitable ? 'text-emerald-600' : 'text-rose-600'
-                      }`}
+                      className={`text-[9px] sm:text-[13px] font-sans tabular-nums font-normal tracking-tight truncate ${isProfitable ? 'text-emerald-600' : 'text-rose-600'
+                        }`}
                     >
-                      {formatValue(dayPnl, dayR)}
+                      <span className="hidden sm:inline">{formatValue(dayPnl, dayR)}</span>
+                      <span className="sm:hidden">{formatCompactValue(dayPnl, dayR)}</span>
                     </span>
                   </div>
                 )}

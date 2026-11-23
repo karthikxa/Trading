@@ -15,8 +15,10 @@ const serverDhanCache = new Map<string, CacheEntry>();
 const inFlightRequests = new Map<string, Promise<{ data: any; summary?: any; status: number; ok: boolean }>>();
 
 // Sliding window rate-limit tracker to protect daily Dhan API quota
+// Dhan allows up to 10 requests per second across REST endpoints.
+// 1 call/sec per endpoint is ~60-120 req/min, safely under Dhan's 250 req/min threshold.
 let callTimestamps: number[] = [];
-const MAX_CALLS_PER_MINUTE = 40; // Dhan safe threshold
+const MAX_CALLS_PER_MINUTE = 150; // Dhan safe ceiling (under 250/min limit)
 
 function isQuotaSafe(): boolean {
   const now = Date.now();
@@ -30,10 +32,10 @@ function recordDhanCall(): void {
 
 // Micro-TTL per endpoint: balances 0ms speed with real-time freshness & quota protection
 const CACHE_TTL_MS: Record<string, number> = {
-  positions: 6000,    // 6s for live PnL & open positions
-  funds: 12000,       // 12s for cash / margin
-  orders: 8000,       // 8s for active orders
-  trades: 20000,      // 20s for today's trades
+  positions: 900,     // 900ms micro-TTL for live PnL & open positions (allows fast 1s polling with fresh upstream ticks)
+  funds: 3000,        // 3s for cash / margin
+  orders: 2000,       // 2s for active orders
+  trades: 5000,       // 5s for today's trades
   all_trades: 180000, // 3 min for historical execution audit
   holdings: 60000,    // 1 min for equity holdings
   profile: 300000,    // 5 min for user profile

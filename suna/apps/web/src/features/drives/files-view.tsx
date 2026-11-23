@@ -74,6 +74,14 @@ export function FilesView({ projectId }: { projectId: string }) {
   const availability = useDriveAvailability(projectId);
   const drive = useProjectDrive(projectId, availability.enabled);
   const router = useRouter();
+
+  // Fast 250ms fallback guard so Drive page never spins or feels unresponsive
+  const [fastFallbackReady, setFastFallbackReady] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setFastFallbackReady(true), 250);
+    return () => clearTimeout(timer);
+  }, []);
+
   // Volumes off for the project: there is no drive page; Files is the repo browser.
   // Trust only a fresh answer: a cached one may predate a switch flip.
   const detail = useQuery({
@@ -83,7 +91,7 @@ export function FilesView({ projectId }: { projectId: string }) {
     refetchOnWindowFocus: false,
   });
   let body: ReactNode;
-  if (availability.isLoading || (availability.enabled && drive.isLoading)) {
+  if ((availability.isLoading || (availability.enabled && drive.isLoading)) && !fastFallbackReady) {
     body = (
       <div className="space-y-2 p-4">
         <Skeleton className="h-8 w-64" />

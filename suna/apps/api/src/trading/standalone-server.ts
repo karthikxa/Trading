@@ -13,6 +13,7 @@
 
 import http from 'http';
 import url from 'url';
+import { handleTradingRequest } from './trading-server-module.ts';
 
 const PORT = Number(process.env.PORT || process.env.FLM_PORT || 8008);
 
@@ -464,6 +465,24 @@ const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url || '/', true);
   const pathname = parsedUrl.pathname || '/';
 
+  // Read request body upfront for POST / PATCH / PUT / DELETE
+  let rawBody = '';
+  if (req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT' || req.method === 'DELETE') {
+    rawBody = await new Promise<string>((resolve) => {
+      let b = '';
+      req.on('data', (chunk) => {
+        b += chunk;
+        if (b.length > 10 * 1024 * 1024) req.destroy();
+      });
+      req.on('end', () => resolve(b));
+      req.on('error', () => resolve(''));
+    });
+  }
+
+  // 1. Dispatch to Trading Server Module (Agents, Groups, Approvals, Chat, Permissions)
+  const handled = await handleTradingRequest(req, res, pathname, parsedUrl, rawBody, dispatchLlmCall);
+  if (handled) return;
+
   // --- GET / or GET /health ---
   if (pathname === '/' || pathname === '/health') {
     const keylessCount = MODELS.filter((m) => m.keyless).length;
@@ -676,15 +695,8 @@ const server = http.createServer(async (req, res) => {
 
   // --- POST /v1/chat/completions ---
   if (pathname === '/v1/chat/completions' && req.method === 'POST') {
-    let rawBody = '';
-    req.on('data', (chunk) => {
-      rawBody += chunk;
-      if (rawBody.length > 5 * 1024 * 1024) req.destroy();
-    });
-
-    req.on('end', async () => {
-      try {
-        const body = JSON.parse(rawBody || '{}');
+    try {
+      const body = JSON.parse(rawBody || '{}');
         const modelId = typeof body.model === 'string' ? body.model : 'pollinations-openai';
         const messages = Array.isArray(body.messages) ? body.messages : [{ role: 'user', content: 'Hello' }];
         const maxTokens = typeof body.max_tokens === 'number' ? body.max_tokens : 800;
@@ -765,45 +777,37 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Invalid JSON body: ' + err.message } }));
       }
-    });
     return;
   }
 
   // --- POST /v1/messages (Anthropic API Format) ---
   if (pathname === '/v1/messages' && req.method === 'POST') {
-    let rawBody = '';
-    req.on('data', (chunk) => {
-      rawBody += chunk;
-    });
+    try {
+      const body = JSON.parse(rawBody || '{}');
+      const modelId = typeof body.model === 'string' ? body.model : 'pollinations-openai';
+      const msgs = Array.isArray(body.messages) ? body.messages : [];
+      const normalized = msgs.map((m: any) => ({
+        role: m.role || 'user',
+        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+      }));
 
-    req.on('end', async () => {
-      try {
-        const body = JSON.parse(rawBody || '{}');
-        const modelId = typeof body.model === 'string' ? body.model : 'pollinations-openai';
-        const msgs = Array.isArray(body.messages) ? body.messages : [];
-        const normalized = msgs.map((m: any) => ({
-          role: m.role || 'user',
-          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-        }));
-
-        const result = await dispatchLlmCall(modelId, normalized);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            id: `msg-${Date.now()}`,
-            type: 'message',
-            role: 'assistant',
-            content: [{ type: 'text', text: result.content }],
-            model: result.model,
-            stop_reason: 'end_turn',
-            usage: { input_tokens: 10, output_tokens: 25 },
-          })
-        );
-      } catch (err: any) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    });
+      const result = await dispatchLlmCall(modelId, normalized);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          id: `msg-${Date.now()}`,
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'text', text: result.content }],
+          model: result.model,
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 10, output_tokens: 25 },
+        })
+      );
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
     return;
   }
 

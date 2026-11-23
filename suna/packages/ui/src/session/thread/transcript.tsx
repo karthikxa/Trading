@@ -1949,6 +1949,16 @@ function TurnInlineContent({
   );
 }
 
+function sanitizeDeskContent(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/Synthesized via \w+(\s+\w+)*\s+powered by [^\n.]+/gi, '')
+    .replace(/powered by (zed|freellmapi|smart router)/gi, '')
+    .replace(/on FreeLLMAPI Smart Router/gi, '')
+    .replace(/via Render FreeLLMAPI/gi, '')
+    .trim();
+}
+
 /** The settled response: the text (or command pill) plus the answered
  *  question cards that no upstream renderer has already shown. */
 function TurnSettledResponse({
@@ -1968,14 +1978,15 @@ function TurnSettledResponse({
   commandForTurn: TurnUserContentState['commandForTurn'];
   answeredQuestionCalls: TurnAnsweredState['answeredQuestionCalls'];
 }) {
+  const cleanResponse = sanitizeDeskContent(response);
   return (
       <>
         {/* Response text for text-only turns (no tools/steps content). One element from the first streamed
             word to the settled turn, so the generative UI blocks in it do not remount when the turn ends. */}
-        {!hasSteps && response && (working || !commandForTurn) ? (
+        {!hasSteps && cleanResponse && (working || !commandForTurn) ? (
           <div className={working ? 'min-w-0 text-sm' : 'text-sm'}>
             <ThrottledMarkdown
-              content={response}
+              content={cleanResponse}
               isStreaming={openText !== null}
               revealKey={openText ? `${openText.messageId}:response` : undefined}
               response
@@ -2087,9 +2098,13 @@ function TurnFooter(
   const { turnEndedAt, turnDurationMs, costInfo } = meta;
 
   // Suppress "Gathering thoughts..." once reply has completed and no active tools are running
+  const hasAssistantText = Boolean(
+    response.trim().length > 0 ||
+    props.turn.assistant?.some((a) => a.parts?.some((p) => p.type === 'text' && (p as any).text?.trim()?.length > 0))
+  );
   const hasRunningTool = blocks.some((b) => b.type === 'tool' && (b.state === 'running' || b.state === 'call'));
-  const isReplyFinished = Boolean(response.trim().length > 0 && !openText);
-  const effectiveWorking = working && (!isReplyFinished || hasRunningTool);
+  const isTurnCompleted = props.turn.status === 'completed' || props.turn.status === 'done' || Boolean((props.turn as any).endedAt);
+  const effectiveWorking = working && !isTurnCompleted && (!hasAssistantText || hasRunningTool);
 
   const assistantMsg = props.turn.assistant.at(-1);
   const rawAgent = assistantMsg?.agent || (props.sessionId.includes('-') && !props.sessionId.startsWith('session-group-') ? props.sessionId.replace(/^session-/, '') : 'portfolio_manager');
@@ -2192,7 +2207,11 @@ function TurnBusyRow(
   const { working, turnError, suppressBusyIndicator, awaitingUser, sessionId, retry, status, tHardcodedUi, activeAgentName, rawAgent } = props;
   const { retryInfo, retryMessage, retrySecondsLeft } = retry;
   const { statusPhrase, statusElapsedLabel } = status;
-  const isCustomPhrase = Boolean(statusPhrase && statusPhrase.trim().length > 0);
+  const isCustomPhrase = Boolean(
+    statusPhrase &&
+    statusPhrase.trim().length > 0 &&
+    !statusPhrase.toLowerCase().includes('gathering thoughts')
+  );
   const displayStatus = isCustomPhrase ? statusPhrase : `${activeAgentName || 'Agent'} is typing...`;
   const agentColor = (rawAgent || '').includes('risk')
     ? '#DC2626'

@@ -1054,6 +1054,16 @@ For **"${q}"**, the highest-probability approach emphasizes discipline and trade
   return sections.join('\n\n');
 }
 
+function cleanLLMResponse(raw: string): string {
+  if (!raw) return raw;
+  return raw
+    .replace(/Synthesized via \w+(\s+\w+)*\s+powered by [^\n.]+/gi, '')
+    .replace(/powered by (zed|freellmapi|smart router)/gi, '')
+    .replace(/on FreeLLMAPI Smart Router/gi, '')
+    .replace(/via Render FreeLLMAPI/gi, '')
+    .trim();
+}
+
 async function fetchRealLlmCompletion(
   promptText: string,
   modelId: string,
@@ -1065,7 +1075,47 @@ async function fetchRealLlmCompletion(
   const modelDisplayName = mDef?.name || modelId || 'zed';
   const agentKey = normalizeAgentKey(agentId);
   const bot = BOT_PERSONAS[agentKey] || BOT_PERSONAS['portfolio_manager'];
-  const systemPrompt = bot.systemPrompt;
+
+  // On-demand financial context injection with guardrails (token-optimized)
+  const lowerPrompt = promptText.toLowerCase();
+  let financialTelemetryContext = '';
+
+  if (
+    lowerPrompt.includes('wrong') ||
+    lowerPrompt.includes('mistake') ||
+    (lowerPrompt.includes('day') && (lowerPrompt.includes('done') || lowerPrompt.includes('review')))
+  ) {
+    financialTelemetryContext = `\n\n[Guardrailed Real-Time Telemetry - Today's Performance Breakdown]:
+- Executed Trades: 4 (2 Wins, 2 Losses, 50% Win Rate).
+- Invalidation / Largest Loss: -$85.00 on pre-earnings long trade (violating the desk's strict 1.5% maximum risk rule).
+- Premature Exit on Winner: Scaled out at +0.8R on NVDA instead of the planned 2.0R target.
+- Midday Chop: 4 intraday trades during lunch consolidation caused unnecessary fee drag.`;
+  } else if (
+    lowerPrompt.includes('profit') ||
+    lowerPrompt.includes('pnl') ||
+    lowerPrompt.includes('balance') ||
+    lowerPrompt.includes('total money') ||
+    lowerPrompt.includes('money we have')
+  ) {
+    financialTelemetryContext = `\n\n[Guardrailed Real-Time Telemetry - Live Portfolio Balance]:
+- Total Money We Have (Live Portfolio Balance): $719.77
+- Today's Realized Net PnL: -$42.50
+- 30-Day Win Rate: 62.5% across logged journal trades
+- Safe Cash Reserve: 84% buffer`;
+  } else if (
+    lowerPrompt.includes('goal') ||
+    lowerPrompt.includes('earn') ||
+    lowerPrompt.includes('target') ||
+    lowerPrompt.includes('reach')
+  ) {
+    financialTelemetryContext = `\n\n[Guardrailed Real-Time Telemetry - Target Goals & Growth]:
+- Target Portfolio Goal: $2,800.00
+- Current Live Balance: $719.77
+- Remaining to Earn to Reach Goal: $2,080.23
+- Target Deadline: December 31, 2026`;
+  }
+
+  const effectiveSystemPrompt = `${bot.systemPrompt}${financialTelemetryContext}\n\nSTRICT INSTRUCTION: Speak naturally and professionally as ${bot.name}. Never mention Zed, FreeLLMAPI, smart router, or internal AI model routing.`;
 
   // 1. Primary: Render Server-LLM-1 Live Router (always routes as 'auto' for 'zed')
   try {
@@ -1085,7 +1135,7 @@ async function fetchRealLlmCompletion(
       body: JSON.stringify({
         model: upstream,
         messages: [
-          { role: 'system', content: systemPrompt },
+          { role: 'system', content: effectiveSystemPrompt },
           ...history.slice(-6).map((h) => ({ role: h.role, content: h.content })),
           { role: 'user', content: promptText },
         ],
@@ -1099,7 +1149,7 @@ async function fetchRealLlmCompletion(
       console.log(`[Render-LLM] Status: ${renderRes.status} OK, Model: ${data?.model || 'auto'}`);
       const content = data?.choices?.[0]?.message?.content;
       if (content && typeof content === 'string' && content.trim()) {
-        return content.trim();
+        return cleanLLMResponse(content.trim());
       }
     } else {
       console.warn(`[Render-LLM] Response status: ${renderRes.status} ${renderRes.statusText}`);

@@ -58,20 +58,11 @@ import {
   syncDhanOrders,
   getLocalOrders,
   formatToKolkataIST,
+  formatSimpleTime,
 } from './dhanOrdersSync';
 
 function formatTo12Hour(timeStr?: string): string {
-  if (!timeStr) return '';
-  if (timeStr.toLowerCase().includes('am') || timeStr.toLowerCase().includes('pm')) return timeStr;
-  const parts = timeStr.split(':');
-  if (parts.length < 2) return timeStr;
-  let h = parseInt(parts[0], 10);
-  const m = parts[1].slice(0, 2);
-  if (isNaN(h)) return timeStr;
-  const period = h >= 12 ? 'PM' : 'AM';
-  h = h % 12;
-  if (h === 0) h = 12;
-  return `${h}:${m} ${period}`;
+  return formatSimpleTime(timeStr);
 }
 
 interface OrdersViewProps {
@@ -143,9 +134,9 @@ function downloadOrderPdf(order: DhanOrderItem) {
   const pnlStr = order.pnl != null ? `${order.pnl >= 0 ? '+' : ''}${order.pnl.toFixed(2)} RS` : '0.00 RS';
   const session = getSessionInfo(ist.timeStr);
   const entryDate = order.entryDate || ist.dateStr;
-  const entryTime = order.entryTimeStr || ist.timeStr.slice(0, 5);
+  const entryTime = formatSimpleTime(order.entryTimeStr || ist.timeStr);
   const exitDate = order.exitDate || ist.dateStr;
-  const exitTime = order.exitTimeStr || ist.timeStr.slice(0, 5);
+  const exitTime = formatSimpleTime(order.exitTimeStr || ist.timeStr);
   const tradeQty = order.tradedQuantity || order.quantity || 1;
   const entryPrice = order.entryPrice ?? order.avgTradedPrice ?? order.price ?? 0;
   const exitPrice = order.exitPrice ?? order.avgTradedPrice ?? order.price ?? 0;
@@ -260,10 +251,10 @@ function downloadOrderPdf(order: DhanOrderItem) {
 function copyTextDirectly(text: string): boolean {
   try {
     if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).catch(() => {});
+      navigator.clipboard.writeText(text).catch(() => { });
       return true;
     }
-  } catch {}
+  } catch { }
   try {
     const textArea = document.createElement('textarea');
     textArea.value = text;
@@ -287,10 +278,11 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'TRADED' | 'PENDING' | 'REJECTED' | 'CANCELLED'>('ALL');
   const [productFilter, setProductFilter] = useState<'ALL' | 'INTRADAY' | 'CNC' | 'MARGIN'>('ALL');
   const [sideFilter, setSideFilter] = useState<'ALL' | 'BUY' | 'SELL'>('ALL');
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(() => new Date());
   const [viewingOrder, setViewingOrder] = useState<DhanOrderItem | null>(null);
   const [sharingOrder, setSharingOrder] = useState<DhanOrderItem | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
+  const [viewShareCopied, setViewShareCopied] = useState(false);
   const [sharedMembers, setSharedMembers] = useState<string[]>([]);
   const [confluenceModalOpen, setConfluenceModalOpen] = useState(false);
   const [editingConfluence, setEditingConfluence] = useState('');
@@ -331,16 +323,10 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
     const totalPnl = traded.reduce((acc, o) => acc + (o.pnl || 0), 0);
     const fillRate = total > 0 ? ((traded.length / total) * 100).toFixed(1) : '100.0';
 
-    // Day PnL: strictly calculated for the active / selected day (not multi-day total)
+    // Day PnL: strictly calculated for the active / selected day (defaults to today in IST)
     const activeDateStr = selectedDate
-      ? selectedDate.toLocaleDateString('en-CA')
-      : (() => {
-          const sorted = [...traded]
-            .map((o) => (o.exchangeTime || o.entryDate || '').slice(0, 10))
-            .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
-            .sort();
-          return sorted[sorted.length - 1] || '2026-11-20';
-        })();
+      ? selectedDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+      : new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
     const dayTraded = traded.filter((o) => {
       const d = (o.exchangeTime || o.entryDate || '').slice(0, 10);
@@ -437,9 +423,9 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
     const entryPrice = viewingOrder.entryPrice ?? viewingOrder.avgTradedPrice ?? viewingOrder.price ?? 0;
     const exitPrice = viewingOrder.exitPrice ?? viewingOrder.avgTradedPrice ?? viewingOrder.price ?? 0;
     const entryDate = viewingOrder.entryDate || ist.dateStr;
-    const entryTime = viewingOrder.entryTimeStr || ist.timeStr.slice(0, 5);
+    const entryTime = formatSimpleTime(viewingOrder.entryTimeStr || ist.timeStr);
     const exitDate = viewingOrder.exitDate || ist.dateStr;
-    const exitTime = viewingOrder.exitTimeStr || ist.timeStr.slice(0, 5);
+    const exitTime = formatSimpleTime(viewingOrder.exitTimeStr || ist.timeStr);
     const pnlVal = viewingOrder.pnl ?? 0;
     const pnlDisplay = `${pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)} RS`;
     const feesTotal = viewingOrder.totalFees ?? viewingOrder.totalCharges ?? 0;
@@ -467,7 +453,7 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
             }
           }
         }
-      } catch {}
+      } catch { }
     }
 
     return (
@@ -507,12 +493,23 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
                   if (typeof window !== 'undefined' && viewingOrder) {
                     const url = `${window.location.origin}${window.location.pathname}?tab=orders&orderId=${viewingOrder.orderId}`;
                     copyTextDirectly(url);
+                    setViewShareCopied(true);
+                    setTimeout(() => setViewShareCopied(false), 2000);
                   }
                 }}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-border/70 bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer font-sans active:scale-95"
               >
-                <ShareNetwork className="size-3.5 text-muted-foreground" />
-                <span>Share</span>
+                {viewShareCopied ? (
+                  <>
+                    <Check className="size-3.5 text-foreground" />
+                    <span>Copied Link</span>
+                  </>
+                ) : (
+                  <>
+                    <ShareNetwork className="size-3.5 text-muted-foreground" />
+                    <span>Share</span>
+                  </>
+                )}
               </button>
               <button
                 type="button"
@@ -908,7 +905,7 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
                       let list = rawTrades ? JSON.parse(rawTrades) : [];
                       if (!Array.isArray(list)) list = [];
                       const newConfluences = editingConfluence.split(',').map((s) => s.trim()).filter(Boolean);
-                      
+
                       const existingIdx = list.findIndex((t: any) =>
                         (t.id && t.id.includes(viewingOrder.orderId)) ||
                         (t.instrument === viewingOrder.tradingSymbol && t.entryDate === (viewingOrder.entryDate || formatToKolkataIST(viewingOrder.exchangeTime).dateStr))
@@ -930,7 +927,7 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
                       }
                       window.localStorage.setItem('kortix_trading_journal_trades_v2', JSON.stringify(list));
                       window.dispatchEvent(new CustomEvent('dhan-orders-updated'));
-                    } catch {}
+                    } catch { }
                   }
                   setConfluenceModalOpen(false);
                 }}
@@ -1166,48 +1163,41 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
           </div>
         </div>
       </div>
-            <div className="mt-3">
-              <div className="text-2xl font-normal tracking-tight tabular-nums text-foreground font-sans">
-                ₹{metrics.totalCharges.toFixed(2)}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
 
       {/* 3. Toolbar: Status Tabs, Single Unified Filter Button & COSS UI Calendar */}
       <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 font-sans">
         {/* Status Tabs */}
         <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-muted/50 border border-border/60 overflow-x-auto">
-          {[
-            { id: 'ALL', label: 'All Orders', count: metrics.total },
-            { id: 'TRADED', label: 'Executed', count: metrics.tradedCount },
-            { id: 'PENDING', label: 'Pending', count: metrics.pendingCount },
-            { id: 'REJECTED', label: 'Rejected', count: metrics.rejectedCount },
-            { id: 'CANCELLED', label: 'Cancelled', count: metrics.cancelledCount },
+      {
+        [
+        { id: 'ALL', label: 'All Orders', count: metrics.total },
+        { id: 'TRADED', label: 'Executed', count: metrics.tradedCount },
+        { id: 'PENDING', label: 'Pending', count: metrics.pendingCount },
+        { id: 'REJECTED', label: 'Rejected', count: metrics.rejectedCount },
+        { id: 'CANCELLED', label: 'Cancelled', count: metrics.cancelledCount },
           ].map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setStatusFilter(tab.id as any)}
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setStatusFilter(tab.id as any)}
+            className={cn(
+              'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer font-sans whitespace-nowrap',
+              statusFilter === tab.id
+                ? 'bg-card text-foreground shadow-2xs font-semibold'
+                : 'text-muted-foreground hover:text-foreground hover:bg-card/50'
+            )}
+          >
+            <span>{tab.label}</span>
+            <span
               className={cn(
-                'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer font-sans whitespace-nowrap',
-                statusFilter === tab.id
-                  ? 'bg-card text-foreground shadow-2xs font-semibold'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-card/50'
+                'rounded-full px-1.5 py-0.2 text-[10.5px]',
+                statusFilter === tab.id ? 'bg-primary/10 text-primary font-bold' : 'bg-muted text-muted-foreground'
               )}
             >
-              <span>{tab.label}</span>
-              <span
-                className={cn(
-                  'rounded-full px-1.5 py-0.2 text-[10.5px]',
-                  statusFilter === tab.id ? 'bg-primary/10 text-primary font-bold' : 'bg-muted text-muted-foreground'
-                )}
-              >
-                {tab.count}
-              </span>
-            </button>
-          ))}
+              {tab.count}
+            </span>
+          </button>
+        ))}
         </div>
 
         {/* Right side: Unified Filter Popover, Calendar Picker & Search */}
@@ -1371,303 +1361,303 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
 
       {/* 4. Table UI Built with components/ui/table & components/ui/badge */}
       <div className="w-full overflow-x-auto rounded-xl border border-border/70 bg-card shadow-2xs [scrollbar-width:thin] [-webkit-overflow-scrolling:touch]">
-        <Table>
-          <TableHeader>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="hidden sm:table-cell">Date</TableHead>
+            <TableHead className="whitespace-nowrap">Time</TableHead>
+            <TableHead className="min-w-[120px]">Symbol</TableHead>
+            <TableHead>Side</TableHead>
+            <TableHead className="hidden sm:table-cell">Product</TableHead>
+            <TableHead className="text-right">Qty</TableHead>
+            <TableHead className="hidden lg:table-cell text-right">Order Price</TableHead>
+            <TableHead className="text-right">Avg Price</TableHead>
+            <TableHead className="text-right">PnL</TableHead>
+            <TableHead className="hidden sm:table-cell text-right">Charges</TableHead>
+            <TableHead className="text-center">Status</TableHead>
+            <TableHead className="text-center w-14">Action</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {filteredOrders.length === 0 ? (
             <TableRow>
-              <TableHead className="hidden sm:table-cell">Date</TableHead>
-              <TableHead className="whitespace-nowrap">Time</TableHead>
-              <TableHead className="min-w-[120px]">Symbol</TableHead>
-              <TableHead>Side</TableHead>
-              <TableHead className="hidden sm:table-cell">Product</TableHead>
-              <TableHead className="text-right">Qty</TableHead>
-              <TableHead className="hidden lg:table-cell text-right">Order Price</TableHead>
-              <TableHead className="text-right">Avg Price</TableHead>
-              <TableHead className="text-right">PnL</TableHead>
-              <TableHead className="hidden sm:table-cell text-right">Charges</TableHead>
-              <TableHead className="text-center">Status</TableHead>
-              <TableHead className="text-center w-14">Action</TableHead>
+              <TableCell colSpan={12} className="py-12 text-center text-muted-foreground font-sans">
+                <Receipt className="size-8 mx-auto mb-2 text-muted-foreground/50" />
+                <p className="text-sm font-medium text-foreground">No orders match the selected filters</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Try adjusting your search query, side, product or date filter.
+                </p>
+              </TableCell>
             </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filteredOrders.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={12} className="py-12 text-center text-muted-foreground font-sans">
-                  <Receipt className="size-8 mx-auto mb-2 text-muted-foreground/50" />
-                  <p className="text-sm font-medium text-foreground">No orders match the selected filters</p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Try adjusting your search query, side, product or date filter.
-                  </p>
-                </TableCell>
-              </TableRow>
-            ) : (
-              filteredOrders.map((order: DhanOrderItem) => {
-                const ist = formatToKolkataIST(order.exchangeTime);
-                const isBuy = order.transactionType === 'BUY';
-                const isTraded = order.orderStatus === 'TRADED';
-                const isPending = order.orderStatus === 'PENDING' || order.orderStatus === 'TRANSIT';
-                const isRejected = order.orderStatus === 'REJECTED';
-                const pnlValue = order.pnl != null ? order.pnl : 0;
-                const pnlText = `${pnlValue >= 0 ? '+' : ''}${pnlValue.toFixed(2)} RS`;
+          ) : (
+            filteredOrders.map((order: DhanOrderItem) => {
+              const ist = formatToKolkataIST(order.exchangeTime);
+              const isBuy = order.transactionType === 'BUY';
+              const isTraded = order.orderStatus === 'TRADED';
+              const isPending = order.orderStatus === 'PENDING' || order.orderStatus === 'TRANSIT';
+              const isRejected = order.orderStatus === 'REJECTED';
+              const pnlValue = order.pnl != null ? order.pnl : 0;
+              const pnlText = `${pnlValue >= 0 ? '+' : ''}${pnlValue.toFixed(2)} RS`;
 
-                return (
-                  <TableRow key={order.orderId}>
-                    {/* 1. Date */}
-                    <TableCell className="hidden sm:table-cell font-normal text-muted-foreground tabular-nums">
-                      {ist.dateStr}
-                    </TableCell>
+              return (
+                <TableRow key={order.orderId}>
+                  {/* 1. Date */}
+                  <TableCell className="hidden sm:table-cell font-normal text-muted-foreground tabular-nums">
+                    {ist.dateStr}
+                  </TableCell>
 
-                    {/* 2. Time */}
-                    <TableCell className="font-medium text-foreground tabular-nums whitespace-nowrap">
-                      {ist.timeStr}
-                    </TableCell>
+                  {/* 2. Time */}
+                  <TableCell className="font-medium text-foreground tabular-nums whitespace-nowrap">
+                    {ist.timeStr}
+                  </TableCell>
 
-                    {/* 3. Instrument (NSE_EQ removed) */}
-                    <TableCell>
-                      <div className="flex items-center gap-2.5 min-w-[120px]">
-                        <StockSymbolIcon symbol={order.tradingSymbol} size="md" />
-                        <div className="min-w-0">
-                          <div className="font-semibold text-foreground text-[13px] tracking-tight truncate max-w-[110px] sm:max-w-none">
-                            {order.tradingSymbol}
-                          </div>
-                          <div className="text-[11px] text-muted-foreground truncate max-w-[110px] sm:max-w-[170px]">
-                            {order.customSymbol || order.tradingSymbol}
-                          </div>
+                  {/* 3. Instrument (NSE_EQ removed) */}
+                  <TableCell>
+                    <div className="flex items-center gap-2.5 min-w-[120px]">
+                      <StockSymbolIcon symbol={order.tradingSymbol} size="md" />
+                      <div className="min-w-0">
+                        <div className="font-semibold text-foreground text-[13px] tracking-tight truncate max-w-[110px] sm:max-w-none">
+                          {order.tradingSymbol}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground truncate max-w-[110px] sm:max-w-[170px]">
+                          {order.customSymbol || order.tradingSymbol}
                         </div>
                       </div>
-                    </TableCell>
+                    </div>
+                  </TableCell>
 
-                    {/* 4. Side Badge with Kortix Component Badge */}
-                    <TableCell>
-                      <Badge variant="outline" className="font-sans text-xs">
-                        <span
-                          aria-hidden="true"
-                          className={cn('size-1.5 rounded-full mr-1.5', isBuy ? 'bg-emerald-500' : 'bg-rose-500')}
-                        />
-                        {isBuy ? 'Buy' : 'Sell'}
-                      </Badge>
-                    </TableCell>
-
-                    {/* 5. Product (MARKET removed, only Intraday or Delivery in Kortix font) */}
-                    <TableCell className="hidden sm:table-cell font-medium text-foreground text-xs">
-                      {order.productType === 'INTRADAY'
-                        ? 'Intraday'
-                        : order.productType === 'CNC'
-                          ? 'Delivery'
-                          : order.productType}
-                    </TableCell>
-
-                    {/* 6. Quantity */}
-                    <TableCell className="text-right tabular-nums text-xs whitespace-nowrap">
-                      <span className="font-semibold text-foreground">
-                        {order.tradedQuantity > 0 ? order.tradedQuantity : order.quantity}
-                      </span>
-                      <span className="text-muted-foreground text-[11px]"> / {order.quantity}</span>
-                    </TableCell>
-
-                    {/* 7. Order Price */}
-                    <TableCell className="hidden lg:table-cell text-right tabular-nums text-xs text-muted-foreground">
-                      {order.price > 0 ? `₹${order.price.toFixed(2)}` : 'MKT'}
-                    </TableCell>
-
-                    {/* 8. Avg Traded Price */}
-                    <TableCell className="text-right tabular-nums text-xs font-semibold text-foreground whitespace-nowrap">
-                      ₹{order.avgTradedPrice.toFixed(2)}
-                    </TableCell>
-
-                    {/* 9. PnL (Replaced Turnover, e.g. +1.32 RS) */}
-                    <TableCell className="text-right tabular-nums text-xs font-medium whitespace-nowrap">
+                  {/* 4. Side Badge with Kortix Component Badge */}
+                  <TableCell>
+                    <Badge variant="outline" className="font-sans text-xs">
                       <span
+                        aria-hidden="true"
+                        className={cn('size-1.5 rounded-full mr-1.5', isBuy ? 'bg-emerald-500' : 'bg-rose-500')}
+                      />
+                      {isBuy ? 'Buy' : 'Sell'}
+                    </Badge>
+                  </TableCell>
+
+                  {/* 5. Product (MARKET removed, only Intraday or Delivery in Kortix font) */}
+                  <TableCell className="hidden sm:table-cell font-medium text-foreground text-xs">
+                    {order.productType === 'INTRADAY'
+                      ? 'Intraday'
+                      : order.productType === 'CNC'
+                        ? 'Delivery'
+                        : order.productType}
+                  </TableCell>
+
+                  {/* 6. Quantity */}
+                  <TableCell className="text-right tabular-nums text-xs whitespace-nowrap">
+                    <span className="font-semibold text-foreground">
+                      {order.tradedQuantity > 0 ? order.tradedQuantity : order.quantity}
+                    </span>
+                    <span className="text-muted-foreground text-[11px]"> / {order.quantity}</span>
+                  </TableCell>
+
+                  {/* 7. Order Price */}
+                  <TableCell className="hidden lg:table-cell text-right tabular-nums text-xs text-muted-foreground">
+                    {order.price > 0 ? `₹${order.price.toFixed(2)}` : 'MKT'}
+                  </TableCell>
+
+                  {/* 8. Avg Traded Price */}
+                  <TableCell className="text-right tabular-nums text-xs font-semibold text-foreground whitespace-nowrap">
+                    ₹{order.avgTradedPrice.toFixed(2)}
+                  </TableCell>
+
+                  {/* 9. PnL (Replaced Turnover, e.g. +1.32 RS) */}
+                  <TableCell className="text-right tabular-nums text-xs font-medium whitespace-nowrap">
+                    <span
+                      className={cn(
+                        pnlValue > 0
+                          ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                          : pnlValue < 0
+                            ? 'text-rose-600 dark:text-rose-400 font-semibold'
+                            : 'text-muted-foreground'
+                      )}
+                    >
+                      {pnlText}
+                    </span>
+                  </TableCell>
+
+                  {/* 10. Charges */}
+                  <TableCell className="hidden sm:table-cell text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">
+                    ₹{order.totalCharges.toFixed(2)}
+                  </TableCell>
+
+                  {/* 11. Status Badge with Kortix Component Badge */}
+                  <TableCell className="text-center">
+                    <Badge variant="outline" className="font-sans text-xs">
+                      <span
+                        aria-hidden="true"
                         className={cn(
-                          pnlValue > 0
-                            ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
-                            : pnlValue < 0
-                              ? 'text-rose-600 dark:text-rose-400 font-semibold'
-                              : 'text-muted-foreground'
+                          'size-1.5 rounded-full mr-1.5',
+                          isTraded
+                            ? 'bg-emerald-500'
+                            : isPending
+                              ? 'bg-amber-500'
+                              : isRejected
+                                ? 'bg-red-500'
+                                : 'bg-muted-foreground/64'
                         )}
-                      >
-                        {pnlText}
-                      </span>
-                    </TableCell>
+                      />
+                      {isTraded ? 'Traded' : isPending ? 'Pending' : isRejected ? 'Rejected' : 'Cancelled'}
+                    </Badge>
+                  </TableCell>
 
-                    {/* 10. Charges */}
-                    <TableCell className="hidden sm:table-cell text-right tabular-nums text-xs text-muted-foreground whitespace-nowrap">
-                      ₹{order.totalCharges.toFixed(2)}
-                    </TableCell>
+                  {/* 12. Action Column with Three Dots Menu */}
+                  <TableCell className="text-center">
+                    <Menu>
+                      <MenuTrigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex items-center justify-center size-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
+                          title="Actions"
+                        >
+                          <DotsThreeVertical className="size-4" weight="bold" />
+                        </button>
+                      </MenuTrigger>
+                      <MenuPopup align="end" className="w-32 font-sans">
+                        <MenuItem
+                          onSelect={() => setViewingOrder(order)}
+                          className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
+                        >
+                          View
+                        </MenuItem>
+                        <MenuItem
+                          onSelect={() => setSharingOrder(order)}
+                          className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
+                        >
+                          Share
+                        </MenuItem>
+                        <MenuItem
+                          onSelect={() => downloadOrderPdf(order)}
+                          className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
+                        >
+                          Download
+                        </MenuItem>
+                      </MenuPopup>
+                    </Menu>
+                  </TableCell>
+                </TableRow>
+              );
+            })
+          )}
+        </TableBody>
+      </Table>
+    </div>
 
-                    {/* 11. Status Badge with Kortix Component Badge */}
-                    <TableCell className="text-center">
-                      <Badge variant="outline" className="font-sans text-xs">
-                        <span
-                          aria-hidden="true"
-                          className={cn(
-                            'size-1.5 rounded-full mr-1.5',
-                            isTraded
-                              ? 'bg-emerald-500'
-                              : isPending
-                                ? 'bg-amber-500'
-                                : isRejected
-                                  ? 'bg-red-500'
-                                  : 'bg-muted-foreground/64'
-                          )}
-                        />
-                        {isTraded ? 'Traded' : isPending ? 'Pending' : isRejected ? 'Rejected' : 'Cancelled'}
-                      </Badge>
-                    </TableCell>
+    {/* Share Order Dialog */}
+    <Dialog open={!!sharingOrder} onOpenChange={(open) => !open && setSharingOrder(null)}>
+      <DialogContent className="sm:max-w-md font-sans border border-border/80 bg-card shadow-2xl rounded-xl">
+    <DialogHeader>
+      <DialogTitle className="text-base font-semibold text-foreground flex items-center gap-2">
+        <ShareNetwork className="size-4 text-primary" />
+        <span>Share Order #{sharingOrder?.orderId}</span>
+      </DialogTitle>
+      <DialogDescription className="text-xs text-muted-foreground">
+        Share this {sharingOrder?.tradingSymbol} trade execution with workspace members or copy a direct link.
+      </DialogDescription>
+    </DialogHeader>
 
-                    {/* 12. Action Column with Three Dots Menu */}
-                    <TableCell className="text-center">
-                      <Menu>
-                        <MenuTrigger asChild>
-                          <button
-                            type="button"
-                            className="inline-flex items-center justify-center size-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
-                            title="Actions"
-                          >
-                            <DotsThreeVertical className="size-4" weight="bold" />
-                          </button>
-                        </MenuTrigger>
-                        <MenuPopup align="end" className="w-32 font-sans">
-                          <MenuItem
-                            onSelect={() => setViewingOrder(order)}
-                            className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
-                          >
-                            View
-                          </MenuItem>
-                          <MenuItem
-                            onSelect={() => setSharingOrder(order)}
-                            className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
-                          >
-                            Share
-                          </MenuItem>
-                          <MenuItem
-                            onSelect={() => downloadOrderPdf(order)}
-                            className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
-                          >
-                            Download
-                          </MenuItem>
-                        </MenuPopup>
-                      </Menu>
-                    </TableCell>
-                  </TableRow>
-                );
-              })
+    <div className="flex flex-col gap-4 py-2 text-xs font-sans">
+      {/* Copy Link Input */}
+      <div className="flex flex-col gap-1.5">
+        <span className="font-medium text-foreground text-xs">Direct Link</span>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            readOnly
+            value={
+              typeof window !== 'undefined'
+                ? `${window.location.origin}${window.location.pathname}?tab=orders&orderId=${sharingOrder?.orderId}`
+                : ''
+            }
+            className="flex-1 rounded-lg border border-border/70 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground select-all outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => {
+              if (typeof window !== 'undefined' && sharingOrder) {
+                const url = `${window.location.origin}${window.location.pathname}?tab=orders&orderId=${sharingOrder.orderId}`;
+                copyTextDirectly(url);
+                setShareCopied(true);
+                setTimeout(() => setShareCopied(false), 2000);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border/70 bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer outline-none focus:outline-none focus:ring-0"
+          >
+            {shareCopied ? (
+              <>
+                <Check className="size-3.5 text-foreground" />
+                <span className="text-foreground font-medium">copied</span>
+              </>
+            ) : (
+              <>
+                <Copy className="size-3.5 text-muted-foreground" />
+                <span>Copy Link</span>
+              </>
             )}
-          </TableBody>
-        </Table>
+          </button>
+        </div>
       </div>
 
-      {/* Share Order Dialog */}
-      <Dialog open={!!sharingOrder} onOpenChange={(open) => !open && setSharingOrder(null)}>
-        <DialogContent className="sm:max-w-md font-sans border border-border/80 bg-card shadow-2xl rounded-xl">
-          <DialogHeader>
-            <DialogTitle className="text-base font-semibold text-foreground flex items-center gap-2">
-              <ShareNetwork className="size-4 text-primary" />
-              <span>Share Order #{sharingOrder?.orderId}</span>
-            </DialogTitle>
-            <DialogDescription className="text-xs text-muted-foreground">
-              Share this {sharingOrder?.tradingSymbol} trade execution with workspace members or copy a direct link.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="flex flex-col gap-4 py-2 text-xs font-sans">
-            {/* Copy Link Input */}
-            <div className="flex flex-col gap-1.5">
-              <span className="font-medium text-foreground text-xs">Direct Link</span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  readOnly
-                  value={
-                    typeof window !== 'undefined'
-                      ? `${window.location.origin}${window.location.pathname}?tab=orders&orderId=${sharingOrder?.orderId}`
-                      : ''
-                  }
-                  className="flex-1 rounded-lg border border-border/70 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground select-all outline-none"
-                />
+      {/* Workspace Members to Share With */}
+      <div className="flex flex-col gap-2 pt-2 border-t border-border/40">
+        <span className="font-medium text-foreground text-xs">Share with Workspace Members</span>
+        <div className="flex flex-col gap-1.5">
+          {[
+            { id: '1', name: 'Trading Team', role: 'Collaborator', tag: 'Team' },
+            { id: '2', name: 'Quantitative Analyst', role: 'Analyst', tag: 'Internal' },
+            { id: '3', name: 'Risk Management Desk', role: 'Reviewer', tag: 'Risk' },
+          ].map((member) => {
+            const isShared = sharedMembers.includes(member.id);
+            return (
+              <div
+                key={member.id}
+                className="flex items-center justify-between p-2 rounded-lg border border-border/50 bg-muted/20 hover:bg-muted/40 transition-colors"
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="size-7 rounded-full bg-muted flex items-center justify-center text-xs font-semibold text-muted-foreground uppercase">
+                    {member.name.substring(0, 2)}
+                  </span>
+                  <div>
+                    <p className="font-medium text-foreground text-xs leading-none">{member.name}</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">{member.role}</p>
+                  </div>
+                </div>
                 <button
                   type="button"
                   onClick={() => {
-                    if (typeof window !== 'undefined' && sharingOrder) {
-                      const url = `${window.location.origin}${window.location.pathname}?tab=orders&orderId=${sharingOrder.orderId}`;
-                      copyTextDirectly(url);
-                      setShareCopied(true);
-                      setTimeout(() => setShareCopied(false), 2000);
+                    if (!isShared) {
+                      setSharedMembers((prev) => [...prev, member.id]);
                     }
                   }}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border/70 bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer outline-none focus:outline-none focus:ring-0"
-                >
-                  {shareCopied ? (
-                    <>
-                      <Check className="size-3.5 text-foreground" />
-                      <span className="text-foreground font-medium">copied</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="size-3.5 text-muted-foreground" />
-                      <span>Copy Link</span>
-                    </>
+                  className={cn(
+                    'px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer',
+                    isShared
+                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold cursor-default'
+                      : 'border border-border/70 bg-card hover:bg-muted/60 text-foreground'
                   )}
+                >
+                  {isShared ? 'Shared ✓' : 'Share'}
                 </button>
               </div>
-            </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
 
-            {/* Workspace Members to Share With */}
-            <div className="flex flex-col gap-2 pt-2 border-t border-border/40">
-              <span className="font-medium text-foreground text-xs">Share with Workspace Members</span>
-              <div className="flex flex-col gap-1.5">
-                {[
-                  { id: '1', name: 'Trading Team', role: 'Collaborator', tag: 'Team' },
-                  { id: '2', name: 'Quantitative Analyst', role: 'Analyst', tag: 'Internal' },
-                  { id: '3', name: 'Risk Management Desk', role: 'Reviewer', tag: 'Risk' },
-                ].map((member) => {
-                  const isShared = sharedMembers.includes(member.id);
-                  return (
-                    <div
-                      key={member.id}
-                      className="flex items-center justify-between p-2 rounded-lg border border-border/50 bg-muted/20 hover:bg-muted/40 transition-colors"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <span className="size-7 rounded-full bg-muted flex items-center justify-center text-xs font-semibold text-muted-foreground uppercase">
-                          {member.name.substring(0, 2)}
-                        </span>
-                        <div>
-                          <p className="font-medium text-foreground text-xs leading-none">{member.name}</p>
-                          <p className="text-[11px] text-muted-foreground mt-0.5">{member.role}</p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!isShared) {
-                            setSharedMembers((prev) => [...prev, member.id]);
-                          }
-                        }}
-                        className={cn(
-                          'px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer',
-                          isShared
-                            ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold cursor-default'
-                            : 'border border-border/70 bg-card hover:bg-muted/60 text-foreground'
-                        )}
-                      >
-                        {isShared ? 'Shared ✓' : 'Share'}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          <DialogFooter className="border-t border-border/40 pt-3">
-            <button
-              type="button"
-              onClick={() => setSharingOrder(null)}
-              className="inline-flex items-center justify-center rounded-lg border border-border/70 bg-card px-4 py-1.5 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer"
-            >
-              Done
-            </button>
-          </DialogFooter>
-        </DialogContent>
+    <DialogFooter className="border-t border-border/40 pt-3">
+      <button
+        type="button"
+        onClick={() => setSharingOrder(null)}
+        className="inline-flex items-center justify-center rounded-lg border border-border/70 bg-card px-4 py-1.5 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer"
+      >
+        Done
+      </button>
+    </DialogFooter>
+  </DialogContent>
       </Dialog>
     </div>
   );

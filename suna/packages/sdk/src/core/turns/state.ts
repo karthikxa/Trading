@@ -243,7 +243,7 @@ export function computeStatusFromPart(part: PartLike | undefined): string | unde
     return 'Thinking...';
   }
 
-  if (isTextPart(part)) return 'Gathering thoughts...';
+  if (isTextPart(part)) return undefined; // Never return "Gathering thoughts..." for text parts
   return undefined;
 }
 

@@ -8,6 +8,7 @@ import { useTranslations } from '../../../i18n';
 import { useEffect, useMemo } from 'react';
 import { BotAvatar } from '../../../workspace/sidebar/bot-avatar';
 import { useTradingAgents } from '../../../workspace/sidebar/trading-agents-nav';
+import { DEFAULT_CANONICAL_TRADING_AGENTS } from '../../../workspace/sidebar/use-trading-agents';
 
 import { useFileSearch } from '../hooks/use-file-search';
 import type { MentionSection, MenuRow } from './menu-items';
@@ -205,21 +206,30 @@ export function MentionMenuHost({
   // Merge runtime agents with all desk agents from the trading roster
   const allAgents = useMemo(() => {
     const list: Agent[] = [...agents];
-    for (const sa of serverAgents) {
-      if (!list.some((a) => a.name?.toLowerCase() === sa.name.toLowerCase())) {
-        list.push({ name: sa.name, role: sa.role } as any);
+    const deskAgents = (serverAgents && serverAgents.length > 0) ? serverAgents : DEFAULT_CANONICAL_TRADING_AGENTS;
+    for (const sa of deskAgents) {
+      if (!list.some((a) => (a.name || '').toLowerCase() === (sa.name || '').toLowerCase())) {
+        list.push({ name: sa.name, role: sa.role, mode: 'primary', native: false } as any);
       }
     }
     return list;
   }, [agents, serverAgents]);
 
   const allGroups = useMemo(() => {
-    if (typeof window === 'undefined') return [{ id: 'offsite_crew', name: 'Offsite crew', agentIds: ['fundamentals_analyst', 'trader_agent', 'portfolio_manager'] }];
+    const defaultGroups = [
+      { id: 'offsite_crew', name: 'Offsite crew', agentIds: ['fundamentals_analyst', 'trader_agent', 'portfolio_manager'] },
+      { id: 'alpha_team', name: 'Alpha Team', agentIds: ['technical_analyst', 'trader_agent', 'risk_manager'] },
+      { id: 'macro_intel', name: 'Macro Intel', agentIds: ['macro_analyst', 'news_analyst', 'sentiment_analyst'] },
+    ];
+    if (typeof window === 'undefined') return defaultGroups;
     try {
       const saved = localStorage.getItem('tauric_agent_groups_v1');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
     } catch {}
-    return [{ id: 'offsite_crew', name: 'Offsite crew', agentIds: ['fundamentals_analyst', 'trader_agent', 'portfolio_manager'] }];
+    return defaultGroups;
   }, []);
 
   const sections = useMemo(

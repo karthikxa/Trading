@@ -89,10 +89,7 @@ export default function JournalView({ projectId }: JournalViewProps) {
       const res = await syncDhanTradesToJournal(projectId);
       if (res && res.trades) {
         setTrades(sortJournalTrades(res.trades));
-        if (res.trades.length > 0 && res.trades[0].entryDate) {
-          setSelectedDate(res.trades[0].entryDate);
-          syncCalendarToDate(res.trades[0].entryDate);
-        }
+        // Keep selected date on today or user-chosen date rather than forcing to oldest trade
       }
     } catch (err) {
       console.error('Failed to sync Dhan trades:', err);

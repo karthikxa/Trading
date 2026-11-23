@@ -22,6 +22,7 @@ import { TradingPairIcon } from './TradingPairIcon';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { formatSimpleTime } from '@/features/trading/dhanOrdersSync';
 
 function AlertCircleFilled({ className = 'size-3.5' }: { className?: string }) {
   return (
@@ -339,8 +340,8 @@ export function TradeDetailView({
               <div className="flex items-center justify-between">
                 <span className="text-zinc-500">Time</span>
                 <span className="text-zinc-950 font-sans tabular-nums">
-                  {currentTrade.entryTime}
-                  {currentTrade.exitTime ? ` – ${currentTrade.exitTime}` : ''}
+                  {formatSimpleTime(currentTrade.entryTime)}
+                  {currentTrade.exitTime ? ` – ${formatSimpleTime(currentTrade.exitTime)}` : ''}
                 </span>
               </div>
               <div className="flex items-center justify-between">

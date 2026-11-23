@@ -544,6 +544,18 @@ export function AgentsSidebarView({
     return INITIAL_TAURIC_GROUPS;
   });
 
+  // Sync groups with server on mount
+  useEffect(() => {
+    fetch('/v1/trading/groups')
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data.groups) && data.groups.length > 0) {
+          setGroups(data.groups);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -587,8 +599,8 @@ export function AgentsSidebarView({
 
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) || workspaces[0];
 
-  // Set single admin for workspace
-  const handleSetAdmin = (targetAgentId: string) => {
+  // Set single admin for workspace (Real server API call)
+  const handleSetAdmin = async (targetAgentId: string) => {
     setAgentOverrides((prev) => {
       const next: Record<string, Partial<TradingAgentDef>> = { ...prev };
       for (const a of serverAgents) {
@@ -596,37 +608,72 @@ export function AgentsSidebarView({
       }
       return next;
     });
+    try {
+      await fetch(`/v1/trading/agents/${targetAgentId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isAdmin: true }),
+      });
+      refetchAgents();
+    } catch {}
   };
 
-  // Pin / Unpin agent
-  const handleTogglePin = (targetAgentId: string) => {
-    setAgentOverrides((prev) => {
-      const current = agents.find((a) => a.id === targetAgentId);
-      return {
-        ...prev,
-        [targetAgentId]: { ...(prev[targetAgentId] || {}), isPinned: !current?.isPinned },
-      };
-    });
+  // Pin / Unpin agent (Real server API call)
+  const handleTogglePin = async (targetAgentId: string) => {
+    const current = agents.find((a) => a.id === targetAgentId);
+    const nextPinned = !current?.isPinned;
+    setAgentOverrides((prev) => ({
+      ...prev,
+      [targetAgentId]: { ...(prev[targetAgentId] || {}), isPinned: nextPinned },
+    }));
+    try {
+      await fetch(`/v1/trading/agents/${targetAgentId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isPinned: nextPinned }),
+      });
+      refetchAgents();
+    } catch {}
   };
 
-  // Delete agent
-  const handleDeleteAgent = (targetAgentId: string) => {
+  // Delete / Archive agent (Real server API call)
+  const handleDeleteAgent = async (targetAgentId: string) => {
     setAgentOverrides((prev) => ({
       ...prev,
       [targetAgentId]: { ...(prev[targetAgentId] || {}), isArchived: true },
     }));
+    try {
+      await fetch(`/v1/trading/agents/${targetAgentId}`, {
+        method: 'DELETE',
+      });
+      refetchAgents();
+    } catch {}
   };
 
-  // Toggle archive group
-  const handleToggleArchiveGroup = (groupId: string) => {
+  // Toggle archive group (Real server API call)
+  const handleToggleArchiveGroup = async (groupId: string) => {
+    const target = groups.find((g) => g.id === groupId);
+    const nextArchived = !target?.isArchived;
     setGroups((prev) =>
-      prev.map((g) => (g.id === groupId ? { ...g, isArchived: !g.isArchived } : g)),
+      prev.map((g) => (g.id === groupId ? { ...g, isArchived: nextArchived } : g)),
     );
+    try {
+      await fetch(`/v1/trading/groups/${groupId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isArchived: nextArchived }),
+      });
+    } catch {}
   };
 
-  // Delete group
-  const handleDeleteGroup = (groupId: string) => {
+  // Delete group (Real server API call)
+  const handleDeleteGroup = async (groupId: string) => {
     setGroups((prev) => prev.filter((g) => g.id !== groupId));
+    try {
+      await fetch(`/v1/trading/groups/${groupId}`, {
+        method: 'DELETE',
+      });
+    } catch {}
   };
 
   // Add custom workspace team
@@ -650,14 +697,16 @@ export function AgentsSidebarView({
     setSelectedAgentId(bot.id);
     if (typeof window !== 'undefined') {
       const sp = new URLSearchParams(window.location.search);
+      sp.set('tab', 'chat');
       sp.set('agentId', bot.id);
       sp.delete('groupId');
       window.history.pushState(null, '', `?${sp.toString()}`);
     }
-    // Immediately dispatch selection so composer updates instantaneously
+    // Immediately dispatch selection so composer and chat update instantaneously
     window.dispatchEvent(new CustomEvent('selected-swarm-agent', { detail: bot }));
+    window.dispatchEvent(new CustomEvent('trading-tab-change', { detail: 'chat' }));
 
-    // Each bot gets its own isolated, dedicated session
+    // Each bot gets its own isolated, dedicated session tracking
     const targetSessionId = `session-${bot.id}`;
     if (typeof window !== 'undefined') {
       try {
@@ -667,10 +716,20 @@ export function AgentsSidebarView({
       } catch {}
     }
 
-    router.push(`/projects/${projectId}/sessions/${targetSessionId}?agentId=${bot.id}`);
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith(`/projects/${projectId}`)) {
+      return;
+    }
+    router.push(`/projects/${projectId}?tab=chat&agentId=${bot.id}`);
   };
 
   const handleOpenGroupChat = (group: AgentGroupDef) => {
+    if (typeof window !== 'undefined') {
+      const sp = new URLSearchParams(window.location.search);
+      sp.set('tab', 'chat');
+      sp.set('groupId', group.id);
+      sp.delete('agentId');
+      window.history.pushState(null, '', `?${sp.toString()}`);
+    }
     window.dispatchEvent(
       new CustomEvent('selected-swarm-agent', {
         detail: {
@@ -685,6 +744,8 @@ export function AgentsSidebarView({
         },
       }),
     );
+    window.dispatchEvent(new CustomEvent('trading-tab-change', { detail: 'chat' }));
+
     const targetSessionId = `session-group-${group.id}`;
     if (typeof window !== 'undefined') {
       try {
@@ -693,7 +754,11 @@ export function AgentsSidebarView({
         localStorage.setItem('tauric_agent_sessions_v1', JSON.stringify(existing));
       } catch {}
     }
-    router.push(`/projects/${projectId}/sessions/${targetSessionId}?groupId=${group.id}`);
+
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith(`/projects/${projectId}`)) {
+      return;
+    }
+    router.push(`/projects/${projectId}?tab=chat&groupId=${group.id}`);
   };
 
   const handleOpenEditDrawer = (agent: TradingAgentDef) => {
@@ -1185,6 +1250,16 @@ export function AgentsSidebarView({
               setShowCreateGroupModal(false);
               setNewGroupName('');
               setNewGroupDesc('');
+              void fetch('/v1/trading/groups', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  id: newGrp.id,
+                  name: newGrp.name,
+                  description: newGrp.description,
+                  agent_ids: newGrp.agentIds,
+                }),
+              }).catch(() => {});
             }}
           >
             <DialogPanel className="grid gap-4 py-2">
@@ -1331,19 +1406,31 @@ export function AgentsSidebarView({
             onSubmit={(event) => {
               event.preventDefault();
               if (selectedGroupToEdit && modifyGroupName.trim() && modifyGroupAgentIds.length > 0) {
+                const updatedName = modifyGroupName.trim();
+                const updatedDesc = modifyGroupDesc.trim() || undefined;
+                const updatedIds = [...modifyGroupAgentIds];
                 setGroups((prev) =>
                   prev.map((g) =>
                     g.id === selectedGroupToEdit.id
                       ? {
                           ...g,
-                          name: modifyGroupName.trim(),
-                          description: modifyGroupDesc.trim() || undefined,
-                          agentIds: [...modifyGroupAgentIds],
+                          name: updatedName,
+                          description: updatedDesc,
+                          agentIds: updatedIds,
                         }
                       : g
                   )
                 );
                 setShowModifyGroupModal(false);
+                void fetch(`/v1/trading/groups/${selectedGroupToEdit.id}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    name: updatedName,
+                    description: updatedDesc,
+                    agent_ids: updatedIds,
+                  }),
+                }).catch(() => {});
               }
             }}
           >

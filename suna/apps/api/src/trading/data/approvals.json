@@ -1,0 +1,15 @@
+[
+  {
+    "id": "app_1795443034810",
+    "agent_id": "test_bot_1795443034719",
+    "agent_name": "Lead Scalper Bot",
+    "action_type": "trade_execution",
+    "details": {
+      "symbol": "RELIANCE",
+      "qty": 50,
+      "side": "BUY"
+    },
+    "status": "pending",
+    "created_at": "2026-11-23T14:10:34.811Z"
+  }
+]

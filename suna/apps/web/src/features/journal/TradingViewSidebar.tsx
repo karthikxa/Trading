@@ -23,6 +23,7 @@ import {
   getSymbolMarketData,
   SymbolMarketData,
 } from './tradingViewData';
+import { formatSimpleTime } from '@/features/trading/dhanOrdersSync';
 
 interface TradingViewSidebarProps {
   date: string;
@@ -333,7 +334,7 @@ export function TradingViewSidebar({
                   >
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs font-semibold text-zinc-700">
-                        {t.entryTime}
+                        {formatSimpleTime(t.entryTime)}
                       </span>
                       <span
                         className={`text-[10px] font-semibold px-1.5 py-0.2 rounded border flex items-center gap-0.5 ${

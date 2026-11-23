@@ -749,7 +749,6 @@ export default function ProjectIndexPage() {
                     </span>
                   </div>
                 </div>
-                </div>
               </div>
             </div>
 

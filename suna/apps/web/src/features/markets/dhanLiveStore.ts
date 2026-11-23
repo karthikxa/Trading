@@ -32,8 +32,53 @@ export interface DhanLiveSnapshot {
 }
 
 const STORAGE_KEY = 'kortix_dhan_live_cache_v2';
-const SYNC_INTERVAL_MS = 4000; // 4s smart background REST sync
 const HIGH_FREQ_TICK_MS = 50; // 50ms ultra-high-frequency (20 updates/sec) reactive tick loop
+
+// Indian Standard Time (IST) Market Hours Check (9:15 AM to 3:30 PM, Monday - Friday)
+export function getIstMarketState(): {
+  isMarketHours: boolean;
+  isWeekday: boolean;
+  timeStr: string;
+  hour: number;
+  minute: number;
+} {
+  const now = new Date();
+  const istFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    hour12: false,
+    hour: 'numeric',
+    minute: 'numeric',
+    weekday: 'short',
+  });
+  const parts = istFormatter.formatToParts(now);
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value || 0);
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value || 0);
+  const weekday = parts.find((p) => p.type === 'weekday')?.value || 'Mon';
+  const isWeekday = weekday !== 'Sat' && weekday !== 'Sun';
+
+  const totalMinutes = hour * 60 + minute;
+  // NSE/BSE Equity & Derivatives Active Window: 9:14 AM (554m) to 3:31 PM (931m)
+  const isMarketHours = isWeekday && totalMinutes >= (9 * 60 + 14) && totalMinutes <= (15 * 60 + 31);
+
+  return {
+    isMarketHours,
+    isWeekday,
+    timeStr: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+    hour,
+    minute,
+  };
+}
+
+// Adaptive polling interval based on market session & scheduled milestones:
+// - 9:14 AM to 3:31 PM (Live Market): 1000ms (1-sec instant fast polling)
+// - Off-market: 60s idle (with automatic trigger at 12:00 AM midnight and 8:00 AM morning)
+export function getAdaptiveSyncInterval(): number {
+  const { isMarketHours } = getIstMarketState();
+  if (isMarketHours) {
+    return 1000; // 1 second fast live polling during market hours (9:14 AM - 3:31 PM IST)
+  }
+  return 60000; // 60s idle sleep outside market hours
+}
 
 function getInitialSnapshot(): DhanLiveSnapshot {
   if (typeof window === 'undefined') {
@@ -213,6 +258,36 @@ async function performSync(force = false) {
   }
 }
 
+let lastScheduledMilestone: string = '';
+
+function scheduleNextSync() {
+  if (syncTimer) {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+  }
+
+  const { isMarketHours, hour, minute } = getIstMarketState();
+  const currentMinuteKey = `${hour}:${minute}`;
+
+  // Automatic triggers at 12:00 AM midnight and 8:00 AM morning IST
+  const isMidnightReconcile = hour === 0 && minute === 0;
+  const isMorningPremarket = hour === 8 && minute === 0;
+
+  if ((isMidnightReconcile || isMorningPremarket) && lastScheduledMilestone !== currentMinuteKey) {
+    lastScheduledMilestone = currentMinuteKey;
+    performSync(true); // Force 1 full API sync for all dashboard metrics
+  }
+
+  // Live market hours (9:15 AM - 3:30 PM): 1000ms (1-second fast polling)
+  // Outside market hours: 60s idle sleep
+  const intervalMs = isMarketHours ? 1000 : 60000;
+
+  syncTimer = setTimeout(async () => {
+    await performSync();
+    scheduleNextSync();
+  }, intervalMs);
+}
+
 function startLiveSync() {
   if (typeof window === 'undefined') return;
   if (syncTimer || tickTimer) return;
@@ -228,10 +303,8 @@ function startLiveSync() {
     }
   }, HIGH_FREQ_TICK_MS);
 
-  // 2. Safe Quota-Guarded Background REST Polling
-  syncTimer = setInterval(() => {
-    performSync();
-  }, SYNC_INTERVAL_MS);
+  // 2. Market-Aware Adaptive Polling (1s during 9:15-3:30; 12am/8am triggers)
+  scheduleNextSync();
 
   // Resume sync immediately when tab becomes visible again
   document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -239,7 +312,7 @@ function startLiveSync() {
 
 function stopLiveSync() {
   if (syncTimer) {
-    clearInterval(syncTimer);
+    clearTimeout(syncTimer);
     syncTimer = null;
   }
   if (tickTimer) {

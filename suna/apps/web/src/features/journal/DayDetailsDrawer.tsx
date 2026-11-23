@@ -25,6 +25,7 @@ import { Tabs, TabsList, TabsTrigger } from '@kortix/ui';
 import Hint from '@kortix/ui/hint';
 import { SidebarGlyph } from '@kortix/ui/icons';
 import { cn } from '@kortix/ui/lib/utils';
+import { formatSimpleTime } from '@/features/trading/dhanOrdersSync';
 
 export function RightPanelGlyph({ className = 'size-4' }: { className?: string }) {
   return <SidebarGlyph className={cn('size-4 -scale-x-100', className)} />;
@@ -376,7 +377,7 @@ export function DayDetailsDrawer({
                           <X className="size-3 text-rose-600 font-bold" />
                         )}
                         <span>{t.instrument}</span>
-                        <span className="text-muted-foreground font-normal">({t.entryTime || '00:00'})</span>
+                        <span className="text-muted-foreground font-normal">({formatSimpleTime(t.entryTime) || '12:00'})</span>
                       </span>
                       <span className="text-muted-foreground text-[10px] truncate max-w-[130px]">
                         {t.followedPlan ? (t.planName || 'Plan Followed') : 'Deviated from plan'}
@@ -550,7 +551,7 @@ export function DayDetailsDrawer({
                     </div>
 
                     <div className="col-span-2 text-center font-sans tabular-nums text-[11px] text-muted-foreground">
-                      {t.entryTime}
+                      {formatSimpleTime(t.entryTime)}
                     </div>
 
                     <div className="col-span-2 flex items-center justify-center">

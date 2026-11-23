@@ -1,5 +1,6 @@
 import { JournalTrade, Direction } from './types';
 import { getLocalTrades } from './storage';
+import { formatSimpleTime } from '@/features/trading/dhanOrdersSync';
 
 /**
  * Calculate Indian Stock Exchange (NSE/BSE) estimated statutory charges
@@ -164,9 +165,9 @@ export function matchDhanExecutions(
       const exitParts = (time || '').split('T');
 
       const entryDate = entryParts[0] || new Date().toISOString().split('T')[0];
-      const entryTime = (entryParts[1] || '09:30').slice(0, 5);
+      const entryTime = formatSimpleTime(entryParts[1] || '09:30');
       const exitDate = exitParts[0] || entryDate;
-      const exitTime = (exitParts[1] || '15:30').slice(0, 5);
+      const exitTime = formatSimpleTime(exitParts[1] || '15:30');
 
       // Estimated Risk & Return calculation:
       // Default risk is 1% of entry price or min ₹0.50 per share
@@ -323,23 +324,28 @@ export async function syncDhanTradesToJournal(
     const executions = Array.isArray(allTradesRes?.data) ? allTradesRes.data : [];
 
     // 3. Fetch existing trades from local storage
-    const currentTrades = getLocalTrades().filter(
+    const allLocal = getLocalTrades();
+    const currentTrades = allLocal.filter(
       (t) => t.source === 'auto' || t.id.startsWith('dhan_')
+    );
+    const manualTrades = allLocal.filter(
+      (t) => t.source !== 'auto' && !t.id.startsWith('dhan_')
     );
 
     // 4. Match round-trip trades
     const matchedTrades = matchDhanExecutions(executions, currentTrades, projectId);
+    const combinedTrades = [...matchedTrades, ...manualTrades];
 
     // 5. Save to localStorage and persist to Supabase
     if (typeof window !== 'undefined') {
-      localStorage.setItem('kortix_trading_journal_trades_v2', JSON.stringify(matchedTrades));
+      localStorage.setItem('kortix_trading_journal_trades_v2', JSON.stringify(combinedTrades));
 
       const avail = Number(fundsRes?.data?.availabelBalance || fundsRes?.data?.sodLimit || 0);
       if (avail > 0) {
         localStorage.setItem('kortix_trading_dhan_funds', JSON.stringify(fundsRes.data));
       }
 
-      window.dispatchEvent(new CustomEvent('trading-journal-updated', { detail: matchedTrades }));
+      window.dispatchEvent(new CustomEvent('trading-journal-updated', { detail: combinedTrades }));
 
       // Persist to Supabase database so future visits never need to call Dhan again
       try {

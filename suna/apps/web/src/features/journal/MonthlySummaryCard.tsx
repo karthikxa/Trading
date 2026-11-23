@@ -60,7 +60,7 @@ export function MonthlySummaryCard({ trades, monthLabel }: MonthlySummaryCardPro
   };
 
   return (
-    <Card className="bg-white border-zinc-200/90 rounded-2xl p-4 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-full">
+    <Card className="bg-white border-zinc-200/90 rounded-2xl p-4 sm:p-6 shadow-2xs flex flex-col gap-4 font-sans h-auto">
       <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
         <h2 className="text-sm font-bold text-zinc-950 tracking-tight">Monthly Summary</h2>
         <Badge variant="secondary" className="font-sans text-xs font-medium text-zinc-600 bg-zinc-100/90 border border-zinc-200/80 px-2.5 py-0.5 rounded-lg tracking-normal">
@@ -68,7 +68,7 @@ export function MonthlySummaryCard({ trades, monthLabel }: MonthlySummaryCardPro
         </Badge>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 sm:gap-6 items-stretch flex-1">
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 sm:gap-6 items-start flex-1">
         {/* Left: Bar Chart of R-distribution in black & white (7 cols) */}
         <div className="md:col-span-7 flex flex-col justify-end pt-1">
           {/* Bars area */}
@@ -82,17 +82,15 @@ export function MonthlySummaryCard({ trades, monthLabel }: MonthlySummaryCardPro
                   title={`${b.label}: ${b.count} ${b.count === 1 ? 'trade' : 'trades'}`}
                 >
                   <span
-                    className={`text-[10px] font-sans tabular-nums font-semibold transition-opacity ${
-                      b.count > 0 ? 'text-zinc-600 opacity-100' : 'text-zinc-400 opacity-0 group-hover:opacity-100'
-                    }`}
+                    className={`text-[10px] font-sans tabular-nums font-semibold transition-opacity ${b.count > 0 ? 'text-zinc-600 opacity-100' : 'text-zinc-400 opacity-0 group-hover:opacity-100'
+                      }`}
                   >
                     {b.count}
                   </span>
                   <div
                     style={{ height: `${heightPct}%` }}
-                    className={`w-full max-w-[40px] rounded-t-md transition-all shadow-2xs ${
-                      b.count > 0 ? 'bg-zinc-950 hover:bg-zinc-800' : 'bg-zinc-200/80'
-                    }`}
+                    className={`w-full max-w-[40px] rounded-t-md transition-all shadow-2xs ${b.count > 0 ? 'bg-zinc-950 hover:bg-zinc-800' : 'bg-zinc-200/80'
+                      }`}
                   />
                 </div>
               );
@@ -118,7 +116,7 @@ export function MonthlySummaryCard({ trades, monthLabel }: MonthlySummaryCardPro
         </div>
 
         {/* Right: Key Performance Stats Table (5 cols) */}
-        <div className="md:col-span-5 flex flex-col justify-between h-full border-t md:border-t-0 md:border-l border-zinc-100 md:pl-6 pt-4 md:pt-0">
+        <div className="md:col-span-5 flex flex-col justify-start h-auto border-t md:border-t-0 md:border-l border-zinc-100 md:pl-6 pt-4 md:pt-0 pb-1">
           <div className="space-y-2 text-xs">
             <div className="flex items-center justify-between py-1 border-b border-zinc-100">
               <span className="text-zinc-500 font-normal">Expectancy</span>
