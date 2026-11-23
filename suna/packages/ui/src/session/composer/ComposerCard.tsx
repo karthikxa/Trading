@@ -349,7 +349,23 @@ export function ComposerCard({
                 onEmptyChange={setIsEmpty}
                 onDocChange={handleDocChange}
                 agents={agents}
-                currentAgentName={selectedAgent}
+                currentAgentName={
+                  selectedAgent ||
+                  (typeof window !== 'undefined'
+                    ? new URLSearchParams(window.location.search).get('agentId') ||
+                      (() => {
+                        try {
+                          const sid = sessionId;
+                          const sessions = JSON.parse(localStorage.getItem('tauric_agent_sessions_v1') || '{}');
+                          for (const [k, v] of Object.entries(sessions)) {
+                            if (v === sid) return k;
+                          }
+                        } catch {}
+                        return null;
+                      })()
+                    : null) ||
+                  'portfolio_manager'
+                }
                 sessions={allSessions ?? []}
                 currentSessionId={sessionId}
                 commands={commands}

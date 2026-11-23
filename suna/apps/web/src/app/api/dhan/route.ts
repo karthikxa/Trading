@@ -2,6 +2,43 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const DHAN_BASE_URL = 'https://api.dhan.co/v2';
 
+// ── In-Memory Smart Cache & Quota Guard ──────────────────────────────────────
+interface CacheEntry {
+  data: any;
+  summary?: any;
+  status: number;
+  ok: boolean;
+  timestamp: number;
+}
+
+const serverDhanCache = new Map<string, CacheEntry>();
+const inFlightRequests = new Map<string, Promise<{ data: any; summary?: any; status: number; ok: boolean }>>();
+
+// Sliding window rate-limit tracker to protect daily Dhan API quota
+let callTimestamps: number[] = [];
+const MAX_CALLS_PER_MINUTE = 40; // Dhan safe threshold
+
+function isQuotaSafe(): boolean {
+  const now = Date.now();
+  callTimestamps = callTimestamps.filter((t) => now - t < 60000);
+  return callTimestamps.length < MAX_CALLS_PER_MINUTE;
+}
+
+function recordDhanCall(): void {
+  callTimestamps.push(Date.now());
+}
+
+// Micro-TTL per endpoint: balances 0ms speed with real-time freshness & quota protection
+const CACHE_TTL_MS: Record<string, number> = {
+  positions: 6000,    // 6s for live PnL & open positions
+  funds: 12000,       // 12s for cash / margin
+  orders: 8000,       // 8s for active orders
+  trades: 20000,      // 20s for today's trades
+  all_trades: 180000, // 3 min for historical execution audit
+  holdings: 60000,    // 1 min for equity holdings
+  profile: 300000,    // 5 min for user profile
+};
+
 function getDhanHeaders(clientId?: string, token?: string) {
   const activeClientId = clientId || process.env.DHAN_CLIENT_ID || '1114824544';
   const activeToken =
@@ -18,101 +55,205 @@ function getDhanHeaders(clientId?: string, token?: string) {
 }
 
 export async function GET(req: NextRequest) {
+  const startTime = Date.now();
   try {
     const { searchParams } = new URL(req.url);
     const action = searchParams.get('action') || 'funds';
+    const forceFresh = searchParams.get('force') === 'true';
 
-    const headers = getDhanHeaders();
+    const cacheKey = `${action}_${searchParams.get('from') || ''}_${searchParams.get('to') || ''}_${searchParams.get('page') || ''}`;
+    const cached = serverDhanCache.get(cacheKey);
+    const ttl = CACHE_TTL_MS[action] || 10000;
 
-    let endpoint = `${DHAN_BASE_URL}/fundlimit`;
-    if (action === 'positions') {
-      endpoint = `${DHAN_BASE_URL}/positions`;
-    } else if (action === 'holdings') {
-      endpoint = `${DHAN_BASE_URL}/holdings`;
-    } else if (action === 'orders') {
-      endpoint = `${DHAN_BASE_URL}/orders`;
-    } else if (action === 'trades' || action === 'all_trades' || action === 'past_trades') {
-      const fromDate = searchParams.get('from') || searchParams.get('fromDate') || '2026-01-01';
-      const toDate = searchParams.get('to') || searchParams.get('toDate') || new Date().toISOString().split('T')[0];
-      const page = searchParams.get('page');
-
-      if (action === 'all_trades' || action === 'past_trades') {
-        // Automatically fetch all pages and today's trades
-        const allExecutions: any[] = [];
-        const seen = new Set<string>();
-
-        // 1. Fetch today's trades
-        try {
-          const todayRes = await fetch(`${DHAN_BASE_URL}/trades`, { headers, cache: 'no-store' });
-          const todayData = await todayRes.json().catch(() => []);
-          if (Array.isArray(todayData)) {
-            for (const t of todayData) {
-              const key = `${t.orderId}_${t.exchangeTradeId}_${t.exchangeTime}`;
-              if (!seen.has(key)) {
-                seen.add(key);
-                allExecutions.push(t);
-              }
-            }
-          }
-        } catch {}
-
-        // 2. Fetch past trade pages
-        for (let p = 0; p < 20; p++) {
-          try {
-            const pageRes = await fetch(`${DHAN_BASE_URL}/trades/${fromDate}/${toDate}/${p}`, {
-              headers,
-              cache: 'no-store',
-            });
-            const pageData = await pageRes.json().catch(() => []);
-            if (!Array.isArray(pageData) || pageData.length === 0) break;
-
-            let addedCount = 0;
-            for (const t of pageData) {
-              const key = `${t.orderId}_${t.exchangeTradeId}_${t.exchangeTime}`;
-              if (!seen.has(key)) {
-                seen.add(key);
-                allExecutions.push(t);
-                addedCount++;
-              }
-            }
-            if (addedCount === 0) break;
-          } catch {
-            break;
-          }
-        }
-
-        return NextResponse.json({
-          ok: true,
+    // 0ms Cache Hit: If fresh or if quota is under pressure, return instantaneously
+    if (cached && !forceFresh && (Date.now() - cached.timestamp < ttl || !isQuotaSafe())) {
+      return NextResponse.json(
+        {
+          ok: cached.ok,
           action,
-          status: 200,
-          data: allExecutions,
-        });
-      }
-
-      if (page !== null) {
-        endpoint = `${DHAN_BASE_URL}/trades/${fromDate}/${toDate}/${page}`;
-      } else {
-        endpoint = `${DHAN_BASE_URL}/trades`;
-      }
-    } else if (action === 'profile') {
-      endpoint = `${DHAN_BASE_URL}/profile`;
+          status: cached.status,
+          data: cached.data,
+          summary: cached.summary,
+          cached: true,
+          latencyMs: Date.now() - startTime,
+          quotaRemaining: Math.max(0, MAX_CALLS_PER_MINUTE - callTimestamps.length),
+        },
+        {
+          headers: {
+            'X-Dhan-Cache': 'HIT',
+            'X-Dhan-Latency': `${Date.now() - startTime}ms`,
+          },
+        }
+      );
     }
 
-    const res = await fetch(endpoint, {
-      method: 'GET',
-      headers,
-      cache: 'no-store',
-    });
+    // Single-flight in-flight deduplication: concurrent requests await the identical outbound fetch
+    if (inFlightRequests.has(cacheKey)) {
+      const inFlight = await inFlightRequests.get(cacheKey)!;
+      return NextResponse.json({
+        ok: inFlight.ok,
+        action,
+        status: inFlight.status,
+        data: inFlight.data,
+        summary: inFlight.summary,
+        cached: true,
+        latencyMs: Date.now() - startTime,
+      });
+    }
 
-    const data = await res.json().catch(() => ({}));
+    const fetchPromise = (async () => {
+      const headers = getDhanHeaders();
+      let endpoint = `${DHAN_BASE_URL}/fundlimit`;
+
+      if (action === 'positions') {
+        endpoint = `${DHAN_BASE_URL}/positions`;
+      } else if (action === 'holdings') {
+        endpoint = `${DHAN_BASE_URL}/holdings`;
+      } else if (action === 'orders') {
+        endpoint = `${DHAN_BASE_URL}/orders`;
+      } else if (action === 'trades' || action === 'all_trades' || action === 'past_trades') {
+        const fromDate = searchParams.get('from') || searchParams.get('fromDate') || '2026-01-01';
+        const toDate = searchParams.get('to') || searchParams.get('toDate') || new Date().toISOString().split('T')[0];
+        const page = searchParams.get('page');
+
+        if (action === 'all_trades' || action === 'past_trades') {
+          recordDhanCall();
+          const allExecutions: any[] = [];
+          const seen = new Set<string>();
+
+          // 1. Fetch today's trades (single fast request)
+          try {
+            const todayRes = await fetch(`${DHAN_BASE_URL}/trades`, { headers, cache: 'no-store' });
+            const todayData = await todayRes.json().catch(() => []);
+            if (Array.isArray(todayData)) {
+              for (const t of todayData) {
+                const key = `${t.orderId}_${t.exchangeTradeId}_${t.exchangeTime}`;
+                if (!seen.has(key)) {
+                  seen.add(key);
+                  allExecutions.push(t);
+                }
+              }
+            }
+          } catch {}
+
+          // 2. Fetch past trade pages up to 5 pages max to protect API quota
+          for (let p = 0; p < 5; p++) {
+            if (!isQuotaSafe()) break;
+            try {
+              recordDhanCall();
+              const pageRes = await fetch(`${DHAN_BASE_URL}/trades/${fromDate}/${toDate}/${p}`, {
+                headers,
+                cache: 'no-store',
+              });
+              const pageData = await pageRes.json().catch(() => []);
+              if (!Array.isArray(pageData) || pageData.length === 0) break;
+
+              let addedCount = 0;
+              for (const t of pageData) {
+                const key = `${t.orderId}_${t.exchangeTradeId}_${t.exchangeTime}`;
+                if (!seen.has(key)) {
+                  seen.add(key);
+                  allExecutions.push(t);
+                  addedCount++;
+                }
+              }
+              if (addedCount === 0 || pageData.length < 50) break;
+            } catch {
+              break;
+            }
+          }
+
+          return {
+            ok: true,
+            status: 200,
+            data: allExecutions,
+          };
+        }
+
+        endpoint = page !== null ? `${DHAN_BASE_URL}/trades/${fromDate}/${toDate}/${page}` : `${DHAN_BASE_URL}/trades`;
+      } else if (action === 'profile') {
+        endpoint = `${DHAN_BASE_URL}/profile`;
+      }
+
+      recordDhanCall();
+      const res = await fetch(endpoint, {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      // Compute rich live summary for positions
+      let summary: any = undefined;
+      if (action === 'positions' && Array.isArray(data)) {
+        const realizedProfit = Number(
+          data.reduce((acc, p) => acc + (Number(p.realizedProfit) || 0), 0).toFixed(2)
+        );
+        const unrealizedProfit = Number(
+          data.reduce((acc, p) => acc + (Number(p.unrealizedProfit) || 0), 0).toFixed(2)
+        );
+        const totalDayPnl = Number((realizedProfit + unrealizedProfit).toFixed(2));
+        const openPositionsCount = data.filter((p) => Number(p.netQty || 0) !== 0).length;
+
+        summary = {
+          realizedProfit,
+          unrealizedProfit,
+          totalDayPnl,
+          positionsCount: data.length,
+          openPositionsCount,
+          lastUpdated: new Date().toISOString(),
+        };
+      }
+
+      return {
+        ok: res.ok,
+        status: res.status,
+        data,
+        summary,
+      };
+    })();
+
+    inFlightRequests.set(cacheKey, fetchPromise);
+    const result = await fetchPromise;
+    inFlightRequests.delete(cacheKey);
+
+    // Save to smart cache
+    serverDhanCache.set(cacheKey, {
+      ...result,
+      timestamp: Date.now(),
+    });
 
     return NextResponse.json({
-      ok: res.ok,
+      ok: result.ok,
       action,
-      status: res.status,
-      data,
+      status: result.status,
+      data: result.data,
+      summary: result.summary,
+      cached: false,
+      latencyMs: Date.now() - startTime,
+      quotaRemaining: Math.max(0, MAX_CALLS_PER_MINUTE - callTimestamps.length),
     });
   } catch (err: any) {
+    // Graceful fallback to stale cache if network/API throws
+    const { searchParams } = new URL(req.url);
+    const action = searchParams.get('action') || 'funds';
+    const cacheKey = `${action}_${searchParams.get('from') || ''}_${searchParams.get('to') || ''}_${searchParams.get('page') || ''}`;
+    const fallback = serverDhanCache.get(cacheKey);
+
+    if (fallback) {
+      return NextResponse.json({
+        ok: fallback.ok,
+        action,
+        status: fallback.status,
+        data: fallback.data,
+        summary: fallback.summary,
+        cached: true,
+        staleFallback: true,
+        latencyMs: Date.now() - startTime,
+      });
+    }
+
     return NextResponse.json(
       { ok: false, error: err?.message || 'Failed to fetch Dhan data' },
       { status: 500 }
@@ -136,6 +277,7 @@ export async function POST(req: NextRequest) {
       endpoint = `${DHAN_BASE_URL}/orders/${orderId}`;
     }
 
+    recordDhanCall();
     const res = await fetch(endpoint, {
       method: action === 'cancel_order' ? 'DELETE' : 'POST',
       headers,
@@ -143,6 +285,10 @@ export async function POST(req: NextRequest) {
     });
 
     const data = await res.json().catch(() => ({}));
+
+    // Invalidate orders and positions cache so subsequent reads pick up fresh data immediately
+    serverDhanCache.delete('orders___');
+    serverDhanCache.delete('positions___');
 
     return NextResponse.json({
       ok: res.ok,

@@ -70,10 +70,11 @@ export function MonthlySummaryCard({ trades, monthLabel }: MonthlySummaryCardPro
 
       <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-stretch flex-1">
         {/* Left: Bar Chart of R-distribution in black & white (7 cols) */}
-        <div className="md:col-span-7 flex flex-col justify-end min-h-[190px] pt-2">
-          <div className="flex items-end justify-between gap-3 h-36 px-2 border-b border-zinc-200/80 pb-2">
+        <div className="md:col-span-7 flex flex-col justify-end pt-1">
+          {/* Bars area */}
+          <div className="flex items-end justify-between gap-3 h-28 px-2 border-b border-zinc-200/80 pb-1">
             {buckets.map((b) => {
-              const heightPct = b.count > 0 ? Math.max(16, Math.round((b.count / maxCount) * 100)) : 4;
+              const heightPct = b.count > 0 ? Math.max(16, Math.round((b.count / maxCount) * 100)) : 6;
               return (
                 <div
                   key={b.label}
@@ -89,18 +90,28 @@ export function MonthlySummaryCard({ trades, monthLabel }: MonthlySummaryCardPro
                   </span>
                   <div
                     style={{ height: `${heightPct}%` }}
-                    className={`w-full max-w-[44px] rounded-t-lg transition-all shadow-2xs ${
+                    className={`w-full max-w-[40px] rounded-t-md transition-all shadow-2xs ${
                       b.count > 0 ? 'bg-zinc-950 hover:bg-zinc-800' : 'bg-zinc-200/80'
                     }`}
                   />
-                  <span className="text-[11px] text-zinc-600 font-sans font-medium tracking-normal truncate max-w-[58px] text-center">
-                    {b.label}
-                  </span>
                 </div>
               );
             })}
           </div>
-          <div className="flex items-center justify-between text-xs text-zinc-500 px-2 pt-2.5 font-sans font-medium tracking-normal">
+
+          {/* X-axis labels under the baseline to avoid bottom cut */}
+          <div className="flex items-center justify-between gap-3 px-2 pt-1.5">
+            {buckets.map((b) => (
+              <span
+                key={b.label}
+                className="flex-1 text-[10px] text-zinc-500 font-sans font-medium text-center truncate"
+              >
+                {b.label}
+              </span>
+            ))}
+          </div>
+
+          <div className="flex items-center justify-between text-[11px] text-zinc-400 px-2 pt-2 font-sans font-medium tracking-normal">
             <span>Risk-to-Reward Distribution</span>
             <span>R-Multiple</span>
           </div>

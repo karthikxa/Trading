@@ -38,6 +38,7 @@ import JournalView from '@/features/journal/JournalView';
 import OrdersView from '@/features/trading/OrdersView';
 import { getLocalTrades } from '@/features/journal/storage';
 import { syncDhanTradesToJournal } from '@/features/journal/dhanSync';
+import { subscribeDhanLive, getDhanLiveSnapshot } from '@/features/markets/dhanLiveStore';
 import type { JournalTrade } from '@/features/journal/types';
 import SearchCommand, { openSearch, SearchButton } from '@/features/markets/SearchCommand';
 import StockSymbolIcon from '@/features/markets/StockSymbolIcon';
@@ -323,45 +324,15 @@ export default function ProjectIndexPage() {
     };
     window.addEventListener('trading-journal-updated', onJournalUpdate);
 
-    // Live continuous polling of Dhan funds and positions every 3 seconds
-    const fetchDhanLive = async () => {
-      try {
-        const [fundsRes, posRes] = await Promise.all([
-          fetch('/api/dhan?action=funds').then((r) => r.json()).catch(() => null),
-          fetch('/api/dhan?action=positions').then((r) => r.json()).catch(() => null),
-        ]);
-
-        if (fundsRes?.data?.availabelBalance != null) {
-          setDhanFunds((prev) => {
-            if (
-              prev?.availabelBalance === fundsRes.data.availabelBalance &&
-              prev?.utilizedAmount === fundsRes.data.utilizedAmount
-            ) {
-              return prev;
-            }
-            return fundsRes.data;
-          });
-          try {
-            window.localStorage.setItem('kortix_trading_dhan_funds', JSON.stringify(fundsRes.data));
-          } catch {}
-        }
-
-        if (Array.isArray(posRes?.data)) {
-          setDhanPositions((prev) => {
-            if (JSON.stringify(prev) === JSON.stringify(posRes.data)) {
-              return prev;
-            }
-            return posRes.data;
-          });
-          try {
-            window.localStorage.setItem('kortix_trading_dhan_positions', JSON.stringify(posRes.data));
-          } catch {}
-        }
-      } catch {}
-    };
-
-    fetchDhanLive();
-    const liveTimer = setInterval(fetchDhanLive, 3000);
+    // Synchronous 0ms subscription with visibility-aware background sync & quota guard
+    const unsubscribeDhan = subscribeDhanLive((snapshot) => {
+      if (snapshot.funds) {
+        setDhanFunds(snapshot.funds as any);
+      }
+      if (snapshot.positions) {
+        setDhanPositions(snapshot.positions);
+      }
+    });
 
     // 2. Auto-sync Dhan trades if trades are empty or have old mock trades
     const local = getLocalTrades();
@@ -378,7 +349,7 @@ export default function ProjectIndexPage() {
 
     return () => {
       window.removeEventListener('trading-journal-updated', onJournalUpdate);
-      clearInterval(liveTimer);
+      unsubscribeDhan();
     };
   }, [projectId]);
 
@@ -418,12 +389,20 @@ export default function ProjectIndexPage() {
   const winRateJournal = totalJournalTrades > 0 ? ((winJournalTrades / totalJournalTrades) * 100).toFixed(1) : '0.0';
   const totalJournalPnl = journalTrades.reduce((acc, t) => acc + (t.pnl ?? 0), 0);
   
-  // Realized PnL for active trading session day (Nov 20: -₹37.37)
-  const todayDateStr = '2026-11-20';
+  // Dynamic IST Today Date string (e.g. '2026-11-23')
+  const todayDateStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
   const todayTrades = journalTrades.filter((t) => t.entryDate === todayDateStr);
-  const todayRealizedPnl = todayTrades.length > 0
-    ? todayTrades.reduce((acc, t) => acc + (t.pnl ?? 0), 0)
-    : totalJournalPnl;
+  const todayJournalPnl = todayTrades.reduce((acc, t) => acc + (t.pnl ?? 0), 0);
+
+  // Live fluctuating Realized & Unrealized PnL from Dhan active positions
+  const dhanLiveRealized = Array.isArray(dhanPositions)
+    ? Number(dhanPositions.reduce((acc: number, p: any) => acc + (Number(p.realizedProfit) || 0), 0).toFixed(2))
+    : 0;
+
+  // Use Dhan live realized PnL if available, otherwise journal today's trades or total
+  const todayRealizedPnl = dhanLiveRealized !== 0
+    ? dhanLiveRealized
+    : (todayTrades.length > 0 ? todayJournalPnl : totalJournalPnl);
   const todayTradesCount = todayTrades.length > 0 ? todayTrades.length : totalJournalTrades;
 
   const displayBalance = dhanFunds?.availabelBalance != null ? dhanFunds.availabelBalance : (startingCapital + totalJournalPnl);
@@ -431,7 +410,7 @@ export default function ProjectIndexPage() {
 
   // Live fluctuating Unrealized PnL from Dhan active positions
   const totalUnrealizedPnl = Array.isArray(dhanPositions)
-    ? dhanPositions.reduce((acc: number, p: any) => acc + (typeof p.unrealizedProfit === 'number' ? p.unrealizedProfit : 0), 0)
+    ? Number(dhanPositions.reduce((acc: number, p: any) => acc + (typeof p.unrealizedProfit === 'number' ? p.unrealizedProfit : 0), 0).toFixed(2))
     : 0;
 
   // Live Margin Used from Dhan funds utilizedAmount

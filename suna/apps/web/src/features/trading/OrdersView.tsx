@@ -257,6 +257,29 @@ function downloadOrderPdf(order: DhanOrderItem) {
   printWindow.document.close();
 }
 
+function copyTextDirectly(text: string): boolean {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).catch(() => {});
+      return true;
+    }
+  } catch {}
+  try {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-999999px';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    const successful = document.execCommand('copy');
+    document.body.removeChild(textArea);
+    return successful;
+  } catch {
+    return false;
+  }
+}
+
 export default function OrdersView({ projectId }: OrdersViewProps) {
   const [orders, setOrders] = useState<DhanOrderItem[]>(() => getLocalOrders());
   const [loading, setLoading] = useState<boolean>(false);
@@ -479,8 +502,14 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
             <div className="flex items-center gap-2 flex-wrap">
               <button
                 type="button"
-                onClick={() => setSharingOrder(viewingOrder)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border/70 bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer font-sans"
+                onClick={() => {
+                  setSharingOrder(viewingOrder);
+                  if (typeof window !== 'undefined' && viewingOrder) {
+                    const url = `${window.location.origin}${window.location.pathname}?tab=orders&orderId=${viewingOrder.orderId}`;
+                    copyTextDirectly(url);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border/70 bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer font-sans active:scale-95"
               >
                 <ShareNetwork className="size-3.5 text-muted-foreground" />
                 <span>Share</span>
@@ -946,7 +975,7 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
                     onClick={() => {
                       if (typeof window !== 'undefined' && sharingOrder) {
                         const url = `${window.location.origin}${window.location.pathname}?tab=orders&orderId=${sharingOrder.orderId}`;
-                        navigator.clipboard?.writeText(url);
+                        copyTextDirectly(url);
                         setShareCopied(true);
                         setTimeout(() => setShareCopied(false), 2000);
                       }
@@ -1550,7 +1579,7 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
                   onClick={() => {
                     if (typeof window !== 'undefined' && sharingOrder) {
                       const url = `${window.location.origin}${window.location.pathname}?tab=orders&orderId=${sharingOrder.orderId}`;
-                      navigator.clipboard?.writeText(url);
+                      copyTextDirectly(url);
                       setShareCopied(true);
                       setTimeout(() => setShareCopied(false), 2000);
                     }

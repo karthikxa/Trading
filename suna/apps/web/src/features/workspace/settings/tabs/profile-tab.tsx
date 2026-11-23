@@ -347,12 +347,30 @@ export function ProfileTabView({
 
   const [totalJournalPnl, setTotalJournalPnl] = useState<number>(0);
 
+  const [dhanBalance, setDhanBalance] = useState<number | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const saved = localStorage.getItem('kortix_trading_dhan_funds');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.availabelBalance != null) return parsed.availabelBalance;
+      }
+    } catch {}
+    return null;
+  });
+
   useEffect(() => {
     const updateMetrics = () => {
       try {
         const trades = getLocalTrades();
         const pnl = trades.reduce((acc, t) => acc + (t.pnl ?? 0), 0);
         setTotalJournalPnl(pnl);
+
+        const savedFunds = localStorage.getItem('kortix_trading_dhan_funds');
+        if (savedFunds) {
+          const parsed = JSON.parse(savedFunds);
+          if (parsed?.availabelBalance != null) setDhanBalance(parsed.availabelBalance);
+        }
 
         const savedCapital = localStorage.getItem('kortix_trading_starting_capital');
         if (savedCapital) {
@@ -364,13 +382,15 @@ export function ProfileTabView({
     updateMetrics();
     window.addEventListener('trading-journal-updated', updateMetrics);
     window.addEventListener('trading-goal-updated', updateMetrics);
+    window.addEventListener('trading-dhan-live-updated', updateMetrics);
     return () => {
       window.removeEventListener('trading-journal-updated', updateMetrics);
       window.removeEventListener('trading-goal-updated', updateMetrics);
+      window.removeEventListener('trading-dhan-live-updated', updateMetrics);
     };
   }, []);
 
-  const currentBalance = currentCapital + totalJournalPnl;
+  const currentBalance = dhanBalance != null ? dhanBalance : (currentCapital + totalJournalPnl);
 
   const [tradingGoal, setTradingGoal] = useState<{ targetAmount: number; targetDate: string }>(() => {
     if (typeof window !== 'undefined') {
@@ -574,20 +594,19 @@ export function ProfileTabView({
             <div className="p-4 space-y-4 bg-muted/20">
               <div className="space-y-3">
                 <div className="space-y-1.5">
-                  <Label htmlFor="goal-current-capital" className="text-xs font-medium text-foreground font-sans">
-                    Total Money We Have ($)
-                  </Label>
-                  <Input
-                    id="goal-current-capital"
-                    type="number"
-                    step="any"
-                    value={totalMoneyDraft}
-                    onChange={(e) => setTotalMoneyDraft(e.target.value)}
-                    placeholder="100000.00"
-                    className="h-9 text-sm font-sans"
-                  />
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-medium text-foreground font-sans">
+                      Total Money We Have ($)
+                    </Label>
+                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold uppercase tracking-wider">
+                      Auto-calculated
+                    </span>
+                  </div>
+                  <div className="h-9 px-3 flex items-center rounded-lg border border-border/70 bg-muted/30 text-sm font-sans font-medium text-foreground tabular-nums select-none">
+                    ${currentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
                   <p className="text-[11px] text-muted-foreground font-sans">
-                    Base starting portfolio capital synced with Overview and Live Trade Logs
+                    Live portfolio balance auto-calculated and synced with Dhan funds &amp; journal trades
                   </p>
                 </div>
                 <div className="space-y-1.5">

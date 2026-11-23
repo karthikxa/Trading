@@ -2,31 +2,19 @@
 
 import React, { useEffect, useState } from 'react';
 import { cn } from '@kortix/ui';
-
-interface DhanFunds {
-  dhanClientId: string;
-  availabelBalance: number;
-  sodLimit?: number;
-  collateralAmount?: number;
-  withdrawableBalance?: number;
-}
+import { getDhanLiveSnapshot, subscribeDhanLive, DhanLiveSnapshot } from './dhanLiveStore';
 
 export default function DhanAccountBar({ className = '' }: { className?: string }) {
-  const [funds, setFunds] = useState<DhanFunds | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Synchronous 0ms frame-0 hydration from snapshot cache
+  const [snapshot, setSnapshot] = useState<DhanLiveSnapshot>(() => getDhanLiveSnapshot());
   const [killSwitchActive, setKillSwitchActive] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
-    fetch('/api/dhan?action=funds')
-      .then((r) => r.json())
-      .then((res) => {
-        if (res?.ok && res?.data?.dhanClientId) {
-          setFunds(res.data);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    const unsubscribe = subscribeDhanLive((next) => {
+      setSnapshot(next);
+    });
+    return () => unsubscribe();
   }, []);
 
   const handleKillSwitch = async () => {
@@ -54,9 +42,10 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
     }
   };
 
-  if (loading && !funds) {
-    return null;
-  }
+  const funds = snapshot.funds;
+  const summary = snapshot.summary;
+  const liveDayPnl = summary.totalDayPnl;
+  const isProfit = liveDayPnl >= 0;
 
   return (
     <div
@@ -73,7 +62,10 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
         <div className="flex flex-col">
           <div className="flex items-center gap-1.5 font-medium">
             <span className="text-zinc-200">DhanHQ Account</span>
-            <span className="size-1.5 rounded-full bg-emerald-400"></span>
+            <span className="relative flex size-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full size-2 bg-emerald-500"></span>
+            </span>
             <span className="text-[10px] text-zinc-400 font-mono">
               ID: {funds?.dhanClientId || '1114824544'}
             </span>
@@ -82,12 +74,23 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
         </div>
       </div>
 
-      {/* Financials: Available Balance */}
-      <div className="flex items-center gap-4 font-mono text-xs">
+      {/* Financials: Available Balance & Today's Live PnL */}
+      <div className="flex items-center gap-4 sm:gap-6 font-mono text-xs">
         <div className="flex flex-col">
           <span className="text-[10px] text-zinc-400 font-sans">Available Cash</span>
           <span className="font-bold text-emerald-400">
             ₹{funds?.availabelBalance !== undefined ? funds.availabelBalance.toFixed(2) : '720.02'}
+          </span>
+        </div>
+
+        {/* Live Fluctuating Today's PnL */}
+        <div className="flex flex-col">
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] text-zinc-400 font-sans">Today's PnL</span>
+            <span className={cn('size-1.5 rounded-full', isProfit ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400 animate-pulse')} />
+          </div>
+          <span className={cn('font-bold', isProfit ? 'text-emerald-400' : 'text-rose-400')}>
+            {isProfit ? '+' : ''}₹{liveDayPnl.toFixed(2)}
           </span>
         </div>
 
@@ -108,12 +111,12 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
           className={cn(
             'px-2.5 py-1 rounded border text-[11px] font-sans font-medium transition-colors cursor-pointer',
             killSwitchActive
-              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-              : 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border-red-500/30'
+              ? 'bg-rose-950/60 text-rose-300 border-rose-800'
+              : 'bg-zinc-800/80 hover:bg-rose-950/40 text-zinc-300 hover:text-rose-300 border-zinc-700 hover:border-rose-800'
           )}
-          title="Emergency risk management lock"
+          title="Emergency broker-level kill switch"
         >
-          {killSwitchActive ? 'Trading Locked' : 'Kill Switch'}
+          {killSwitchActive ? 'Trading Disabled' : 'Kill Switch'}
         </button>
       </div>
     </div>
