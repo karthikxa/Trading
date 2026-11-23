@@ -32,7 +32,8 @@ export interface DhanLiveSnapshot {
 }
 
 const STORAGE_KEY = 'kortix_dhan_live_cache_v2';
-const SYNC_INTERVAL_MS = 6000; // 6s when tab is active (well within 40 calls/min limit)
+const SYNC_INTERVAL_MS = 4000; // 4s smart background REST sync
+const HIGH_FREQ_TICK_MS = 50; // 50ms ultra-high-frequency (20 updates/sec) reactive tick loop
 
 function getInitialSnapshot(): DhanLiveSnapshot {
   if (typeof window === 'undefined') {
@@ -111,6 +112,7 @@ function getInitialSnapshot(): DhanLiveSnapshot {
 let currentSnapshot: DhanLiveSnapshot = getInitialSnapshot();
 const subscribers = new Set<(snapshot: DhanLiveSnapshot) => void>();
 let syncTimer: any = null;
+let tickTimer: any = null;
 let isFetching = false;
 
 export function getDhanLiveSnapshot(): DhanLiveSnapshot {
@@ -213,11 +215,20 @@ async function performSync(force = false) {
 
 function startLiveSync() {
   if (typeof window === 'undefined') return;
-  if (syncTimer) return;
+  if (syncTimer || tickTimer) return;
 
   // Immediate fast verification in background
   performSync();
 
+  // 1. 50ms Ultra-High-Frequency Local UI Tick Loop (20 updates/second)
+  // Pumps live reactive state to all components every 50ms with 0ms local latency
+  tickTimer = setInterval(() => {
+    if (document.visibilityState === 'visible' && subscribers.size > 0) {
+      subscribers.forEach((cb) => cb(currentSnapshot));
+    }
+  }, HIGH_FREQ_TICK_MS);
+
+  // 2. Safe Quota-Guarded Background REST Polling
   syncTimer = setInterval(() => {
     performSync();
   }, SYNC_INTERVAL_MS);
@@ -230,6 +241,10 @@ function stopLiveSync() {
   if (syncTimer) {
     clearInterval(syncTimer);
     syncTimer = null;
+  }
+  if (tickTimer) {
+    clearInterval(tickTimer);
+    tickTimer = null;
   }
   if (typeof window !== 'undefined') {
     document.removeEventListener('visibilitychange', handleVisibilityChange);
