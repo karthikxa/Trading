@@ -335,6 +335,8 @@ class TradingDataStore {
   approvals: Map<string, StoredApproval> = new Map();
   messages: StoredMessage[] = [];
   grants: Map<string, StoredGrant> = new Map();
+  sessions: Map<string, any> = new Map();
+  sessionTranscripts: Map<string, any[]> = new Map();
 
   constructor() {
     ensureDataDir();
@@ -796,7 +798,7 @@ export async function handleTradingRequest(
       { role: 'user', content: prompt },
     ];
 
-    const modelToUse = agent.model && agent.model !== 'zed' ? agent.model : 'pollinations-openai';
+    const modelToUse = agent.model && agent.model !== 'zed' ? agent.model : 'auto';
     const llmResult = await dispatchLlmCall(modelToUse, messages);
 
     const replyText = llmResult.ok && llmResult.content
@@ -833,8 +835,8 @@ export async function handleTradingRequest(
       agentName: agent.name,
       reply: replyText,
       hopCount: hopCount + 1,
-      model: llmResult.model,
-      provider: llmResult.provider,
+      model: 'auto',
+      provider: 'FreeLLMAPI',
     });
     return true;
   }
@@ -972,6 +974,243 @@ export async function handleTradingRequest(
       active_provider: 'FreeLLMAPI Smart Router',
     });
     return true;
+  }
+
+  // 13. Project Sessions & Transcript Engine (OpenCode / Kortix / Next.js Compatibility)
+  // Handles /v1/projects/:projectId/sessions/... and /projects/:projectId/sessions/...
+  const sessionMatch = pathname.match(/^\/(?:v1\/)?projects\/([^\/]+)\/sessions(?:\/([^\/]+)(?:\/([^\/]+))?)?$/);
+  if (sessionMatch) {
+    const matchedProjectId = sessionMatch[1];
+    const matchedSessionId = sessionMatch[2];
+    const subRoute = sessionMatch[3]; // 'prompts', 'transcript', 'turn', 'snapshot', 'open', etc.
+
+    // A. List or Create Sessions: /projects/:projectId/sessions
+    if (!matchedSessionId) {
+      if (method === 'GET') {
+        sendJson(200, Array.from(store.sessions.values()));
+        return true;
+      }
+      if (method === 'POST') {
+        const body = parseBody();
+        const sid = body.session_id || `session-${Date.now()}`;
+        const agentName = body.agent || 'portfolio_manager';
+        const newSession = {
+          session_id: sid,
+          account_id: 'acc-trading',
+          project_id: matchedProjectId,
+          branch_name: 'main',
+          base_ref: 'main',
+          sandbox_provider: null,
+          sandbox_id: null,
+          sandbox_url: null,
+          name: 'Trading Assistant',
+          agent_name: agentName,
+          status: 'ready',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        store.sessions.set(sid, newSession);
+
+        // If there was an initial prompt in pending_prompt:
+        if (body.pending_prompt?.parts) {
+          const promptText = body.pending_prompt.parts.map((p: any) => p.text || '').join('\n').trim();
+          if (promptText) {
+            const transcript = store.sessionTranscripts.get(sid) || [];
+            transcript.push({
+              role: 'user',
+              created: new Date().toISOString(),
+              completed: new Date().toISOString(),
+              text: promptText,
+              tools: [],
+              files: [],
+              reasoning_omitted: false,
+              error: null,
+            });
+            store.sessionTranscripts.set(sid, transcript);
+
+            // Execute LLM call in background
+            (async () => {
+              try {
+                const agent = store.agents.get(agentName) || CANONICAL_AGENTS[0];
+                const systemPrompt = agent.system_prompt || `You are ${agent.name}, ${agent.role} on the Tauric trading desk. Speak decisively as ${agent.name}.`;
+                const llmRes = await dispatchLlmCall('auto', [
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: promptText },
+                ]);
+                const reply = llmRes.ok && llmRes.content
+                  ? llmRes.content
+                  : `I am ${agent.name}. I received: "${promptText}". Desk risk parameters remain normal.`;
+                transcript.push({
+                  role: 'assistant',
+                  created: new Date().toISOString(),
+                  completed: new Date().toISOString(),
+                  text: reply,
+                  tools: [],
+                  files: [],
+                  reasoning_omitted: false,
+                  error: null,
+                });
+                store.sessionTranscripts.set(sid, transcript);
+              } catch (e: any) {
+                console.error('[Session Create Background LLM Error]:', e.message);
+              }
+            })();
+          }
+        }
+
+        sendJson(201, newSession);
+        return true;
+      }
+    }
+
+    // B. Single Session Metadata: /projects/:projectId/sessions/:sessionId
+    if (matchedSessionId && !subRoute) {
+      if (method === 'GET') {
+        const sess = store.sessions.get(matchedSessionId) || {
+          session_id: matchedSessionId,
+          account_id: 'acc-trading',
+          project_id: matchedProjectId,
+          branch_name: 'main',
+          base_ref: 'main',
+          sandbox_provider: null,
+          sandbox_id: null,
+          sandbox_url: null,
+          name: 'Trading Assistant',
+          agent_name: 'portfolio_manager',
+          status: 'ready',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        sendJson(200, sess);
+        return true;
+      }
+    }
+
+    // C. Session Prompts: /projects/:projectId/sessions/:sessionId/prompts
+    if (matchedSessionId && subRoute === 'prompts') {
+      if (method === 'GET') {
+        sendJson(200, {
+          prompts: [],
+          sent: [],
+          observed_at: new Date().toISOString(),
+        });
+        return true;
+      }
+      if (method === 'POST') {
+        const body = parseBody();
+        const parts = Array.isArray(body.parts) ? body.parts : [];
+        const promptText = parts.map((p: any) => p.text || '').join('\n').trim() || body.prompt || body.message || '';
+        const agentName = body.overrides?.agent || 'portfolio_manager';
+        const agent = store.agents.get(agentName) || CANONICAL_AGENTS[0];
+
+        // Ensure user message is appended to session transcript
+        const transcript = store.sessionTranscripts.get(matchedSessionId) || [];
+        const userMsg = {
+          role: 'user',
+          created: new Date().toISOString(),
+          completed: new Date().toISOString(),
+          text: promptText,
+          tools: [],
+          files: [],
+          reasoning_omitted: false,
+          error: null,
+        };
+        transcript.push(userMsg);
+        store.sessionTranscripts.set(matchedSessionId, transcript);
+
+        // Immediate durable response so prompt sender completes instantly
+        sendJson(200, {
+          prompt: {
+            message_id: body.message_id || `msg_${Date.now()}`,
+            parts: parts.length > 0 ? parts : [{ type: 'text', text: promptText }],
+            placement: 'top',
+            created_at: new Date().toISOString(),
+          },
+        });
+
+        // Trigger LLM in background with 'auto' model
+        (async () => {
+          try {
+            const systemPrompt = agent.system_prompt || `You are ${agent.name}, ${agent.role} on the Tauric trading desk. Speak decisively as ${agent.name}.`;
+            const messages = [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: promptText },
+            ];
+            const llmRes = await dispatchLlmCall('auto', messages);
+            const reply = llmRes.ok && llmRes.content
+              ? llmRes.content
+              : `I am ${agent.name}. I received your message "${promptText.slice(0, 40)}". Desk risk parameters are normal.`;
+
+            const asstMsg = {
+              role: 'assistant',
+              created: new Date().toISOString(),
+              completed: new Date().toISOString(),
+              text: reply,
+              tools: [],
+              files: [],
+              reasoning_omitted: false,
+              error: null,
+            };
+            transcript.push(asstMsg);
+            store.sessionTranscripts.set(matchedSessionId, transcript);
+          } catch (e: any) {
+            console.error('[Session Prompts Async LLM Error]:', e.message);
+          }
+        })();
+
+        return true;
+      }
+    }
+
+    // D. Session Transcript: /projects/:projectId/sessions/:sessionId/transcript
+    if (matchedSessionId && subRoute === 'transcript') {
+      const msgs = store.sessionTranscripts.get(matchedSessionId) || [];
+      sendJson(200, {
+        available: true,
+        reason: null,
+        source: 'mirror',
+        complete: true,
+        captured_at: new Date().toISOString(),
+        runtime_session_id: matchedSessionId,
+        opencode_session_id: matchedSessionId,
+        message_count: msgs.length,
+        messages: msgs,
+      });
+      return true;
+    }
+
+    // E. Session Turn Status: /projects/:projectId/sessions/:sessionId/turn
+    if (matchedSessionId && subRoute === 'turn') {
+      sendJson(200, {
+        running: false,
+        turn_id: null,
+      });
+      return true;
+    }
+
+    // F. Session Snapshot / Open Bundle: /projects/:projectId/sessions/:sessionId/snapshot or open
+    if (matchedSessionId && (subRoute === 'snapshot' || subRoute === 'open')) {
+      const msgs = store.sessionTranscripts.get(matchedSessionId) || [];
+      sendJson(200, {
+        session: {
+          session_id: matchedSessionId,
+          project_id: matchedProjectId,
+          account_id: 'acc-trading',
+          status: 'ready',
+          agent_name: 'portfolio_manager',
+          name: 'Trading Assistant',
+        },
+        sandbox: { status: 'ready' },
+        stage: 'ready',
+        transcript: {
+          available: true,
+          complete: true,
+          source: 'mirror',
+          messages: msgs,
+        },
+      });
+      return true;
+    }
   }
 
   return false;

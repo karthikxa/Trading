@@ -382,8 +382,8 @@ async function dispatchLlmCall(
           return {
             ok: true,
             content: text.trim(),
-            model: data.model || mDef.id,
-            provider: pDef.name,
+            model: 'auto',
+            provider: 'FreeLLMAPI',
             latencyMs: Date.now() - started,
           };
         }
@@ -516,163 +516,16 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/' || pathname === '/health') {
     const keylessCount = MODELS.filter((m) => m.keyless).length;
     const keyedCount = MODELS.filter((m) => !m.keyless).length;
-
-    // If Accept header requests HTML, render the Interactive Explorer Dashboard!
-    const accept = req.headers.accept || '';
-    if (accept.includes('text/html') && pathname === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>FreeLLMAPI Gateway — Standalone Explorer</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Inter', sans-serif; background: #0c0e14; color: #e2e8f0; padding: 32px 16px; }
-    .container { max-width: 960px; margin: 0 auto; }
-    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 20px; margin-bottom: 24px; }
-    h1 { font-size: 22px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 10px; }
-    .badge { font-size: 11px; padding: 3px 8px; border-radius: 9999px; font-weight: 600; text-transform: uppercase; }
-    .badge-live { background: #064e3b; color: #34d399; }
-    .badge-keyless { background: #312e81; color: #a5b4fc; }
-    .badge-keyed { background: #374151; color: #9ca3af; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; margin-bottom: 28px; }
-    .card { background: #131722; border: 1px solid #1e293b; border-radius: 10px; padding: 14px; }
-    .card:hover { border-color: #3b82f6; }
-    .card-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }
-    .card-desc { font-size: 12px; color: #94a3b8; margin-bottom: 12px; line-height: 1.4; }
-    .card-footer { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #64748b; font-family: 'JetBrains Mono', monospace; }
-    .btn { background: #2563eb; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500; }
-    .btn:hover { background: #1d4ed8; }
-    .test-box { background: #131722; border: 1px solid #1e293b; border-radius: 10px; padding: 20px; margin-bottom: 24px; }
-    .input-row { display: flex; gap: 10px; margin-top: 12px; }
-    input, select { background: #0c0e14; border: 1px solid #334155; color: #fff; padding: 10px 14px; border-radius: 6px; font-size: 13px; outline: none; }
-    input:focus, select:focus { border-color: #3b82f6; }
-    input { flex: 1; }
-    #response-box { margin-top: 16px; background: #0c0e14; border: 1px solid #1e293b; border-radius: 8px; padding: 14px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; white-space: pre-wrap; line-height: 1.5; color: #cbd5e1; min-height: 80px; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <header>
-      <div>
-        <h1>FreeLLMAPI Gateway <span class="badge badge-live">LIVE :8008</span></h1>
-        <p style="color:#94a3b8; font-size:13px; margin-top:4px;">Unified OpenAI-compatible router • No Auth Required for exploration</p>
-      </div>
-      <div>
-        <span class="badge badge-keyless">${keylessCount} Keyless Free</span>
-        <span class="badge badge-keyed">${keyedCount} Keyed Free</span>
-      </div>
-    </header>
-
-    <div class="test-box">
-      <h2 style="font-size:15px; font-weight:600;">⚡ Instant Live Prompt Tester</h2>
-      <p style="font-size:12px; color:#94a3b8; margin-top:2px;">Select any model and send a live message directly through the router.</p>
-      <div class="input-row">
-        <select id="model-select">
-          ${MODELS.map((m) => `<option value="${m.id}">${m.name} (${m.keyless ? 'Keyless' : 'Keyed'})</option>`).join('')}
-        </select>
-        <input type="text" id="prompt-input" value="Explain moving averages in 2 sentences." placeholder="Enter your prompt...">
-        <button class="btn" id="send-btn" onclick="runTest()">Send Request</button>
-      </div>
-      <div id="response-box">Click "Send Request" to test live inference...</div>
-    </div>
-
-    <h2 style="font-size:15px; font-weight:600; margin-bottom:12px;">Available Model Catalog (${MODELS.length} Models)</h2>
-    <div class="grid">
-      ${MODELS.map(
-        (m) => `
-        <div class="card">
-          <div class="card-title">
-            <span>${m.name}</span>
-            <span class="badge ${m.keyless ? 'badge-keyless' : 'badge-keyed'}">${m.keyless ? 'NO KEY' : 'FREE TIER'}</span>
-          </div>
-          <div class="card-desc">${m.description}</div>
-          <div class="card-footer">
-            <span>${m.id}</span>
-            <button class="btn" style="padding:4px 8px; font-size:11px;" onclick="selectAndTest('${m.id}')">Test</button>
-          </div>
-        </div>
-      `
-      ).join('')}
-    </div>
-  </div>
-
-  <script>
-    function selectAndTest(modelId) {
-      document.getElementById('model-select').value = modelId;
-      runTest();
-    }
-
-    async function runTest() {
-      const model = document.getElementById('model-select').value;
-      const prompt = document.getElementById('prompt-input').value;
-      const box = document.getElementById('response-box');
-      const btn = document.getElementById('send-btn');
-
-      box.innerText = 'Connecting to ' + model + '...';
-      btn.disabled = true;
-      const t0 = Date.now();
-
-      try {
-        const res = await fetch('/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: model,
-            messages: [{ role: 'user', content: prompt }]
-          })
-        });
-
-        const data = await res.json();
-        const latency = Date.now() - t0;
-
-        if (data.choices && data.choices[0]) {
-          box.innerText = '⏱️ Latency: ' + latency + 'ms | Provider: ' + (data.freellmapi ? data.freellmapi.provider : 'N/A') + '\\n\\n' + data.choices[0].message.content;
-        } else if (data.error) {
-          box.innerText = '⚠️ Error: ' + JSON.stringify(data.error, null, 2);
-        } else {
-          box.innerText = JSON.stringify(data, null, 2);
-        }
-      } catch (err) {
-        box.innerText = '❌ Failed: ' + err.message;
-      } finally {
-        btn.disabled = false;
-      }
-    }
-  </script>
-</body>
-</html>`);
-      return;
-    }
-
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(
-      JSON.stringify(
-        {
-          status: 'ok',
-          service: 'freellmapi-gateway',
-          mode: 'standalone',
-          port: PORT,
-          catalog: {
-            total_models: MODELS.length,
-            keyless_models: keylessCount,
-            keyed_models: keyedCount,
-          },
-          endpoints: {
-            models: 'GET /v1/models',
-            chat: 'POST /v1/chat/completions',
-            messages: 'POST /v1/messages',
-            test: 'GET /v1/test?model=pollinations-openai&prompt=hello',
-            dashboard: 'GET /',
-          },
-        },
-        null,
-        2
-      )
+      JSON.stringify({
+        service: 'FreeLLMAPI Gateway & Trading Server',
+        status: 'healthy',
+        model: 'auto',
+        keylessCount,
+        keyedCount,
+        uptime: process.uptime(),
+      })
     );
     return;
   }

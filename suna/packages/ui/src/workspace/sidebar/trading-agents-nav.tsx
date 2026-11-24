@@ -695,41 +695,67 @@ export function AgentsSidebarView({
 
   const handleOpenAgentChat = (bot: TradingAgentDef) => {
     setSelectedAgentId(bot.id);
+
+    // Retrieve or seed session id for this bot
+    let targetSessionId: string | null = null;
     if (typeof window !== 'undefined') {
-      const sp = new URLSearchParams(window.location.search);
-      sp.set('tab', 'chat');
-      sp.set('agentId', bot.id);
-      sp.delete('groupId');
-      window.history.pushState(null, '', `?${sp.toString()}`);
+      try {
+        const existing = JSON.parse(localStorage.getItem('tauric_agent_sessions_v1') || '{}');
+        if (existing[bot.id]) {
+          targetSessionId = existing[bot.id];
+        } else {
+          targetSessionId = `session-${bot.id}`;
+          existing[bot.id] = targetSessionId;
+          localStorage.setItem('tauric_agent_sessions_v1', JSON.stringify(existing));
+        }
+      } catch {}
     }
+
     // Immediately dispatch selection so composer and chat update instantaneously
     window.dispatchEvent(new CustomEvent('selected-swarm-agent', { detail: bot }));
     window.dispatchEvent(new CustomEvent('trading-tab-change', { detail: 'chat' }));
 
-    // Each bot gets its own isolated, dedicated session tracking
-    const targetSessionId = `session-${bot.id}`;
-    if (typeof window !== 'undefined') {
-      try {
-        const existing = JSON.parse(localStorage.getItem('tauric_agent_sessions_v1') || '{}');
-        existing[bot.id] = targetSessionId;
-        localStorage.setItem('tauric_agent_sessions_v1', JSON.stringify(existing));
-      } catch {}
-    }
+    // Target chat URL: if this bot has a valid UUID session, route to that session; else route to project chat tab
+    const targetUrl = targetSessionId && /^[0-9a-fA-F-]{36}$/.test(targetSessionId)
+      ? `/projects/${projectId}/sessions/${targetSessionId}`
+      : `/projects/${projectId}?tab=chat&agentId=${bot.id}`;
 
-    if (typeof window !== 'undefined' && window.location.pathname.startsWith(`/projects/${projectId}`)) {
-      return;
+    if (typeof window !== 'undefined') {
+      const cleanPath = window.location.pathname.replace(/^\/[a-z]{2}(-[A-Z]{2})?/, '');
+      const isStrictHome = cleanPath === `/projects/${projectId}` || cleanPath === `/projects/${projectId}/`;
+
+      if (isStrictHome) {
+        // We are already on the project home view, update search params cleanly
+        const sp = new URLSearchParams(window.location.search);
+        sp.set('tab', 'chat');
+        sp.set('agentId', bot.id);
+        sp.delete('groupId');
+        window.history.pushState(null, '', `?${sp.toString()}`);
+        return;
+      }
+
+      // We are on a subpage (/admin/connectors, /customize, /drive, /apps, /sessions/..., etc.)
+      // Cleanly navigate to the bot's chat view
+      router.push(targetUrl);
+      window.location.href = targetUrl;
     }
-    router.push(`/projects/${projectId}?tab=chat&agentId=${bot.id}`);
   };
 
   const handleOpenGroupChat = (group: AgentGroupDef) => {
+    let targetSessionId: string | null = null;
     if (typeof window !== 'undefined') {
-      const sp = new URLSearchParams(window.location.search);
-      sp.set('tab', 'chat');
-      sp.set('groupId', group.id);
-      sp.delete('agentId');
-      window.history.pushState(null, '', `?${sp.toString()}`);
+      try {
+        const existing = JSON.parse(localStorage.getItem('tauric_agent_sessions_v1') || '{}');
+        if (existing[group.id]) {
+          targetSessionId = existing[group.id];
+        } else {
+          targetSessionId = `session-group-${group.id}`;
+          existing[group.id] = targetSessionId;
+          localStorage.setItem('tauric_agent_sessions_v1', JSON.stringify(existing));
+        }
+      } catch {}
     }
+
     window.dispatchEvent(
       new CustomEvent('selected-swarm-agent', {
         detail: {
@@ -746,19 +772,26 @@ export function AgentsSidebarView({
     );
     window.dispatchEvent(new CustomEvent('trading-tab-change', { detail: 'chat' }));
 
-    const targetSessionId = `session-group-${group.id}`;
-    if (typeof window !== 'undefined') {
-      try {
-        const existing = JSON.parse(localStorage.getItem('tauric_agent_sessions_v1') || '{}');
-        existing[group.id] = targetSessionId;
-        localStorage.setItem('tauric_agent_sessions_v1', JSON.stringify(existing));
-      } catch {}
-    }
+    const targetUrl = targetSessionId && /^[0-9a-fA-F-]{36}$/.test(targetSessionId)
+      ? `/projects/${projectId}/sessions/${targetSessionId}`
+      : `/projects/${projectId}?tab=chat&groupId=${group.id}`;
 
-    if (typeof window !== 'undefined' && window.location.pathname.startsWith(`/projects/${projectId}`)) {
-      return;
+    if (typeof window !== 'undefined') {
+      const cleanPath = window.location.pathname.replace(/^\/[a-z]{2}(-[A-Z]{2})?/, '');
+      const isStrictHome = cleanPath === `/projects/${projectId}` || cleanPath === `/projects/${projectId}/`;
+
+      if (isStrictHome) {
+        const sp = new URLSearchParams(window.location.search);
+        sp.set('tab', 'chat');
+        sp.set('groupId', group.id);
+        sp.delete('agentId');
+        window.history.pushState(null, '', `?${sp.toString()}`);
+        return;
+      }
+
+      router.push(targetUrl);
+      window.location.href = targetUrl;
     }
-    router.push(`/projects/${projectId}?tab=chat&groupId=${group.id}`);
   };
 
   const handleOpenEditDrawer = (agent: TradingAgentDef) => {

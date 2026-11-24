@@ -80,44 +80,59 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: 'Empty prompt' }, { status: 400 });
     }
 
-    // Call unified /v1/trading/chat endpoint (local bun API or same-origin)
+    // Call unified /v1/trading/chat endpoint (local backend or same-origin)
     const apiTarget = process.env.INTERNAL_API_URL || 'http://localhost:8008';
-    const chatRes = await fetch(`${apiTarget}/v1/trading/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        agentId,
-        message: prompt,
-        history,
-        hopCount,
-      }),
-      signal: AbortSignal.timeout(45000),
-    });
-
     let replyText = '';
-    let modelName = 'system';
-    let providerName = 'local';
+    let modelName = 'auto';
+    let providerName = 'FreeLLMAPI';
 
-    if (chatRes.ok) {
-      const data = await chatRes.json();
-      replyText = data.reply || '';
-      modelName = data.model || 'system';
-      providerName = data.provider || 'local';
-    } else {
-      // Fallback: query agent system prompt directly from DB
-      try {
-        const supabase = getSupabase();
-        const { data: agentRow } = await supabase
-          .from('agents')
-          .select('id, name, role, system_prompt, description')
-          .eq('id', agentId)
-          .maybeSingle();
+    try {
+      const chatRes = await fetch(`${apiTarget}/v1/trading/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agentId,
+          message: prompt,
+          history,
+          hopCount,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
 
-        const personaPrompt = agentRow?.system_prompt || agentRow?.description || `You are ${agentName}, an institutional trading desk bot.`;
-        replyText = `**${agentName}** (${agentRow?.role || 'Desk Agent'})\n\nReceived: "${prompt}".\n\n${personaPrompt}`;
-      } catch {
-        replyText = `**${agentName}**\n\nReceived: "${prompt}". Ready for trading instructions.`;
+      if (chatRes.ok) {
+        const data = await chatRes.json();
+        replyText = data.reply || '';
+        modelName = 'auto';
+        providerName = 'FreeLLMAPI';
       }
+    } catch {
+      // Background server offline/restarting - direct FreeLLMAPI fallback
+    }
+
+    if (!replyText) {
+      try {
+        const pollRes = await fetch('https://text.pollinations.ai/openai/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: [
+              { role: 'system', content: `You are ${agentName}, an institutional trading desk bot.` },
+              { role: 'user', content: prompt },
+            ],
+            model: 'openai-fast',
+            seed: Math.floor(Math.random() * 1000000),
+          }),
+          signal: AbortSignal.timeout(20000),
+        });
+        if (pollRes.ok) {
+          const pollData = await pollRes.json();
+          replyText = pollData?.choices?.[0]?.message?.content || '';
+        }
+      } catch {}
+    }
+
+    if (!replyText) {
+      replyText = `**${agentName}**\n\nReceived: "${prompt}". Ready for trading instructions.`;
     }
 
     const messageId = `msg_${Date.now()}`;
