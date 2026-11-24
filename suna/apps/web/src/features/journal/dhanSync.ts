@@ -315,10 +315,16 @@ export async function syncDhanTradesToJournal(
       }
     }
 
+    const userToken = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_access_token') : null;
+    const userClientId = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_client_id') : null;
+    const authHeaders: HeadersInit = {};
+    if (userToken) authHeaders['x-dhan-access-token'] = userToken;
+    if (userClientId) authHeaders['x-dhan-client-id'] = userClientId;
+
     // 2. Fetch all trades and funds concurrently from Dhan API
     const [allTradesRes, fundsRes] = await Promise.all([
-      fetch('/api/dhan?action=all_trades').then((r) => r.json()).catch(() => ({ data: [] })),
-      fetch('/api/dhan?action=funds').then((r) => r.json()).catch(() => ({ data: {} })),
+      fetch('/api/dhan?action=all_trades', { headers: authHeaders }).then((r) => r.json()).catch(() => ({ data: [] })),
+      fetch('/api/dhan?action=funds', { headers: authHeaders }).then((r) => r.json()).catch(() => ({ data: {} })),
     ]);
 
     const executions = Array.isArray(allTradesRes?.data) ? allTradesRes.data : [];

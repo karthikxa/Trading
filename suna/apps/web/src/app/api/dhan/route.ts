@@ -104,7 +104,9 @@ export async function GET(req: NextRequest) {
     }
 
     const fetchPromise = (async () => {
-      const headers = getDhanHeaders();
+      const clientToken = req.headers.get('x-dhan-access-token') || searchParams.get('token');
+      const clientDhanId = req.headers.get('x-dhan-client-id') || searchParams.get('clientId');
+      const headers = getDhanHeaders(clientDhanId || undefined, clientToken || undefined);
       let endpoint = `${DHAN_BASE_URL}/fundlimit`;
 
       if (action === 'positions') {

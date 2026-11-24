@@ -29,6 +29,7 @@ export interface DhanLiveSnapshot {
   summary: DhanPositionsSummary;
   lastSyncTimestamp: number;
   isLive: boolean;
+  isTokenExpired?: boolean;
 }
 
 const STORAGE_KEY = 'kortix_dhan_live_cache_v2';
@@ -192,10 +193,23 @@ async function performSync(force = false) {
   isFetching = true;
 
   try {
+    const userToken = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_access_token') : null;
+    const userClientId = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_client_id') : null;
+    const authHeaders: HeadersInit = {};
+    if (userToken) authHeaders['x-dhan-access-token'] = userToken;
+    if (userClientId) authHeaders['x-dhan-client-id'] = userClientId;
+
     const [fundsRes, posRes] = await Promise.all([
-      fetch(`/api/dhan?action=funds${force ? '&force=true' : ''}`).then((r) => r.json()).catch(() => null),
-      fetch(`/api/dhan?action=positions${force ? '&force=true' : ''}`).then((r) => r.json()).catch(() => null),
+      fetch(`/api/dhan?action=funds${force ? '&force=true' : ''}`, { headers: authHeaders }).then((r) => r.json()).catch(() => null),
+      fetch(`/api/dhan?action=positions${force ? '&force=true' : ''}`, { headers: authHeaders }).then((r) => r.json()).catch(() => null),
     ]);
+
+    const isTokenExpired = Boolean(
+      fundsRes?.status === 401 ||
+      posRes?.status === 401 ||
+      fundsRes?.data?.errorCode === 'DH-901' ||
+      posRes?.data?.errorCode === 'DH-901'
+    );
 
     let changed = false;
     const nextFunds = fundsRes?.data?.availabelBalance != null ? fundsRes.data : currentSnapshot.funds;
@@ -229,13 +243,14 @@ async function performSync(force = false) {
       changed = true;
     }
 
-    if (changed || !currentSnapshot.isLive) {
+    if (changed || !currentSnapshot.isLive || isTokenExpired !== currentSnapshot.isTokenExpired) {
       currentSnapshot = {
         funds: nextFunds,
         positions: nextPositions,
         summary: nextSummary,
         lastSyncTimestamp: Date.now(),
-        isLive: true,
+        isLive: !isTokenExpired,
+        isTokenExpired,
       };
 
       try {
@@ -332,4 +347,10 @@ function handleVisibilityChange() {
 
 export function forceDhanSync() {
   return performSync(true);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('dhan-token-updated', () => {
+    performSync(true);
+  });
 }

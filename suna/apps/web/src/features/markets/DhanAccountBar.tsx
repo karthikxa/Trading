@@ -17,6 +17,19 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
     return () => unsubscribe();
   }, []);
 
+  const handleUpdateToken = () => {
+    const current = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_access_token') || '' : '';
+    const token = window.prompt(
+      'Enter your today’s DhanHQ Access Token (from web.dhan.co -> Profile -> Access Token):',
+      current
+    );
+    if (token !== null && token.trim() !== '') {
+      localStorage.setItem('kortix_dhan_access_token', token.trim());
+      window.dispatchEvent(new CustomEvent('dhan-token-updated'));
+      alert('Dhan Access Token updated! Syncing live orders, positions, and journal...');
+    }
+  };
+
   const handleKillSwitch = async () => {
     if (!confirm('Are you sure you want to activate the Dhan Kill Switch? This will disable trading to prevent further orders.')) {
       return;
@@ -102,8 +115,27 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
         </div>
       </div>
 
-      {/* Actions: Kill Switch */}
+      {/* Actions: Kill Switch & Token Management */}
       <div className="flex items-center gap-2">
+        {snapshot.isTokenExpired ? (
+          <button
+            type="button"
+            onClick={handleUpdateToken}
+            className="px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-sans font-medium flex items-center gap-1 cursor-pointer hover:bg-amber-500/30 transition-all animate-pulse"
+            title="Dhan token expired (DH-901). Click to renew today's access token."
+          >
+            <span>⚠️ Renew Dhan Token</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={handleUpdateToken}
+            className="px-2 py-1 rounded bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 text-[11px] font-sans font-medium transition-colors cursor-pointer"
+            title="Update daily DhanHQ Access Token"
+          >
+            Token
+          </button>
+        )}
         <button
           type="button"
           onClick={handleKillSwitch}

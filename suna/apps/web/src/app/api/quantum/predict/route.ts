@@ -16,7 +16,7 @@ function findScriptPath(): string {
   ];
 
   for (const c of candidates) {
-    if (fs.existsSync(c)) {
+    if (fs.existsSync(/*turbopackIgnore: true*/ c)) {
       return c;
     }
   }

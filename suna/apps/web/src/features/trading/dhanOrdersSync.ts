@@ -225,10 +225,16 @@ export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderIte
   }
 
   try {
+    const userToken = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_access_token') : null;
+    const userClientId = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_client_id') : null;
+    const authHeaders: HeadersInit = {};
+    if (userToken) authHeaders['x-dhan-access-token'] = userToken;
+    if (userClientId) authHeaders['x-dhan-client-id'] = userClientId;
+
     // 1. Fetch today's orders & executions from Dhan
     const [ordersRes, tradesRes] = await Promise.all([
-      fetch('/api/dhan?action=orders').then((r) => r.json()).catch(() => ({ ok: false, data: [] })),
-      fetch('/api/dhan?action=all_trades').then((r) => r.json()).catch(() => ({ ok: false, data: [] })),
+      fetch('/api/dhan?action=orders', { headers: authHeaders }).then((r) => r.json()).catch(() => ({ ok: false, data: [] })),
+      fetch('/api/dhan?action=all_trades', { headers: authHeaders }).then((r) => r.json()).catch(() => ({ ok: false, data: [] })),
     ]);
 
     const liveOrdersList = Array.isArray(ordersRes?.data) ? ordersRes.data : [];
