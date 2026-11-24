@@ -195,14 +195,14 @@ export const TradingCalendar = React.memo(function TradingCalendar({
       {/* ========================================================================= */}
       {/* CALENDAR CONTROLS BAR (COSS UI Components)                                */}
       {/* ========================================================================= */}
-      <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 px-3 sm:px-5 py-2.5 sm:py-3.5 border-b border-zinc-200/80 bg-white">
-        <div className="flex items-center gap-1 sm:gap-1.5">
+      <div className="flex items-center justify-between gap-1.5 sm:gap-3 px-2.5 sm:px-5 py-2 sm:py-3.5 border-b border-zinc-200/80 bg-white">
+        <div className="flex items-center gap-1 sm:gap-1.5 min-w-0">
           <Button
             type="button"
             variant="outline"
             size="xs"
             onClick={onPrevMonth}
-            className="h-7 w-7 sm:h-8 sm:w-8 p-0 rounded-lg text-zinc-600 hover:text-zinc-950 border-zinc-200"
+            className="h-7 w-7 sm:h-8 sm:w-8 p-0 rounded-lg text-zinc-600 hover:text-zinc-950 border-zinc-200 shrink-0"
             title="Previous month"
           >
             <ChevronLeft className="size-3.5 sm:size-4" />
@@ -212,7 +212,7 @@ export const TradingCalendar = React.memo(function TradingCalendar({
             variant="outline"
             size="xs"
             onClick={onNextMonth}
-            className="h-7 w-7 sm:h-8 sm:w-8 p-0 rounded-lg text-zinc-600 hover:text-zinc-950 border-zinc-200"
+            className="h-7 w-7 sm:h-8 sm:w-8 p-0 rounded-lg text-zinc-600 hover:text-zinc-950 border-zinc-200 shrink-0"
             title="Next month"
           >
             <ChevronRight className="size-3.5 sm:size-4" />
@@ -224,7 +224,7 @@ export const TradingCalendar = React.memo(function TradingCalendar({
                 <button
                   type="button"
                   aria-label="Open calendar date picker"
-                  className="ml-0.5 sm:ml-1 inline-flex h-7 sm:h-8 items-center gap-1.5 sm:gap-2 rounded-lg px-2 sm:px-2.5 text-xs sm:text-base font-bold text-zinc-950 tracking-tight hover:bg-zinc-100/90 data-[popup-open]:bg-zinc-100 transition-colors cursor-pointer"
+                  className="ml-0.5 sm:ml-1 inline-flex h-7 sm:h-8 items-center gap-1 sm:gap-2 rounded-lg px-1.5 sm:px-2.5 text-xs sm:text-base font-bold text-zinc-950 tracking-tight hover:bg-zinc-100/90 data-[popup-open]:bg-zinc-100 transition-colors cursor-pointer min-w-0 truncate"
                 >
                   <CalendarIcon className="size-3.5 sm:size-4 text-zinc-500 shrink-0" />
                   <span className="truncate">{monthName}</span>
@@ -267,13 +267,13 @@ export const TradingCalendar = React.memo(function TradingCalendar({
           </Popover>
         </div>
 
-        <div className="flex items-center gap-1.5 sm:gap-2">
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={onJumpThisMonth}
-            className="hidden xs:inline-flex h-7 sm:h-8 px-2 sm:px-3 text-xs rounded-lg bg-white hover:bg-zinc-50 text-zinc-800 font-semibold border-zinc-200 shadow-2xs cursor-pointer"
+            className="hidden md:inline-flex h-7 sm:h-8 px-2 sm:px-3 text-xs rounded-lg bg-white hover:bg-zinc-50 text-zinc-800 font-semibold border-zinc-200 shadow-2xs cursor-pointer"
           >
             This Month
           </Button>
@@ -283,11 +283,11 @@ export const TradingCalendar = React.memo(function TradingCalendar({
             <PopoverTrigger
               type="button"
               className={cn(
-                'inline-flex items-center gap-1 sm:gap-1.5 rounded-lg border border-border/70 bg-card px-2 sm:px-3 py-1 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer font-sans h-7 sm:h-8'
+                'inline-flex items-center gap-1 sm:gap-1.5 rounded-lg border border-border/70 bg-card px-2 sm:px-3 py-1 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer font-sans h-7 sm:h-8 shrink-0'
               )}
             >
               <Filter className="size-3 sm:size-3.5 text-muted-foreground" />
-              <span>Filter</span>
+              <span className="hidden xs:inline">Filter</span>
             </PopoverTrigger>
             <PopoverPopup align="end" className="w-56 p-3 flex flex-col gap-2.5 border border-border/80 bg-card shadow-xl rounded-xl font-sans z-50">
               <span className="text-xs font-semibold text-foreground">Return / Currency Filter</span>
@@ -321,10 +321,11 @@ export const TradingCalendar = React.memo(function TradingCalendar({
             variant="default"
             size="sm"
             onClick={onAddTrade}
-            className="bg-zinc-950 hover:bg-zinc-800 text-white font-medium shadow-xs gap-1.5 h-8 px-3 rounded-lg cursor-pointer"
+            className="bg-zinc-950 hover:bg-zinc-800 text-white font-medium shadow-xs gap-1 sm:gap-1.5 h-7 sm:h-8 px-2 sm:px-3 rounded-lg cursor-pointer shrink-0 text-xs sm:text-sm"
           >
             <Plus className="size-3.5" />
-            <span>Add Trade</span>
+            <span className="hidden xs:inline">Add Trade</span>
+            <span className="xs:hidden">Add</span>
           </Button>
 
           {onToggleDrawer && (
@@ -335,9 +336,9 @@ export const TradingCalendar = React.memo(function TradingCalendar({
               onClick={onToggleDrawer}
               aria-label={drawerOpen ? 'Close side panel' : 'Open side panel'}
               title={drawerOpen ? 'Close side panel' : 'Open side panel'}
-              className="size-8 rounded-lg border-zinc-200 bg-white text-zinc-700 hover:text-zinc-950 hover:bg-zinc-100 cursor-pointer shadow-2xs"
+              className="size-7 sm:size-8 rounded-lg border-zinc-200 bg-white text-zinc-700 hover:text-zinc-950 hover:bg-zinc-100 cursor-pointer shadow-2xs shrink-0 flex items-center justify-center"
             >
-              <RightPanelGlyph className="size-4" />
+              <RightPanelGlyph className="size-3.5 sm:size-4" />
             </Button>
           )}
         </div>

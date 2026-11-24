@@ -13,7 +13,7 @@ import { syncDhanTradesToJournal } from './dhanSync';
 import { TradingCalendar } from './TradingCalendar';
 import { MonthlySummaryCard } from './MonthlySummaryCard';
 import { WeeklyBreakdownCard } from './WeeklyBreakdownCard';
-import { DayDetailsDrawer } from './DayDetailsDrawer';
+import { DayDetailsDrawer, RightPanelGlyph } from './DayDetailsDrawer';
 import { AddTradeView } from './AddTradeView';
 import { TradeDetailView } from './TradeDetailView';
 import { Button } from '@kortix/ui';
@@ -254,6 +254,22 @@ export default function JournalView({ projectId }: JournalViewProps) {
 
   return (
     <div className="relative flex flex-col h-full w-full overflow-hidden bg-background text-foreground font-sans">
+      {/* Mobile Floating Toggle: Always visible on phone view when right menu is closed */}
+      {!drawerOpen && viewMode === 'calendar' && (
+        <div className="fixed top-3 right-3 z-40 sm:hidden">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={() => setDrawerOpen(true)}
+            aria-label="Open side panel"
+            title="Open side panel"
+            className="size-8 rounded-lg bg-background/95 backdrop-blur border border-border shadow-xs hover:bg-muted text-foreground cursor-pointer flex items-center justify-center transition-all"
+          >
+            <RightPanelGlyph className="size-4" />
+          </Button>
+        </div>
+      )}
       {/* ========================================================================= */}
       {/* BODY CONTENT (CALENDAR | ADD | DETAIL)                                    */}
       {/* ========================================================================= */}
