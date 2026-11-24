@@ -20,7 +20,7 @@ import {
   useOptionalSidebar,
   useSidebar,
 } from './sidebar-context';
-import { createPeekController } from './sidebar-peek';
+import { createPeekController, type PeekController } from './sidebar-peek';
 import {
   SIDEBAR_MAX_WIDTH_PX,
   SIDEBAR_WIDTH_COOKIE_NAME,
@@ -99,7 +99,7 @@ function SidebarProvider({
   // Edge-peek flyout state — hover intent lives in a plain controller so the
   // open/close delays are testable without React or wall-clock timers.
   const [peek, setPeek] = React.useState(false);
-  const peekController = React.useMemo(() => createPeekController(setPeek), []);
+  const peekController: PeekController = React.useMemo(() => createPeekController(setPeek), []);
 
   const [instantToggle, setInstantToggle] = React.useState(false);
   const lastCollapseTimeRef = React.useRef(0);
