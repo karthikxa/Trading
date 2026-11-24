@@ -54,6 +54,7 @@ scripts/test_*.py
 
 tv-data/
 *.mjs
+!tests/*.mjs
 all_indian_market_symbols.json
 indian-market-data.json
 suna/apps/web/public/market-icons/

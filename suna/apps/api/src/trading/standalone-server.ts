@@ -336,7 +336,7 @@ async function dispatchLlmCall(
   // 1. Keyless Pollinations Handler
   if (mDef.provider === 'pollinations' || (!key && mDef.keyless)) {
     try {
-      const pollRes = await fetch('https://text.pollinations.ai/', {
+      let pollRes = await fetch('https://text.pollinations.ai/openai/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -344,16 +344,36 @@ async function dispatchLlmCall(
           model: 'openai-fast',
           seed: Math.floor(Math.random() * 1000000),
         }),
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(25000),
       });
 
+      if (pollRes.status === 402 || pollRes.status === 429) {
+        const errText = await pollRes.text();
+        const waitMatch = errText.match(/wait\s+(\d+)\s+seconds/i);
+        const waitSec = waitMatch ? Math.min(parseInt(waitMatch[1], 10) + 2, 45) : 35;
+        console.warn(`[Standalone FreeLLM] Pollinations rate limit hit. Backing off ${waitSec}s...`);
+        await new Promise((r) => setTimeout(r, waitSec * 1000));
+
+        pollRes = await fetch('https://text.pollinations.ai/openai/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages,
+            model: 'openai-fast',
+            seed: Math.floor(Math.random() * 1000000),
+          }),
+          signal: AbortSignal.timeout(25000),
+        });
+      }
+
       if (pollRes.ok) {
-        const text = await pollRes.text();
-        if (text && !text.includes('FREE_LIMIT') && !text.includes('Free limit reached')) {
+        const data = await pollRes.json();
+        const text = data?.choices?.[0]?.message?.content;
+        if (text) {
           return {
             ok: true,
             content: text.trim(),
-            model: mDef.id,
+            model: data.model || mDef.id,
             provider: pDef.name,
             latencyMs: Date.now() - started,
           };

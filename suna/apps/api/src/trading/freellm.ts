@@ -276,10 +276,10 @@ async function dispatchOne(
     });
   }
 
-  // Pollinations uses direct text endpoint with openai-fast model
+  // Pollinations uses OpenAI-compatible chat completions endpoint with openai-fast model
   if (model.provider === 'pollinations') {
     try {
-      const pollRes = await fetch('https://text.pollinations.ai/', {
+      let pollRes = await fetch('https://text.pollinations.ai/openai/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -289,17 +289,38 @@ async function dispatchOne(
         }),
         signal: AbortSignal.timeout(timeoutMs),
       });
+
+      if (pollRes.status === 402 || pollRes.status === 429) {
+        const errText = await pollRes.text();
+        const waitMatch = errText.match(/wait\s+(\d+)\s+seconds/i);
+        const waitSec = waitMatch ? Math.min(parseInt(waitMatch[1], 10) + 2, 45) : 35;
+        console.warn(`[FreeLLMAPI] Pollinations rate limit hit. Backing off ${waitSec}s...`);
+        await new Promise((r) => setTimeout(r, waitSec * 1000));
+
+        pollRes = await fetch('https://text.pollinations.ai/openai/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            messages: bodyMessages,
+            model: 'openai-fast',
+            seed: Math.floor(Math.random() * 1000000),
+          }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      }
+
       if (pollRes.ok) {
-        const text = await pollRes.text();
-        if (text && !text.includes('FREE_LIMIT') && !text.includes('Free limit reached') && !text.includes('402')) {
+        const data = await pollRes.json();
+        const text = data?.choices?.[0]?.message?.content;
+        if (text) {
           return new Response(
             JSON.stringify({
               choices: [{ message: { role: 'assistant', content: text.trim() } }],
+              model: data.model || 'gpt-oss-20b',
             }),
             { status: 200, headers: { 'content-type': 'application/json' } }
           );
         }
-        return new Response(text || 'Pollinations free rate limit', { status: 429 });
       }
       return pollRes;
     } catch (err: any) {
