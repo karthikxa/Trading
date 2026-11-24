@@ -17,14 +17,38 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
     return () => unsubscribe();
   }, []);
 
-  const handleUpdateToken = () => {
-    const current = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_access_token') || '' : '';
-    const token = window.prompt(
-      'Enter your today’s DhanHQ Access Token (from web.dhan.co -> Profile -> Access Token):',
-      current
+  const handleUpdateToken = async () => {
+    const choice = window.prompt(
+      'DhanHQ Authentication Setup:\n\n1. Type "A" to setup 100% Automated Daily Login (PIN + TOTP Secret Key)\n2. Or directly paste today’s Access Token below:',
+      typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_access_token') || '' : ''
     );
-    if (token !== null && token.trim() !== '') {
-      localStorage.setItem('kortix_dhan_access_token', token.trim());
+    if (!choice) return;
+
+    if (choice.trim().toUpperCase() === 'A') {
+      const pin = window.prompt('Enter your 6-digit Dhan login PIN:');
+      if (!pin) return;
+      const totp = window.prompt('Enter your Dhan TOTP Secret Key (from Dhan Google Authenticator setup):');
+      if (!totp) return;
+
+      try {
+        const res = await fetch('/api/dhan?action=auto_auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: pin.trim(), totpSecret: totp.trim() }),
+        });
+        const data = await res.json();
+        if (data.ok && data.accessToken) {
+          localStorage.setItem('kortix_dhan_access_token', data.accessToken);
+          window.dispatchEvent(new CustomEvent('dhan-token-updated'));
+          alert('Automated Dhan Login Succeeded! Daily token generated and live sync active.');
+        } else {
+          alert('Auto-Login failed: ' + (data.error || 'Check your PIN and TOTP Secret'));
+        }
+      } catch (err: any) {
+        alert('Auto-login error: ' + (err?.message || 'Network error'));
+      }
+    } else {
+      localStorage.setItem('kortix_dhan_access_token', choice.trim());
       window.dispatchEvent(new CustomEvent('dhan-token-updated'));
       alert('Dhan Access Token updated! Syncing live orders, positions, and journal...');
     }

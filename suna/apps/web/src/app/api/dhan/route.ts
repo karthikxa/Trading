@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { refreshDhanAccessToken } from '@/features/markets/dhanAutoAuth';
 
 const DHAN_BASE_URL = 'https://api.dhan.co/v2';
 
@@ -180,13 +181,27 @@ export async function GET(req: NextRequest) {
       }
 
       recordDhanCall();
-      const res = await fetch(endpoint, {
+      let res = await fetch(endpoint, {
         method: 'GET',
         headers,
         cache: 'no-store',
       });
 
-      const data = await res.json().catch(() => ({}));
+      let data = await res.json().catch(() => ({}));
+
+      // If token expired (401 or DH-901), attempt automatic renewal via TOTP
+      if (!res.ok && (res.status === 401 || data?.errorCode === 'DH-901')) {
+        const renewed = await refreshDhanAccessToken();
+        if (renewed.ok && renewed.accessToken) {
+          headers['access-token'] = renewed.accessToken;
+          res = await fetch(endpoint, {
+            method: 'GET',
+            headers,
+            cache: 'no-store',
+          });
+          data = await res.json().catch(() => ({}));
+        }
+      }
 
       // Compute rich live summary for positions
       let summary: any = undefined;
@@ -270,6 +285,14 @@ export async function POST(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const action = searchParams.get('action') || 'orders';
     const body = await req.json().catch(() => ({}));
+
+    if (action === 'auto_auth') {
+      const pin = body.pin || req.headers.get('x-dhan-pin') || undefined;
+      const totpSecret = body.totpSecret || req.headers.get('x-dhan-totp-secret') || undefined;
+      const clientId = body.clientId || req.headers.get('x-dhan-client-id') || undefined;
+      const result = await refreshDhanAccessToken({ clientId, pin, totpSecret });
+      return NextResponse.json(result);
+    }
 
     const headers = getDhanHeaders();
 
