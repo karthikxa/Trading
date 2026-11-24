@@ -109,6 +109,8 @@ export interface FlmModelDef {
 }
 
 export const FLM_MODELS: FlmModelDef[] = [
+  // Auto Free Model Router (Default — zero config)
+  { id: 'auto', upstreamId: 'openai-fast', provider: 'pollinations', tier: 'fast', priority: 25, keyless: true },
   // Optional remote upstream provider (enabled only when FLM_REMOTE_BASE_URL is set in env)
   { id: 'remote-default', upstreamId: 'auto', provider: 'remote', tier: 'fast', priority: 15 },
   // Keyless models — no API key required (always available)

@@ -124,6 +124,15 @@ export interface ModelItem {
 export const MODELS: ModelItem[] = [
   // --- Keyless (No API Key Required) ---
   {
+    id: 'auto',
+    name: 'Auto Free Router (Zero Config)',
+    provider: 'pollinations',
+    upstreamId: 'openai-fast',
+    keyless: true,
+    tier: 'fast',
+    description: 'Auto-selects optimal free model without credentials',
+  },
+  {
     id: 'pollinations-openai',
     name: 'OpenAI GPT-4o (Pollinations)',
     provider: 'pollinations',

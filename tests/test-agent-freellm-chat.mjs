@@ -34,20 +34,21 @@ const client = new pg.Client({
 });
 
 // 2. FreeLLMAPI Caller with automatic cooldown handling
-async function callFreeLlm(messages, model = 'openai-fast', agentName = 'Agent') {
+async function callFreeLlm(messages, requestedModel = 'auto', agentName = 'Agent') {
   let attempts = 0;
   const maxAttempts = 5;
+  const upstreamModel = requestedModel === 'auto' ? 'openai-fast' : requestedModel;
 
   while (attempts < maxAttempts) {
     attempts++;
     const start = Date.now();
     try {
-      console.log(`\n⏳ [${agentName}] Querying FreeLLMAPI (${model})...`);
+      console.log(`\n⏳ [${agentName}] Querying FreeLLMAPI (model: ${requestedModel})...`);
       const res = await fetch('https://text.pollinations.ai/openai/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model,
+          model: upstreamModel,
           messages,
           seed: Math.floor(Math.random() * 1000000),
         }),
@@ -66,7 +67,7 @@ async function callFreeLlm(messages, model = 'openai-fast', agentName = 'Agent')
         return {
           ok: true,
           content,
-          model: data.model || model,
+          model: requestedModel === 'auto' ? 'auto' : (data.model || requestedModel),
           latencyMs,
         };
       }
