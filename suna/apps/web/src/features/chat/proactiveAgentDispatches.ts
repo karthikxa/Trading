@@ -6,6 +6,20 @@
 
 export type DispatchLevel = 'info' | 'notice' | 'warning' | 'alert' | 'critical';
 
+export interface ProactiveApproval {
+  id: string;
+  dispatchId?: string;
+  agentId: string;
+  symbol: string;
+  action: 'BUY' | 'SELL' | 'HOLD' | 'REBALANCE' | 'STOP_LOSS' | 'ALERT';
+  quantity?: number;
+  price?: number;
+  status: 'pending' | 'approved' | 'rejected' | 'executed';
+  reason?: string;
+  confidence?: number;
+  timestamp: string;
+}
+
 export interface ProactiveDispatch {
   id: string;
   agentId: string;
@@ -18,6 +32,7 @@ export interface ProactiveDispatch {
   quantity?: number;
   price?: number;
   metadata?: Record<string, unknown>;
+  approval?: ProactiveApproval;
   timestamp: string;
   read?: boolean;
 }
@@ -128,7 +143,15 @@ export function dispatchProactiveAgentMessage(
     quantity: options?.quantity,
     price: options?.price,
     metadata: options?.metadata,
+    approval: options?.approval,
   });
+}
+
+/**
+ * Gets the most recent proactive dispatch for a specific agent
+ */
+export function getProactiveDispatchForAgent(agentId: string): ProactiveDispatch | undefined {
+  return dispatchStore.getByAgent(agentId)[0];
 }
 
 /**
@@ -170,6 +193,7 @@ export function useProactiveDispatches(agentId?: string) {
   return {
     dispatches,
     dispatchMessage: dispatchProactiveAgentMessage,
+    getForAgent: getProactiveDispatchForAgent,
     triggerAlert: triggerProactiveMarketAlert,
   };
 }

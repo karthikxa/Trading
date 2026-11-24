@@ -4,6 +4,18 @@
  * and autonomous workflow health across all 8 canonical trading bots.
  */
 
+export type HeartbeatCadence = '10s' | '30s' | '1m' | '5m' | '15m' | '1h' | 'daily' | 'market_hours';
+
+export interface HeartbeatSettings {
+  enabled: boolean;
+  cadence: HeartbeatCadence | string;
+  intervalMs: number;
+  notifyOnAnomaly: boolean;
+  dhanTokenAutoRefresh: boolean;
+  autoExecuteSafeTrades: boolean;
+  activeAgents: string[];
+}
+
 export interface AgentHeartbeatStatus {
   agentId: string;
   isAlive: boolean;
@@ -30,6 +42,26 @@ class AgentHeartbeatEngine {
   private intervalId: NodeJS.Timeout | null = null;
   private intervalMs: number = 30000; // 30s default heartbeat
   private listeners: Set<HeartbeatListener> = new Set();
+  
+  private settings: HeartbeatSettings = {
+    enabled: true,
+    cadence: '30s',
+    intervalMs: 30000,
+    notifyOnAnomaly: true,
+    dhanTokenAutoRefresh: true,
+    autoExecuteSafeTrades: false,
+    activeAgents: [
+      'portfolio_manager',
+      'trader_agent',
+      'risk_manager',
+      'technical_analyst',
+      'fundamentals_analyst',
+      'growth_analyst',
+      'macro_analyst',
+      'news_analyst',
+    ],
+  };
+
   private agentStatuses: Record<string, AgentHeartbeatStatus> = {
     portfolio_manager: { agentId: 'portfolio_manager', isAlive: true, status: 'monitoring', lastPing: new Date().toISOString(), currentTask: 'Portfolio rebalancing guard' },
     trader_agent: { agentId: 'trader_agent', isAlive: true, status: 'monitoring', lastPing: new Date().toISOString(), currentTask: 'Dhan order routing ready' },
@@ -52,6 +84,15 @@ class AgentHeartbeatEngine {
   };
 
   constructor() {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('kortix_heartbeat_settings_v1');
+        if (saved) {
+          this.settings = { ...this.settings, ...JSON.parse(saved) };
+          this.intervalMs = this.settings.intervalMs;
+        }
+      } catch {}
+    }
     this.checkMarketStatus();
   }
 
@@ -68,6 +109,28 @@ class AgentHeartbeatEngine {
     const isMarketHours = istMinutes >= 555 && istMinutes <= 930;
     this.metrics.marketOpen = isWeekday && isMarketHours;
     return this.metrics.marketOpen;
+  }
+
+  public getSettings(): HeartbeatSettings {
+    return { ...this.settings };
+  }
+
+  public saveSettings(newSettings: Partial<HeartbeatSettings>): HeartbeatSettings {
+    this.settings = { ...this.settings, ...newSettings };
+    if (newSettings.intervalMs) {
+      this.intervalMs = newSettings.intervalMs;
+      this.metrics.heartbeatIntervalMs = newSettings.intervalMs;
+      if (this.intervalId) {
+        this.start(this.intervalMs);
+      }
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('kortix_heartbeat_settings_v1', JSON.stringify(this.settings));
+      } catch {}
+    }
+    this.notify();
+    return { ...this.settings };
   }
 
   public start(intervalMs: number = 30000): () => void {
@@ -128,6 +191,15 @@ class AgentHeartbeatEngine {
     this.notify();
   }
 
+  public dispatchAgentHeartbeat(agentId: string, customStatus?: Partial<AgentHeartbeatStatus>): void {
+    this.recordAgentHeartbeat(agentId, {
+      isAlive: true,
+      status: customStatus?.status || 'monitoring',
+      currentTask: customStatus?.currentTask || 'Autonomous task cycle active',
+      ...customStatus,
+    });
+  }
+
   public getStatus(agentId: string): AgentHeartbeatStatus | undefined {
     return this.agentStatuses[agentId];
   }
@@ -163,6 +235,18 @@ class AgentHeartbeatEngine {
 }
 
 export const heartbeatEngine = new AgentHeartbeatEngine();
+
+export function getHeartbeatSettings(): HeartbeatSettings {
+  return heartbeatEngine.getSettings();
+}
+
+export function saveHeartbeatSettings(settings: Partial<HeartbeatSettings>): HeartbeatSettings {
+  return heartbeatEngine.saveSettings(settings);
+}
+
+export function dispatchAgentHeartbeat(agentId: string, customStatus?: Partial<AgentHeartbeatStatus>): void {
+  heartbeatEngine.dispatchAgentHeartbeat(agentId, customStatus);
+}
 
 export function startAgentHeartbeat(intervalMs: number = 30000): () => void {
   return heartbeatEngine.start(intervalMs);
