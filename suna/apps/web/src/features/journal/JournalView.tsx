@@ -33,15 +33,11 @@ export default function JournalView({ projectId }: JournalViewProps) {
   const [currentYear, setCurrentYear] = useState(() => new Date().getFullYear());
   const [currentMonth, setCurrentMonth] = useState(() => new Date().getMonth());
 
-  // Selected date for side drawer: formatted YYYY-MM-DD
+  // Selected date for side drawer: formatted YYYY-MM-DD (defaults to today in IST)
   const [selectedDate, setSelectedDate] = useState<string>(() => {
-    const now = new Date();
-    const yr = now.getFullYear();
-    const mo = String(now.getMonth() + 1).padStart(2, '0');
-    const da = String(now.getDate()).padStart(2, '0');
-    return `${yr}-${mo}-${da}`;
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
   });
-  const [drawerOpen, setDrawerOpen] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   // View state: 'calendar' | 'add' | 'detail'
   const [viewMode, setViewMode] = useState<'calendar' | 'add' | 'detail'>('calendar');
@@ -109,10 +105,6 @@ export default function JournalView({ projectId }: JournalViewProps) {
           const synced = await syncDhanTradesToJournal(projectId);
           if (isMounted && Array.isArray(synced.trades) && synced.trades.length > 0) {
             setTrades(sortJournalTrades(synced.trades));
-            if (synced.trades[0].entryDate) {
-              setSelectedDate(synced.trades[0].entryDate);
-              syncCalendarToDate(synced.trades[0].entryDate);
-            }
             return;
           }
         }
@@ -262,23 +254,6 @@ export default function JournalView({ projectId }: JournalViewProps) {
 
   return (
     <div className="relative flex flex-col h-full w-full overflow-hidden bg-background text-foreground font-sans">
-      {!drawerOpen && viewMode === 'calendar' && (
-        <div className="absolute top-[11px] right-3.5 z-30">
-          <Hint label="Open side panel">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={() => setDrawerOpen(true)}
-              aria-label="Open side panel"
-              title="Open side panel"
-              className="size-7 text-muted-foreground hover:text-foreground cursor-pointer"
-            >
-              <SidebarGlyph className="size-4 -scale-x-100" />
-            </Button>
-          </Hint>
-        </div>
-      )}
       {/* ========================================================================= */}
       {/* BODY CONTENT (CALENDAR | ADD | DETAIL)                                    */}
       {/* ========================================================================= */}

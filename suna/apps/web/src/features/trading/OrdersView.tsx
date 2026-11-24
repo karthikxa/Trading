@@ -278,7 +278,7 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'TRADED' | 'PENDING' | 'REJECTED' | 'CANCELLED'>('ALL');
   const [productFilter, setProductFilter] = useState<'ALL' | 'INTRADAY' | 'CNC' | 'MARGIN'>('ALL');
   const [sideFilter, setSideFilter] = useState<'ALL' | 'BUY' | 'SELL'>('ALL');
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(() => new Date());
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
   const [viewingOrder, setViewingOrder] = useState<DhanOrderItem | null>(null);
   const [sharingOrder, setSharingOrder] = useState<DhanOrderItem | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
@@ -1286,34 +1286,22 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
             </PopoverContent>
           </Popover>
 
-          {/* B. COSS UI Calendar Date Picker */}
+          {/* B. Calendar Date Picker (Icon Button Only) */}
           <Popover>
             <PopoverTrigger
               type="button"
+              aria-label="Filter by date"
+              title={
+                selectedDate
+                  ? `Filter: ${selectedDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`
+                  : 'Filter by date'
+              }
               className={cn(
-                'inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer font-sans outline-none focus:outline-none focus:ring-0',
-                selectedDate && 'bg-muted/60 text-foreground font-semibold'
+                'inline-flex items-center justify-center size-8 rounded-lg border border-border/60 bg-card text-muted-foreground shadow-2xs hover:bg-muted/50 hover:text-foreground transition-colors cursor-pointer font-sans outline-none focus:outline-none focus:ring-0',
+                selectedDate && 'bg-primary/10 text-primary border-primary/30 font-semibold'
               )}
             >
-              <CalendarBlank className="size-3.5 text-muted-foreground" />
-              <span>
-                {selectedDate
-                  ? selectedDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
-                  : 'Date'}
-              </span>
-              {selectedDate && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedDate(undefined);
-                  }}
-                  className="ml-1 text-muted-foreground hover:text-foreground"
-                >
-                  ×
-                </span>
-              )}
+              <CalendarBlank className="size-4" />
             </PopoverTrigger>
             <PopoverContent align="end" className="p-0 border border-border/80 bg-card shadow-xl rounded-xl">
               <Calendar
@@ -1322,17 +1310,24 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
                 onSelect={(d) => setSelectedDate(d)}
                 initialFocus
               />
-              {selectedDate && (
-                <div className="p-2 border-t border-border/40 flex justify-end">
+              <div className="p-2 border-t border-border/40 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedDate(new Date())}
+                  className="text-xs text-muted-foreground hover:text-foreground font-medium px-2 py-1 rounded hover:bg-muted cursor-pointer"
+                >
+                  Today
+                </button>
+                {selectedDate && (
                   <button
                     type="button"
                     onClick={() => setSelectedDate(undefined)}
-                    className="text-xs text-muted-foreground hover:text-foreground font-medium px-2 py-1 rounded hover:bg-muted"
+                    className="text-xs text-destructive hover:text-destructive/80 font-medium px-2 py-1 rounded hover:bg-destructive/10 cursor-pointer"
                   >
-                    Clear Date
+                    Clear Filter
                   </button>
-                </div>
-              )}
+                )}
+              </div>
             </PopoverContent>
           </Popover>
 

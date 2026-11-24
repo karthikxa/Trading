@@ -326,6 +326,20 @@ export const TradingCalendar = React.memo(function TradingCalendar({
             <Plus className="size-3.5" />
             <span>Add Trade</span>
           </Button>
+
+          {onToggleDrawer && (
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={onToggleDrawer}
+              aria-label={drawerOpen ? 'Close side panel' : 'Open side panel'}
+              title={drawerOpen ? 'Close side panel' : 'Open side panel'}
+              className="size-8 rounded-lg border-zinc-200 bg-white text-zinc-700 hover:text-zinc-950 hover:bg-zinc-100 cursor-pointer shadow-2xs"
+            >
+              <RightPanelGlyph className="size-4" />
+            </Button>
+          )}
         </div>
       </div>
 
