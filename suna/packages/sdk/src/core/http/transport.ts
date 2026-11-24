@@ -1141,13 +1141,13 @@ async function fetchRealLlmCompletion(
         ],
         max_tokens: 1500,
       }),
-      signal: AbortSignal.timeout(4500),
+      signal: AbortSignal.timeout(30000),
     });
 
     if (renderRes.ok) {
       const data = await renderRes.json();
       console.log(`[Render-LLM] Status: ${renderRes.status} OK, Model: ${data?.model || 'auto'}`);
-      const content = data?.choices?.[0]?.message?.content;
+      const content = data?.choices?.[0]?.message?.content || data?.reply;
       if (content && typeof content === 'string' && content.trim()) {
         return cleanLLMResponse(content.trim());
       }
@@ -1238,9 +1238,15 @@ async function fetchRealLlmCompletion(
       signal: AbortSignal.timeout(25000),
     });
     if (pollRes.ok) {
-      const text = await pollRes.text();
-      if (text && text.trim() && !text.includes('FREE_LIMIT') && !text.includes('Free limit reached') && !text.startsWith('{')) {
-        return text.trim();
+      const raw = await pollRes.text();
+      if (raw.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(raw);
+          const txt = parsed?.choices?.[0]?.message?.content || parsed?.content || parsed?.text;
+          if (txt && typeof txt === 'string' && txt.trim()) return txt.trim();
+        } catch {}
+      } else if (raw && raw.trim() && !raw.includes('FREE_LIMIT') && !raw.includes('Free limit reached')) {
+        return raw.trim();
       }
     }
   } catch (e) {

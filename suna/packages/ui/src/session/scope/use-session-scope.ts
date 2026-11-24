@@ -277,7 +277,9 @@ export function useSessionScope({ projectId, sessionId, agentName }: UseSessionS
     if (projectConfigError) return unavailableCatalog();
     if (projectConfigLoading) return undefined;
 
-    const agentScope = projectConfig?.agents.find((agent) => agent.name === agentName)?.scope;
+    const agentScope = Array.isArray(projectConfig?.agents)
+      ? projectConfig.agents.find((agent) => agent.name === agentName)?.scope
+      : undefined;
     return buildSessionScopeSelectionCatalog({
       ...catalogQuery.data.raw,
       grants: {

@@ -487,9 +487,10 @@ export async function handleTradingRequest(
     }
   };
 
-  // 1. Projects Detail & Cans Bridge (Fixes Connectors, Drive, Customize hanging)
-  if (pathname.match(/^\/v1\/projects\/[^/]+\/detail$/) && method === 'GET') {
-    const projectId = pathname.split('/')[3] || 'b0000000-0000-0000-0000-000000000001';
+  // 1. Projects Detail & Cans Bridge (Fixes Connectors, Drive, Customize, Scope hanging)
+  if ((pathname.match(/^\/(?:v1\/)?projects\/[^/]+(?:\/detail)?$/) || pathname.match(/^\/v1\/projects\/[^/]+$/)) && method === 'GET') {
+    const parts = pathname.replace(/^\/v1/, '').split('/').filter(Boolean);
+    const projectId = parts[1] || 'b0000000-0000-0000-0000-000000000001';
     sendJson(200, {
       project: {
         id: projectId,
@@ -502,6 +503,11 @@ export async function handleTradingRequest(
       config: {
         default_agent: 'portfolio_manager',
         open_code_default_agent: 'portfolio_manager',
+        agents: Array.from(store.agents.values()).map((a) => ({
+          name: a.id,
+          role: a.role,
+          scope: { env: [], connectors: [] },
+        })),
       },
       role: 'admin',
     });

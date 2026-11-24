@@ -47,7 +47,13 @@ export async function POST(req: Request) {
 
     const data = await res.json();
     console.log('[API /api/llm] Render responded 200 OK with model:', data?.model);
-    return NextResponse.json(data);
+    const replyText = data?.choices?.[0]?.message?.content || data?.reply || '';
+    return NextResponse.json({
+      ...data,
+      model: 'auto',
+      choices: [{ message: { role: 'assistant', content: replyText } }],
+      reply: replyText,
+    });
   } catch (err: any) {
     console.error('[API /api/llm] Request failed:', err?.message || String(err));
     return NextResponse.json(
