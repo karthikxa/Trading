@@ -2107,7 +2107,8 @@ function TurnFooter(
   const effectiveWorking = working && !isTurnCompleted && (!hasAssistantText || hasRunningTool);
 
   const assistantMsg = props.turn.assistant.at(-1);
-  const rawAgent = assistantMsg?.agent || (props.sessionId.includes('-') && !props.sessionId.startsWith('session-group-') ? props.sessionId.replace(/^session-/, '') : 'portfolio_manager');
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(props.sessionId);
+  const rawAgent = assistantMsg?.agent || (!isUuid && props.sessionId.includes('-') && !props.sessionId.startsWith('session-group-') ? props.sessionId.replace(/^session-/, '') : 'portfolio_manager');
   const activeAgentName = rawAgent.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
 
   return (
@@ -2212,7 +2213,39 @@ function TurnBusyRow(
     statusPhrase.trim().length > 0 &&
     !statusPhrase.toLowerCase().includes('gathering thoughts')
   );
-  const displayStatus = isCustomPhrase ? statusPhrase : `${activeAgentName || 'Agent'} is typing...`;
+  // Default authentic Kortix ambient TextShimmer phrases ("Thinking", "Reading the context", etc.)
+  const displayStatus = isCustomPhrase ? statusPhrase : undefined;
+  const isBusy = working && !suppressBusyIndicator;
+
+  // Broadcast bot typing status so sidebar bot row shimmers in real-time during SSE streaming
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const candidateIds = [
+      rawAgent,
+      activeAgentName?.toLowerCase().replace(/\s+/g, '_'),
+      activeAgentName?.toLowerCase().replace(/\s+/g, '-'),
+      activeAgentName,
+    ].filter(Boolean) as string[];
+
+    for (const id of candidateIds) {
+      window.dispatchEvent(
+        new CustomEvent('bot-typing-status', {
+          detail: { agentId: id, isTyping: isBusy },
+        })
+      );
+    }
+
+    return () => {
+      for (const id of candidateIds) {
+        window.dispatchEvent(
+          new CustomEvent('bot-typing-status', {
+            detail: { agentId: id, isTyping: false },
+          })
+        );
+      }
+    };
+  }, [isBusy, rawAgent, activeAgentName]);
+
   const agentColor = (rawAgent || '').includes('risk')
     ? '#DC2626'
     : (rawAgent || '').includes('trader')
@@ -2240,6 +2273,7 @@ function TurnBusyRow(
         )}
         <SessionBusyIndicator
           sessionId={sessionId}
+          ambient={true}
           statusText={displayStatus}
           elapsedLabel={statusElapsedLabel}
           agentName={activeAgentName}

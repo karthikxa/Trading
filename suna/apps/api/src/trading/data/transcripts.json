@@ -1,0 +1,236 @@
+{
+  "test-sess-1": [
+    {
+      "info": {
+        "id": "msg_user_1795533641216_zxcy",
+        "sessionID": "test-sess-1",
+        "role": "user",
+        "time": {
+          "created": 1795533641216,
+          "completed": 1795533641216
+        }
+      },
+      "parts": [
+        {
+          "id": "part_msg_user_1795533641216_zxcy",
+          "sessionID": "test-sess-1",
+          "messageID": "msg_user_1795533641216_zxcy",
+          "type": "text",
+          "text": "Hello Portfolio Manager"
+        }
+      ],
+      "role": "user",
+      "created": "2026-11-24T15:20:41.216Z",
+      "completed": "2026-11-24T15:20:41.216Z",
+      "text": "Hello Portfolio Manager",
+      "tools": [],
+      "files": [],
+      "reasoning_omitted": false,
+      "error": null
+    },
+    {
+      "info": {
+        "id": "msg_asst_1795533648114_55m8",
+        "sessionID": "test-sess-1",
+        "role": "assistant",
+        "agent": "portfolio_manager",
+        "time": {
+          "created": 1795533648114,
+          "completed": 1795533648114
+        }
+      },
+      "parts": [
+        {
+          "id": "part_msg_asst_1795533648114_55m8",
+          "sessionID": "test-sess-1",
+          "messageID": "msg_asst_1795533648114_55m8",
+          "type": "text",
+          "text": "Good day. I’m the portfolio manager for the Tauric trading desk and will distill the analyst research into a clear capital allocation plan and risk sizing guidelines. Let’s get right to it."
+        }
+      ],
+      "role": "assistant",
+      "created": "2026-11-24T15:20:48.114Z",
+      "completed": "2026-11-24T15:20:48.114Z",
+      "text": "Good day. I’m the portfolio manager for the Tauric trading desk and will distill the analyst research into a clear capital allocation plan and risk sizing guidelines. Let’s get right to it.",
+      "tools": [],
+      "files": [],
+      "reasoning_omitted": false,
+      "error": null
+    }
+  ],
+  "test-sess-greeting": [
+    {
+      "info": {
+        "id": "msg_user_1795535221846_c4wp",
+        "sessionID": "test-sess-greeting",
+        "role": "user",
+        "time": {
+          "created": 1795535221846,
+          "completed": 1795535221846
+        }
+      },
+      "parts": [
+        {
+          "id": "part_msg_user_1795535221846_c4wp",
+          "sessionID": "test-sess-greeting",
+          "messageID": "msg_user_1795535221846_c4wp",
+          "type": "text",
+          "text": "how are u"
+        }
+      ],
+      "role": "user",
+      "created": "2026-11-24T15:47:01.846Z",
+      "completed": "2026-11-24T15:47:01.846Z",
+      "text": "how are u",
+      "tools": [],
+      "files": [],
+      "reasoning_omitted": false,
+      "error": null
+    },
+    {
+      "info": {
+        "id": "msg_asst_1795535230188_9nfa",
+        "sessionID": "test-sess-greeting",
+        "role": "assistant",
+        "agent": "portfolio_manager",
+        "time": {
+          "created": 1795535230188,
+          "completed": 1795535230188
+        }
+      },
+      "parts": [
+        {
+          "id": "part_msg_asst_1795535230188_9nfa",
+          "sessionID": "test-sess-greeting",
+          "messageID": "msg_asst_1795535230188_9nfa",
+          "type": "text",
+          "text": "Hey! I'm doing great—ready to help you with any market insights or trading decisions you need. What’s on your mind today?"
+        }
+      ],
+      "role": "assistant",
+      "created": "2026-11-24T15:47:10.188Z",
+      "completed": "2026-11-24T15:47:10.188Z",
+      "text": "Hey! I'm doing great—ready to help you with any market insights or trading decisions you need. What’s on your mind today?",
+      "tools": [],
+      "files": [],
+      "reasoning_omitted": false,
+      "error": null
+    }
+  ],
+  "session-portfolio_manager": [
+    {
+      "info": {
+        "id": "msg_user_1795536697223_m3j9",
+        "sessionID": "session-portfolio_manager",
+        "role": "user",
+        "time": {
+          "created": 1795536697223,
+          "completed": 1795536697223
+        }
+      },
+      "parts": [
+        {
+          "id": "part_msg_user_1795536697223_m3j9",
+          "sessionID": "session-portfolio_manager",
+          "messageID": "msg_user_1795536697223_m3j9",
+          "type": "text",
+          "text": "ur name"
+        }
+      ],
+      "role": "user",
+      "created": "2026-11-24T16:11:37.223Z",
+      "completed": "2026-11-24T16:11:37.223Z",
+      "text": "ur name",
+      "tools": [],
+      "files": [],
+      "reasoning_omitted": false,
+      "error": null
+    },
+    {
+      "info": {
+        "id": "msg_asst_1795536700191_uie4",
+        "sessionID": "session-portfolio_manager",
+        "role": "assistant",
+        "agent": "portfolio_manager",
+        "time": {
+          "created": 1795536700191,
+          "completed": 1795536700191
+        }
+      },
+      "parts": [
+        {
+          "id": "part_msg_asst_1795536700191_uie4",
+          "sessionID": "session-portfolio_manager",
+          "messageID": "msg_asst_1795536700191_uie4",
+          "type": "text",
+          "text": "I'm the Portfolio Manager, Chief of Staff & Swarm Lead on the Tauric Trading Desk."
+        }
+      ],
+      "role": "assistant",
+      "created": "2026-11-24T16:11:40.191Z",
+      "completed": "2026-11-24T16:11:40.191Z",
+      "text": "I'm the Portfolio Manager, Chief of Staff & Swarm Lead on the Tauric Trading Desk.",
+      "tools": [],
+      "files": [],
+      "reasoning_omitted": false,
+      "error": null
+    },
+    {
+      "info": {
+        "id": "msg_user_1795538081585_x2dz",
+        "sessionID": "session-portfolio_manager",
+        "role": "user",
+        "time": {
+          "created": 1795538081585,
+          "completed": 1795538081585
+        }
+      },
+      "parts": [
+        {
+          "id": "part_msg_user_1795538081585_x2dz",
+          "sessionID": "session-portfolio_manager",
+          "messageID": "msg_user_1795538081585_x2dz",
+          "type": "text",
+          "text": "what can we do"
+        }
+      ],
+      "role": "user",
+      "created": "2026-11-24T16:34:41.585Z",
+      "completed": "2026-11-24T16:34:41.585Z",
+      "text": "what can we do",
+      "tools": [],
+      "files": [],
+      "reasoning_omitted": false,
+      "error": null
+    },
+    {
+      "info": {
+        "id": "msg_asst_1795538089674_qtmk",
+        "sessionID": "session-portfolio_manager",
+        "role": "assistant",
+        "agent": "portfolio_manager",
+        "time": {
+          "created": 1795538089674,
+          "completed": 1795538089674
+        }
+      },
+      "parts": [
+        {
+          "id": "part_msg_asst_1795538089674_qtmk",
+          "sessionID": "session-portfolio_manager",
+          "messageID": "msg_asst_1795538089674_qtmk",
+          "type": "text",
+          "text": "We can structure and execute trades, optimize swarm algorithms, manage risk and exposure, analyze real-time flow, rebalance portfolios, or run desk briefings. What's the priority today?"
+        }
+      ],
+      "role": "assistant",
+      "created": "2026-11-24T16:34:49.674Z",
+      "completed": "2026-11-24T16:34:49.674Z",
+      "text": "We can structure and execute trades, optimize swarm algorithms, manage risk and exposure, analyze real-time flow, rebalance portfolios, or run desk briefings. What's the priority today?",
+      "tools": [],
+      "files": [],
+      "reasoning_omitted": false,
+      "error": null
+    }
+  ]
+}

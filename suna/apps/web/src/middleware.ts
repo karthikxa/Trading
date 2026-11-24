@@ -434,6 +434,7 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/_next') ||
     pathname.startsWith('/favicon') ||
     pathname.startsWith('/v1/') ||
+    (pathname.startsWith('/projects/') && (pathname.includes('/events') || pathname.includes('/prompts') || pathname.includes('/log') || pathname.includes('/transcript') || pathname.includes('/turn') || pathname.includes('/abort'))) ||
     pathname.startsWith('/supabase/') || // same-origin Supabase proxy (sandbox preview) — must reach the next.config rewrite, never the auth-gate
     pathname.startsWith('/api/') ||
     pathname.startsWith('/monitoring') || // Sentry error tracking tunnel (Better Stack)

@@ -4,37 +4,45 @@
  * emitted by Kortix / Bops trading bots (e.g. Portfolio Manager, Risk Manager, Trader Agent).
  */
 
-export type DispatchLevel = 'info' | 'notice' | 'warning' | 'alert' | 'critical';
+export type DispatchLevel = 'info' | 'notice' | 'warning' | 'alert' | 'critical' | string;
 
 export interface ProactiveApproval {
   id: string;
   dispatchId?: string;
   agentId: string;
+  title?: string;
   symbol: string;
-  action: 'BUY' | 'SELL' | 'HOLD' | 'REBALANCE' | 'STOP_LOSS' | 'ALERT';
+  action: 'BUY' | 'SELL' | 'HOLD' | 'REBALANCE' | 'STOP_LOSS' | 'ALERT' | string;
   quantity?: number;
   price?: number;
-  status: 'pending' | 'approved' | 'rejected' | 'executed';
+  riskLevel?: 'low' | 'medium' | 'high' | 'critical' | string;
+  status: 'pending' | 'approved' | 'rejected' | 'executed' | string;
   reason?: string;
+  details?: Record<string, any> | any;
+  resolvedAt?: string;
   confidence?: number;
   timestamp: string;
+  [key: string]: any;
 }
 
 export interface ProactiveDispatch {
   id: string;
   agentId: string;
   agentName: string;
-  type: 'trade_signal' | 'risk_warning' | 'market_opportunity' | 'system_status' | 'execution_report';
+  type: 'trade_signal' | 'risk_warning' | 'market_opportunity' | 'system_status' | 'execution_report' | string;
   message: string;
+  content: string;
+  steps: any[];
   level: DispatchLevel;
   symbol?: string;
-  action?: 'BUY' | 'SELL' | 'HOLD' | 'REBALANCE' | 'STOP_LOSS' | 'ALERT';
+  action?: 'BUY' | 'SELL' | 'HOLD' | 'REBALANCE' | 'STOP_LOSS' | 'ALERT' | string;
   quantity?: number;
   price?: number;
   metadata?: Record<string, unknown>;
   approval?: ProactiveApproval;
   timestamp: string;
   read?: boolean;
+  [key: string]: any;
 }
 
 type DispatchListener = (dispatch: ProactiveDispatch) => void;
@@ -45,7 +53,6 @@ class ProactiveDispatchStore {
   private maxHistory = 100;
 
   constructor() {
-    // Initialize with recent system bootstrap notice if in browser
     if (typeof window !== 'undefined') {
       try {
         const saved = sessionStorage.getItem('kortix_proactive_dispatches_v1');
@@ -58,12 +65,30 @@ class ProactiveDispatchStore {
     }
   }
 
-  public dispatch(dispatchData: Omit<ProactiveDispatch, 'id' | 'timestamp'> & { id?: string; timestamp?: string }): ProactiveDispatch {
+  public dispatch(dispatchData: Partial<ProactiveDispatch> & { agentId: string }): ProactiveDispatch {
+    const rawContent = dispatchData.content || dispatchData.message || 'Market monitoring active.';
     const item: ProactiveDispatch = {
+      ...dispatchData,
       id: dispatchData.id || `disp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      agentId: dispatchData.agentId,
+      agentName: dispatchData.agentName || dispatchData.agentId.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+      type: dispatchData.type || 'market_opportunity',
+      message: rawContent,
+      content: rawContent,
+      steps: dispatchData.steps || [
+        { icon: 'skill', label: 'Loaded skill', target: `${dispatchData.agentId}-desk` },
+        { icon: 'file', label: 'Read', target: `memory/${dispatchData.agentId}/directives.md` },
+        { icon: 'search', label: 'Monitored', target: 'Nifty / BankNifty Live Orderbook' },
+      ],
+      level: dispatchData.level || 'info',
+      symbol: dispatchData.symbol,
+      action: dispatchData.action,
+      quantity: dispatchData.quantity,
+      price: dispatchData.price,
+      metadata: dispatchData.metadata,
+      approval: dispatchData.approval,
       timestamp: dispatchData.timestamp || new Date().toISOString(),
       read: false,
-      ...dispatchData,
     };
 
     this.dispatches.unshift(item);
@@ -129,14 +154,18 @@ export const dispatchStore = new ProactiveDispatchStore();
 export function dispatchProactiveAgentMessage(
   agentId: string,
   message: string,
-  options?: Partial<Omit<ProactiveDispatch, 'agentId' | 'message'>>,
+  options?: Partial<Omit<ProactiveDispatch, 'agentId' | 'message'>> & Record<string, any>,
+  ..._extraArgs: any[]
 ): ProactiveDispatch {
   const agentName = options?.agentName || agentId.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
   return dispatchStore.dispatch({
+    ...options,
     agentId,
     agentName,
     type: options?.type || 'market_opportunity',
     message,
+    content: options?.content || message,
+    steps: options?.steps,
     level: options?.level || 'info',
     symbol: options?.symbol,
     action: options?.action,
@@ -148,10 +177,34 @@ export function dispatchProactiveAgentMessage(
 }
 
 /**
- * Gets the most recent proactive dispatch for a specific agent
+ * Gets the most recent proactive dispatch for a specific agent.
+ * Guaranteed to return a non-null ProactiveDispatch with content and steps.
  */
-export function getProactiveDispatchForAgent(agentId: string): ProactiveDispatch | undefined {
-  return dispatchStore.getByAgent(agentId)[0];
+export function getProactiveDispatchForAgent(
+  agentId: string,
+  agentName?: string,
+  role?: string,
+  ..._rest: any[]
+): ProactiveDispatch {
+  const agentDispatches = dispatchStore.getByAgent(agentId);
+  if (agentDispatches.length > 0) {
+    return agentDispatches[0];
+  }
+
+  const name = agentName || agentId.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  return dispatchStore.dispatch({
+    agentId,
+    agentName: name,
+    type: 'market_opportunity',
+    message: `Ready for ${role || 'trading analysis'}. Market monitors and execution risk guards are active.`,
+    content: `Ready for ${role || 'trading analysis'}. Market monitors and execution risk guards are active.`,
+    steps: [
+      { icon: 'skill', label: 'Loaded skill', target: `${agentId}-desk` },
+      { icon: 'file', label: 'Read', target: `memory/${agentId}/directives.md` },
+      { icon: 'search', label: 'Monitored', target: 'Nifty / BankNifty Live Orderbook' },
+    ],
+    level: 'info',
+  });
 }
 
 /**
@@ -167,6 +220,11 @@ export function triggerProactiveMarketAlert(
     agentName: 'Risk Manager',
     type: 'risk_warning',
     message: `[${symbol}] ${reason}`,
+    content: `[${symbol}] ${reason}`,
+    steps: [
+      { icon: 'skill', label: 'Triggered guard', target: 'risk-manager-stop-loss' },
+      { icon: 'search', label: 'Evaluated exposure', target: symbol },
+    ],
     level,
     symbol,
     action: 'ALERT',

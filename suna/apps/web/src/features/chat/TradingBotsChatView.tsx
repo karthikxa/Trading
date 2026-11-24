@@ -36,6 +36,13 @@ import {
   Lightning,
   Stop,
   Users,
+  Shield,
+  Check,
+  X,
+  CheckCircle,
+  Warning,
+  Clock,
+  Sparkle,
 } from '@phosphor-icons/react';
 import { WallpaperBackground } from '@/components/ui/wallpaper-background';
 import { cn } from '@kortix/ui';
@@ -47,6 +54,19 @@ import {
 } from '@kortix/ui/dropdown-menu';
 import { Button } from '@kortix/ui/button';
 import { ButtonGroup, ButtonGroupSeparator } from '@kortix/ui/button-group';
+import { formatSimpleTime } from '@/features/trading/dhanOrdersSync';
+import {
+  getProactiveDispatchForAgent,
+  type ProactiveApproval,
+  type ProactiveDispatch,
+} from './proactiveAgentDispatches';
+import {
+  getHeartbeatSettings,
+  saveHeartbeatSettings,
+  dispatchAgentHeartbeat,
+  type HeartbeatCadence,
+  type HeartbeatSettings,
+} from './agentHeartbeatEngine';
 
 export interface ChatStep {
   icon: 'skill' | 'file' | 'search';
@@ -65,6 +85,7 @@ export interface ChatMessage {
   expression?: BotExpression;
   content: string;
   steps?: ChatStep[];
+  approval?: ProactiveApproval;
   timestamp: string;
 }
 
@@ -99,7 +120,7 @@ export function TradingBotsChatView({
       try {
         const saved = localStorage.getItem('kortix_trading_agent_overrides_v1');
         if (saved) return JSON.parse(saved);
-      } catch {}
+      } catch { }
     }
     return {};
   });
@@ -110,7 +131,7 @@ export function TradingBotsChatView({
       try {
         const saved = localStorage.getItem('kortix_trading_agent_overrides_v1');
         if (saved) setAgentOverrides(JSON.parse(saved));
-      } catch {}
+      } catch { }
     };
     window.addEventListener('trading-agents-updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
@@ -174,14 +195,121 @@ export function TradingBotsChatView({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Load message history for current active bot
+  // OpenMausBot / Grok Proactive Heartbeat Settings & Pulse
+  const [heartbeatSettings, setHeartbeatSettings] = useState<HeartbeatSettings>(getHeartbeatSettings);
+
+  const handleChangeCadence = (cadence: HeartbeatCadence) => {
+    const updated: HeartbeatSettings = {
+      ...heartbeatSettings,
+      cadence,
+      intervalMs:
+        cadence === '15s'
+          ? 15000
+          : cadence === '30s'
+            ? 30000
+            : cadence === '45s'
+              ? 45000
+              : cadence === '60s'
+                ? 60000
+                : 0,
+    };
+    setHeartbeatSettings(updated);
+    saveHeartbeatSettings(updated);
+  };
+
+  const handleManualPulse = () => {
+    const msg = dispatchAgentHeartbeat(activeAgent.id, activeAgent.name, activeAgent.role);
+    setMessages((prev) => {
+      if (prev.some((m) => m.id === msg.id)) return prev;
+      return [...prev, msg];
+    });
+  };
+
+  // Heartbeat background interval for proactive agent intelligence
+  useEffect(() => {
+    if (heartbeatSettings.cadence === 'paused' || heartbeatSettings.intervalMs <= 0) return;
+
+    const timer = setInterval(() => {
+      dispatchAgentHeartbeat(activeAgent.id, activeAgent.name, activeAgent.role);
+    }, heartbeatSettings.intervalMs);
+
+    return () => clearInterval(timer);
+  }, [heartbeatSettings.cadence, heartbeatSettings.intervalMs, activeAgent.id, activeAgent.name, activeAgent.role]);
+
+  // Listen to agent-heartbeat-pulse events
+  useEffect(() => {
+    const handlePulse = (e: any) => {
+      const detail = e.detail;
+      if (detail && detail.agentId === activeAgent.id && detail.message) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === detail.message.id)) return prev;
+          return [...prev, detail.message];
+        });
+      }
+    };
+    window.addEventListener('agent-heartbeat-pulse', handlePulse);
+    return () => window.removeEventListener('agent-heartbeat-pulse', handlePulse);
+  }, [activeAgent.id]);
+
+  // Helper to sync bot's approval status with sidebar and localStorage
+  const updateAgentApprovalStatus = (botId: string, status: 'waiting for approval' | 'idle', pendingCount: number) => {
+    try {
+      const saved = localStorage.getItem('kortix_trading_agent_overrides_v1');
+      const overrides = saved ? JSON.parse(saved) : {};
+      overrides[botId] = {
+        ...(overrides[botId] || {}),
+        status,
+        pending_approvals_count: pendingCount,
+      };
+      localStorage.setItem('kortix_trading_agent_overrides_v1', JSON.stringify(overrides));
+      window.dispatchEvent(new CustomEvent('trading-agents-updated'));
+    } catch { }
+  };
+
+  // Load message history for current active bot, or automatically dispatch proactive message with HITL
   useEffect(() => {
     try {
       const saved = localStorage.getItem(`kortix_agent_chat_${activeAgent.id}`);
       if (saved) {
-        setMessages(JSON.parse(saved));
-      } else {
-        setMessages([]);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setMessages(parsed);
+          const hasPending = parsed.some((m: ChatMessage) => m.approval && m.approval.status === 'pending');
+          if (hasPending) {
+            updateAgentApprovalStatus(activeAgent.id, 'waiting for approval', 1);
+          }
+          setStreamingText('');
+          setStreamingSteps([]);
+          setIsTyping(false);
+          return;
+        }
+      }
+
+      // Proactive auto-initialization: all bots message proactively with HITL setup
+      const proactive = getProactiveDispatchForAgent(activeAgent.id, activeAgent.name, activeAgent.role);
+      const now = new Date();
+      const timeStr = formatSimpleTime(now.toTimeString().slice(0, 5));
+      const initialMsg: ChatMessage = {
+        id: `proactive-${activeAgent.id}-${Date.now()}`,
+        sender: 'agent',
+        agentId: activeAgent.id,
+        agentName: activeAgent.name,
+        shape: activeAgent.shape,
+        color: activeAgent.color,
+        expression: activeAgent.expression,
+        content: proactive.content,
+        steps: proactive.steps,
+        approval: proactive.approval,
+        timestamp: timeStr,
+      };
+
+      setMessages([initialMsg]);
+      try {
+        localStorage.setItem(`kortix_agent_chat_${activeAgent.id}`, JSON.stringify([initialMsg]));
+      } catch { }
+
+      if (proactive.approval && proactive.approval.status === 'pending') {
+        updateAgentApprovalStatus(activeAgent.id, 'waiting for approval', 1);
       }
     } catch {
       setMessages([]);
@@ -189,14 +317,120 @@ export function TradingBotsChatView({
     setStreamingText('');
     setStreamingSteps([]);
     setIsTyping(false);
-  }, [activeAgent.id]);
+  }, [activeAgent.id, activeAgent.name, activeAgent.role, activeAgent.shape, activeAgent.color, activeAgent.expression]);
 
   // Save messages helper
   const saveMessages = (msgs: ChatMessage[]) => {
     setMessages(msgs);
     try {
       localStorage.setItem(`kortix_agent_chat_${activeAgent.id}`, JSON.stringify(msgs));
-    } catch {}
+    } catch { }
+  };
+
+  // HITL Approval actions
+  const handleApprove = (approvalId: string) => {
+    const now = new Date();
+    const timeStr = formatSimpleTime(now.toTimeString().slice(0, 5));
+
+    const updated = messages.map((m) => {
+      if (m.approval && m.approval.id === approvalId) {
+        return {
+          ...m,
+          approval: {
+            ...m.approval,
+            status: 'approved' as const,
+            resolvedAt: timeStr,
+          },
+        };
+      }
+      return m;
+    });
+
+    const targetMsg = messages.find((m) => m.approval && m.approval.id === approvalId);
+    const details = targetMsg?.approval?.details;
+    const symbolStr = details?.symbol ? ` on **${details.symbol}**` : '';
+
+    const followUpMsg: ChatMessage = {
+      id: `bot-approved-${Date.now()}`,
+      sender: 'agent',
+      agentId: activeAgent.id,
+      agentName: activeAgent.name,
+      shape: activeAgent.shape,
+      color: activeAgent.color,
+      expression: 'attentive',
+      content: `✓ **Human-in-the-Loop (HITL) Authorization Confirmed** · ${timeStr}
+
+Action authorized by Trader.
+• **Order Execution**: Order staged and dispatched${symbolStr} via DhanHQ Smart Router.
+• **Risk Guardrails**: Intraday stop loss active. Trailing drawdown monitor running with 1-sec tick polling.
+• **Audit Ledger**: Logged to Trading Journal.`,
+      timestamp: timeStr,
+    };
+
+    const finalMessages = [...updated, followUpMsg];
+    saveMessages(finalMessages);
+    updateAgentApprovalStatus(activeAgent.id, 'idle', 0);
+  };
+
+  const handleReject = (approvalId: string) => {
+    const now = new Date();
+    const timeStr = formatSimpleTime(now.toTimeString().slice(0, 5));
+
+    const updated = messages.map((m) => {
+      if (m.approval && m.approval.id === approvalId) {
+        return {
+          ...m,
+          approval: {
+            ...m.approval,
+            status: 'rejected' as const,
+            resolvedAt: timeStr,
+          },
+        };
+      }
+      return m;
+    });
+
+    const followUpMsg: ChatMessage = {
+      id: `bot-rejected-${Date.now()}`,
+      sender: 'agent',
+      agentId: activeAgent.id,
+      agentName: activeAgent.name,
+      shape: activeAgent.shape,
+      color: activeAgent.color,
+      expression: 'suspicious',
+      content: `✕ **Action Aborted by Trader** · ${timeStr}
+
+Trade execution discarded per Human-in-the-Loop rejection. No orders were placed on DhanHQ. Capital preserved and risk allocation remains at 100% capacity.`,
+      timestamp: timeStr,
+    };
+
+    const finalMessages = [...updated, followUpMsg];
+    saveMessages(finalMessages);
+    updateAgentApprovalStatus(activeAgent.id, 'idle', 0);
+  };
+
+  // Trigger fresh proactive check-in / setup on demand
+  const handleTriggerProactive = () => {
+    const proactive = getProactiveDispatchForAgent(activeAgent.id, activeAgent.name, activeAgent.role);
+    const now = new Date();
+    const timeStr = formatSimpleTime(now.toTimeString().slice(0, 5));
+    const newMsg: ChatMessage = {
+      id: `proactive-${activeAgent.id}-${Date.now()}`,
+      sender: 'agent',
+      agentId: activeAgent.id,
+      agentName: activeAgent.name,
+      shape: activeAgent.shape,
+      color: activeAgent.color,
+      expression: activeAgent.expression,
+      content: proactive.content,
+      steps: proactive.steps,
+      approval: proactive.approval,
+      timestamp: timeStr,
+    };
+    saveMessages([...messages, newMsg]);
+    if (proactive.approval && proactive.approval.status === 'pending') {
+      updateAgentApprovalStatus(activeAgent.id, 'waiting for approval', 1);
+    }
   };
 
   // Auto-scroll to bottom as tokens stream in
@@ -220,7 +454,7 @@ export function TradingBotsChatView({
     setIsTyping(false);
     try {
       localStorage.removeItem(`kortix_agent_chat_${activeAgent.id}`);
-    } catch {}
+    } catch { }
   };
 
   // Stop active generation
@@ -472,10 +706,97 @@ export function TradingBotsChatView({
           <span className="font-medium text-sm text-foreground tracking-tight font-sans">
             {sessionTitle}
           </span>
+          {messages.some((m) => m.approval && m.approval.status === 'pending') && (
+            <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 animate-pulse flex items-center gap-1">
+              <Clock className="size-3" />
+              Waiting for approval
+            </span>
+          )}
         </div>
 
-        {/* Right Action Icons: >_ terminal, 🌐 globe, 🗂️ folder, ↗ Share, + New Agent */}
+        {/* Right Action Icons: Heartbeat Dropdown, Proactive Dispatch, >_ terminal, 🌐 globe, 🗂️ folder, ↗ Share, + New Agent */}
         <div className="flex items-center gap-1.5">
+          {/* Living Heartbeat Vitals Dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className={cn(
+                  'h-8 px-2.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs',
+                  heartbeatSettings.cadence === 'paused'
+                    ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 border-border/40'
+                    : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
+                )}
+                title={`OpenMausBot Heartbeat: ${heartbeatSettings.cadence} cadence`}
+              >
+                <span
+                  className={cn(
+                    'size-2 rounded-full',
+                    heartbeatSettings.cadence === 'paused' ? 'bg-zinc-400' : 'bg-emerald-500 animate-pulse'
+                  )}
+                />
+                <span className="font-semibold">Heartbeat: {heartbeatSettings.cadence}</span>
+                <CaretDown className="size-3 opacity-60" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              className="w-56 p-1.5 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200/90 dark:border-zinc-800 shadow-xl text-xs font-sans z-50 text-zinc-900 dark:text-zinc-100"
+            >
+              <div className="px-2.5 py-1.5 font-semibold text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border/40 mb-1">
+                OpenMausBot Heartbeat Cadence
+              </div>
+              <DropdownMenuItem
+                onClick={handleManualPulse}
+                className="flex items-center gap-2 px-2.5 py-2 rounded-lg cursor-pointer hover:bg-amber-500/10 text-amber-600 font-medium"
+              >
+                <Lightning className="size-3.5 text-amber-500 fill-amber-500" />
+                <span>Pulse Now (Manual Trigger)</span>
+              </DropdownMenuItem>
+              {(['15s', '30s', '45s', '60s'] as HeartbeatCadence[]).map((cadence) => (
+                <DropdownMenuItem
+                  key={cadence}
+                  onClick={() => handleChangeCadence(cadence)}
+                  className={cn(
+                    'flex items-center justify-between px-2.5 py-1.5 rounded-lg cursor-pointer',
+                    heartbeatSettings.cadence === cadence ? 'font-bold bg-muted' : 'hover:bg-muted/60'
+                  )}
+                >
+                  <span>
+                    {cadence}{' '}
+                    {cadence === '15s'
+                      ? '(Aggressive)'
+                      : cadence === '30s'
+                        ? '(Active Market)'
+                        : cadence === '45s'
+                          ? '(Standard)'
+                          : '(Slow)'}
+                  </span>
+                  {heartbeatSettings.cadence === cadence && <Check className="size-3.5 text-emerald-500" />}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuItem
+                onClick={() => handleChangeCadence('paused')}
+                className={cn(
+                  'flex items-center justify-between px-2.5 py-1.5 rounded-lg cursor-pointer text-muted-foreground hover:bg-muted/60',
+                  heartbeatSettings.cadence === 'paused' ? 'font-bold text-red-500' : ''
+                )}
+              >
+                <span>Pause Heartbeat</span>
+                {heartbeatSettings.cadence === 'paused' && <Check className="size-3.5 text-red-500" />}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <button
+            type="button"
+            onClick={handleTriggerProactive}
+            className="h-8 px-2.5 rounded-lg text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+            title="Trigger Proactive Agent Briefing & HITL Setup"
+          >
+            <Lightning className="size-3.5 text-amber-500 fill-amber-500" />
+            <span className="font-semibold">Proactive Dispatch</span>
+          </button>
           <button
             type="button"
             className="size-8 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/60 flex items-center justify-center transition-colors cursor-pointer"
@@ -730,6 +1051,172 @@ export function TradingBotsChatView({
                           response={true}
                         />
                       </div>
+
+                      {/* Human-in-the-Loop (HITL) Interactive Approval Card */}
+                      {msg.approval && (
+                        <div
+                          className={cn(
+                            'mt-3.5 rounded-xl border p-4 space-y-3 font-sans transition-all shadow-xs',
+                            msg.approval.status === 'pending'
+                              ? 'border-amber-500/40 bg-amber-500/5 dark:bg-amber-500/10'
+                              : msg.approval.status === 'approved'
+                                ? 'border-emerald-500/40 bg-emerald-500/5 dark:bg-emerald-500/10'
+                                : 'border-zinc-300 dark:border-zinc-800 bg-zinc-100/50 dark:bg-zinc-900/50 opacity-80'
+                          )}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Shield
+                                className={cn(
+                                  'size-4.5',
+                                  msg.approval.status === 'pending'
+                                    ? 'text-amber-500'
+                                    : msg.approval.status === 'approved'
+                                      ? 'text-emerald-500'
+                                      : 'text-zinc-500'
+                                )}
+                              />
+                              <span className="font-semibold text-xs tracking-tight uppercase text-foreground">
+                                Human-in-the-Loop (HITL) Review
+                              </span>
+                            </div>
+                            <span
+                              className={cn(
+                                'text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-md border',
+                                msg.approval.riskLevel === 'high'
+                                  ? 'bg-red-500/10 text-red-600 border-red-500/20'
+                                  : msg.approval.riskLevel === 'medium'
+                                    ? 'bg-amber-500/10 text-amber-600 border-amber-500/20'
+                                    : 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
+                              )}
+                            >
+                              {msg.approval.riskLevel} Risk
+                            </span>
+                          </div>
+
+                          <div className="text-sm font-semibold text-foreground">
+                            {msg.approval.title}
+                          </div>
+
+                          {/* Details Badges */}
+                          {msg.approval.details && (
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 text-xs">
+                              {msg.approval.details.symbol && (
+                                <div className="p-2 rounded-lg bg-background/80 border border-border/40">
+                                  <div className="text-[10px] text-muted-foreground uppercase font-semibold">Instrument</div>
+                                  <div className="font-bold text-foreground mt-0.5">{msg.approval.details.symbol}</div>
+                                </div>
+                              )}
+                              {msg.approval.details.action && (
+                                <div className="p-2 rounded-lg bg-background/80 border border-border/40">
+                                  <div className="text-[10px] text-muted-foreground uppercase font-semibold">Action</div>
+                                  <div
+                                    className={cn(
+                                      'font-bold mt-0.5',
+                                      msg.approval.details.action === 'BUY'
+                                        ? 'text-emerald-600 dark:text-emerald-400'
+                                        : 'text-red-600 dark:text-red-400'
+                                    )}
+                                  >
+                                    {msg.approval.details.action}
+                                  </div>
+                                </div>
+                              )}
+                              {msg.approval.details.quantity && (
+                                <div className="p-2 rounded-lg bg-background/80 border border-border/40">
+                                  <div className="text-[10px] text-muted-foreground uppercase font-semibold">Lots / Qty</div>
+                                  <div className="font-bold text-foreground mt-0.5">{msg.approval.details.quantity} Qty</div>
+                                </div>
+                              )}
+                              {msg.approval.details.price && (
+                                <div className="p-2 rounded-lg bg-background/80 border border-border/40">
+                                  <div className="text-[10px] text-muted-foreground uppercase font-semibold">Limit Price</div>
+                                  <div className="font-bold text-foreground mt-0.5">₹{msg.approval.details.price.toFixed(2)}</div>
+                                </div>
+                              )}
+                              {msg.approval.details.target && (
+                                <div className="p-2 rounded-lg bg-background/80 border border-border/40">
+                                  <div className="text-[10px] text-muted-foreground uppercase font-semibold">Target</div>
+                                  <div className="font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">₹{msg.approval.details.target.toFixed(2)}</div>
+                                </div>
+                              )}
+                              {msg.approval.details.stopLoss && (
+                                <div className="p-2 rounded-lg bg-background/80 border border-border/40">
+                                  <div className="text-[10px] text-muted-foreground uppercase font-semibold">Stop Loss</div>
+                                  <div className="font-bold text-red-600 dark:text-red-400 mt-0.5">₹{msg.approval.details.stopLoss.toFixed(2)}</div>
+                                </div>
+                              )}
+                              {msg.approval.details.estCharges && (
+                                <div className="p-2 rounded-lg bg-background/80 border border-border/40">
+                                  <div className="text-[10px] text-muted-foreground uppercase font-semibold">Est. Charges</div>
+                                  <div className="font-bold text-foreground mt-0.5">₹{msg.approval.details.estCharges.toFixed(2)}</div>
+                                </div>
+                              )}
+                              {msg.approval.details.exchange && (
+                                <div className="p-2 rounded-lg bg-background/80 border border-border/40">
+                                  <div className="text-[10px] text-muted-foreground uppercase font-semibold">Exchange</div>
+                                  <div className="font-bold text-foreground mt-0.5">{msg.approval.details.exchange}</div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {msg.approval.details?.notes && (
+                            <div className="text-xs text-muted-foreground bg-background/50 p-2.5 rounded-lg border border-border/40 leading-relaxed">
+                              {msg.approval.details.notes}
+                            </div>
+                          )}
+
+                          {/* Action Buttons or Resolution Status */}
+                          <div className="pt-2 border-t border-border/40 flex items-center justify-between">
+                            {msg.approval.status === 'pending' ? (
+                              <>
+                                <div className="text-xs text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1.5">
+                                  <Clock className="size-3.5 animate-pulse" />
+                                  <span>Autonomous execution held pending trader approval</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    onClick={() => handleReject(msg.approval!.id)}
+                                    variant="outline"
+                                    className="h-8 px-3 text-xs text-zinc-600 hover:text-red-600 cursor-pointer"
+                                  >
+                                    <X className="size-3.5 mr-1" />
+                                    Reject
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    onClick={() => handleApprove(msg.approval!.id)}
+                                    className="h-8 px-3.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs cursor-pointer active:scale-95 transition-all"
+                                  >
+                                    <Check className="size-3.5 mr-1" />
+                                    Approve Action
+                                  </Button>
+                                </div>
+                              </>
+                            ) : msg.approval.status === 'approved' ? (
+                              <div className="w-full flex items-center justify-between text-xs text-emerald-600 dark:text-emerald-400 font-medium py-1">
+                                <span className="flex items-center gap-1.5 font-semibold">
+                                  <CheckCircle className="size-4" />
+                                  Authorized by Trader at {msg.approval.resolvedAt}
+                                </span>
+                                <span className="text-[11px] text-muted-foreground font-mono">Dispatched via DhanHQ Smart Router</span>
+                              </div>
+                            ) : (
+                              <div className="w-full flex items-center justify-between text-xs text-red-600 dark:text-red-400 font-medium py-1">
+                                <span className="flex items-center gap-1.5 font-semibold">
+                                  <X className="size-4" />
+                                  Action Rejected by Trader at {msg.approval.resolvedAt}
+                                </span>
+                                <span className="text-[11px] text-muted-foreground font-mono">Order staging cancelled</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

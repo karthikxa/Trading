@@ -69,21 +69,21 @@ interface StockTabItem {
   name: string;
 }
 
-export const CANONICAL_TRADING_PROJECT_ID = 'b0000000-0000-0000-0000-000000000001';
+export const CANONICAL_TRADING_PROJECT_ID = 'trading';
 
 export default function ProjectIndexPage() {
   const tI18nComplete = useTranslations('hardcodedUi.i18nComplete');
   const { id: rawProjectId } = useParams<{ id: string }>();
-  const projectId = rawProjectId === 'proj-trading' ? CANONICAL_TRADING_PROJECT_ID : rawProjectId;
+  const projectId = (rawProjectId === 'proj-trading' || rawProjectId === 'b0000000-0000-0000-0000-000000000001') ? CANONICAL_TRADING_PROJECT_ID : rawProjectId;
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  // Cleanly replace URL if visiting via legacy slug
+  // Cleanly replace URL if visiting via legacy GUID or slug
   useEffect(() => {
-    if (rawProjectId === 'proj-trading') {
+    if (rawProjectId === 'proj-trading' || rawProjectId === 'b0000000-0000-0000-0000-000000000001') {
       const q = searchParams.toString();
-      router.replace(`/projects/${CANONICAL_TRADING_PROJECT_ID}${q ? `?${q}` : ''}`);
+      router.replace(`/projects/trading${q ? `?${q}` : ''}`);
     }
   }, [rawProjectId, searchParams, router]);
 

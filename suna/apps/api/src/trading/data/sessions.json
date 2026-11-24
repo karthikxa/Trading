@@ -1,0 +1,32 @@
+[
+  {
+    "session_id": "test-sess-1",
+    "account_id": "acc-trading",
+    "project_id": "b0000000-0000-0000-0000-000000000001",
+    "branch_name": "main",
+    "base_ref": "main",
+    "sandbox_provider": null,
+    "sandbox_id": null,
+    "sandbox_url": null,
+    "name": "Trading Assistant",
+    "agent_name": "portfolio_manager",
+    "status": "ready",
+    "created_at": "2026-11-24T15:20:41.207Z",
+    "updated_at": "2026-11-24T15:20:41.207Z"
+  },
+  {
+    "session_id": "41e580cf-3ed7-4c84-b74a-76ca329914e4",
+    "account_id": "acc-trading",
+    "project_id": "trading",
+    "branch_name": "main",
+    "base_ref": "main",
+    "sandbox_provider": null,
+    "sandbox_id": null,
+    "sandbox_url": null,
+    "name": "Trading Assistant",
+    "agent_name": "portfolio_manager",
+    "status": "ready",
+    "created_at": "2026-11-24T15:54:16.934Z",
+    "updated_at": "2026-11-24T15:54:16.934Z"
+  }
+]

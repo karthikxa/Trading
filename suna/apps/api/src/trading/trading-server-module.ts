@@ -25,6 +25,8 @@ const APPROVALS_FILE = path.join(DATA_DIR, 'approvals.json');
 const MESSAGES_FILE = path.join(DATA_DIR, 'messages.json');
 const SWARM_RUNS_FILE = path.join(DATA_DIR, 'swarm_runs.json');
 const GRANTS_FILE = path.join(DATA_DIR, 'connector_grants.json');
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+const TRANSCRIPTS_FILE = path.join(DATA_DIR, 'transcripts.json');
 
 function ensureDataDir() {
   try {
@@ -107,7 +109,7 @@ const CANONICAL_AGENTS: StoredAgent[] = [
     color: '#8B5CF6',
     expression: 'attentive',
     description: 'Synthesizes committee debate into capital allocation guidance.',
-    system_prompt: 'You are Portfolio Manager, Chief of Staff & Swarm Lead on the Tauric trading desk. Synthesize all analyst inputs into decisive capital allocation guidance and risk sizing. Always speak directly as Portfolio Manager.',
+    system_prompt: 'You are Portfolio Manager on the Tauric trading desk. Converse naturally, concisely, and warmly. If the user greets you or asks casual questions (like "how are u", "hi", "what can you do"), respond conversationally in 1-2 friendly sentences like a real desk teammate. Only provide detailed market reports or analysis when specifically requested.',
     model: 'zed',
     is_admin: true,
     is_pinned: true,
@@ -337,6 +339,8 @@ class TradingDataStore {
   grants: Map<string, StoredGrant> = new Map();
   sessions: Map<string, any> = new Map();
   sessionTranscripts: Map<string, any[]> = new Map();
+  sessionPrompts: Map<string, any[]> = new Map();
+  sessionSseStreams: Map<string, Set<any>> = new Map();
 
   constructor() {
     ensureDataDir();
@@ -402,6 +406,30 @@ class TradingDataStore {
       }
     } catch {}
 
+    // 6. Sessions
+    try {
+      if (fs.existsSync(SESSIONS_FILE)) {
+        const raw = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
+        if (Array.isArray(raw)) {
+          raw.forEach((s) => this.sessions.set(s.session_id, s));
+        }
+      }
+    } catch {}
+
+    // 7. Transcripts
+    try {
+      if (fs.existsSync(TRANSCRIPTS_FILE)) {
+        const raw = JSON.parse(fs.readFileSync(TRANSCRIPTS_FILE, 'utf8'));
+        if (typeof raw === 'object' && raw !== null) {
+          Object.entries(raw).forEach(([sid, msgs]) => {
+            if (Array.isArray(msgs)) {
+              this.sessionTranscripts.set(sid, msgs);
+            }
+          });
+        }
+      }
+    } catch {}
+
     this.recomputeApprovalCounts();
   }
 
@@ -432,6 +460,22 @@ class TradingDataStore {
   saveGrants() {
     try {
       fs.writeFileSync(GRANTS_FILE, JSON.stringify(Array.from(this.grants.values()), null, 2));
+    } catch {}
+  }
+
+  saveSessions() {
+    try {
+      fs.writeFileSync(SESSIONS_FILE, JSON.stringify(Array.from(this.sessions.values()), null, 2));
+    } catch {}
+  }
+
+  saveTranscripts() {
+    try {
+      const obj: Record<string, any[]> = {};
+      for (const [k, v] of this.sessionTranscripts.entries()) {
+        obj[k] = v;
+      }
+      fs.writeFileSync(TRANSCRIPTS_FILE, JSON.stringify(obj, null, 2));
     } catch {}
   }
 
@@ -490,19 +534,26 @@ export async function handleTradingRequest(
   // 1. Projects Detail & Cans Bridge (Fixes Connectors, Drive, Customize, Scope hanging)
   if ((pathname.match(/^\/(?:v1\/)?projects\/[^/]+(?:\/detail)?$/) || pathname.match(/^\/v1\/projects\/[^/]+$/)) && method === 'GET') {
     const parts = pathname.replace(/^\/v1/, '').split('/').filter(Boolean);
-    const projectId = parts[1] || 'b0000000-0000-0000-0000-000000000001';
+    const rawId = parts[1] || 'b0000000-0000-0000-0000-000000000001';
+    const projectId = (rawId === 'trading' || rawId === 'trading-desk' || rawId === 'desk') ? 'b0000000-0000-0000-0000-000000000001' : rawId;
+    const projectObj = {
+      id: projectId,
+      name: 'Trading Desk',
+      slug: 'trading-desk',
+      icon: null,
+      icon_glyph: null,
+      account_id: 'acc-trading',
+      created_at: '2026-11-20T00:00:00.000Z',
+      updated_at: new Date().toISOString(),
+    };
     sendJson(200, {
-      project: {
-        id: projectId,
-        name: 'Trading Desk',
-        slug: 'trading-desk',
-        account_id: 'acc-trading',
-        created_at: '2026-11-20T00:00:00.000Z',
-        updated_at: new Date().toISOString(),
-      },
+      ...projectObj,
+      project: projectObj,
       config: {
         default_agent: 'portfolio_manager',
         open_code_default_agent: 'portfolio_manager',
+        skills: [],
+        commands: [],
         agents: Array.from(store.agents.values()).map((a) => ({
           name: a.id,
           role: a.role,
@@ -510,6 +561,22 @@ export async function handleTradingRequest(
         })),
       },
       role: 'admin',
+    });
+    return true;
+  }
+
+  // 1.1 Project Config
+  if (pathname.match(/^\/(?:v1\/)?projects\/[^/]+\/config$/) && method === 'GET') {
+    sendJson(200, {
+      default_agent: 'portfolio_manager',
+      open_code_default_agent: 'portfolio_manager',
+      skills: [],
+      commands: [],
+      agents: Array.from(store.agents.values()).map((a) => ({
+        name: a.id,
+        role: a.role,
+        scope: { env: [], connectors: [] },
+      })),
     });
     return true;
   }
@@ -982,6 +1049,35 @@ export async function handleTradingRequest(
     return true;
   }
 
+  // 12.5. Project Summary & Metadata (/v1/projects/:projectId and /projects/:projectId)
+  const projectDetailMatch = pathname.match(/^\/(?:v1\/)?projects\/([^\/]+)$/);
+  if (projectDetailMatch && method === 'GET') {
+    const matchedProjectId = projectDetailMatch[1];
+    const projectRecord = {
+      id: matchedProjectId,
+      project_id: matchedProjectId,
+      name: 'Trading Desk',
+      slug: 'trading-desk',
+      account_id: 'acc-trading',
+      icon: null,
+      icon_glyph: null,
+      repo_url: '',
+      default_branch: 'main',
+      manifest_path: '',
+      status: 'active',
+      metadata: {},
+      last_opened_at: new Date().toISOString(),
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: new Date().toISOString(),
+      project_role: 'admin',
+    };
+    sendJson(200, {
+      ...projectRecord,
+      project: projectRecord,
+    });
+    return true;
+  }
+
   // 13. Project Sessions & Transcript Engine (OpenCode / Kortix / Next.js Compatibility)
   // Handles /v1/projects/:projectId/sessions/... and /projects/:projectId/sessions/...
   const sessionMatch = pathname.match(/^\/(?:v1\/)?projects\/([^\/]+)\/sessions(?:\/([^\/]+)(?:\/([^\/]+))?)?$/);
@@ -993,7 +1089,12 @@ export async function handleTradingRequest(
     // A. List or Create Sessions: /projects/:projectId/sessions
     if (!matchedSessionId) {
       if (method === 'GET') {
-        sendJson(200, Array.from(store.sessions.values()));
+        const parent = parsedUrl.query.parent || parsedUrl.query.parent_session_id;
+        const allSessions = Array.from(store.sessions.values());
+        const filtered = parent
+          ? allSessions.filter((s: any) => s.parent_session_id === parent || s.parent_id === parent)
+          : allSessions;
+        sendJson(200, filtered);
         return true;
       }
       if (method === 'POST') {
@@ -1016,6 +1117,7 @@ export async function handleTradingRequest(
           updated_at: new Date().toISOString(),
         };
         store.sessions.set(sid, newSession);
+        store.saveSessions();
 
         // If there was an initial prompt in pending_prompt:
         if (body.pending_prompt?.parts) {
@@ -1033,6 +1135,7 @@ export async function handleTradingRequest(
               error: null,
             });
             store.sessionTranscripts.set(sid, transcript);
+            store.saveTranscripts();
 
             // Execute LLM call in background
             (async () => {
@@ -1057,6 +1160,7 @@ export async function handleTradingRequest(
                   error: null,
                 });
                 store.sessionTranscripts.set(sid, transcript);
+                store.saveTranscripts();
               } catch (e: any) {
                 console.error('[Session Create Background LLM Error]:', e.message);
               }
@@ -1092,6 +1196,21 @@ export async function handleTradingRequest(
       }
     }
 
+    // Helper to broadcast SSE event to all connected clients for a session
+    const broadcastSessionEvent = (sessionId: string, eventData: any) => {
+      const streams = store.sessionSseStreams.get(sessionId);
+      if (streams && streams.size > 0) {
+        const payload = `data: ${JSON.stringify(eventData)}\n\n`;
+        for (const clientRes of streams) {
+          try {
+            clientRes.write(payload);
+          } catch {
+            streams.delete(clientRes);
+          }
+        }
+      }
+    };
+
     // C. Session Prompts: /projects/:projectId/sessions/:sessionId/prompts
     if (matchedSessionId && subRoute === 'prompts') {
       if (method === 'GET') {
@@ -1108,13 +1227,31 @@ export async function handleTradingRequest(
         const promptText = parts.map((p: any) => p.text || '').join('\n').trim() || body.prompt || body.message || '';
         const agentName = body.overrides?.agent || 'portfolio_manager';
         const agent = store.agents.get(agentName) || CANONICAL_AGENTS[0];
+        const nowMs = Date.now();
+        const userMsgId = `msg_user_${nowMs}_${Math.random().toString(36).substring(2, 6)}`;
+        const userPartId = `part_${userMsgId}`;
 
-        // Ensure user message is appended to session transcript
+        // Ensure user message is appended to session transcript in full Kortix V1 Message Row format
         const transcript = store.sessionTranscripts.get(matchedSessionId) || [];
         const userMsg = {
+          info: {
+            id: userMsgId,
+            sessionID: matchedSessionId,
+            role: 'user',
+            time: { created: nowMs, completed: nowMs },
+          },
+          parts: [
+            {
+              id: userPartId,
+              sessionID: matchedSessionId,
+              messageID: userMsgId,
+              type: 'text',
+              text: promptText,
+            },
+          ],
           role: 'user',
-          created: new Date().toISOString(),
-          completed: new Date().toISOString(),
+          created: new Date(nowMs).toISOString(),
+          completed: new Date(nowMs).toISOString(),
           text: promptText,
           tools: [],
           files: [],
@@ -1123,34 +1260,89 @@ export async function handleTradingRequest(
         };
         transcript.push(userMsg);
         store.sessionTranscripts.set(matchedSessionId, transcript);
+        store.saveTranscripts();
+
+        const promptItem = {
+          message_id: body.message_id || userMsgId,
+          parts: parts.length > 0 ? parts : [{ type: 'text', text: promptText }],
+          placement: 'top',
+          created_at: new Date(nowMs).toISOString(),
+        };
+        store.sessionPrompts.set(matchedSessionId, []);
 
         // Immediate durable response so prompt sender completes instantly
         sendJson(200, {
-          prompt: {
-            message_id: body.message_id || `msg_${Date.now()}`,
-            parts: parts.length > 0 ? parts : [{ type: 'text', text: promptText }],
-            placement: 'top',
-            created_at: new Date().toISOString(),
+          prompt: promptItem,
+        });
+
+        // Broadcast turn started and cleared queue to SSE streams
+        const activeTurnId = `turn_${nowMs}`;
+        broadcastSessionEvent(matchedSessionId, {
+          type: 'kortix.control.queue',
+          channel: 'control',
+          cseq: Date.now(),
+          cepoch: 'ep1',
+          at: Date.now(),
+          payload: {
+            known: true,
+            prompts: [],
+            sent: [],
+            held: false,
+            observed_at: new Date().toISOString(),
+          },
+        });
+        broadcastSessionEvent(matchedSessionId, {
+          type: 'kortix.control.turn',
+          channel: 'control',
+          cseq: Date.now() + 1,
+          cepoch: 'ep1',
+          at: Date.now(),
+          payload: {
+            known: true,
+            turns: [{ turn_token: activeTurnId }],
+            last_ended: null,
+            can_stop: true,
           },
         });
 
-        // Trigger LLM in background with 'auto' model
+        // Trigger LLM in background with 'auto' model via Render LLM endpoint
         (async () => {
           try {
-            const systemPrompt = agent.system_prompt || `You are ${agent.name}, ${agent.role} on the Tauric trading desk. Speak decisively as ${agent.name}.`;
+            const systemPrompt = `You are ${agent.name}, ${agent.role} on the Tauric trading desk.
+Speak naturally, directly, concisely, and stay in character.
+When asked for your name or who you are, state that you are ${agent.name}, ${agent.role} on the Tauric Trading Desk.`;
             const messages = [
               { role: 'system', content: systemPrompt },
               { role: 'user', content: promptText },
             ];
             const llmRes = await dispatchLlmCall('auto', messages);
-            const reply = llmRes.ok && llmRes.content
+            let reply = llmRes.ok && llmRes.content
               ? llmRes.content
-              : `I am ${agent.name}. I received your message "${promptText.slice(0, 40)}". Desk risk parameters are normal.`;
+              : `I am ${agent.name}. I received your message. Desk telemetry and risk parameters remain normal.`;
 
+            const asstTimeMs = Date.now();
+            const asstMsgId = `msg_asst_${asstTimeMs}_${Math.random().toString(36).substring(2, 6)}`;
+            const asstPartId = `part_${asstMsgId}`;
             const asstMsg = {
+              info: {
+                id: asstMsgId,
+                sessionID: matchedSessionId,
+                role: 'assistant',
+                agent: agentName,
+                time: { created: asstTimeMs, completed: asstTimeMs },
+              },
+              parts: [
+                {
+                  id: asstPartId,
+                  sessionID: matchedSessionId,
+                  messageID: asstMsgId,
+                  type: 'text',
+                  text: reply,
+                },
+              ],
               role: 'assistant',
-              created: new Date().toISOString(),
-              completed: new Date().toISOString(),
+              created: new Date(asstTimeMs).toISOString(),
+              completed: new Date(asstTimeMs).toISOString(),
               text: reply,
               tools: [],
               files: [],
@@ -1159,8 +1351,101 @@ export async function handleTradingRequest(
             };
             transcript.push(asstMsg);
             store.sessionTranscripts.set(matchedSessionId, transcript);
+            store.saveTranscripts();
+
+            // Construct v2 SessionLogMessage
+            const v2AsstMsg = {
+              schema: 'kortix.session/2',
+              v: 1,
+              message_id: asstMsgId,
+              thread_id: 'thread-main',
+              seq: transcript.length - 1,
+              role: 'assistant',
+              kind: 'turn',
+              status: 'complete',
+              in_context: true,
+              model: null,
+              usage: null,
+              finish: 'stop',
+              error: null,
+              created_at: new Date(asstTimeMs).toISOString(),
+              completed_at: new Date(asstTimeMs).toISOString(),
+              producer: {
+                harness: 'kortix',
+                harness_version: '2.0.0',
+                adapter_version: '2.0.0',
+              },
+              blocks: [
+                {
+                  id: `blk_${asstMsgId}_0`,
+                  type: 'text',
+                  text: reply,
+                },
+              ],
+            };
+
+            // Stream runtime log message so Kortix live renders the reply
+            broadcastSessionEvent(matchedSessionId, {
+              channel: 'runtime',
+              seq: transcript.length,
+              epoch: 'ep1',
+              type: 'log.message',
+              payload: {
+                rev: asstTimeMs,
+                message: v2AsstMsg,
+              },
+            });
+
+            // Turn completed - broadcast to clear typing status & trigger sync
+            broadcastSessionEvent(matchedSessionId, {
+              type: 'kortix.control.turn',
+              channel: 'control',
+              cseq: Date.now(),
+              cepoch: 'ep1',
+              at: Date.now(),
+              payload: {
+                known: true,
+                turns: [],
+                last_ended: { ended_at: new Date().toISOString() },
+                can_stop: false,
+              },
+            });
+            broadcastSessionEvent(matchedSessionId, {
+              type: 'kortix.control.queue',
+              channel: 'control',
+              cseq: Date.now() + 1,
+              cepoch: 'ep1',
+              at: Date.now(),
+              payload: {
+                known: true,
+                prompts: [],
+                sent: [],
+                held: false,
+                observed_at: new Date().toISOString(),
+              },
+            });
+            broadcastSessionEvent(matchedSessionId, {
+              type: 'kortix.control.resync',
+              channel: 'control',
+              cseq: Date.now() + 2,
+              cepoch: 'ep1',
+              at: Date.now(),
+            });
           } catch (e: any) {
             console.error('[Session Prompts Async LLM Error]:', e.message);
+            broadcastSessionEvent(matchedSessionId, {
+              type: 'kortix.control.turn',
+              channel: 'control',
+              cseq: Date.now(),
+              cepoch: 'ep1',
+              at: Date.now(),
+              payload: {
+                known: true,
+                turns: [],
+                last_ended: { ended_at: new Date().toISOString() },
+                can_stop: false,
+              },
+            });
           }
         })();
 
@@ -1168,7 +1453,153 @@ export async function handleTradingRequest(
       }
     }
 
-    // D. Session Transcript: /projects/:projectId/sessions/:sessionId/transcript
+    // D. Session Events SSE Stream: /projects/:projectId/sessions/:sessionId/events
+    if (matchedSessionId && subRoute === 'events') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': '*',
+      });
+
+      // Send initial hello, runtime status, and queue status
+      res.write(`data: ${JSON.stringify({ type: 'kortix.stream.heartbeat' })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'kortix.runtime.status', state: 'up', reason: null })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        type: 'kortix.control.session',
+        channel: 'control',
+        cseq: 1,
+        cepoch: 'ep1',
+        at: Date.now(),
+        payload: {
+          session_id: matchedSessionId,
+          name: 'Trading Assistant',
+        },
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        type: 'kortix.control.queue',
+        channel: 'control',
+        cseq: 2,
+        cepoch: 'ep1',
+        at: Date.now(),
+        payload: {
+          known: true,
+          prompts: [],
+          sent: [],
+          held: false,
+          observed_at: new Date().toISOString(),
+        },
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        type: 'kortix.control.turn',
+        channel: 'control',
+        cseq: 3,
+        cepoch: 'ep1',
+        at: Date.now(),
+        payload: {
+          known: true,
+          turns: [],
+          last_ended: null,
+          can_stop: false,
+        },
+      })}\n\n`);
+
+      // Track active SSE client
+      let streamSet = store.sessionSseStreams.get(matchedSessionId);
+      if (!streamSet) {
+        streamSet = new Set();
+        store.sessionSseStreams.set(matchedSessionId, streamSet);
+      }
+      streamSet.add(res);
+
+      const hbInterval = setInterval(() => {
+        try {
+          res.write(`data: ${JSON.stringify({ type: 'kortix.stream.heartbeat' })}\n\n`);
+        } catch {
+          clearInterval(hbInterval);
+        }
+      }, 15000);
+
+      req.on('close', () => {
+        clearInterval(hbInterval);
+        streamSet?.delete(res);
+      });
+
+      return true;
+    }
+
+    // E. Session Log (Kortix v2 Session Log Contract): /projects/:projectId/sessions/:sessionId/log
+    if (matchedSessionId && subRoute === 'log') {
+      const rawMsgs = store.sessionTranscripts.get(matchedSessionId) || [];
+      const sess = store.sessions.get(matchedSessionId);
+      const threadId = 'thread-main';
+
+      const v2Messages = rawMsgs.map((m: any, index: number) => {
+        const msgId = m.info?.id || `msg_${index}_${matchedSessionId}`;
+        const text = m.parts?.[0]?.text || m.text || '';
+        const role = m.role || m.info?.role || 'user';
+        const createdAt = m.created || new Date().toISOString();
+        const completedAt = m.completed || createdAt;
+
+        return {
+          schema: 'kortix.session/2',
+          v: 1,
+          message_id: msgId,
+          thread_id: threadId,
+          seq: index,
+          role: role === 'assistant' ? 'assistant' : role === 'system' ? 'system' : 'user',
+          kind: 'turn',
+          status: 'complete',
+          in_context: true,
+          model: null,
+          usage: null,
+          finish: 'stop',
+          error: null,
+          created_at: createdAt,
+          completed_at: completedAt,
+          producer: {
+            harness: 'kortix',
+            harness_version: '2.0.0',
+            adapter_version: '2.0.0',
+          },
+          blocks: [
+            {
+              id: `blk_${msgId}_0`,
+              type: 'text',
+              text: String(text),
+            },
+          ],
+        };
+      });
+
+      sendJson(200, {
+        generation: 1,
+        has_more: false,
+        session: {
+          schema: 'kortix.session/2',
+          v: 1,
+          session_id: matchedSessionId,
+          title: sess?.name || 'Trading Assistant',
+          created_at: sess?.created_at || new Date().toISOString(),
+        },
+        threads: [
+          {
+            schema: 'kortix.session/2',
+            v: 1,
+            thread_id: threadId,
+            parent_thread_id: null,
+            spawned_by: null,
+            created_at: sess?.created_at || new Date().toISOString(),
+          },
+        ],
+        thread_id: threadId,
+        messages: v2Messages,
+      });
+      return true;
+    }
+
+    // F. Session Transcript: /projects/:projectId/sessions/:sessionId/transcript
     if (matchedSessionId && subRoute === 'transcript') {
       const msgs = store.sessionTranscripts.get(matchedSessionId) || [];
       sendJson(200, {
@@ -1185,7 +1616,7 @@ export async function handleTradingRequest(
       return true;
     }
 
-    // E. Session Turn Status: /projects/:projectId/sessions/:sessionId/turn
+    // F. Session Turn Status: /projects/:projectId/sessions/:sessionId/turn
     if (matchedSessionId && subRoute === 'turn') {
       sendJson(200, {
         running: false,
@@ -1194,7 +1625,7 @@ export async function handleTradingRequest(
       return true;
     }
 
-    // F. Session Snapshot / Open Bundle: /projects/:projectId/sessions/:sessionId/snapshot or open
+    // G. Session Snapshot / Open Bundle: /projects/:projectId/sessions/:sessionId/snapshot or open
     if (matchedSessionId && (subRoute === 'snapshot' || subRoute === 'open')) {
       const msgs = store.sessionTranscripts.get(matchedSessionId) || [];
       sendJson(200, {

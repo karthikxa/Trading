@@ -97,12 +97,6 @@ export function SessionBusyIndicator({
       )}
     >
       <SessionDotMatrix sessionId={sessionId} size={14} className="shrink-0" />
-      {agentName ? (
-        <span
-          className="size-2 shrink-0 rounded-full inline-block"
-          style={{ backgroundColor: agentColor || '#F97316', boxShadow: '0 0 0 1px rgba(0,0,0,0.1)' }}
-        />
-      ) : null}
       <span className="relative min-w-0 flex-1" aria-hidden>
         {isRetrying ? (
           <span className="text-muted-foreground/70 block truncate text-sm leading-5 tabular-nums">

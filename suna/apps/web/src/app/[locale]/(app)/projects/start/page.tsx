@@ -78,7 +78,7 @@ export default function ProjectStartPage() {
   useEffect(() => {
     if (decided.current) return;
     const raw = readRawLastProjectCookie();
-    const remembered = readLastProjectId(user?.id) || (raw ? raw.split(':')[1] : null) || 'b0000000-0000-0000-0000-000000000001';
+    const remembered = readLastProjectId(user?.id) || (raw ? raw.split(':')[1] : null) || 'trading';
     decided.current = withCurrentQuery(`/projects/${remembered}`);
     router.replace(decided.current);
 

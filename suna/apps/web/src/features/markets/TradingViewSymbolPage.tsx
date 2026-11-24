@@ -178,7 +178,7 @@ export default function TradingViewSymbolPage({
 
           <div className="flex items-center gap-2.5 flex-wrap">
             <Link
-              href={`/projects/b0000000-0000-0000-0000-000000000001?tab=chart`}
+              href={`/projects/trading?tab=chart`}
               className="inline-flex items-center gap-1.5 rounded-lg border border-border/80 bg-background px-3.5 py-2 text-xs font-semibold text-foreground shadow-2xs hover:bg-muted/50 transition-colors"
             >
               <span>See on Supercharts</span>

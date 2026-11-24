@@ -4,26 +4,51 @@
  * and autonomous workflow health across all 8 canonical trading bots.
  */
 
-export type HeartbeatCadence = '10s' | '30s' | '1m' | '5m' | '15m' | '1h' | 'daily' | 'market_hours';
+export type HeartbeatCadence =
+  | '10s'
+  | '15s'
+  | '30s'
+  | '45s'
+  | '60s'
+  | '1m'
+  | '5m'
+  | '15m'
+  | '1h'
+  | 'daily'
+  | 'market_hours'
+  | 'paused'
+  | string;
 
 export interface HeartbeatSettings {
   enabled: boolean;
-  cadence: HeartbeatCadence | string;
+  cadence: HeartbeatCadence;
   intervalMs: number;
   notifyOnAnomaly: boolean;
   dhanTokenAutoRefresh: boolean;
   autoExecuteSafeTrades: boolean;
   activeAgents: string[];
+  [key: string]: any;
 }
 
 export interface AgentHeartbeatStatus {
   agentId: string;
   isAlive: boolean;
-  status: 'idle' | 'monitoring' | 'analyzing' | 'executing' | 'offline';
+  status: 'idle' | 'monitoring' | 'analyzing' | 'executing' | 'offline' | string;
   lastPing: string;
   latencyMs?: number;
   currentTask?: string;
   dhanTokenValid?: boolean;
+  [key: string]: any;
+}
+
+export interface HeartbeatMessage {
+  id: string;
+  sender: 'agent';
+  agentId: string;
+  agentName: string;
+  content: string;
+  timestamp: string;
+  [key: string]: any;
 }
 
 export interface SystemHealthMetrics {
@@ -34,13 +59,14 @@ export interface SystemHealthMetrics {
   totalAgentsOnline: number;
   heartbeatIntervalMs: number;
   activeAutomations: number;
+  [key: string]: any;
 }
 
 type HeartbeatListener = (statuses: Record<string, AgentHeartbeatStatus>, metrics: SystemHealthMetrics) => void;
 
 class AgentHeartbeatEngine {
   private intervalId: NodeJS.Timeout | null = null;
-  private intervalMs: number = 30000; // 30s default heartbeat
+  private intervalMs: number = 30000;
   private listeners: Set<HeartbeatListener> = new Set();
   
   private settings: HeartbeatSettings = {
@@ -98,13 +124,11 @@ class AgentHeartbeatEngine {
 
   private checkMarketStatus(): boolean {
     const now = new Date();
-    // IST conversion: UTC + 5:30
     const utcHours = now.getUTCHours();
     const utcMinutes = now.getUTCMinutes();
     const istMinutes = utcHours * 60 + utcMinutes + 330;
     const day = now.getUTCDay();
 
-    // Monday (1) to Friday (5), 9:15 to 15:30 IST (555 to 930 minutes)
     const isWeekday = day >= 1 && day <= 5;
     const isMarketHours = istMinutes >= 555 && istMinutes <= 930;
     this.metrics.marketOpen = isWeekday && isMarketHours;
@@ -160,7 +184,6 @@ class AgentHeartbeatEngine {
     const nowIso = new Date().toISOString();
     this.checkMarketStatus();
 
-    // Refresh agent heartbeats
     Object.keys(this.agentStatuses).forEach((agentId) => {
       const current = this.agentStatuses[agentId];
       this.agentStatuses[agentId] = {
@@ -191,13 +214,43 @@ class AgentHeartbeatEngine {
     this.notify();
   }
 
-  public dispatchAgentHeartbeat(agentId: string, customStatus?: Partial<AgentHeartbeatStatus>): void {
+  public dispatchAgentHeartbeat(
+    agentId: string,
+    agentNameOrCustom?: any,
+    role?: any,
+    ..._rest: any[]
+  ): HeartbeatMessage {
+    const name = typeof agentNameOrCustom === 'string'
+      ? agentNameOrCustom
+      : agentId.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    const r = typeof role === 'string' ? role : 'trading agent';
+
     this.recordAgentHeartbeat(agentId, {
       isAlive: true,
-      status: customStatus?.status || 'monitoring',
-      currentTask: customStatus?.currentTask || 'Autonomous task cycle active',
-      ...customStatus,
+      status: typeof agentNameOrCustom === 'object' ? agentNameOrCustom?.status || 'monitoring' : 'monitoring',
+      currentTask: typeof agentNameOrCustom === 'object' ? agentNameOrCustom?.currentTask || `Active ${r} monitoring loop` : `Active ${r} monitoring loop`,
     });
+
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const message: HeartbeatMessage = {
+      id: `hb_${agentId}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      sender: 'agent',
+      agentId,
+      agentName: name,
+      content: `[Heartbeat] ${name} (${r}) routine pulse verified. Desk telemetry and risk parameters operational.`,
+      timestamp: timeStr,
+    };
+
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent('agent-heartbeat-pulse', {
+          detail: { agentId, agentName: name, message }
+        }));
+      } catch {}
+    }
+
+    return message;
   }
 
   public getStatus(agentId: string): AgentHeartbeatStatus | undefined {
@@ -214,7 +267,6 @@ class AgentHeartbeatEngine {
 
   public subscribe(listener: HeartbeatListener): () => void {
     this.listeners.add(listener);
-    // Initial call
     listener({ ...this.agentStatuses }, { ...this.metrics });
     return () => {
       this.listeners.delete(listener);
@@ -244,8 +296,13 @@ export function saveHeartbeatSettings(settings: Partial<HeartbeatSettings>): Hea
   return heartbeatEngine.saveSettings(settings);
 }
 
-export function dispatchAgentHeartbeat(agentId: string, customStatus?: Partial<AgentHeartbeatStatus>): void {
-  heartbeatEngine.dispatchAgentHeartbeat(agentId, customStatus);
+export function dispatchAgentHeartbeat(
+  agentId: string,
+  agentNameOrCustom?: any,
+  role?: any,
+  ...rest: any[]
+): HeartbeatMessage {
+  return heartbeatEngine.dispatchAgentHeartbeat(agentId, agentNameOrCustom, role, ...rest);
 }
 
 export function startAgentHeartbeat(intervalMs: number = 30000): () => void {

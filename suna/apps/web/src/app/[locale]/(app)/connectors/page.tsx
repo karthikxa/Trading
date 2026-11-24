@@ -9,8 +9,8 @@ export default function ConnectorsRedirectPage() {
   useEffect(() => {
     const projectId =
       typeof window !== 'undefined'
-        ? localStorage.getItem('last_project_id') || 'b0000000-0000-0000-0000-000000000001'
-        : 'b0000000-0000-0000-0000-000000000001';
+        ? localStorage.getItem('last_project_id') || 'trading'
+        : 'trading';
     router.replace(`/projects/${projectId}/admin/connectors`);
   }, [router]);
 

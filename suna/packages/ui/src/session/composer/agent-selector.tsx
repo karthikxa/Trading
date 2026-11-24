@@ -321,14 +321,7 @@ export function AgentSelector({
         disabled
         className="text-muted-foreground rounded-lg hit-area-y-3"
       >
-        <BotAvatar
-          shape={activeSwarmBot?.shape || 'circle'}
-          color={activeSwarmBot?.color || '#8B5CF6'}
-          expression={activeSwarmBot?.expression || 'attentive'}
-          size={18}
-          isAnimated={false}
-        />
-        <span className={cn('max-w-[120px] truncate ml-1.5 font-medium', triggerLabelClassName)}>
+        <span className={cn('max-w-[120px] truncate font-medium', triggerLabelClassName)}>
           {currentDisplayName}
         </span>
       </Button>
@@ -351,17 +344,6 @@ export function AgentSelector({
           />
         }
       >
-        {selectedGroup ? (
-          <OverlappingAvatars agentIds={selectedGroup.agentIds} size={20} />
-        ) : (
-          <BotAvatar
-            shape={activeSwarmBot?.shape || 'circle'}
-            color={activeSwarmBot?.color || '#8B5CF6'}
-            expression={activeSwarmBot?.expression || 'attentive'}
-            size={20}
-            isAnimated={true}
-          />
-        )}
         <span
           className={cn(
             'truncate text-sm font-medium text-zinc-900 dark:text-zinc-100 leading-tight font-sans tracking-normal max-w-[160px]',

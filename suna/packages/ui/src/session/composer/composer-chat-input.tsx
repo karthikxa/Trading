@@ -210,14 +210,14 @@ export function ComposerChatInput({
     ? runtimeCommands
     : projectConfig
       ? [
-          ...projectConfig.skills.map((skill): Command => ({
+          ...(projectConfig.skills ?? []).map((skill): Command => ({
             name: skill.name,
             description: skill.description ?? undefined,
             source: 'skill',
             template: '',
             hints: [],
           })),
-          ...projectConfig.commands.map((command): Command => ({
+          ...(projectConfig.commands ?? []).map((command): Command => ({
             name: command.name,
             description: command.description ?? undefined,
             source: 'command',

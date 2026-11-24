@@ -507,6 +507,16 @@ const nextConfig = (): NextConfig => ({
 
   async redirects() {
     return [
+      {
+        source: '/projects/b0000000-0000-0000-0000-000000000001/:path*',
+        destination: '/projects/trading/:path*',
+        permanent: false,
+      },
+      {
+        source: '/projects/b0000000-0000-0000-0000-000000000001',
+        destination: '/projects/trading',
+        permanent: false,
+      },
       // The desktop shell historically launched at /dashboard, which never
       // existed. The signed-in home is /projects (see middleware). Desktop
       // builds that baked the old URL in, and old links, land there instead
@@ -1104,6 +1114,38 @@ const nextConfig = (): NextConfig => ({
       { type: 'header' as const, key: 'accept', value: '(?:.*,)?\\s*text/markdown.*' },
     ];
     const beforeFiles = [
+      {
+        source: '/projects/:projectId/sessions/:sessionId/events',
+        destination: `${process.env.KORTIX_API_PROXY_TARGET ?? 'http://localhost:8008'}/projects/:projectId/sessions/:sessionId/events`,
+      },
+      {
+        source: '/projects/:projectId/sessions/:sessionId/prompts',
+        destination: `${process.env.KORTIX_API_PROXY_TARGET ?? 'http://localhost:8008'}/projects/:projectId/sessions/:sessionId/prompts`,
+      },
+      {
+        source: '/projects/:projectId/sessions/:sessionId/log',
+        destination: `${process.env.KORTIX_API_PROXY_TARGET ?? 'http://localhost:8008'}/projects/:projectId/sessions/:sessionId/log`,
+      },
+      {
+        source: '/projects/:projectId/sessions/:sessionId/transcript',
+        destination: `${process.env.KORTIX_API_PROXY_TARGET ?? 'http://localhost:8008'}/projects/:projectId/sessions/:sessionId/transcript`,
+      },
+      {
+        source: '/projects/:projectId/sessions/:sessionId/turn',
+        destination: `${process.env.KORTIX_API_PROXY_TARGET ?? 'http://localhost:8008'}/projects/:projectId/sessions/:sessionId/turn`,
+      },
+      {
+        source: '/projects/:projectId/sessions/:sessionId/abort',
+        destination: `${process.env.KORTIX_API_PROXY_TARGET ?? 'http://localhost:8008'}/projects/:projectId/sessions/:sessionId/abort`,
+      },
+      {
+        source: '/trading/:path*',
+        destination: '/projects/trading/:path*',
+      },
+      {
+        source: '/trading',
+        destination: '/projects/trading',
+      },
       {
         source: '/docs',
         has: acceptsMarkdown,

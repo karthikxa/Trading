@@ -342,7 +342,38 @@ async function dispatchLlmCall(
 
   const key = apiKey || resolveApiKey(mDef.provider);
 
-  // 1. Keyless Pollinations Handler
+  // 1. Primary: Direct Call to Render LLM Endpoint
+  try {
+    const renderRes = await fetch('https://server-llm-1.onrender.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'auto',
+        messages,
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (renderRes.ok) {
+      const data = await renderRes.json() as any;
+      const text = data?.choices?.[0]?.message?.content;
+      if (text) {
+        return {
+          ok: true,
+          content: text.trim(),
+          model: data.model || 'auto',
+          provider: 'RenderLLM',
+          latencyMs: Date.now() - started,
+        };
+      }
+    } else {
+      console.warn(`[Standalone FreeLLM] Render LLM HTTP ${renderRes.status}:`, (await renderRes.text().catch(() => '')).slice(0, 160));
+    }
+  } catch (e: any) {
+    console.warn('[Standalone FreeLLM] Render LLM error, falling back:', e.message);
+  }
+
+  // 2. Keyless Pollinations Handler
   if (mDef.provider === 'pollinations' || (!key && mDef.keyless)) {
     try {
       let pollRes = await fetch('https://text.pollinations.ai/openai/chat/completions', {
