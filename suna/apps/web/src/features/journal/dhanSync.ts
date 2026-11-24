@@ -303,6 +303,11 @@ export async function syncDhanTradesToJournal(
             window.dispatchEvent(
               new CustomEvent('trading-journal-updated', { detail: cachedTrades })
             );
+
+            // Reconcile in background with live Dhan API so missing/recent trades are backfilled automatically
+            setTimeout(() => {
+              syncDhanTradesToJournal(projectId, true).catch(() => {});
+            }, 500);
           }
 
           return {

@@ -291,6 +291,12 @@ function scheduleNextSync() {
   if ((isMidnightReconcile || isMorningPremarket) && lastScheduledMilestone !== currentMinuteKey) {
     lastScheduledMilestone = currentMinuteKey;
     performSync(true); // Force 1 full API sync for all dashboard metrics
+    try {
+      if (typeof window !== 'undefined') {
+        import('@/features/journal/dhanSync').then((m) => m.syncDhanTradesToJournal(undefined, true)).catch(() => {});
+        import('@/features/trading/dhanOrdersSync').then((m) => m.syncDhanOrders(true)).catch(() => {});
+      }
+    } catch {}
   }
 
   // Live market hours (9:15 AM - 3:30 PM): 1000ms (1-second fast polling)
@@ -307,8 +313,12 @@ function startLiveSync() {
   if (typeof window === 'undefined') return;
   if (syncTimer || tickTimer) return;
 
-  // Immediate fast verification in background
+  // Immediate fast verification in background for funds, positions, journal, and orders
   performSync();
+  try {
+    import('@/features/journal/dhanSync').then((m) => m.syncDhanTradesToJournal(undefined, true)).catch(() => {});
+    import('@/features/trading/dhanOrdersSync').then((m) => m.syncDhanOrders(true)).catch(() => {});
+  } catch {}
 
   // 1. 50ms Ultra-High-Frequency Local UI Tick Loop (20 updates/second)
   // Pumps live reactive state to all components every 50ms with 0ms local latency
