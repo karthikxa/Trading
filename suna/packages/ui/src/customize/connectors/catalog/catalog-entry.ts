@@ -101,7 +101,33 @@ export function appNameKey(name: string): string {
     .replace(/(mcp|mcpserver)$/, '');
 }
 
+export const DHAN_CATALOG_ENTRY: CatalogEntry = {
+  source: 'discover',
+  key: 'discover:dhan',
+  slug: 'dhan',
+  name: 'Dhan',
+  description: 'Indian Stock Broker for NSE & BSE live trading, order execution and portfolio audit.',
+  icon: '/logos/dhan.svg',
+  categories: ['Trading', 'Finance'],
+  popularity: 1,
+  connector: {
+    id: 'dhan',
+    kind: 'composio',
+    slug: 'dhan',
+    name: 'Dhan',
+    description: 'Indian Stock Broker for NSE & BSE live trading, order execution and portfolio audit.',
+    url: 'https://dhan.co',
+    icon: '/logos/dhan.svg',
+    domain: 'dhan.co',
+    categories: ['Trading', 'Finance'],
+    feeds: ['popular'],
+    popularity: 1,
+    oneClick: true,
+  },
+};
+
 export function catalogEntryKindLabel(entry: CatalogEntry): string {
+  if (entry?.slug === 'dhan') return 'Composio';
   switch (entry?.connector?.kind) {
     case 'composio':
       return 'Composio';

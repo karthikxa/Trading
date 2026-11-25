@@ -225,16 +225,10 @@ export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderIte
   }
 
   try {
-    const userToken = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_access_token') : null;
-    const userClientId = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_client_id') : null;
-    const authHeaders: HeadersInit = {};
-    if (userToken) authHeaders['x-dhan-access-token'] = userToken;
-    if (userClientId) authHeaders['x-dhan-client-id'] = userClientId;
-
-    // 1. Fetch today's orders & executions from Dhan
+    // 1. Fetch today's orders & executions from Dhan (authenticated via httpOnly session cookie)
     const [ordersRes, tradesRes] = await Promise.all([
-      fetch('/api/dhan?action=orders', { headers: authHeaders }).then((r) => r.json()).catch(() => ({ ok: false, data: [] })),
-      fetch('/api/dhan?action=all_trades', { headers: authHeaders }).then((r) => r.json()).catch(() => ({ ok: false, data: [] })),
+      fetch('/api/dhan?action=orders', { credentials: 'same-origin' }).then((r) => r.json()).catch(() => ({ ok: false, data: [] })),
+      fetch('/api/dhan?action=all_trades', { credentials: 'same-origin' }).then((r) => r.json()).catch(() => ({ ok: false, data: [] })),
     ]);
 
     const liveOrdersList = Array.isArray(ordersRes?.data) ? ordersRes.data : [];
@@ -256,7 +250,7 @@ export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderIte
       orderMap.set(orderId, {
         orderId,
         exchangeOrderId: o.exchangeOrderId ? String(o.exchangeOrderId) : undefined,
-        dhanClientId: String(o.dhanClientId || '1114824544'),
+        dhanClientId: String(o.dhanClientId || ''),
         tradingSymbol: cleanSym,
         customSymbol: displayName,
         securityId: String(o.securityId || ''),
@@ -329,7 +323,7 @@ export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderIte
         orderMap.set(orderId, {
           orderId,
           exchangeOrderId: t.exchangeOrderId ? String(t.exchangeOrderId) : undefined,
-          dhanClientId: String(t.dhanClientId || '1114824544'),
+          dhanClientId: String(t.dhanClientId || ''),
           tradingSymbol: cleanSym,
           customSymbol: displayName,
           securityId: String(t.securityId || ''),

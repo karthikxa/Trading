@@ -187,9 +187,9 @@ function rowToTrade(row: any): JournalTrade {
     id: row.id,
     projectId: row.project_id || undefined,
     userId: row.user_id || undefined,
-    entryDate: typeof row.entry_date === 'string' ? row.entry_date.split('T')[0] : String(row.entry_date || ''),
+    entryDate: typeof row.entry_date === 'string' ? row.entry_date.trim().split(/[T ]+/)[0] : String(row.entry_date || ''),
     entryTime: row.entry_time || '00:00',
-    exitDate: typeof row.exit_date === 'string' ? row.exit_date.split('T')[0] : (row.exit_date || undefined),
+    exitDate: typeof row.exit_date === 'string' ? row.exit_date.trim().split(/[T ]+/)[0] : (row.exit_date || undefined),
     exitTime: row.exit_time || undefined,
     instrument: String(row.instrument || '').toUpperCase(),
     direction: normalizeDirection(row.direction),
@@ -210,7 +210,7 @@ function rowToTrade(row: any): JournalTrade {
     mistakes: Array.isArray(row.mistakes) ? row.mistakes.filter((m: unknown) => typeof m === 'string' && m.trim()) : [],
     entryEmotion: row.entry_emotion || undefined,
     exitEmotion: row.exit_emotion || undefined,
-    notes: typeof row.notes === 'string' ? row.notes : '',
+    notes: typeof row.notes === 'string' && !row.notes.trim().startsWith('Dhan execution order #') ? row.notes : '',
     chartHtf: row.chart_htf || undefined,
     chartMtf: row.chart_mtf || undefined,
     chartLtf: row.chart_ltf || undefined,
@@ -294,7 +294,17 @@ export function getLocalTrades(): JournalTrade[] {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    cachedTradesInMemory = Array.isArray(parsed) ? sortJournalTrades(parsed) : [];
+    const cleaned = Array.isArray(parsed)
+      ? parsed
+          .filter((t: any) => !String(t?.id || '').includes('_test'))
+          .map((t: any) => ({
+            ...t,
+            entryDate: typeof t?.entryDate === 'string' ? t.entryDate.trim().split(/[T ]+/)[0] : String(t?.entryDate || ''),
+            exitDate: typeof t?.exitDate === 'string' ? t.exitDate.trim().split(/[T ]+/)[0] : t?.exitDate,
+            notes: typeof t?.notes === 'string' && !t.notes.trim().startsWith('Dhan execution order #') ? t.notes : '',
+          }))
+      : [];
+    cachedTradesInMemory = sortJournalTrades(cleaned);
     return cachedTradesInMemory;
   } catch {
     return [];

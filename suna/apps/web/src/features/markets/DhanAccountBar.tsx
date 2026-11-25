@@ -62,21 +62,29 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
     >
       {/* Broker & Account Badge */}
       <div className="flex items-center gap-2.5">
-        <div className="size-6 rounded-md bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold text-[10px]">
-          DH
-        </div>
+        <img
+          src="/logos/dhan.svg"
+          alt="Dhan"
+          className="size-6 rounded-md object-contain shrink-0"
+        />
         <div className="flex flex-col">
           <div className="flex items-center gap-1.5 font-medium">
             <span className="text-zinc-200">DhanHQ Account</span>
-            <span className="relative flex size-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full size-2 bg-emerald-500"></span>
-            </span>
+            {snapshot.isLive && !snapshot.isTokenExpired ? (
+              <span className="relative flex size-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full size-2 bg-emerald-500"></span>
+              </span>
+            ) : (
+              <span className="relative inline-flex rounded-full size-2 bg-amber-400"></span>
+            )}
             <span className="text-[10px] text-zinc-400 font-mono">
-              ID: {funds?.dhanClientId || '1114824544'}
+              {funds?.dhanClientId ? `ID: ${funds.dhanClientId}` : 'Not connected'}
             </span>
           </div>
-          <span className="text-[10px] text-zinc-400">Zero-Brokerage & Live Trading Ready</span>
+          <span className="text-[10px] text-zinc-400">
+            {snapshot.isLive ? 'Zero-Brokerage & Live Trading Ready' : 'Connect your DhanHQ account for live sync'}
+          </span>
         </div>
       </div>
 
@@ -85,7 +93,7 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
         <div className="flex flex-col">
           <span className="text-[10px] text-zinc-400 font-sans">Available Cash</span>
           <span className="font-bold text-emerald-400">
-            ₹{funds?.availabelBalance !== undefined ? funds.availabelBalance.toFixed(2) : '720.02'}
+            {funds?.availabelBalance !== undefined ? `₹${Number(funds.availabelBalance).toFixed(2)}` : '—'}
           </span>
         </div>
 
@@ -96,26 +104,26 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
             <span className={cn('size-1.5 rounded-full', isProfit ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400 animate-pulse')} />
           </div>
           <span className={cn('font-bold', isProfit ? 'text-emerald-400' : 'text-rose-400')}>
-            {isProfit ? '+' : ''}₹{liveDayPnl.toFixed(2)}
+            {snapshot.isLive ? `${isProfit ? '+' : ''}₹${liveDayPnl.toFixed(2)}` : '—'}
           </span>
         </div>
 
         <div className="hidden sm:flex flex-col">
           <span className="text-[10px] text-zinc-400 font-sans">Withdrawable</span>
           <span className="text-zinc-300">
-            ₹{funds?.withdrawableBalance !== undefined ? funds.withdrawableBalance.toFixed(2) : '720.02'}
+            {funds?.withdrawableBalance !== undefined ? `₹${Number(funds.withdrawableBalance).toFixed(2)}` : '—'}
           </span>
         </div>
       </div>
 
-      {/* Actions: Kill Switch & TradingView-style Connect Dhan */}
+      {/* Actions: Kill Switch & Connect Dhan */}
       <div className="flex items-center gap-2">
-        {snapshot.isTokenExpired ? (
+        {!snapshot.isLive || snapshot.isTokenExpired ? (
           <button
             type="button"
             onClick={handleOpenConnect}
-            className="px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-sans font-medium flex items-center gap-1.5 cursor-pointer hover:bg-amber-500/30 transition-all animate-pulse"
-            title="Dhan token expired or disconnected. Click to connect live via OTP or QR."
+            className="px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-sans font-medium flex items-center gap-1.5 cursor-pointer hover:bg-amber-500/30 transition-all"
+            title="Dhan session disconnected or expired. Click to connect."
           >
             <span className="size-1.5 rounded-full bg-amber-400" />
             <span>Connect DhanHQ</span>

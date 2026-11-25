@@ -228,7 +228,7 @@
   --destructive-foreground: #fbfbfb;
   --border: #e3e3e3;
   --input: #ededed;
-  --ring: #0099ff;
+  --ring: transparent; /* Zero blue border/ring */
   --hover: rgba(0, 0, 0, 0.045);
   --active: rgba(0, 0, 0, 0.075);
   --selection: rgba(0, 0, 0, 0.08);
@@ -272,7 +272,7 @@
   --destructive-foreground: #fbfbfb;
   --border: #d4d4d4;
   --input: #dedede;
-  --ring: #0099ff;
+  --ring: transparent; /* Zero blue border/ring */
   --hover: rgba(27, 27, 27, 0.045);
   --active: rgba(27, 27, 27, 0.075);
   --selection: rgba(0, 0, 0, 0.08);
@@ -317,7 +317,7 @@
   --destructive-foreground: #fbfbfb;
   --border: #262626;
   --input: #212121;
-  --ring: #0099ff;
+  --ring: transparent; /* Zero blue border/ring */
   --hover: rgba(255, 255, 255, 0.06);
   --active: rgba(255, 255, 255, 0.1);
   --selection: rgba(255, 255, 255, 0.1);
@@ -362,7 +362,7 @@
   --destructive-foreground: #fbfbfb;
   --border: #262626;
   --input: #1c1c1c;
-  --ring: #0099ff;
+  --ring: transparent; /* Zero blue border/ring */
   --hover: rgba(255, 255, 255, 0.06);
   --active: rgba(255, 255, 255, 0.1);
   --selection: rgba(255, 255, 255, 0.1);

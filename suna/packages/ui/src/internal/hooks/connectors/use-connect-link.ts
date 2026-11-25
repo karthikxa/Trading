@@ -127,6 +127,14 @@ export async function runConnectLinkFlow(
     if (response.connected) return { connected: true };
     const url = connectLinkUrl(response);
     if (!url) throw new Error('The connector did not return a Connect Link. Try again.');
+
+    // If it's Dhan authentication or requested direct redirection, redirect the main window directly
+    if (url.includes('/api/dhan/auth/start') || url.includes('auth.dhan.co')) {
+      closePopupSafely(popup);
+      window.location.assign(url);
+      return { connected: true };
+    }
+
     if (popup.closed) {
       throw new Error(POPUP_CLOSED_MESSAGE);
     }

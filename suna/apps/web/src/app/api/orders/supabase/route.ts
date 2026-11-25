@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
       order_id: String(o.orderId || o.order_id),
       project_id: o.projectId || o.project_id || 'b0000000-0000-0000-0000-000000000001',
       exchange_order_id: o.exchangeOrderId || o.exchange_order_id || null,
-      dhan_client_id: String(o.dhanClientId || o.dhan_client_id || '1114824544'),
+      dhan_client_id: String(o.dhanClientId || o.dhan_client_id || ''),
       trading_symbol: o.tradingSymbol || o.trading_symbol || o.customSymbol || 'STOCK',
       custom_symbol: o.customSymbol || o.custom_symbol || null,
       security_id: String(o.securityId || o.security_id || ''),

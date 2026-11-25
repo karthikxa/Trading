@@ -350,7 +350,73 @@ export function ConnectorsPage({
     ...contract('config'),
   });
 
-  const connectors = useMemo(() => connectorsQuery.data?.connectors ?? [], [connectorsQuery.data]);
+  const [dhanConnected, setDhanConnected] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const checkDhanStatus = () => {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('kortix_dhan_access_token');
+        localStorage.removeItem('kortix_dhan_client_id');
+      }
+      fetch('/api/dhan/auth/status', { cache: 'no-store' })
+        .then((r) => r.json())
+        .then((data) => {
+          if (!cancelled) setDhanConnected(Boolean(data?.connected));
+        })
+        .catch(() => {
+          if (!cancelled) setDhanConnected(false);
+        });
+    };
+
+    checkDhanStatus();
+    window.addEventListener('dhan-token-updated', checkDhanStatus);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('dhan-token-updated', checkDhanStatus);
+    };
+  }, []);
+
+  const connectors = useMemo(() => {
+    const list = connectorsQuery.data?.connectors ?? [];
+    if (typeof window === 'undefined') return list;
+    const existingDhan = list.find((c) => c.slug === 'dhan');
+    if (existingDhan) {
+      if (dhanConnected) {
+        existingDhan.status = 'active';
+        existingDhan.state = 'connected';
+      } else {
+        existingDhan.status = 'needs_auth';
+        existingDhan.state = 'needs_account';
+      }
+      return list;
+    }
+    if (dhanConnected) {
+      return [
+        {
+          slug: 'dhan',
+          name: 'Dhan',
+          provider: 'composio',
+          iconUrl: '/logos/dhan.svg',
+          status: 'active',
+          state: 'connected',
+          credentialMode: 'shared',
+          authorizationStrategy: 'project',
+          sensitive: true,
+          secretSet: true,
+          actions: [
+            { name: 'fundlimit', description: 'Real-time Cash balance & Collateral Limit' },
+            { name: 'positions', description: 'Open Positions, Quantities & Unrealized PnL' },
+            { name: 'orders', description: 'Place, Modify & Cancel NSE/BSE Orders' },
+            { name: 'trades', description: 'Execution Book & Statutory Charges Ledger' },
+            { name: 'profile', description: 'User Profile & Market Segment Status' },
+          ],
+        } as any,
+        ...list,
+      ];
+    }
+    return list;
+  }, [connectorsQuery.data, dhanConnected]);
   const connectedKeys = useMemo(() => connectedCatalogKeys(connectors), [connectors]);
 
   const { installEntry, pendingKey, request: installRequest, setRequest: setInstallRequest, confirm: confirmInstall } = useInstall(projectId, {
@@ -627,14 +693,14 @@ export function ConnectorsPage({
         />
       );
     }
-    if (list.length > 0) return ownConnectors(list);
-    if (query.trim()) return <CatalogNoMatch query={query} />;
     return (
-      <EmptyState
-        media={<EmptyArt icon={PlugsConnectedIcon} />}
-        title={tI18nComplete.raw('text51ae0a7e3783')}
-        description={tI18nComplete.raw('texta3487dfc2132')}
-      />
+      <div className="space-y-4">
+        {list.length > 0 ? (
+          ownConnectors(list)
+        ) : query.trim() ? (
+          <CatalogNoMatch query={query} />
+        ) : null}
+      </div>
     );
   };
 
@@ -643,7 +709,7 @@ export function ConnectorsPage({
   const catalogSection = (
     <>
       {ownMatches.length > 0 ? (
-        <div className="space-y-3">
+        <div className="space-y-3 mb-6">
           <h2 className="text-sm font-medium">{tPages('yourConnectors')}</h2>
           {ownConnectors(ownMatches)}
         </div>

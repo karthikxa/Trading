@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { refreshDhanAccessToken } from '@/features/markets/dhanAutoAuth';
+import { clearSession, getSession } from '@/lib/dhan/session';
+import {
+  autoLogin,
+  getAutoLoginState,
+  getCachedSession,
+  setCachedSession,
+} from '@/lib/dhan/autologin';
 
 const DHAN_BASE_URL = 'https://api.dhan.co/v2';
 
@@ -16,8 +22,6 @@ const serverDhanCache = new Map<string, CacheEntry>();
 const inFlightRequests = new Map<string, Promise<{ data: any; summary?: any; status: number; ok: boolean }>>();
 
 // Sliding window rate-limit tracker to protect daily Dhan API quota
-// Dhan allows up to 10 requests per second across REST endpoints.
-// 1 call/sec per endpoint is ~60-120 req/min, safely under Dhan's 250 req/min threshold.
 let callTimestamps: number[] = [];
 const MAX_CALLS_PER_MINUTE = 180; // Dhan safe ceiling (under 250/min limit)
 const MAX_DAILY_CALLS = 24500; // Daily quota safety ceiling (under Dhan's 25,000 limit)
@@ -33,7 +37,7 @@ function isQuotaSafe(): boolean {
     dailyCallCount = 0;
   }
   if (dailyCallCount >= MAX_DAILY_CALLS) {
-    return false; // Hard daily quota guard
+    return false;
   }
   callTimestamps = callTimestamps.filter((t) => now - t < 60000);
   return callTimestamps.length < MAX_CALLS_PER_MINUTE;
@@ -51,25 +55,33 @@ function recordDhanCall(): void {
 
 // Micro-TTL per endpoint: balances 0ms speed with real-time freshness & quota protection
 const CACHE_TTL_MS: Record<string, number> = {
-  positions: 600,     // 600ms micro-TTL for live PnL & open positions (allows fast 700ms polling with fresh upstream ticks)
-  funds: 2500,        // 2.5s for cash / margin
-  orders: 1500,       // 1.5s for active orders
-  trades: 4000,       // 4s for today's trades
-  all_trades: 180000, // 3 min for historical execution audit
-  holdings: 60000,    // 1 min for equity holdings
-  profile: 300000,    // 5 min for user profile
+  positions: 600,
+  funds: 2500,
+  fundlimit: 2500,
+  orders: 1500,
+  trades: 4000,
+  all_trades: 180000,
+  past_trades: 180000,
+  holdings: 60000,
+  profile: 300000,
 };
 
-function getDhanHeaders(clientId?: string, token?: string) {
-  const activeClientId = clientId || process.env.DHAN_CLIENT_ID || '1114824544';
-  const activeToken =
-    token ||
-    process.env.DHAN_ACCESS_TOKEN ||
-    'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJ1c2VyUmVnaW9uIjoiUjEiLCJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzk1MzM5ODI3LCJpYXQiOjE3OTUyNTM0MjcsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTE0ODI0NTQ0In0.KMJLAiT4SSPZ7AW-2s_a29jiPp7J9KxCQUAjdJjzjZuCFeg-KRuEFc22ulqXkthSyRldvM3awdUzbGSMCN2QAA';
+const ACTION_ALLOWLIST = new Set([
+  'funds',
+  'fundlimit',
+  'profile',
+  'positions',
+  'holdings',
+  'orders',
+  'trades',
+  'all_trades',
+  'past_trades',
+]);
 
+function buildDhanHeaders(clientId: string, accessToken: string) {
   return {
-    'client-id': activeClientId,
-    'access-token': activeToken,
+    'client-id': clientId,
+    'access-token': accessToken,
     'Content-Type': 'application/json',
     Accept: 'application/json',
   };
@@ -79,14 +91,33 @@ export async function GET(req: NextRequest) {
   const startTime = Date.now();
   try {
     const { searchParams } = new URL(req.url);
-    const action = searchParams.get('action') || 'funds';
+    const rawAction = searchParams.get('path') || searchParams.get('action') || 'funds';
+    const action = rawAction === 'fundlimit' ? 'funds' : rawAction;
+    if (!ACTION_ALLOWLIST.has(rawAction)) {
+      return NextResponse.json({ ok: false, error: 'path not allowed' }, { status: 400 });
+    }
+
     const forceFresh = searchParams.get('force') === 'true';
 
-    const cacheKey = `${action}_${searchParams.get('from') || ''}_${searchParams.get('to') || ''}_${searchParams.get('page') || ''}`;
+    const session = (await getSession()) ?? getCachedSession() ?? (await autoLogin());
+    if (!session) {
+      const autoState = getAutoLoginState();
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'not connected',
+          status: 401,
+          detail: autoState.lastError,
+          retryInSeconds: autoState.cooldownSecondsLeft,
+        },
+        { status: 401 }
+      );
+    }
+
+    const cacheKey = `${session.clientId}_${action}_${searchParams.get('from') || ''}_${searchParams.get('to') || ''}_${searchParams.get('page') || ''}`;
     const cached = serverDhanCache.get(cacheKey);
     const ttl = CACHE_TTL_MS[action] || 10000;
 
-    // 0ms Cache Hit: If fresh or if quota is under pressure, return instantaneously
     if (cached && !forceFresh && (Date.now() - cached.timestamp < ttl || !isQuotaSafe())) {
       return NextResponse.json(
         {
@@ -108,27 +139,29 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Single-flight in-flight deduplication: concurrent requests await the identical outbound fetch
     if (inFlightRequests.has(cacheKey)) {
       const inFlight = await inFlightRequests.get(cacheKey)!;
-      return NextResponse.json({
-        ok: inFlight.ok,
-        action,
-        status: inFlight.status,
-        data: inFlight.data,
-        summary: inFlight.summary,
-        cached: true,
-        latencyMs: Date.now() - startTime,
-      });
+      return NextResponse.json(
+        {
+          ok: inFlight.ok,
+          action,
+          status: inFlight.status,
+          data: inFlight.data,
+          summary: inFlight.summary,
+          cached: true,
+          latencyMs: Date.now() - startTime,
+        },
+        { status: inFlight.status === 401 ? 401 : 200 }
+      );
     }
 
     const fetchPromise = (async () => {
-      const clientToken = req.headers.get('x-dhan-access-token') || searchParams.get('token');
-      const clientDhanId = req.headers.get('x-dhan-client-id') || searchParams.get('clientId');
-      const headers = getDhanHeaders(clientDhanId || undefined, clientToken || undefined);
+      const headers = buildDhanHeaders(session.clientId, session.accessToken);
       let endpoint = `${DHAN_BASE_URL}/fundlimit`;
 
-      if (action === 'positions') {
+      if (action === 'profile') {
+        endpoint = `${DHAN_BASE_URL}/profile`;
+      } else if (action === 'positions') {
         endpoint = `${DHAN_BASE_URL}/positions`;
       } else if (action === 'holdings') {
         endpoint = `${DHAN_BASE_URL}/holdings`;
@@ -144,9 +177,11 @@ export async function GET(req: NextRequest) {
           const allExecutions: any[] = [];
           const seen = new Set<string>();
 
-          // 1. Fetch today's trades (single fast request)
           try {
             const todayRes = await fetch(`${DHAN_BASE_URL}/trades`, { headers, cache: 'no-store' });
+            if (todayRes.status === 401) {
+              return { ok: false, status: 401, data: { errorCode: 'DH-901', errorMessage: 'Session expired' }, summary: undefined };
+            }
             const todayData = await todayRes.json().catch(() => []);
             if (Array.isArray(todayData)) {
               for (const t of todayData) {
@@ -159,7 +194,6 @@ export async function GET(req: NextRequest) {
             }
           } catch {}
 
-          // 2. Fetch past trade pages up to 5 pages max to protect API quota
           for (let p = 0; p < 5; p++) {
             if (!isQuotaSafe()) break;
             try {
@@ -180,7 +214,7 @@ export async function GET(req: NextRequest) {
                   addedCount++;
                 }
               }
-              if (addedCount === 0 || pageData.length < 50) break;
+              if (pageData.length < 10 || addedCount === 0) break;
             } catch {
               break;
             }
@@ -190,38 +224,44 @@ export async function GET(req: NextRequest) {
             ok: true,
             status: 200,
             data: allExecutions,
+            summary: undefined,
           };
+        } else if (searchParams.get('from') || searchParams.get('fromDate') || page) {
+          endpoint = `${DHAN_BASE_URL}/trades/${fromDate}/${toDate}/${page || '0'}`;
+        } else {
+          endpoint = `${DHAN_BASE_URL}/trades`;
         }
-
-        endpoint = page !== null ? `${DHAN_BASE_URL}/trades/${fromDate}/${toDate}/${page}` : `${DHAN_BASE_URL}/trades`;
-      } else if (action === 'profile') {
-        endpoint = `${DHAN_BASE_URL}/profile`;
       }
 
       recordDhanCall();
-      let res = await fetch(endpoint, {
-        method: 'GET',
-        headers,
-        cache: 'no-store',
-      });
+      const res = await fetch(endpoint, { headers, cache: 'no-store' });
+      const rawText = await res.text().catch(() => '');
+      let data: any = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = {};
+      }
 
-      let data = await res.json().catch(() => ({}));
+      // Auto-heal once if session token rejected upstream (no loop!)
+      if (res.status === 401 || data?.errorCode === 'DH-901') {
+        await clearSession(false);
+        setCachedSession(null);
+        return {
+          ok: false,
+          status: 401,
+          data,
+          summary: undefined,
+        };
+      }
 
-      // If token expired (401 or DH-901), attempt automatic renewal via TOTP
-      if (!res.ok && (res.status === 401 || data?.errorCode === 'DH-901')) {
-        const renewed = await refreshDhanAccessToken();
-        if (renewed.ok && renewed.accessToken) {
-          headers['access-token'] = renewed.accessToken;
-          res = await fetch(endpoint, {
-            method: 'GET',
-            headers,
-            cache: 'no-store',
-          });
-          data = await res.json().catch(() => ({}));
+      if (action === 'funds' && data && typeof data === 'object' && !Array.isArray(data)) {
+        const cashVal = Number(data.availabelBalance || data.sodLimit || data.availableBalance || 0);
+        if (cashVal > 0 && (data.availabelBalance === 0 || data.availabelBalance == null)) {
+          data.availabelBalance = cashVal;
         }
       }
 
-      // Compute rich live summary for positions
       let summary: any = undefined;
       if (action === 'positions' && Array.isArray(data)) {
         const realizedProfit = Number(
@@ -252,14 +292,33 @@ export async function GET(req: NextRequest) {
     })();
 
     inFlightRequests.set(cacheKey, fetchPromise);
-    const result = await fetchPromise;
-    inFlightRequests.delete(cacheKey);
+    let result: { data: any; summary?: any; status: number; ok: boolean };
+    try {
+      result = await fetchPromise;
+    } finally {
+      inFlightRequests.delete(cacheKey);
+    }
 
-    // Save to smart cache
-    serverDhanCache.set(cacheKey, {
-      ...result,
-      timestamp: Date.now(),
-    });
+    if (result.status === 401) {
+      serverDhanCache.delete(cacheKey);
+      return NextResponse.json(
+        {
+          ok: false,
+          action,
+          status: 401,
+          data: result.data,
+          error: 'DhanHQ session expired. Please reconnect.',
+        },
+        { status: 401 }
+      );
+    }
+
+    if (result.ok) {
+      serverDhanCache.set(cacheKey, {
+        ...result,
+        timestamp: Date.now(),
+      });
+    }
 
     return NextResponse.json({
       ok: result.ok,
@@ -272,25 +331,6 @@ export async function GET(req: NextRequest) {
       quotaRemaining: Math.max(0, MAX_CALLS_PER_MINUTE - callTimestamps.length),
     });
   } catch (err: any) {
-    // Graceful fallback to stale cache if network/API throws
-    const { searchParams } = new URL(req.url);
-    const action = searchParams.get('action') || 'funds';
-    const cacheKey = `${action}_${searchParams.get('from') || ''}_${searchParams.get('to') || ''}_${searchParams.get('page') || ''}`;
-    const fallback = serverDhanCache.get(cacheKey);
-
-    if (fallback) {
-      return NextResponse.json({
-        ok: fallback.ok,
-        action,
-        status: fallback.status,
-        data: fallback.data,
-        summary: fallback.summary,
-        cached: true,
-        staleFallback: true,
-        latencyMs: Date.now() - startTime,
-      });
-    }
-
     return NextResponse.json(
       { ok: false, error: err?.message || 'Failed to fetch Dhan data' },
       { status: 500 }
@@ -304,68 +344,24 @@ export async function POST(req: NextRequest) {
     const action = searchParams.get('action') || 'orders';
     const body = await req.json().catch(() => ({}));
 
-    if (action === 'auto_auth') {
-      const pin = body.pin || req.headers.get('x-dhan-pin') || undefined;
-      const totpSecret = body.totpSecret || req.headers.get('x-dhan-totp-secret') || undefined;
-      const clientId = body.clientId || req.headers.get('x-dhan-client-id') || undefined;
-      const result = await refreshDhanAccessToken({ clientId, pin, totpSecret });
-      return NextResponse.json(result);
+    const session = (await getSession()) ?? getCachedSession() ?? (await autoLogin());
+    if (!session) {
+      const autoState = getAutoLoginState();
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'not connected',
+          status: 401,
+          detail: autoState.lastError,
+          retryInSeconds: autoState.cooldownSecondsLeft,
+        },
+        { status: 401 }
+      );
     }
 
-    if (action === 'verify_otp' || action === 'login_totp') {
-      const clientId = body.clientId || req.headers.get('x-dhan-client-id') || process.env.DHAN_CLIENT_ID || '1114824544';
-      const pin = body.pin || req.headers.get('x-dhan-pin') || process.env.DHAN_PIN || '221007';
-      const totp = body.totp || body.otp || body.code;
-
-      if (!totp) {
-        return NextResponse.json({ ok: false, error: '6-digit OTP/TOTP code is required' }, { status: 400 });
-      }
-
-      const authUrl = new URL('https://auth.dhan.co/app/generateAccessToken');
-      authUrl.searchParams.set('dhanClientId', String(clientId).trim());
-      authUrl.searchParams.set('pin', String(pin).trim());
-      authUrl.searchParams.set('totp', String(totp).trim());
-
-      recordDhanCall();
-      const authRes = await fetch(authUrl.toString(), {
-        method: 'POST',
-        headers: { Accept: 'application/json' },
-        cache: 'no-store',
-      });
-
-      const authData = await authRes.json().catch(() => ({}));
-      if (authRes.ok && authData?.accessToken) {
-        process.env.DHAN_ACCESS_TOKEN = authData.accessToken;
-        process.env.DHAN_CLIENT_ID = clientId;
-        serverDhanCache.clear();
-        return NextResponse.json({
-          ok: true,
-          accessToken: authData.accessToken,
-          clientName: authData.dhanClientName,
-          clientUcc: authData.dhanClientUcc,
-          expiryTime: authData.expiryTime,
-        });
-      }
-
-      return NextResponse.json({
-        ok: false,
-        error: authData?.message || authData?.errorMessage || 'Invalid OTP/TOTP or PIN from DhanHQ',
-      });
-    }
-
-    if (action === 'save_token') {
-      const token = body.token || body.accessToken;
-      if (!token) {
-        return NextResponse.json({ ok: false, error: 'Token is required' }, { status: 400 });
-      }
-      process.env.DHAN_ACCESS_TOKEN = String(token).trim();
-      serverDhanCache.clear();
-      return NextResponse.json({ ok: true, message: 'Dhan token saved successfully' });
-    }
-
-    const headers = getDhanHeaders();
-
+    const headers = buildDhanHeaders(session.clientId, session.accessToken);
     let endpoint = `${DHAN_BASE_URL}/orders`;
+
     if (action === 'kill_switch') {
       endpoint = `${DHAN_BASE_URL}/tradercontrols/killswitch`;
     } else if (action === 'cancel_order') {
@@ -382,16 +378,18 @@ export async function POST(req: NextRequest) {
 
     const data = await res.json().catch(() => ({}));
 
-    // Invalidate orders and positions cache so subsequent reads pick up fresh data immediately
-    serverDhanCache.delete('orders___');
-    serverDhanCache.delete('positions___');
+    serverDhanCache.delete(`${session.clientId}_orders___`);
+    serverDhanCache.delete(`${session.clientId}_positions___`);
 
-    return NextResponse.json({
-      ok: res.ok,
-      action,
-      status: res.status,
-      data,
-    });
+    return NextResponse.json(
+      {
+        ok: res.ok,
+        action,
+        status: res.status,
+        data,
+      },
+      { status: res.status === 401 ? 401 : 200 }
+    );
   } catch (err: any) {
     return NextResponse.json(
       { ok: false, error: err?.message || 'Failed to execute Dhan operation' },

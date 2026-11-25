@@ -16,7 +16,7 @@ import { useDebounce } from '../../../hooks/use-debounce';
 
 import { useTranslations } from '../../../i18n';
 import { browseSections, sectionsPageFromDiscover, type BrowseSectionsPage } from './browse-sections';
-import { catalogEntryFromDiscover, connectToolkitApp, type CatalogEntry } from './catalog-entry';
+import { catalogEntryFromDiscover, connectToolkitApp, DHAN_CATALOG_ENTRY, type CatalogEntry } from './catalog-entry';
 import { CATEGORY_ROW_CAP, localizedSectionTitle } from './connector-categories';
 
 /** Cards per section on the browse page, and how many sections it shows.
@@ -247,14 +247,28 @@ export function useCatalog(
     enabled: opts.enabled && !searching,
   });
 
-  const entries = useMemo(
-    () =>
-      withoutComputerRecord(
-        hideComputerRecord,
-        (discoverQuery.data?.pages ?? []).flatMap((page) => ((page && page.items) || []).map(catalogEntryFromDiscover)),
-      ),
-    [hideComputerRecord, discoverQuery.data?.pages],
-  );
+  const entries = useMemo(() => {
+    const raw = withoutComputerRecord(
+      hideComputerRecord,
+      (discoverQuery.data?.pages ?? []).flatMap((page) => ((page && page.items) || []).map(catalogEntryFromDiscover)),
+    );
+
+    const q = activeQuery.toLowerCase().trim();
+    const matchesDhan =
+      !q ||
+      'dhan'.includes(q) ||
+      'trading'.includes(q) ||
+      'broker'.includes(q) ||
+      'stock'.includes(q) ||
+      'nse'.includes(q) ||
+      'bse'.includes(q);
+
+    const hasDhan = raw.some((e) => e.slug === 'dhan');
+    if (matchesDhan && !hasDhan) {
+      return [DHAN_CATALOG_ENTRY, ...raw];
+    }
+    return raw;
+  }, [hideComputerRecord, discoverQuery.data?.pages, activeQuery]);
 
   const {
     fetchNextPage,
@@ -290,14 +304,23 @@ export function useCatalog(
    */
   const sections = useMemo<CatalogSection[]>(() => {
     if (searching || !sectionsQuery.data) return [];
-    return browseSections(sectionsQuery.data, {
+    const baseSections = browseSections(sectionsQuery.data, {
       cardCount: SECTION_CARD_COUNT,
       title: (label) => localizedSectionTitle(label, tI18nComplete),
     }).map((section) => ({ ...section, items: withoutComputerRecord(hideComputerRecord, section.items) }));
+
+    if (baseSections.length > 0) {
+      const popularSection = baseSections[0];
+      if (!popularSection.items.some((item) => item.slug === 'dhan')) {
+        popularSection.items = [DHAN_CATALOG_ENTRY, ...popularSection.items.slice(0, SECTION_CARD_COUNT - 1)];
+        popularSection.total = (popularSection.total || 0) + 1;
+      }
+    }
+    return baseSections;
   }, [searching, sectionsQuery.data, tI18nComplete, hideComputerRecord]);
 
   const reportedTotal = discoverQuery.data?.pages[0]?.total;
-  const total = typeof reportedTotal === 'number' ? reportedTotal : entries.length;
+  const total = typeof reportedTotal === 'number' && reportedTotal > 0 ? reportedTotal : entries.length;
 
   // A failed sections request on the browse page is an error, not an empty
   // catalogue — without this the grid would say "no connectors" over an outage.

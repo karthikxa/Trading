@@ -13,6 +13,20 @@ function getSupabase() {
   });
 }
 
+function cleanJournalDate(raw: unknown, fallback?: string): string | null {
+  if (typeof raw === 'string' && raw.trim()) {
+    return raw.trim().split(/[T ]+/)[0];
+  }
+  return fallback ?? null;
+}
+
+function cleanReflectionNote(notes: unknown): string | null {
+  if (typeof notes !== 'string') return null;
+  const trimmed = notes.trim();
+  if (!trimmed || trimmed.startsWith('Dhan execution order #')) return null;
+  return notes;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -29,7 +43,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true, data: data || [] });
+    const cleaned = (data || [])
+      .filter((row: any) => !String(row.id || '').includes('_test'))
+      .map((row: any) => ({
+        ...row,
+        entry_date: cleanJournalDate(row.entry_date, ''),
+        exit_date: cleanJournalDate(row.exit_date) || cleanJournalDate(row.entry_date, ''),
+        notes: cleanReflectionNote(row.notes),
+      }));
+
+    return NextResponse.json({ ok: true, data: cleaned });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message }, { status: 500 });
   }
@@ -46,6 +69,9 @@ export async function POST(req: NextRequest) {
 
     const supabase = getSupabase();
 
+    // Remove any leftover test fixtures so they never cause count/PnL flicker
+    await supabase.from('journal_trades').delete().like('id', '%_test%');
+
     // Map frontend trades to snake_case Supabase table schema
     const rows = trades.map((t: any) => ({
       id: t.id,
@@ -55,9 +81,9 @@ export async function POST(req: NextRequest) {
       lots: Number(t.lots || 1),
       entry_price: Number(t.entryPrice || 0),
       exit_price: Number(t.exitPrice || 0),
-      entry_date: t.entryDate || new Date().toISOString().split('T')[0],
+      entry_date: cleanJournalDate(t.entryDate, new Date().toISOString().split('T')[0]),
       entry_time: t.entryTime || '09:30',
-      exit_date: t.exitDate || t.entryDate,
+      exit_date: cleanJournalDate(t.exitDate) || cleanJournalDate(t.entryDate, new Date().toISOString().split('T')[0]),
       exit_time: t.exitTime || '15:30',
       pnl: Number(t.pnl || 0),
       commission: Number(t.commission || 0),
@@ -71,7 +97,7 @@ export async function POST(req: NextRequest) {
       plan_name: t.planName || 'DhanHQ Execution',
       confluences: Array.isArray(t.confluences) ? t.confluences : [],
       mistakes: Array.isArray(t.mistakes) ? t.mistakes : [],
-      notes: t.notes || null,
+      notes: cleanReflectionNote(t.notes),
       chart_htf: t.chartHtf || null,
       chart_mtf: t.chartMtf || null,
       chart_ltf: t.chartLtf || null,
@@ -93,6 +119,34 @@ export async function POST(req: NextRequest) {
     });
   } catch (err: any) {
     console.error('[supabase-journal] Server error:', err);
+    return NextResponse.json({ ok: false, error: err?.message }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const id = req.nextUrl.searchParams.get('id');
+    const testOnly = req.nextUrl.searchParams.get('testOnly') === '1';
+    const supabase = getSupabase();
+
+    if (testOnly) {
+      const { error } = await supabase.from('journal_trades').delete().like('id', '%_test%');
+      if (error) {
+        return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+      }
+      return NextResponse.json({ ok: true, deletedPattern: '%_test%' });
+    }
+
+    if (!id) {
+      return NextResponse.json({ ok: false, error: 'id or testOnly=1 required' }, { status: 400 });
+    }
+
+    const { error } = await supabase.from('journal_trades').delete().eq('id', id);
+    if (error) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    }
+    return NextResponse.json({ ok: true, deletedId: id });
+  } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message }, { status: 500 });
   }
 }

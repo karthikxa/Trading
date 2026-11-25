@@ -23,11 +23,30 @@ interface ConnectorItem {
 }
 
 const POPULAR_SLUGS = [
-  'gmail', 'googlecalendar', 'slack', 'github_mcp', 'notion_mcp', 'linear_mcp',
+  'dhan', 'gmail', 'googlecalendar', 'slack', 'github_mcp', 'notion_mcp', 'linear_mcp',
   'googledrive', 'stripe_mcp', 'hubspot', 'jira', 'figma', 'airtable',
   'salesforce', 'discord', 'shopify', 'zendesk', 'asana', 'trello', 'clickup',
   'zoom', 'twitter', 'telegram', 'whatsapp', 'supabase', 'postgres', 'mongodb'
 ];
+
+const DHAN_ITEM: ConnectorItem = {
+  id: 'dhan',
+  slug: 'dhan',
+  name: 'Dhan',
+  description: 'Connect and automate workflows with Dhan.',
+  provider: 'composio',
+  category: 'trading & finance',
+  categories: ['trading & finance', 'broker', 'trading'],
+  icon: '/logos/dhan.svg',
+  domain: 'dhan.co',
+  kind: 'composio',
+  popularity: 10000,
+  rank: 1,
+  isNoAuth: false,
+  variants: [
+    { id: 'dhan-oauth', kind: 'composio', name: 'Dhan', oneClick: true },
+  ],
+};
 
 // 17 native Kortix Trading Desk connectors
 const KORTIX_ITEMS: ConnectorItem[] = ((catalogData as unknown as ConnectorItem[]) || [])
@@ -65,8 +84,8 @@ const COMPOSIO_ITEMS: ConnectorItem[] = (composioToolkitsData as any[]).map((t, 
   };
 }).sort((a, b) => b.popularity - a.popularity);
 
-// Full catalog contains all 1,610 Composio toolkits + 17 Kortix trading apps (1,627 total)
-const FULL_CATALOG: ConnectorItem[] = [...COMPOSIO_ITEMS, ...KORTIX_ITEMS];
+// Full catalog contains Dhan + all 1,610 Composio toolkits + 17 Kortix trading apps
+const FULL_CATALOG: ConnectorItem[] = [DHAN_ITEM, ...COMPOSIO_ITEMS, ...KORTIX_ITEMS];
 
 const inMemoryInstalled = new Set<string>();
 
@@ -676,9 +695,15 @@ export async function POST(req: Request) {
     const provider = body.provider || match?.provider || 'composio';
     const connectionId = body.connectionId || (rawSlug.startsWith('conn_') ? rawSlug : `conn_${cleanSlug || 'gen'}_${Date.now()}`);
 
-    // Mode: connect (Generate real Composio OAuth authorization URL)
+    // Mode: connect (Generate real Composio OAuth authorization URL or Dhan login)
     if (body.mode === 'connect' || body.operation === 'connect') {
-      const connectUrl = await getComposioOAuthLink(cleanSlug || rawSlug);
+      let connectUrl: string;
+      if (cleanSlug === 'dhan') {
+        const returnUrl = `/projects/trading/admin/connectors/dhan/dhan?app=composio:dhan`;
+        connectUrl = `/api/dhan/auth/start?returnTo=${encodeURIComponent(returnUrl)}`;
+      } else {
+        connectUrl = await getComposioOAuthLink(cleanSlug || rawSlug);
+      }
       return NextResponse.json({
         ok: true,
         success: true,
@@ -724,7 +749,18 @@ export async function POST(req: Request) {
     }
 
     // Default Install / Create Connector (Draft profile created in project)
-    const connectUrl = await getComposioOAuthLink(cleanSlug || rawSlug);
+    const set = getInstalledSlugs();
+    if (cleanSlug) set.add(cleanSlug);
+    if (rawSlug) set.add(rawSlug);
+    saveInstalled(set);
+
+    let connectUrl: string;
+    if (cleanSlug === 'dhan') {
+      const returnUrl = `/projects/trading/admin/connectors/dhan/dhan?app=composio:dhan`;
+      connectUrl = `/api/dhan/auth/start?returnTo=${encodeURIComponent(returnUrl)}`;
+    } else {
+      connectUrl = await getComposioOAuthLink(cleanSlug || rawSlug);
+    }
 
     return NextResponse.json({
       ok: true,

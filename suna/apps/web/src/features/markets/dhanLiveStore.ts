@@ -7,6 +7,9 @@
  * and guards daily Dhan API quota with visibility-aware smart background sync.
  */
 
+import { dhanMarketFeed, MarketTick } from './dhanMarketFeedWs';
+import { dhanOrderUpdates } from '@/features/trading/dhanOrderUpdateWs';
+
 export interface DhanPositionsSummary {
   realizedProfit: number;
   unrealizedProfit: number;
@@ -84,7 +87,7 @@ export function getAdaptiveSyncInterval(): number {
 function getInitialSnapshot(): DhanLiveSnapshot {
   if (typeof window === 'undefined') {
     return {
-      funds: { availabelBalance: 720.02, dhanClientId: '1114824544' },
+      funds: null,
       positions: [],
       summary: {
         realizedProfit: 0,
@@ -100,10 +103,14 @@ function getInitialSnapshot(): DhanLiveSnapshot {
   }
 
   try {
+    // Purge legacy client-stored token keys now that auth lives strictly in httpOnly cookie
+    window.localStorage.removeItem('kortix_dhan_access_token');
+    window.localStorage.removeItem('kortix_dhan_client_id');
+
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') {
+      if (parsed && typeof parsed === 'object' && parsed.funds?.dhanClientId) {
         return {
           funds: parsed.funds || null,
           positions: Array.isArray(parsed.positions) ? parsed.positions : [],
@@ -116,38 +123,21 @@ function getInitialSnapshot(): DhanLiveSnapshot {
             lastUpdated: new Date().toISOString(),
           },
           lastSyncTimestamp: parsed.lastSyncTimestamp || 0,
-          isLive: true,
+          isLive: Boolean(parsed.isLive),
         };
       }
     }
   } catch {}
 
-  // Fallback to legacy keys if v2 not yet populated
-  let legacyFunds = null;
-  let legacyPositions: any[] = [];
-  try {
-    const f = window.localStorage.getItem('kortix_trading_dhan_funds');
-    if (f) legacyFunds = JSON.parse(f);
-    const p = window.localStorage.getItem('kortix_trading_dhan_positions');
-    if (p) legacyPositions = JSON.parse(p);
-  } catch {}
-
-  const realizedProfit = Array.isArray(legacyPositions)
-    ? Number(legacyPositions.reduce((acc, pos) => acc + (Number(pos.realizedProfit) || 0), 0).toFixed(2))
-    : 0;
-  const unrealizedProfit = Array.isArray(legacyPositions)
-    ? Number(legacyPositions.reduce((acc, pos) => acc + (Number(pos.unrealizedProfit) || 0), 0).toFixed(2))
-    : 0;
-
   return {
-    funds: legacyFunds || { availabelBalance: 720.02, dhanClientId: '1114824544' },
-    positions: legacyPositions,
+    funds: null,
+    positions: [],
     summary: {
-      realizedProfit,
-      unrealizedProfit,
-      totalDayPnl: Number((realizedProfit + unrealizedProfit).toFixed(2)),
-      positionsCount: legacyPositions.length,
-      openPositionsCount: legacyPositions.filter((pos) => Number(pos.netQty || 0) !== 0).length,
+      realizedProfit: 0,
+      unrealizedProfit: 0,
+      totalDayPnl: 0,
+      positionsCount: 0,
+      openPositionsCount: 0,
       lastUpdated: new Date().toISOString(),
     },
     lastSyncTimestamp: 0,
@@ -193,15 +183,9 @@ async function performSync(force = false) {
   isFetching = true;
 
   try {
-    const userToken = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_access_token') : null;
-    const userClientId = typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_client_id') : null;
-    const authHeaders: HeadersInit = {};
-    if (userToken) authHeaders['x-dhan-access-token'] = userToken;
-    if (userClientId) authHeaders['x-dhan-client-id'] = userClientId;
-
     const [fundsRes, posRes] = await Promise.all([
-      fetch(`/api/dhan?action=funds${force ? '&force=true' : ''}`, { headers: authHeaders }).then((r) => r.json()).catch(() => null),
-      fetch(`/api/dhan?action=positions${force ? '&force=true' : ''}`, { headers: authHeaders }).then((r) => r.json()).catch(() => null),
+      fetch(`/api/dhan?action=funds${force ? '&force=true' : ''}`, { credentials: 'same-origin' }).then((r) => r.json()).catch(() => null),
+      fetch(`/api/dhan?action=positions${force ? '&force=true' : ''}`, { credentials: 'same-origin' }).then((r) => r.json()).catch(() => null),
     ]);
 
     const isTokenExpired = Boolean(
@@ -210,6 +194,32 @@ async function performSync(force = false) {
       fundsRes?.data?.errorCode === 'DH-901' ||
       posRes?.data?.errorCode === 'DH-901'
     );
+
+    if (isTokenExpired) {
+      currentSnapshot = {
+        funds: null,
+        positions: [],
+        summary: {
+          realizedProfit: 0,
+          unrealizedProfit: 0,
+          totalDayPnl: 0,
+          positionsCount: 0,
+          openPositionsCount: 0,
+          lastUpdated: new Date().toISOString(),
+        },
+        lastSyncTimestamp: Date.now(),
+        isLive: false,
+        isTokenExpired: true,
+      };
+      try {
+        window.localStorage.removeItem(STORAGE_KEY);
+        window.localStorage.removeItem('kortix_trading_dhan_funds');
+        window.localStorage.removeItem('kortix_trading_dhan_positions');
+      } catch {}
+      subscribers.forEach((cb) => cb(currentSnapshot));
+      window.dispatchEvent(new CustomEvent('trading-dhan-live-updated', { detail: currentSnapshot }));
+      return;
+    }
 
     let changed = false;
     const nextFunds = fundsRes?.data?.availabelBalance != null ? fundsRes.data : currentSnapshot.funds;
@@ -233,6 +243,18 @@ async function performSync(force = false) {
         openPositionsCount: nextPositions.filter((pos) => Number(pos.netQty || 0) !== 0).length,
         lastUpdated: new Date().toISOString(),
       };
+    }
+
+    if (Array.isArray(nextPositions) && nextPositions.length > 0) {
+      const subscriptions = nextPositions
+        .filter((pos) => pos.securityId)
+        .map((pos) => ({
+          ExchangeSegment: pos.exchangeSegment || 'NSE_EQ',
+          SecurityId: String(pos.securityId),
+        }));
+      if (subscriptions.length > 0) {
+        dhanMarketFeed.subscribe(subscriptions, 15);
+      }
     }
 
     if (
@@ -309,9 +331,73 @@ function scheduleNextSync() {
   }, intervalMs);
 }
 
+function handleLiveMarketTick(tick: MarketTick) {
+  if (!currentSnapshot.positions || currentSnapshot.positions.length === 0) return;
+  let changed = false;
+
+  const updatedPositions = currentSnapshot.positions.map((pos) => {
+    if (String(pos.securityId) === String(tick.securityId)) {
+      changed = true;
+      const netQty = Number(pos.netQty || 0);
+      const buyAvg = Number(pos.buyAvg || pos.costPrice || 0);
+      const sellAvg = Number(pos.sellAvg || 0);
+      const ltp = tick.ltp;
+
+      let unrealized = Number(pos.unrealizedProfit || 0);
+      if (netQty > 0 && buyAvg > 0) {
+        unrealized = Number(((ltp - buyAvg) * netQty).toFixed(2));
+      } else if (netQty < 0 && sellAvg > 0) {
+        unrealized = Number(((sellAvg - ltp) * Math.abs(netQty)).toFixed(2));
+      }
+
+      return {
+        ...pos,
+        lastTradedPrice: ltp,
+        unrealizedProfit: unrealized,
+      };
+    }
+    return pos;
+  });
+
+  if (changed) {
+    const realizedProfit = Number(
+      updatedPositions.reduce((acc, pos) => acc + (Number(pos.realizedProfit) || 0), 0).toFixed(2)
+    );
+    const unrealizedProfit = Number(
+      updatedPositions.reduce((acc, pos) => acc + (Number(pos.unrealizedProfit) || 0), 0).toFixed(2)
+    );
+    currentSnapshot = {
+      ...currentSnapshot,
+      positions: updatedPositions,
+      summary: {
+        ...currentSnapshot.summary,
+        realizedProfit,
+        unrealizedProfit,
+        totalDayPnl: Number((realizedProfit + unrealizedProfit).toFixed(2)),
+        lastUpdated: new Date().toISOString(),
+      },
+      lastSyncTimestamp: Date.now(),
+      isLive: true,
+    };
+    subscribers.forEach((cb) => cb(currentSnapshot));
+  }
+}
+
 function startLiveSync() {
   if (typeof window === 'undefined') return;
   if (syncTimer || tickTimer) return;
+
+  // Initialize official DhanHQ WebSockets (Market Feed + Order Updates)
+  try {
+    dhanMarketFeed.connect().catch(() => {});
+    dhanOrderUpdates.connect().catch(() => {});
+    dhanOrderUpdates.onOrderAlert(() => {
+      performSync(true).catch(() => {});
+    });
+    dhanMarketFeed.onAnyTick((tick) => {
+      handleLiveMarketTick(tick);
+    });
+  } catch {}
 
   // Immediate fast verification in background for funds, positions, journal, and orders
   performSync();
@@ -336,6 +422,10 @@ function startLiveSync() {
 }
 
 function stopLiveSync() {
+  try {
+    dhanMarketFeed.disconnect();
+    dhanOrderUpdates.disconnect();
+  } catch {}
   if (syncTimer) {
     clearTimeout(syncTimer);
     syncTimer = null;

@@ -609,6 +609,442 @@ export async function handleTradingRequest(
     return true;
   }
 
+  // 1.2 Connectors API (/connectors/projects/:id/connectors)
+  if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/connectors\/?$/) && method === 'GET') {
+    const isConnected = Boolean(process.env.DHAN_ACCESS_TOKEN);
+    const clientId = process.env.DHAN_CLIENT_ID || '1114824544';
+    sendJson(200, {
+      connectors: [
+        {
+          slug: 'dhan',
+          name: 'Dhan',
+          provider: 'composio',
+          iconUrl: '/logos/dhan.svg',
+          status: isConnected ? 'active' : 'needs_auth',
+          state: isConnected ? 'connected' : 'needs_account',
+          credentialMode: 'shared',
+          authorizationStrategy: 'project',
+          sensitive: true,
+          secretSet: isConnected,
+          actions: [
+            { name: 'fundlimit', description: 'Real-time Cash balance & Collateral Limit' },
+            { name: 'positions', description: 'Open Positions, Quantities & Unrealized PnL' },
+            { name: 'orders', description: 'Place, Modify & Cancel NSE/BSE Orders' },
+            { name: 'trades', description: 'Execution Book & Statutory Charges Ledger' },
+            { name: 'profile', description: 'User Profile & Market Segment Status' },
+          ],
+          authSecret: null,
+          secretIdentifier: 'dhan_access_token',
+          credentialSource: isConnected ? 'stored' : 'none',
+        },
+      ],
+    });
+    return true;
+  }
+
+  if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/connectors\/dhan\/?$/) && method === 'GET') {
+    const isConnected = Boolean(process.env.DHAN_ACCESS_TOKEN);
+    const clientId = process.env.DHAN_CLIENT_ID || '1114824544';
+    sendJson(200, {
+      connector: {
+        slug: 'dhan',
+        name: 'Dhan',
+        provider: 'composio',
+        iconUrl: '/logos/dhan.svg',
+        status: isConnected ? 'active' : 'needs_auth',
+        state: isConnected ? 'connected' : 'needs_account',
+        credentialMode: 'shared',
+        authorizationStrategy: 'project',
+        sensitive: true,
+        secretSet: isConnected,
+        actions: [
+          { name: 'fundlimit', description: 'Real-time Cash balance & Collateral Limit' },
+          { name: 'positions', description: 'Open Positions, Quantities & Unrealized PnL' },
+          { name: 'orders', description: 'Place, Modify & Cancel NSE/BSE Orders' },
+          { name: 'trades', description: 'Execution Book & Statutory Charges Ledger' },
+          { name: 'profile', description: 'User Profile & Market Segment Status' },
+        ],
+        authSecret: null,
+        secretIdentifier: 'dhan_access_token',
+        credentialSource: isConnected ? 'stored' : 'none',
+      },
+    });
+    return true;
+  }
+
+  if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/discover\/connectors(?:\/dhan)?\/?$/) && method === 'GET') {
+    const dhanItem = {
+      id: 'dhan',
+      kind: 'composio',
+      slug: 'dhan',
+      name: 'Dhan',
+      description: 'Indian Stock Broker for NSE & BSE live trading, order execution and portfolio audit.',
+      url: 'https://dhan.co',
+      icon: '/logos/dhan.svg',
+      domain: 'dhan.co',
+      categories: ['Trading', 'Finance'],
+      feeds: ['popular'],
+      popularity: 1,
+      oneClick: true,
+    };
+
+    if (pathname.endsWith('/dhan') || pathname.endsWith('/dhan/')) {
+      sendJson(200, { item: dhanItem, variants: [], installed: [] });
+      return true;
+    }
+
+    const items = [
+      dhanItem,
+      {
+        id: 'gmail',
+        kind: 'composio',
+        slug: 'gmail',
+        name: 'Gmail',
+        description: 'Read, draft, and send emails.',
+        url: 'https://mail.google.com',
+        icon: '/connector-icons/gmail.svg',
+        domain: 'gmail.com',
+        categories: ['Productivity'],
+        feeds: ['popular'],
+        popularity: 2,
+        oneClick: true,
+      },
+      {
+        id: 'googlecalendar',
+        kind: 'composio',
+        slug: 'googlecalendar',
+        name: 'Google Calendar',
+        description: 'Schedule events and meetings.',
+        url: 'https://calendar.google.com',
+        icon: '/connector-icons/googlecalendar.svg',
+        domain: 'calendar.google.com',
+        categories: ['Productivity'],
+        feeds: ['popular'],
+        popularity: 3,
+        oneClick: true,
+      },
+      {
+        id: 'slack',
+        kind: 'composio',
+        slug: 'slack',
+        name: 'Slack',
+        description: 'Channels and direct messages.',
+        url: 'https://slack.com',
+        icon: '/connector-icons/slack.svg',
+        domain: 'slack.com',
+        categories: ['Communication'],
+        feeds: ['popular'],
+        popularity: 4,
+        oneClick: true,
+      },
+      {
+        id: 'github_mcp',
+        kind: 'mcp',
+        slug: 'github_mcp',
+        name: 'GitHub MCP',
+        description: 'Repository management, issues, PRs.',
+        url: 'https://github.com',
+        icon: '/connector-icons/github.svg',
+        domain: 'github.com',
+        categories: ['Development'],
+        feeds: ['popular'],
+        popularity: 5,
+        oneClick: true,
+      },
+      {
+        id: 'notion_mcp',
+        kind: 'mcp',
+        slug: 'notion_mcp',
+        name: 'Notion MCP',
+        description: 'Pages, databases and documents.',
+        url: 'https://notion.so',
+        icon: '/connector-icons/notion.svg',
+        domain: 'notion.so',
+        categories: ['Productivity'],
+        feeds: ['popular'],
+        popularity: 6,
+        oneClick: true,
+      },
+      {
+        id: 'linear_mcp',
+        kind: 'mcp',
+        slug: 'linear_mcp',
+        name: 'Linear MCP',
+        description: 'Issue tracking and sprint planning.',
+        url: 'https://linear.app',
+        icon: '/connector-icons/linear.svg',
+        domain: 'linear.app',
+        categories: ['Development'],
+        feeds: ['popular'],
+        popularity: 7,
+        oneClick: true,
+      },
+      {
+        id: 'googledrive',
+        kind: 'composio',
+        slug: 'googledrive',
+        name: 'Google Drive',
+        description: 'Cloud files, folders and storage.',
+        url: 'https://drive.google.com',
+        icon: '/connector-icons/googledrive.svg',
+        domain: 'drive.google.com',
+        categories: ['Productivity'],
+        feeds: ['popular'],
+        popularity: 8,
+        oneClick: true,
+      },
+      {
+        id: 'stripe_mcp',
+        kind: 'mcp',
+        slug: 'stripe_mcp',
+        name: 'Stripe MCP',
+        description: 'Billing, payments and invoices.',
+        url: 'https://stripe.com',
+        icon: '/connector-icons/stripe.svg',
+        domain: 'stripe.com',
+        categories: ['Finance'],
+        feeds: ['popular'],
+        popularity: 9,
+        oneClick: true,
+      },
+      {
+        id: 'hubspot',
+        kind: 'composio',
+        slug: 'hubspot',
+        name: 'HubSpot',
+        description: 'CRM contacts, deals and marketing.',
+        url: 'https://hubspot.com',
+        icon: '/connector-icons/hubspot.svg',
+        domain: 'hubspot.com',
+        categories: ['Marketing'],
+        feeds: ['popular'],
+        popularity: 10,
+        oneClick: true,
+      },
+    ];
+
+    sendJson(200, {
+      items,
+      total: items.length,
+      hasMore: false,
+      nextCursor: null,
+    });
+    return true;
+  }
+
+  if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/discover\/sections\/?$/) && method === 'GET') {
+    const popularItems = [
+      {
+        id: 'dhan',
+        kind: 'composio',
+        slug: 'dhan',
+        name: 'Dhan',
+        description: 'Indian Stock Broker for NSE & BSE live trading, order execution and portfolio audit.',
+        url: 'https://dhan.co',
+        icon: '/logos/dhan.svg',
+        domain: 'dhan.co',
+        categories: ['Trading', 'Finance'],
+        feeds: ['popular'],
+        popularity: 1,
+        oneClick: true,
+      },
+      {
+        id: 'gmail',
+        kind: 'composio',
+        slug: 'gmail',
+        name: 'Gmail',
+        description: 'Read, draft, and send emails.',
+        url: 'https://mail.google.com',
+        icon: '/connector-icons/gmail.svg',
+        domain: 'gmail.com',
+        categories: ['Productivity'],
+        feeds: ['popular'],
+        popularity: 2,
+        oneClick: true,
+      },
+      {
+        id: 'googlecalendar',
+        kind: 'composio',
+        slug: 'googlecalendar',
+        name: 'Google Calendar',
+        description: 'Schedule events and meetings.',
+        url: 'https://calendar.google.com',
+        icon: '/connector-icons/googlecalendar.svg',
+        domain: 'calendar.google.com',
+        categories: ['Productivity'],
+        feeds: ['popular'],
+        popularity: 3,
+        oneClick: true,
+      },
+      {
+        id: 'slack',
+        kind: 'composio',
+        slug: 'slack',
+        name: 'Slack',
+        description: 'Channels and direct messages.',
+        url: 'https://slack.com',
+        icon: '/connector-icons/slack.svg',
+        domain: 'slack.com',
+        categories: ['Communication'],
+        feeds: ['popular'],
+        popularity: 4,
+        oneClick: true,
+      },
+      {
+        id: 'github_mcp',
+        kind: 'mcp',
+        slug: 'github_mcp',
+        name: 'GitHub MCP',
+        description: 'Repository management, issues, PRs.',
+        url: 'https://github.com',
+        icon: '/connector-icons/github.svg',
+        domain: 'github.com',
+        categories: ['Development'],
+        feeds: ['popular'],
+        popularity: 5,
+        oneClick: true,
+      },
+      {
+        id: 'notion_mcp',
+        kind: 'mcp',
+        slug: 'notion_mcp',
+        name: 'Notion MCP',
+        description: 'Pages, databases and documents.',
+        url: 'https://notion.so',
+        icon: '/connector-icons/notion.svg',
+        domain: 'notion.so',
+        categories: ['Productivity'],
+        feeds: ['popular'],
+        popularity: 6,
+        oneClick: true,
+      },
+      {
+        id: 'linear_mcp',
+        kind: 'mcp',
+        slug: 'linear_mcp',
+        name: 'Linear MCP',
+        description: 'Issue tracking and sprint planning.',
+        url: 'https://linear.app',
+        icon: '/connector-icons/linear.svg',
+        domain: 'linear.app',
+        categories: ['Development'],
+        feeds: ['popular'],
+        popularity: 7,
+        oneClick: true,
+      },
+      {
+        id: 'googledrive',
+        kind: 'composio',
+        slug: 'googledrive',
+        name: 'Google Drive',
+        description: 'Cloud files, folders and storage.',
+        url: 'https://drive.google.com',
+        icon: '/connector-icons/googledrive.svg',
+        domain: 'drive.google.com',
+        categories: ['Productivity'],
+        feeds: ['popular'],
+        popularity: 8,
+        oneClick: true,
+      },
+      {
+        id: 'stripe_mcp',
+        kind: 'mcp',
+        slug: 'stripe_mcp',
+        name: 'Stripe MCP',
+        description: 'Billing, payments and invoices.',
+        url: 'https://stripe.com',
+        icon: '/connector-icons/stripe.svg',
+        domain: 'stripe.com',
+        categories: ['Finance'],
+        feeds: ['popular'],
+        popularity: 9,
+        oneClick: true,
+      },
+      {
+        id: 'hubspot',
+        kind: 'composio',
+        slug: 'hubspot',
+        name: 'HubSpot',
+        description: 'CRM contacts, deals and marketing.',
+        url: 'https://hubspot.com',
+        icon: '/connector-icons/hubspot.svg',
+        domain: 'hubspot.com',
+        categories: ['Marketing'],
+        feeds: ['popular'],
+        popularity: 10,
+        oneClick: true,
+      },
+    ];
+
+    sendJson(200, {
+      popular: popularItems,
+      sections: [
+        {
+          key: 'popular',
+          label: 'Popular',
+          total: popularItems.length,
+          items: popularItems,
+        },
+        {
+          key: 'trading',
+          label: 'Trading & Finance',
+          total: 2,
+          items: [popularItems[0], popularItems[8]],
+        },
+      ],
+      categories: [
+        { key: 'popular', label: 'Popular', count: popularItems.length },
+        { key: 'trading', label: 'Trading & Finance', count: 2 },
+      ],
+    });
+    return true;
+  }
+
+  if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/connectors\/dhan\/accounts\/?$/) && method === 'GET') {
+    const isConnected = Boolean(process.env.DHAN_ACCESS_TOKEN);
+    const clientId = process.env.DHAN_CLIENT_ID || '1114824544';
+    sendJson(200, {
+      accounts: isConnected
+        ? [
+            {
+              id: 'dhan_primary_account',
+              name: `DhanHQ Trading (${clientId})`,
+              owner_type: 'project',
+              status: 'active',
+              metadata: {
+                clientId,
+                broker: 'DhanHQ',
+                segments: ['NSE_EQ', 'NSE_FNO', 'BSE_EQ'],
+              },
+            },
+          ]
+        : [],
+    });
+    return true;
+  }
+
+  if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/connectors\/sync\/?$/) && method === 'POST') {
+    sendJson(200, { ok: true, synced: ['dhan'] });
+    return true;
+  }
+
+  if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/catalog\/?$/) && method === 'GET') {
+    sendJson(200, {
+      entries: [
+        {
+          slug: 'dhan',
+          name: 'DhanHQ',
+          category: 'Trading',
+          description: 'Official DhanHQ Live Broker Integration for NSE/BSE Trading, Portfolio & Real-time Orders.',
+          provider: 'http',
+          source: 'local',
+        },
+      ],
+      total: 1,
+    });
+    return true;
+  }
+
   // 2. Agents API (/v1/trading/agents)
   if (pathname === '/v1/trading/agents') {
     if (method === 'GET') {

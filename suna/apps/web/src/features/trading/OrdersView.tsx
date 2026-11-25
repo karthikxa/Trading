@@ -281,7 +281,9 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'TRADED' | 'PENDING' | 'REJECTED' | 'CANCELLED'>('ALL');
   const [productFilter, setProductFilter] = useState<'ALL' | 'INTRADAY' | 'CNC' | 'MARGIN'>('ALL');
   const [sideFilter, setSideFilter] = useState<'ALL' | 'BUY' | 'SELL'>('ALL');
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(() => new Date());
+  const [dateRange, setDateRange] = useState<{ from?: Date; to?: Date } | undefined>(undefined);
+  const [calendarMode, setCalendarMode] = useState<'single' | 'range'>('single');
   const [viewingOrder, setViewingOrder] = useState<DhanOrderItem | null>(null);
   const [sharingOrder, setSharingOrder] = useState<DhanOrderItem | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
@@ -408,18 +410,31 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
         return false;
       }
 
-      // 4. Date Filter (Specific Day)
-      if (selectedDate) {
-        try {
-          const orderDate = new Date(o.exchangeTime);
-          const sameDay =
-            orderDate.getFullYear() === selectedDate.getFullYear() &&
-            orderDate.getMonth() === selectedDate.getMonth() &&
-            orderDate.getDate() === selectedDate.getDate();
-          if (!sameDay) return false;
-        } catch {
-          return false;
+      // 4. Date Filter (Specific Day or Custom Range — defaults to Today)
+      const orderDayKey = (() => {
+        const raw = String(o.exchangeTime || '').trim();
+        const directMatch = raw.match(/^(\d{4}-\d{2}-\d{2})(?:[T ]|$)/);
+        if (directMatch && !raw.endsWith('Z') && !/[+-]\d{2}:?\d{2}$/.test(raw)) {
+          return directMatch[1];
         }
+        try {
+          const parsed = new Date(raw);
+          if (!Number.isNaN(parsed.getTime())) {
+            return parsed.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+          }
+        } catch {}
+        return '';
+      })();
+
+      if (dateRange?.from) {
+        if (!orderDayKey) return false;
+        const fromKey = dateRange.from.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        const toKey = (dateRange.to ?? dateRange.from).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        if (orderDayKey < fromKey || orderDayKey > toKey) return false;
+      } else if (selectedDate) {
+        if (!orderDayKey) return false;
+        const targetKey = selectedDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        if (orderDayKey !== targetKey) return false;
       }
 
       // 5. Search Filter (symbol, custom symbol, orderId)
@@ -842,7 +857,7 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
                     Review & Reflection
                   </span>
                   <p className="text-xs text-foreground leading-relaxed p-3.5 rounded-lg bg-muted/20 border border-border/40">
-                    {userNotes || `Dhan execution order #${viewingOrder.orderId}. Product: ${viewingOrder.productType}. Segment: ${viewingOrder.exchangeSegment || 'NSE_EQ'}.`}
+                    {userNotes || 'No reflection notes added yet.'}
                   </p>
                 </div>
               </div>
@@ -1320,45 +1335,97 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
             </PopoverContent>
           </Popover>
 
-          {/* B. Calendar Date Picker (Icon Button Only) */}
+          {/* B. Calendar Date Picker (Today by default, plus Previous Days & Custom Range) */}
           <Popover>
             <PopoverTrigger
               type="button"
               aria-label="Filter by date"
               title={
-                selectedDate
-                  ? `Filter: ${selectedDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`
-                  : 'Filter by date'
+                dateRange?.from
+                  ? `Range: ${dateRange.from.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} - ${(dateRange.to ?? dateRange.from).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`
+                  : selectedDate
+                    ? `Filter: ${selectedDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`
+                    : 'All Dates'
               }
               className={cn(
                 'inline-flex items-center justify-center size-8 rounded-lg border border-border/60 bg-card text-muted-foreground shadow-2xs hover:bg-muted/50 hover:text-foreground transition-colors cursor-pointer font-sans outline-none focus:outline-none focus:ring-0',
-                selectedDate && 'bg-primary/10 text-primary border-primary/30 font-semibold'
+                (selectedDate || dateRange?.from) && 'bg-primary/10 text-primary border-primary/30 font-semibold'
               )}
             >
               <CalendarBlank className="size-4" />
             </PopoverTrigger>
             <PopoverContent align="end" className="p-0 border border-border/80 bg-card shadow-xl rounded-xl">
+              <div className="px-2.5 pt-2.5 pb-1 flex items-center gap-1 border-b border-border/40">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCalendarMode('single');
+                    setDateRange(undefined);
+                    if (!selectedDate) setSelectedDate(new Date());
+                  }}
+                  className={cn(
+                    'flex-1 text-[11px] font-medium py-1 px-2 rounded-md transition-colors cursor-pointer',
+                    calendarMode === 'single'
+                      ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+                  )}
+                >
+                  Single Day
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCalendarMode('range');
+                    if (!dateRange?.from && selectedDate) {
+                      setDateRange({ from: selectedDate, to: selectedDate });
+                    }
+                  }}
+                  className={cn(
+                    'flex-1 text-[11px] font-medium py-1 px-2 rounded-md transition-colors cursor-pointer',
+                    calendarMode === 'range'
+                      ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+                  )}
+                >
+                  Custom Range
+                </button>
+              </div>
               <Calendar
-                mode="single"
-                selected={selectedDate}
-                onSelect={(d) => setSelectedDate(d)}
+                mode={calendarMode as any}
+                selected={(calendarMode === 'range' ? dateRange : selectedDate) as any}
+                onSelect={(val: any) => {
+                  if (calendarMode === 'range') {
+                    setDateRange(val);
+                    if (val?.from) setSelectedDate(val.from);
+                  } else {
+                    setDateRange(undefined);
+                    setSelectedDate(val);
+                  }
+                }}
                 initialFocus
               />
               <div className="p-2 border-t border-border/40 flex items-center justify-between gap-2">
                 <button
                   type="button"
-                  onClick={() => setSelectedDate(new Date())}
+                  onClick={() => {
+                    setCalendarMode('single');
+                    setDateRange(undefined);
+                    setSelectedDate(new Date());
+                  }}
                   className="text-xs text-muted-foreground hover:text-foreground font-medium px-2 py-1 rounded hover:bg-muted cursor-pointer"
                 >
                   Today
                 </button>
-                {selectedDate && (
+                {(selectedDate || dateRange?.from) && (
                   <button
                     type="button"
-                    onClick={() => setSelectedDate(undefined)}
+                    onClick={() => {
+                      setDateRange(undefined);
+                      setSelectedDate(undefined);
+                    }}
                     className="text-xs text-destructive hover:text-destructive/80 font-medium px-2 py-1 rounded hover:bg-destructive/10 cursor-pointer"
                   >
-                    Clear Filter
+                    All Dates
                   </button>
                 )}
               </div>

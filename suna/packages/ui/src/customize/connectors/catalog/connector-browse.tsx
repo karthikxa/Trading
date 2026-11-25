@@ -125,6 +125,7 @@ const CatalogEntryCard = memo(function CatalogEntryCard({
     subtitle: <span className="text-muted-foreground text-xs">{catalogEntryKindLabel(entry)}</span>,
     trailing: <CatalogAffordance entry={entry} connected={connected} install={install} />,
   };
+
   // Only the Install control needs to sit beside the link. The "Added" badge
   // stays inside it, so a click on the badge still opens the page.
   return (

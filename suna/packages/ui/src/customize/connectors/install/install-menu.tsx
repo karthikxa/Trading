@@ -40,7 +40,7 @@ export function InstallButton({
       variant={variant}
       className={cn(
         variant !== 'default' &&
-          'hover:border-ring hover:ring-ring/15 hit-area-y-3 hit-area-l-3 shrink-0 border border-transparent hover:border hover:ring-2',
+          'hit-area-y-3 hit-area-l-3 shrink-0 border border-transparent hover:border-border/80 hover:bg-foreground/5 hover:ring-0 focus-visible:ring-0 outline-none',
         className,
       )}
       disabled={disabled || pending}

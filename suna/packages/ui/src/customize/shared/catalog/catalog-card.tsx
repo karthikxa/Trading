@@ -75,7 +75,7 @@ export function CatalogCard({
     variant === 'plain'
       ? 'border-transparent bg-transparent px-3 py-2.5 hover:bg-accent'
       : 'bg-accent/50 border-border/60 hover:bg-accent hover:border-border px-4 py-3.5',
-    'focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:outline-none',
+    'focus-visible:ring-border focus-visible:ring-1 focus-visible:outline-none',
     disabled && 'pointer-events-none opacity-60',
     className,
   );

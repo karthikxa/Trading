@@ -39,7 +39,7 @@ export async function refreshDhanAccessToken(params?: {
   pin?: string;
   totpSecret?: string;
 }): Promise<{ ok: boolean; accessToken?: string; error?: string }> {
-  const clientId = params?.clientId || process.env.DHAN_CLIENT_ID || '1114824544';
+  const clientId = params?.clientId || process.env.DHAN_CLIENT_ID || '';
   const pin = params?.pin || process.env.DHAN_PIN;
   const totpSecret = params?.totpSecret || process.env.DHAN_TOTP_SECRET;
 

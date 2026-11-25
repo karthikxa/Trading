@@ -83,7 +83,10 @@ export default function JournalView({ projectId }: JournalViewProps) {
     if (!isBackground) setIsSyncingDhan(true);
     try {
       const res = await syncDhanTradesToJournal(projectId);
-      if (res && res.trades) {
+      // CRITICAL: Never replace existing trades with an empty result.
+      // Dhan API returns 0 trades when the token just expired — that must
+      // not blank the calendar. Only update if we got real data.
+      if (res && Array.isArray(res.trades) && res.trades.length > 0) {
         setTrades((prev) => {
           const sorted = sortJournalTrades(res.trades);
           if (prev.length === sorted.length && JSON.stringify(prev) === JSON.stringify(sorted)) {
@@ -105,15 +108,16 @@ export default function JournalView({ projectId }: JournalViewProps) {
     async function loadData() {
       try {
         const loaded = await getJournalTrades(projectId);
-        const hasMock = loaded.some((t) => t.instrument === 'EURUSD' || !t.id.startsWith('dhan_'));
-        if (loaded.length === 0 || hasMock) {
+        // Only force a Dhan sync if there are truly no trades at all.
+        // The old `hasMock` check was incorrectly treating UUID manual trades as mocks.
+        if (loaded.length === 0) {
           const synced = await syncDhanTradesToJournal(projectId);
           if (isMounted && Array.isArray(synced.trades) && synced.trades.length > 0) {
             setTrades(sortJournalTrades(synced.trades));
             return;
           }
         }
-        if (isMounted && Array.isArray(loaded)) {
+        if (isMounted && Array.isArray(loaded) && loaded.length > 0) {
           setTrades(sortJournalTrades(loaded));
         }
       } catch (err) {
@@ -122,8 +126,15 @@ export default function JournalView({ projectId }: JournalViewProps) {
     }
     loadData();
 
-    const onJournalUpdated = () => {
-      const fresh = getLocalTrades();
+    const onJournalUpdated = (e: Event) => {
+      // Use the event's detail directly — avoids a re-read from localStorage
+      // that could race with an in-progress write and return stale/empty data.
+      const incoming = (e as CustomEvent<JournalTrade[]>).detail;
+      const fresh = Array.isArray(incoming) && incoming.length > 0
+        ? incoming
+        : getLocalTrades();
+      // Never blank the calendar with an empty update
+      if (fresh.length === 0) return;
       setTrades((prev) => {
         const sorted = sortJournalTrades(fresh);
         if (prev.length === sorted.length && JSON.stringify(prev) === JSON.stringify(sorted)) {
@@ -134,12 +145,13 @@ export default function JournalView({ projectId }: JournalViewProps) {
     };
     window.addEventListener('trading-journal-updated', onJournalUpdated);
 
-    // Live market background poll (every 3s) with zero flicker
+    // Supabase-backed sync: 60s is plenty — data is durable in Supabase.
+    // 3s was causing back-to-back reconciles that wiped the calendar.
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         handleSyncDhan(true);
       }
-    }, 3000);
+    }, 60000);
 
     return () => {
       isMounted = false;
