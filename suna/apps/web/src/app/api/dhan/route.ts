@@ -19,24 +19,42 @@ const inFlightRequests = new Map<string, Promise<{ data: any; summary?: any; sta
 // Dhan allows up to 10 requests per second across REST endpoints.
 // 1 call/sec per endpoint is ~60-120 req/min, safely under Dhan's 250 req/min threshold.
 let callTimestamps: number[] = [];
-const MAX_CALLS_PER_MINUTE = 150; // Dhan safe ceiling (under 250/min limit)
+const MAX_CALLS_PER_MINUTE = 180; // Dhan safe ceiling (under 250/min limit)
+const MAX_DAILY_CALLS = 24500; // Daily quota safety ceiling (under Dhan's 25,000 limit)
+
+let dailyCallCount = 0;
+let dailyCallDate = new Date().toISOString().slice(0, 10);
 
 function isQuotaSafe(): boolean {
   const now = Date.now();
+  const todayStr = new Date().toISOString().slice(0, 10);
+  if (todayStr !== dailyCallDate) {
+    dailyCallDate = todayStr;
+    dailyCallCount = 0;
+  }
+  if (dailyCallCount >= MAX_DAILY_CALLS) {
+    return false; // Hard daily quota guard
+  }
   callTimestamps = callTimestamps.filter((t) => now - t < 60000);
   return callTimestamps.length < MAX_CALLS_PER_MINUTE;
 }
 
 function recordDhanCall(): void {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  if (todayStr !== dailyCallDate) {
+    dailyCallDate = todayStr;
+    dailyCallCount = 0;
+  }
+  dailyCallCount++;
   callTimestamps.push(Date.now());
 }
 
 // Micro-TTL per endpoint: balances 0ms speed with real-time freshness & quota protection
 const CACHE_TTL_MS: Record<string, number> = {
-  positions: 900,     // 900ms micro-TTL for live PnL & open positions (allows fast 1s polling with fresh upstream ticks)
-  funds: 3000,        // 3s for cash / margin
-  orders: 2000,       // 2s for active orders
-  trades: 5000,       // 5s for today's trades
+  positions: 600,     // 600ms micro-TTL for live PnL & open positions (allows fast 700ms polling with fresh upstream ticks)
+  funds: 2500,        // 2.5s for cash / margin
+  orders: 1500,       // 1.5s for active orders
+  trades: 4000,       // 4s for today's trades
   all_trades: 180000, // 3 min for historical execution audit
   holdings: 60000,    // 1 min for equity holdings
   profile: 300000,    // 5 min for user profile
@@ -292,6 +310,57 @@ export async function POST(req: NextRequest) {
       const clientId = body.clientId || req.headers.get('x-dhan-client-id') || undefined;
       const result = await refreshDhanAccessToken({ clientId, pin, totpSecret });
       return NextResponse.json(result);
+    }
+
+    if (action === 'verify_otp' || action === 'login_totp') {
+      const clientId = body.clientId || req.headers.get('x-dhan-client-id') || process.env.DHAN_CLIENT_ID || '1114824544';
+      const pin = body.pin || req.headers.get('x-dhan-pin') || process.env.DHAN_PIN || '221007';
+      const totp = body.totp || body.otp || body.code;
+
+      if (!totp) {
+        return NextResponse.json({ ok: false, error: '6-digit OTP/TOTP code is required' }, { status: 400 });
+      }
+
+      const authUrl = new URL('https://auth.dhan.co/app/generateAccessToken');
+      authUrl.searchParams.set('dhanClientId', String(clientId).trim());
+      authUrl.searchParams.set('pin', String(pin).trim());
+      authUrl.searchParams.set('totp', String(totp).trim());
+
+      recordDhanCall();
+      const authRes = await fetch(authUrl.toString(), {
+        method: 'POST',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      });
+
+      const authData = await authRes.json().catch(() => ({}));
+      if (authRes.ok && authData?.accessToken) {
+        process.env.DHAN_ACCESS_TOKEN = authData.accessToken;
+        process.env.DHAN_CLIENT_ID = clientId;
+        serverDhanCache.clear();
+        return NextResponse.json({
+          ok: true,
+          accessToken: authData.accessToken,
+          clientName: authData.dhanClientName,
+          clientUcc: authData.dhanClientUcc,
+          expiryTime: authData.expiryTime,
+        });
+      }
+
+      return NextResponse.json({
+        ok: false,
+        error: authData?.message || authData?.errorMessage || 'Invalid OTP/TOTP or PIN from DhanHQ',
+      });
+    }
+
+    if (action === 'save_token') {
+      const token = body.token || body.accessToken;
+      if (!token) {
+        return NextResponse.json({ ok: false, error: 'Token is required' }, { status: 400 });
+      }
+      process.env.DHAN_ACCESS_TOKEN = String(token).trim();
+      serverDhanCache.clear();
+      return NextResponse.json({ ok: true, message: 'Dhan token saved successfully' });
     }
 
     const headers = getDhanHeaders();

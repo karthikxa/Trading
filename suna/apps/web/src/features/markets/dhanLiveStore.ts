@@ -71,12 +71,12 @@ export function getIstMarketState(): {
 }
 
 // Adaptive polling interval based on market session & scheduled milestones:
-// - 9:14 AM to 3:31 PM (Live Market): 1000ms (1-sec instant fast polling)
+// - 9:14 AM to 3:31 PM (Live Market): 700ms (ultra-fast sub-second live polling)
 // - Off-market: 60s idle (with automatic trigger at 12:00 AM midnight and 8:00 AM morning)
 export function getAdaptiveSyncInterval(): number {
   const { isMarketHours } = getIstMarketState();
   if (isMarketHours) {
-    return 1000; // 1 second fast live polling during market hours (9:14 AM - 3:31 PM IST)
+    return 700; // 700ms ultra-fast live polling during market hours (9:14 AM - 3:31 PM IST)
   }
   return 60000; // 60s idle sleep outside market hours
 }
@@ -299,9 +299,9 @@ function scheduleNextSync() {
     } catch {}
   }
 
-  // Live market hours (9:15 AM - 3:30 PM): 1000ms (1-second fast polling)
+  // Live market hours (9:14 AM - 3:31 PM): 700ms (ultra-fast sub-second polling)
   // Outside market hours: 60s idle sleep
-  const intervalMs = isMarketHours ? 1000 : 60000;
+  const intervalMs = isMarketHours ? 700 : 60000;
 
   syncTimer = setTimeout(async () => {
     await performSync();

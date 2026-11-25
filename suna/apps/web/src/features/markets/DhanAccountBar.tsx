@@ -3,12 +3,14 @@
 import React, { useEffect, useState } from 'react';
 import { cn } from '@kortix/ui';
 import { getDhanLiveSnapshot, subscribeDhanLive, DhanLiveSnapshot } from './dhanLiveStore';
+import ConnectDhanModal from './ConnectDhanModal';
 
 export default function DhanAccountBar({ className = '' }: { className?: string }) {
   // Synchronous 0ms frame-0 hydration from snapshot cache
   const [snapshot, setSnapshot] = useState<DhanLiveSnapshot>(() => getDhanLiveSnapshot());
   const [killSwitchActive, setKillSwitchActive] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
 
   useEffect(() => {
     const unsubscribe = subscribeDhanLive((next) => {
@@ -17,41 +19,8 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
     return () => unsubscribe();
   }, []);
 
-  const handleUpdateToken = async () => {
-    const choice = window.prompt(
-      'DhanHQ Authentication Setup:\n\n1. Type "A" to setup 100% Automated Daily Login (PIN + TOTP Secret Key)\n2. Or directly paste today’s Access Token below:',
-      typeof window !== 'undefined' ? localStorage.getItem('kortix_dhan_access_token') || '' : ''
-    );
-    if (!choice) return;
-
-    if (choice.trim().toUpperCase() === 'A') {
-      const pin = window.prompt('Enter your 6-digit Dhan login PIN:');
-      if (!pin) return;
-      const totp = window.prompt('Enter your Dhan TOTP Secret Key (from Dhan Google Authenticator setup):');
-      if (!totp) return;
-
-      try {
-        const res = await fetch('/api/dhan?action=auto_auth', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pin: pin.trim(), totpSecret: totp.trim() }),
-        });
-        const data = await res.json();
-        if (data.ok && data.accessToken) {
-          localStorage.setItem('kortix_dhan_access_token', data.accessToken);
-          window.dispatchEvent(new CustomEvent('dhan-token-updated'));
-          alert('Automated Dhan Login Succeeded! Daily token generated and live sync active.');
-        } else {
-          alert('Auto-Login failed: ' + (data.error || 'Check your PIN and TOTP Secret'));
-        }
-      } catch (err: any) {
-        alert('Auto-login error: ' + (err?.message || 'Network error'));
-      }
-    } else {
-      localStorage.setItem('kortix_dhan_access_token', choice.trim());
-      window.dispatchEvent(new CustomEvent('dhan-token-updated'));
-      alert('Dhan Access Token updated! Syncing live orders, positions, and journal...');
-    }
+  const handleOpenConnect = () => {
+    setConnectModalOpen(true);
   };
 
   const handleKillSwitch = async () => {
@@ -139,25 +108,27 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
         </div>
       </div>
 
-      {/* Actions: Kill Switch & Token Management */}
+      {/* Actions: Kill Switch & TradingView-style Connect Dhan */}
       <div className="flex items-center gap-2">
         {snapshot.isTokenExpired ? (
           <button
             type="button"
-            onClick={handleUpdateToken}
-            className="px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-sans font-medium flex items-center gap-1 cursor-pointer hover:bg-amber-500/30 transition-all animate-pulse"
-            title="Dhan token expired (DH-901). Click to renew today's access token."
+            onClick={handleOpenConnect}
+            className="px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-sans font-medium flex items-center gap-1.5 cursor-pointer hover:bg-amber-500/30 transition-all animate-pulse"
+            title="Dhan token expired or disconnected. Click to connect live via OTP or QR."
           >
-            <span>⚠️ Renew Dhan Token</span>
+            <span className="size-1.5 rounded-full bg-amber-400" />
+            <span>Connect DhanHQ</span>
           </button>
         ) : (
           <button
             type="button"
-            onClick={handleUpdateToken}
-            className="px-2 py-1 rounded bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 text-[11px] font-sans font-medium transition-colors cursor-pointer"
-            title="Update daily DhanHQ Access Token"
+            onClick={handleOpenConnect}
+            className="px-2.5 py-1 rounded bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-[11px] font-sans font-medium transition-colors cursor-pointer flex items-center gap-1.5"
+            title="DhanHQ live connected. Click to switch account or renew token."
           >
-            Token
+            <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span>Connected</span>
           </button>
         )}
         <button
@@ -175,6 +146,9 @@ export default function DhanAccountBar({ className = '' }: { className?: string 
           {killSwitchActive ? 'Trading Disabled' : 'Kill Switch'}
         </button>
       </div>
+
+      {/* TradingView-Style Connect to DhanHQ Modal */}
+      <ConnectDhanModal open={connectModalOpen} onOpenChange={setConnectModalOpen} />
     </div>
   );
 }

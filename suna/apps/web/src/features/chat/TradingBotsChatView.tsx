@@ -350,6 +350,22 @@ export function TradingBotsChatView({
     const details = targetMsg?.approval?.details;
     const symbolStr = details?.symbol ? ` on **${details.symbol}**` : '';
 
+    // Dispatch optimistic placing event so Orders View renders real-time Skeleton placeholder
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('dhan-order-placing', {
+          detail: {
+            symbol: details?.symbol || 'NSE Order',
+            side: details?.action || 'BUY',
+            timestamp: Date.now(),
+          },
+        })
+      );
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('dhan-order-placed'));
+      }, 1500);
+    }
+
     const followUpMsg: ChatMessage = {
       id: `bot-approved-${Date.now()}`,
       sender: 'agent',

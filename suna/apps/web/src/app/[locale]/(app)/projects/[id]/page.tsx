@@ -324,13 +324,13 @@ export default function ProjectIndexPage() {
     };
     window.addEventListener('trading-journal-updated', onJournalUpdate);
 
-    // Synchronous 0ms subscription with visibility-aware background sync & quota guard
+    // Synchronous 0ms subscription with visibility-aware background sync & quota guard (zero-flicker)
     const unsubscribeDhan = subscribeDhanLive((snapshot) => {
       if (snapshot.funds) {
-        setDhanFunds(snapshot.funds as any);
+        setDhanFunds((prev) => (JSON.stringify(prev) === JSON.stringify(snapshot.funds) ? prev : snapshot.funds as any));
       }
       if (snapshot.positions) {
-        setDhanPositions(snapshot.positions);
+        setDhanPositions((prev) => (JSON.stringify(prev) === JSON.stringify(snapshot.positions) ? prev : snapshot.positions));
       }
     });
 

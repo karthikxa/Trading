@@ -79,22 +79,27 @@ export default function JournalView({ projectId }: JournalViewProps) {
     }
   }, []);
 
-  const handleSyncDhan = useCallback(async () => {
-    setIsSyncingDhan(true);
+  const handleSyncDhan = useCallback(async (isBackground = false) => {
+    if (!isBackground) setIsSyncingDhan(true);
     try {
       const res = await syncDhanTradesToJournal(projectId);
       if (res && res.trades) {
-        setTrades(sortJournalTrades(res.trades));
-        // Keep selected date on today or user-chosen date rather than forcing to oldest trade
+        setTrades((prev) => {
+          const sorted = sortJournalTrades(res.trades);
+          if (prev.length === sorted.length && JSON.stringify(prev) === JSON.stringify(sorted)) {
+            return prev;
+          }
+          return sorted;
+        });
       }
     } catch (err) {
       console.error('Failed to sync Dhan trades:', err);
     } finally {
-      setIsSyncingDhan(false);
+      if (!isBackground) setIsSyncingDhan(false);
     }
-  }, [projectId, syncCalendarToDate]);
+  }, [projectId]);
 
-  // Load trades on mount
+  // Load trades on mount & listen to live updates with zero flicker
   useEffect(() => {
     let isMounted = true;
     async function loadData() {
@@ -116,10 +121,32 @@ export default function JournalView({ projectId }: JournalViewProps) {
       }
     }
     loadData();
+
+    const onJournalUpdated = () => {
+      const fresh = getLocalTrades();
+      setTrades((prev) => {
+        const sorted = sortJournalTrades(fresh);
+        if (prev.length === sorted.length && JSON.stringify(prev) === JSON.stringify(sorted)) {
+          return prev;
+        }
+        return sorted;
+      });
+    };
+    window.addEventListener('trading-journal-updated', onJournalUpdated);
+
+    // Live market background poll (every 3s) with zero flicker
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        handleSyncDhan(true);
+      }
+    }, 3000);
+
     return () => {
       isMounted = false;
+      window.removeEventListener('trading-journal-updated', onJournalUpdated);
+      clearInterval(interval);
     };
-  }, [projectId, syncCalendarToDate]);
+  }, [projectId, handleSyncDhan]);
 
   // Open ?trade=<id> deep-link if present once trades are available
   useEffect(() => {

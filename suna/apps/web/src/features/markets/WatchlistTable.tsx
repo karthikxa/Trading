@@ -29,17 +29,22 @@ export const WatchlistTable = React.memo(function WatchlistTable({
   const [trades, setTrades] = useState<any[]>(() => journalTrades || getLocalTrades());
 
   useEffect(() => {
-    setItems(getStoredWatchlist());
-    const onUpdate = () => setItems(getStoredWatchlist());
+    const onUpdate = () => {
+      const next = getStoredWatchlist();
+      setItems((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+    };
     window.addEventListener('watchlist-updated', onUpdate);
     return () => window.removeEventListener('watchlist-updated', onUpdate);
   }, []);
 
   useEffect(() => {
     if (journalTrades) {
-      setTrades(journalTrades);
+      setTrades((prev) => (JSON.stringify(prev) === JSON.stringify(journalTrades) ? prev : journalTrades));
     } else {
-      const onTrades = () => setTrades(getLocalTrades());
+      const onTrades = () => {
+        const next = getLocalTrades();
+        setTrades((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+      };
       window.addEventListener('trading-journal-updated', onTrades);
       return () => window.removeEventListener('trading-journal-updated', onTrades);
     }

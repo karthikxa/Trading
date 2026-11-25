@@ -53,6 +53,7 @@ import { Calendar } from '@/components/ui/calendar';
 import { Menu, MenuTrigger, MenuPopup, MenuItem } from '@/components/ui/menu';
 import { WallpaperBackground } from '@/components/ui/wallpaper-background';
 import StockSymbolIcon from '@/features/markets/StockSymbolIcon';
+import ConnectDhanModal from '@/features/markets/ConnectDhanModal';
 import {
   DhanOrderItem,
   syncDhanOrders,
@@ -274,6 +275,8 @@ function copyTextDirectly(text: string): boolean {
 export default function OrdersView({ projectId }: OrdersViewProps) {
   const [orders, setOrders] = useState<DhanOrderItem[]>(() => getLocalOrders());
   const [loading, setLoading] = useState<boolean>(false);
+  const [placingOrder, setPlacingOrder] = useState<{ symbol?: string; side?: string; timestamp?: number } | null>(null);
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'TRADED' | 'PENDING' | 'REJECTED' | 'CANCELLED'>('ALL');
   const [productFilter, setProductFilter] = useState<'ALL' | 'INTRADAY' | 'CNC' | 'MARGIN'>('ALL');
@@ -289,14 +292,16 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
   const [editingNotes, setEditingNotes] = useState('');
 
   const fetchOrders = useCallback(async (force = false) => {
-    setLoading(true);
     try {
       const updated = await syncDhanOrders(force);
-      setOrders(updated);
+      setOrders((prev) => {
+        if (prev.length === updated.length && JSON.stringify(prev) === JSON.stringify(updated)) {
+          return prev;
+        }
+        return updated;
+      });
     } catch (err) {
       console.error('Failed to refresh Dhan orders:', err);
-    } finally {
-      setLoading(false);
     }
   }, []);
 
@@ -304,10 +309,39 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
     fetchOrders(false);
 
     const onOrdersUpdated = () => {
-      setOrders(getLocalOrders());
+      const fresh = getLocalOrders();
+      setOrders((prev) => {
+        if (prev.length === fresh.length && JSON.stringify(prev) === JSON.stringify(fresh)) {
+          return prev;
+        }
+        return fresh;
+      });
     };
+
+    const handlePlacing = (e: any) => {
+      setPlacingOrder(e.detail || { timestamp: Date.now() });
+    };
+    const handlePlaced = () => {
+      setTimeout(() => setPlacingOrder(null), 1200);
+    };
+
     window.addEventListener('dhan-orders-updated', onOrdersUpdated);
-    return () => window.removeEventListener('dhan-orders-updated', onOrdersUpdated);
+    window.addEventListener('dhan-order-placing', handlePlacing);
+    window.addEventListener('dhan-order-placed', handlePlaced);
+
+    // Live market polling every 1500ms with zero flicker
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchOrders(false);
+      }
+    }, 1500);
+
+    return () => {
+      window.removeEventListener('dhan-orders-updated', onOrdersUpdated);
+      window.removeEventListener('dhan-order-placing', handlePlacing);
+      window.removeEventListener('dhan-order-placed', handlePlaced);
+      clearInterval(interval);
+    };
   }, [fetchOrders]);
 
   // Derived KPI Metrics
@@ -1374,7 +1408,65 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {filteredOrders.length === 0 ? (
+          {/* Order Placement Skeleton Row */}
+          {placingOrder && (
+            <TableRow className="animate-pulse bg-emerald-500/5 dark:bg-emerald-950/20 border-b border-emerald-500/30">
+              <TableCell className="hidden sm:table-cell">
+                <div className="h-4 w-16 bg-muted-foreground/20 rounded animate-pulse" />
+              </TableCell>
+              <TableCell>
+                <div className="h-4 w-12 bg-muted-foreground/20 rounded animate-pulse" />
+              </TableCell>
+              <TableCell>
+                <div className="flex items-center gap-2.5 min-w-[120px]">
+                  <div className="size-8 rounded-full bg-emerald-500/20 animate-pulse shrink-0 flex items-center justify-center text-[10px] text-emerald-400 font-bold">
+                    {placingOrder.symbol?.slice(0, 2) || 'DH'}
+                  </div>
+                  <div className="space-y-1">
+                    <div className="h-4 w-20 bg-muted-foreground/25 rounded font-semibold text-xs text-foreground">
+                      {placingOrder.symbol || 'Routing Order...'}
+                    </div>
+                    <div className="h-3 w-14 bg-muted-foreground/15 rounded" />
+                  </div>
+                </div>
+              </TableCell>
+              <TableCell>
+                <Badge variant="outline" className="font-sans text-xs bg-emerald-500/10 text-emerald-400 border-emerald-500/30 animate-pulse">
+                  <span className="size-1.5 rounded-full mr-1.5 bg-emerald-500 animate-ping" />
+                  {placingOrder.side || 'Order'}
+                </Badge>
+              </TableCell>
+              <TableCell className="hidden sm:table-cell">
+                <div className="h-4 w-14 bg-muted-foreground/20 rounded animate-pulse" />
+              </TableCell>
+              <TableCell className="text-right">
+                <div className="h-4 w-10 ml-auto bg-muted-foreground/20 rounded animate-pulse" />
+              </TableCell>
+              <TableCell className="text-right">
+                <div className="h-4 w-14 ml-auto bg-muted-foreground/20 rounded animate-pulse" />
+              </TableCell>
+              <TableCell className="text-right">
+                <div className="h-4 w-16 ml-auto bg-muted-foreground/20 rounded animate-pulse" />
+              </TableCell>
+              <TableCell className="text-right">
+                <div className="h-4 w-12 ml-auto bg-muted-foreground/20 rounded animate-pulse" />
+              </TableCell>
+              <TableCell className="hidden sm:table-cell text-right">
+                <div className="h-4 w-10 ml-auto bg-muted-foreground/20 rounded animate-pulse" />
+              </TableCell>
+              <TableCell className="text-center">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/30 animate-pulse">
+                  <span className="size-1.5 rounded-full bg-amber-400 animate-ping" />
+                  Placing...
+                </span>
+              </TableCell>
+              <TableCell className="text-center">
+                <div className="size-6 mx-auto rounded bg-muted-foreground/20 animate-pulse" />
+              </TableCell>
+            </TableRow>
+          )}
+
+          {filteredOrders.length === 0 && !placingOrder ? (
             <TableRow>
               <TableCell colSpan={12} className="py-12 text-center text-muted-foreground font-sans">
                 <Receipt className="size-8 mx-auto mb-2 text-muted-foreground/50" />
@@ -1654,6 +1746,9 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
     </DialogFooter>
   </DialogContent>
       </Dialog>
+
+      {/* TradingView-Style Connect to DhanHQ Modal */}
+      <ConnectDhanModal open={connectModalOpen} onOpenChange={setConnectModalOpen} />
     </div>
   );
 }
