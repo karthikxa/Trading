@@ -543,8 +543,8 @@ const server = http.createServer(async (req, res) => {
   const handled = await handleTradingRequest(req, res, pathname, parsedUrl, rawBody, dispatchLlmCall);
   if (handled) return;
 
-  // --- GET / or GET /health ---
-  if (pathname === '/' || pathname === '/health') {
+  // --- GET / or GET /health or GET /v1/health ---
+  if (pathname === '/' || pathname === '/health' || pathname === '/v1/health') {
     const keylessCount = MODELS.filter((m) => m.keyless).length;
     const keyedCount = MODELS.filter((m) => !m.keyless).length;
     res.writeHead(200, { 'Content-Type': 'application/json' });

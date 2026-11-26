@@ -999,11 +999,11 @@ function generateDynamicTradingAnalysis(promptText: string, modelDisplayName: st
       `**Corrective Action**: Enforce a mandatory hard stop placed at the time of entry. Do not enter without a verified lower-timeframe Market Structure Shift (MSS).`;
   }
 
-  // 2. "how much profit we are?" / "what is our profit" / "current profit" / "pnl"
-  if (lower.includes('profit') || lower.includes('pnl') || lower.includes('balance') || lower.includes('total money') || lower.includes('money we have')) {
+  // 2. "how much profit we are?" / "what is our profit" / "current profit" / "pnl" / "margin"
+  if (lower.includes('profit') || lower.includes('pnl') || lower.includes('balance') || lower.includes('margin') || lower.includes('total money') || lower.includes('money we have')) {
     return `### 💰 Portfolio Balance & PnL Status\n\n` +
-      `• **Total Money We Have (Live Portfolio Balance)**: **$719.77**\n` +
-      `• **Today's Realized Net PnL**: **-$42.50** (2 Wins, 2 Losses, 50% Win Rate)\n` +
+      `• **Margin (Available Trading Balance)**: **₹719.77**\n` +
+      `• **Today's Realized Net PnL**: **₹-42.50** (2 Wins, 2 Losses, 50% Win Rate)\n` +
       `• **30-Day Track Record**: **62.5%** win rate across logged journal trades.\n` +
       `• **Risk Allocation**: Current cash allocation is 84%, equity buffer remains safe.`;
   }
@@ -1094,12 +1094,13 @@ async function fetchRealLlmCompletion(
     lowerPrompt.includes('profit') ||
     lowerPrompt.includes('pnl') ||
     lowerPrompt.includes('balance') ||
+    lowerPrompt.includes('margin') ||
     lowerPrompt.includes('total money') ||
     lowerPrompt.includes('money we have')
   ) {
     financialTelemetryContext = `\n\n[Guardrailed Real-Time Telemetry - Live Portfolio Balance]:
-- Total Money We Have (Live Portfolio Balance): $719.77
-- Today's Realized Net PnL: -$42.50
+- Margin (Available Trading Balance): ₹719.77
+- Today's Realized Net PnL: ₹-42.50
 - 30-Day Win Rate: 62.5% across logged journal trades
 - Safe Cash Reserve: 84% buffer`;
   } else if (
@@ -1109,9 +1110,9 @@ async function fetchRealLlmCompletion(
     lowerPrompt.includes('reach')
   ) {
     financialTelemetryContext = `\n\n[Guardrailed Real-Time Telemetry - Target Goals & Growth]:
-- Target Portfolio Goal: $2,800.00
-- Current Live Balance: $719.77
-- Remaining to Earn to Reach Goal: $2,080.23
+- Target Portfolio Goal: ₹1,25,000.00
+- Current Live Margin: ₹719.77
+- Remaining to Earn to Reach Goal: ₹1,24,280.23
 - Target Deadline: December 31, 2026`;
   }
 

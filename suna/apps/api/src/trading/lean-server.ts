@@ -19,6 +19,7 @@ import { db } from '../shared/db';
 import { logger } from '../lib/logger';
 import { tradingApp, tradingChartsPublicApp } from './routes';
 import { tradingGatewayApp } from './gateway';
+import { workspaceBridgeApp } from './workspace-bridge';
 
 const app = makeOpenApiApp();
 
@@ -63,6 +64,8 @@ app.use('/v1/trading', supabaseAuth);
 app.use('/v1/trading/*', supabaseAuth);
 app.route('/v1/trading', tradingApp);
 app.route('/v1', tradingGatewayApp);
+app.route('/v1', workspaceBridgeApp);
+app.route('/', workspaceBridgeApp);
 
 installHttpErrors(app);
 

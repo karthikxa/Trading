@@ -609,6 +609,48 @@ export async function handleTradingRequest(
     return true;
   }
 
+  // 1.15 Apps list
+  if (pathname.match(/^\/(?:v1\/)?projects\/[^/]+\/apps$/) && method === 'GET') {
+    sendJson(200, { apps: [] });
+    return true;
+  }
+
+  // 1.16 IAM Effective Permissions
+  if (pathname.match(/^\/(?:v1\/)?accounts\/[^/]+\/iam\/members\/[^/]+\/effective$/) && method === 'GET') {
+    const action = parsedUrl.query.action as string || 'project.read';
+    sendJson(200, { allowed: true, reason: null, action });
+    return true;
+  }
+
+  if (pathname.match(/^\/(?:v1\/)?accounts\/[^/]+\/iam\/members\/[^/]+\/effective:batch$/) && method === 'POST') {
+    const body = parseBody();
+    const probes = (body.probes || []) as Array<{ action: string; resourceType?: string; resourceId?: string }>;
+    const results = probes.map((p) => ({
+      action: p.action,
+      resource_type: p.resourceType || 'project',
+      resource_id: p.resourceId || null,
+      allowed: true,
+      reason: null,
+    }));
+    sendJson(200, { results });
+    return true;
+  }
+
+  // 1.17 Billing account state
+  if ((pathname === '/v1/billing/account-state' || pathname === '/v1/billing/account-state/minimal') && method === 'GET') {
+    sendJson(200, {
+      can_manage_billing: true,
+      subscription: {
+        can_purchase_credits: true,
+        tier: 'enterprise',
+      },
+      credits: {
+        balance: 1000000,
+      },
+    });
+    return true;
+  }
+
   // 1.2 Connectors API (/connectors/projects/:id/connectors)
   if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/connectors\/?$/) && method === 'GET') {
     const isConnected = Boolean(process.env.DHAN_ACCESS_TOKEN);

@@ -459,7 +459,7 @@ export function ProfileTabView({
       window.dispatchEvent(new Event('storage'));
     }
     setIsEditingGoal(false);
-    successToast('Goals and total money updated successfully');
+    successToast('Goals and margin updated successfully');
   };
   // The right-hand control of the Delete-account row, and the line under its
   // label. Four states, one row — an errored status check, an unavailable or
@@ -596,22 +596,22 @@ export function ProfileTabView({
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <Label className="text-xs font-medium text-foreground font-sans">
-                      Total Money We Have ($)
+                      Margin (₹)
                     </Label>
                     <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold uppercase tracking-wider">
                       Auto-calculated
                     </span>
                   </div>
                   <div className="h-9 px-3 flex items-center rounded-lg border border-border/70 bg-muted/30 text-sm font-sans font-medium text-foreground tabular-nums select-none">
-                    ${currentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    ₹{currentBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </div>
                   <p className="text-[11px] text-muted-foreground font-sans">
-                    Live portfolio balance auto-calculated and synced with Dhan funds &amp; journal trades
+                    Available trading margin auto-calculated and synced with Dhan funds &amp; journal trades
                   </p>
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="goal-target-amount" className="text-xs font-medium text-foreground font-sans">
-                    Target Money ($)
+                    Target (₹)
                   </Label>
                   <Input
                     id="goal-target-amount"
@@ -672,24 +672,24 @@ export function ProfileTabView({
           ) : (
             <>
               <SettingsRow
-                label="Total Money We Have"
-                description="Live portfolio balance synced across Overview KPI cards and Journal trades"
+                label="Margin"
+                description="Available trading margin synced across Overview KPI cards and Journal trades"
               >
                 <div className="flex items-center gap-2.5 my-auto">
                   <span className="text-sm font-medium tabular-nums text-foreground font-sans">
-                    ${currentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    ₹{currentBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </span>
                 </div>
               </SettingsRow>
               <SettingsRow
-                label="Target Money"
-                description={`Target: $${tradingGoal.targetAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Current balance: $${currentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                label="Target"
+                description={`Target: ₹${tradingGoal.targetAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · Current margin: ₹${currentBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
               >
                 <div className="flex flex-col items-end gap-1.5 my-auto">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-normal tabular-nums text-foreground font-sans">
                       {remainingAmount > 0
-                        ? `$${remainingAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} remaining`
+                        ? `₹${remainingAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} remaining`
                         : `${(goalPercent - 100).toFixed(1)}% above target`}
                     </span>
                   </div>
