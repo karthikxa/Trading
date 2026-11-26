@@ -70,6 +70,7 @@ app.route('/', workspaceBridgeApp);
 installHttpErrors(app);
 
 const server = Bun.serve({
+  hostname: '127.0.0.1',
   port: config.PORT,
   idleTimeout: 0,
   fetch: app.fetch,
