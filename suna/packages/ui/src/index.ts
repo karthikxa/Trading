@@ -213,7 +213,7 @@ export {
   markerVariants,
 } from './primitives/marker';
 export { useDebounce } from './hooks/use-debounce';
-export { useIsMobile } from './hooks/use-mobile';
+export { useIsMobile, isPortraitMobileViewport } from './hooks/use-mobile';
 export { useMediaQuery } from './hooks/use-media-query';
 export { useSlashFocus } from './internal/hooks/use-slash-focus';
 export { faviconUrlForHostname } from './lib/favicon';

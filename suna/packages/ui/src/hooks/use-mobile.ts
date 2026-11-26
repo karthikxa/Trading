@@ -27,3 +27,16 @@ export function useIsMobile() {
 export function useIsPhone() {
   return useMediaQuery('(max-width: 639px)');
 }
+
+/**
+ * True only when on a mobile-width screen in vertical (portrait) orientation.
+ * Horizontal (landscape) phones keep the sidebar open when navigating.
+ */
+export function isPortraitMobileViewport(): boolean {
+  if (typeof window === 'undefined') return false;
+  const isPortrait =
+    typeof window.matchMedia === 'function'
+      ? window.matchMedia('(orientation: portrait)').matches
+      : window.innerHeight >= window.innerWidth;
+  return window.innerWidth < MOBILE_BREAKPOINT && isPortrait;
+}

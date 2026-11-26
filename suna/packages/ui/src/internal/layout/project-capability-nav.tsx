@@ -18,7 +18,7 @@ import {
   useSidebar,
 } from '../../primitives/sidebar';
 import { UiLink as Link, useUiPathname } from '../../providers/ui-provider';
-import { useIsMobile } from '../hooks';
+import { isPortraitMobileViewport, useIsMobile } from '../hooks';
 import { activeCapabilityTab, agentHref, capabilityTabHref } from '../lib/capability-tab-routes';
 import { useReviewSessionSummary } from '../hooks/use-review-session-summary';
 import { usePinnedAgents } from '../stores/pinned-agents-store';
@@ -121,7 +121,7 @@ export function ProjectCapabilityNav({ projectId }: { projectId: string }) {
   const onModels = !!pathname && /\/admin\/models(\/|$)/.test(pathname);
   const hasSettings = access.tabs.includes('config');
   const close = () => {
-    if (isMobile) setOpenMobile(false);
+    if (isPortraitMobileViewport()) setOpenMobile(false);
   };
 
   if (agents.length === 0 && !showReview && !hasModels && !hasSettings) return null;

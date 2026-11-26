@@ -2,7 +2,7 @@
 
 import { HoverPrefetchLink } from '../components/hover-prefetch-link';
 import { SidebarMenuButton, SidebarMenuItem, useSidebar } from '../../primitives/sidebar';
-import { useIsMobile } from '../hooks';
+import { isPortraitMobileViewport } from '../hooks';
 import { cn } from '../lib/utils';
 import type { ComponentProps, ReactNode } from 'react';
 
@@ -20,7 +20,6 @@ export function ProjectNavRow({
   className?: string;
   children: ReactNode;
 }) {
-  const isMobile = useIsMobile();
   const { setOpenMobile } = useSidebar();
   return (
     <SidebarMenuItem>
@@ -34,7 +33,7 @@ export function ProjectNavRow({
           {...link}
           onClick={(event) => {
             link.onClick?.(event);
-            if (isMobile) setOpenMobile(false);
+            if (isPortraitMobileViewport()) setOpenMobile(false);
           }}
         >
           {children}

@@ -12,7 +12,7 @@ import {
   useOwnsPairedComputer,
   useThisComputerState,
 } from '../../../internal/tunnel/computer-connect';
-import { useIsMobile } from '../../../internal/hooks';
+import { isPortraitMobileViewport, useIsMobile } from '../../../internal/hooks';
 import { useTranslations } from '../../../i18n';
 
 export const COMPUTER_PROMO_DISMISSED_KEY = 'kortix.computer-promo.dismissed';
@@ -105,7 +105,7 @@ function ComputerPromo({
           return;
         }
         onOpenConnect();
-        if (isMobile) setOpenMobile(false);
+        if (isPortraitMobileViewport()) setOpenMobile(false);
       }}
     />
   );

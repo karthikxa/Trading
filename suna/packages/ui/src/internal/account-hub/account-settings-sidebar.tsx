@@ -1,6 +1,7 @@
 'use client';
 
 import { useTranslations } from '../../i18n';
+import { isPortraitMobileViewport } from '../../hooks/use-mobile';
 /**
  * The settings sidebar — the 300px left column of the account hub modal.
  *
@@ -101,8 +102,8 @@ function NavRow({ entry }: { entry: NavEntry }) {
           to={entry.to}
           aria-current={entry.active ? 'page' : undefined}
           onClick={() => {
-            // The mobile sidebar is a sheet over the page; a pick closes it.
-            if (isMobile) setOpenMobile(false);
+            // The mobile sidebar is a sheet over the page; a pick closes it in portrait mode.
+            if (isPortraitMobileViewport()) setOpenMobile(false);
           }}
           className="gap-2 px-2.5 py-1 font-medium transition-none has-[>svg]:px-2.5"
         >

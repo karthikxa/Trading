@@ -52,6 +52,7 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover
 import { Calendar } from '@/components/ui/calendar';
 import { Menu, MenuTrigger, MenuPopup, MenuItem } from '@/components/ui/menu';
 import { WallpaperBackground } from '@/components/ui/wallpaper-background';
+import { SidebarToggle } from '@kortix/ui/workspace';
 import StockSymbolIcon from '@/features/markets/StockSymbolIcon';
 import ConnectDhanModal from '@/features/markets/ConnectDhanModal';
 import {
@@ -1109,7 +1110,8 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
     <div className="w-full h-full flex-1 p-3 sm:p-6 lg:p-8 flex flex-col gap-4 sm:gap-6 overflow-y-auto bg-background text-foreground font-sans">
       {/* 1. Header Section (Cleaned: removed long subtitle, 64 orders badge, Dhan Live Connected, and Sync button) */}
       <div className="flex items-center justify-between pb-2 border-b border-border/40 font-sans">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-1 sm:gap-2.5">
+          <SidebarToggle className="-ml-2" />
           <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-foreground font-sans">
             Orders
           </h1>

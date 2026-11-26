@@ -32,7 +32,7 @@ import { ProjectSpacesNav } from './project-spaces-nav';
 import { TradingAgentsSessionsList } from './trading-agents-nav';
 import { useIsCreatingProjectSession } from '../../internal/hooks/projects/new-session-guard';
 import { useNewProjectSession } from '../../internal/hooks/projects/use-new-project-session';
-import { useIsMobile } from '../../internal/hooks';
+import { isPortraitMobileViewport, useIsMobile } from '../../internal/hooks';
 import { useTranslations } from '../../i18n';
 import { cn } from '../../internal/lib/utils';
 import { useBillingAccountId } from '../../internal/stores/billing-account-context';
@@ -109,12 +109,12 @@ export function ProjectSidebar({
   // the one entry point left that has to ask the hook to navigate.
   const handleNewSession = useCallback(() => {
     newSession();
-    if (isMobile) setOpenMobile(false);
-  }, [newSession, isMobile, setOpenMobile]);
+    if (isPortraitMobileViewport()) setOpenMobile(false);
+  }, [newSession, setOpenMobile]);
   // The anchor performs the navigation; this keeps the row's one side effect.
   const handleNewSessionClick = useCallback(() => {
-    if (isMobile) setOpenMobile(false);
-  }, [isMobile, setOpenMobile]);
+    if (isPortraitMobileViewport()) setOpenMobile(false);
+  }, [setOpenMobile]);
   // Shared by the row's anchor and its creating-session state, which stays a
   // real <button> so `disabled` still holds. The shortcut hint is desktop
   // only: a phone has no keyboard, and the tap's sticky hover revealed the
@@ -132,16 +132,43 @@ export function ProjectSidebar({
   // dialog on top of it. Dismiss it first — same order as opening a new
   // session from here.
   const handleOpenSearch = useCallback(() => {
-    if (isMobile) setOpenMobile(false);
+    if (isPortraitMobileViewport()) setOpenMobile(false);
     onOpenSearch?.();
-  }, [isMobile, setOpenMobile, onOpenSearch]);
+  }, [setOpenMobile, onOpenSearch]);
 
   const handleOpenStockSearch = useCallback(() => {
-    if (isMobile) setOpenMobile(false);
+    if (isPortraitMobileViewport()) setOpenMobile(false);
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('kortix:open-stock-search'));
     }
-  }, [isMobile, setOpenMobile]);
+  }, [setOpenMobile]);
+
+  // Close mobile sidebar automatically when switching tabs or routes in vertical (portrait) mode;
+  // keep it open in horizontal (landscape) mode.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const closeIfPortrait = () => {
+      if (isPortraitMobileViewport()) setOpenMobile(false);
+    };
+    window.addEventListener('trading-tab-change', closeIfPortrait);
+    return () => window.removeEventListener('trading-tab-change', closeIfPortrait);
+  }, [setOpenMobile]);
+
+  // Also auto-close whenever pathname or searchParams change in mobile portrait
+  const lastNavKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const navKey = `${pathname}?${searchParams.toString()}`;
+    if (lastNavKeyRef.current === null) {
+      lastNavKeyRef.current = navKey;
+      return;
+    }
+    if (lastNavKeyRef.current !== navKey) {
+      lastNavKeyRef.current = navKey;
+      if (isPortraitMobileViewport()) {
+        setOpenMobile(false);
+      }
+    }
+  }, [pathname, searchParams, setOpenMobile]);
 
   useEffect(() => {
     if (channels) return;
@@ -188,7 +215,7 @@ export function ProjectSidebar({
                     projectId={projectId}
                     surface="bg-sidebar"
                     onNavigate={() => {
-                      if (isMobile) setOpenMobile(false);
+                      if (isPortraitMobileViewport()) setOpenMobile(false);
                     }}
                   />
                   {isMobile && (
@@ -250,7 +277,12 @@ export function ProjectSidebar({
                         isActive={currentTab === 'chart'}
                         className="group/menu-button text-sidebar-foreground relative cursor-pointer font-sans"
                       >
-                        <Link href={`/projects/${projectId}?tab=chart`}>
+                        <Link
+                          href={`/projects/${projectId}?tab=chart`}
+                          onClick={() => {
+                            if (isPortraitMobileViewport()) setOpenMobile(false);
+                          }}
+                        >
                           <span className="shrink-0">
                             <ChartLineUp className="size-4" />
                           </span>
@@ -265,7 +297,12 @@ export function ProjectSidebar({
                         isActive={currentTab === 'overview'}
                         className="group/menu-button text-sidebar-foreground relative cursor-pointer font-sans"
                       >
-                        <Link href={`/projects/${projectId}?tab=overview`}>
+                        <Link
+                          href={`/projects/${projectId}?tab=overview`}
+                          onClick={() => {
+                            if (isPortraitMobileViewport()) setOpenMobile(false);
+                          }}
+                        >
                           <span className="shrink-0">
                             <TrendUp className="size-4" />
                           </span>
@@ -280,7 +317,12 @@ export function ProjectSidebar({
                         isActive={currentTab === 'journal'}
                         className="group/menu-button text-sidebar-foreground relative cursor-pointer"
                       >
-                        <Link href={`/projects/${projectId}?tab=journal`}>
+                        <Link
+                          href={`/projects/${projectId}?tab=journal`}
+                          onClick={() => {
+                            if (isPortraitMobileViewport()) setOpenMobile(false);
+                          }}
+                        >
                           <span className="shrink-0">
                             <Notebook className="size-4" />
                           </span>
@@ -295,7 +337,12 @@ export function ProjectSidebar({
                         isActive={currentTab === 'orders'}
                         className="group/menu-button text-sidebar-foreground relative cursor-pointer"
                       >
-                        <Link href={`/projects/${projectId}?tab=orders`}>
+                        <Link
+                          href={`/projects/${projectId}?tab=orders`}
+                          onClick={() => {
+                            if (isPortraitMobileViewport()) setOpenMobile(false);
+                          }}
+                        >
                           <span className="shrink-0">
                             <Receipt className="size-4" />
                           </span>
@@ -310,7 +357,12 @@ export function ProjectSidebar({
                   asChild
                   className="group/menu-button text-sidebar-foreground relative cursor-pointer"
                 >
-                  <Link href={`/projects/${projectId}/admin/connectors`}>
+                  <Link
+                    href={`/projects/${projectId}/admin/connectors`}
+                    onClick={() => {
+                      if (isPortraitMobileViewport()) setOpenMobile(false);
+                    }}
+                  >
                     <span className="shrink-0">
                       <PlugsConnectedIcon className="size-4" />
                     </span>
@@ -325,7 +377,12 @@ export function ProjectSidebar({
                         asChild
                         className="group/menu-button text-sidebar-foreground relative"
                       >
-                        <Link href={`/projects/${projectId}/customize/agents`}>
+                        <Link
+                          href={`/projects/${projectId}/customize/agents`}
+                          onClick={() => {
+                            if (isPortraitMobileViewport()) setOpenMobile(false);
+                          }}
+                        >
                           <span className="shrink-0">
                             <Sliders className="size-4" />
                           </span>
@@ -340,7 +397,12 @@ export function ProjectSidebar({
                         asChild
                         className="group/menu-button text-sidebar-foreground relative"
                       >
-                        <Link href={`/projects/${projectId}/drive`}>
+                        <Link
+                          href={`/projects/${projectId}/drive`}
+                          onClick={() => {
+                            if (isPortraitMobileViewport()) setOpenMobile(false);
+                          }}
+                        >
                           <span className="shrink-0">
                             <HardDrives className="size-4" />
                           </span>
@@ -358,6 +420,7 @@ export function ProjectSidebar({
                         <Link
                           href={`/projects/${projectId}/apps`}
                           onClick={() => {
+                            if (isPortraitMobileViewport()) setOpenMobile(false);
                             useAppsModalStore.getState().setOpen(true);
                           }}
                         >

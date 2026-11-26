@@ -11,7 +11,7 @@ import {
   useSidebar,
 } from '../../../primitives/sidebar';
 import { BrowserIcon } from '../../../internal/chrome/browser-icon';
-import { useIsMobile } from '../../../internal/hooks';
+import { isPortraitMobileViewport, useIsMobile } from '../../../internal/hooks';
 import { useTranslations } from '../../../i18n';
 
 export const CHROME_PROMO_DISMISSED_KEY = 'kortix.chrome-promo.dismissed';
@@ -70,7 +70,7 @@ function ChromePromo({
         className="text-sidebar-foreground bg-hover group-has-data-[sidebar=menu-action]/menu-item:pr-8"
         onClick={() => {
           onOpenConnect();
-          if (isMobile) setOpenMobile(false);
+          if (isPortraitMobileViewport()) setOpenMobile(false);
         }}
       >
         <BrowserIcon brand="chrome" tone="current" className="text-muted-foreground size-4" />

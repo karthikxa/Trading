@@ -352,6 +352,7 @@ export function TradingAgentsSidebarNav({
       <SidebarMenuButton
         onClick={() => {
           onOpenAgentsSidebar?.();
+          window.dispatchEvent(new CustomEvent('trading-tab-change', { detail: 'chat' }));
           router.push(`/projects/${projectId}?tab=chat`);
         }}
         isActive={isActive}

@@ -27,7 +27,7 @@ import {
 import { SidebarMenuButton, SidebarMenuItem, useSidebar } from '../../primitives/sidebar';
 import { SidebarGlyph } from '../../icons/sidebar-toggle';
 import { useNavRowMeta } from './nav-row-meta';
-import { useIsMobile } from '../../internal/hooks';
+import { isPortraitMobileViewport, useIsMobile } from '../../internal/hooks';
 import { useTranslations } from '../../i18n';
 import {
   SIDEBAR_NAV_DEFAULTS,
@@ -90,7 +90,7 @@ function MoreNavItem({
   const hidden = items.filter((e) => e.visibility === 'never' && meta[e.id]);
 
   const closeSheet = () => {
-    if (isMobile) setOpenMobile(false);
+    if (isPortraitMobileViewport()) setOpenMobile(false);
   };
 
   // A mouse opens the menu on hover. Touch and keyboard keep the click and
@@ -200,7 +200,7 @@ function CustomizeNavEntry({ projectId }: { projectId: string }) {
   if (!access.settled || access.tabs.length === 0) return null;
   const hasAgents = access.tabs.includes('agent');
   const close = () => {
-    if (isMobile) setOpenMobile(false);
+    if (isPortraitMobileViewport()) setOpenMobile(false);
   };
 
   return (

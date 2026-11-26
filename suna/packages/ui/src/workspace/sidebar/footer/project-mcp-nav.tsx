@@ -6,7 +6,7 @@ import { useCallback, useState, useSyncExternalStore } from 'react';
 
 import { useSidebar } from '../../../primitives/sidebar';
 import { Mcp } from '../../../internal/icons/mcp';
-import { useIsMobile } from '../../../internal/hooks';
+import { isPortraitMobileViewport, useIsMobile } from '../../../internal/hooks';
 import { useTranslations } from '../../../i18n';
 
 export const MCP_PROMO_DISMISSED_KEY = 'kortix.mcp-promo.dismissed';
@@ -55,7 +55,7 @@ export function ProjectMcpNavItem({ onOpenConnect }: { onOpenConnect: () => void
       onDismiss={dismiss}
       onClick={() => {
         onOpenConnect();
-        if (isMobile) setOpenMobile(false);
+        if (isPortraitMobileViewport()) setOpenMobile(false);
       }}
     />
   );

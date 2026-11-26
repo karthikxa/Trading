@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useTranslations } from '@/i18n/use-translations';
-import { ProjectHome } from '@kortix/ui/workspace';
+import { ProjectHome, SidebarToggle } from '@kortix/ui/workspace';
 import { useAccountState } from '@kortix/ui/internal/billing/index';
 import {
   billingDialogArgs,
@@ -572,7 +572,8 @@ export default function ProjectIndexPage() {
             {/* Kortix Page Header */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border/40 font-sans">
               <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-1 sm:gap-2.5">
+                  <SidebarToggle className="-ml-2" />
                   <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-foreground font-sans">
                     Overview
                   </h1>
@@ -983,6 +984,7 @@ export default function ProjectIndexPage() {
         {/* ========================================================================= */}
         {visitedViews.has('chart') && (
           <div className={cn("relative w-full h-full min-h-0 flex-1 flex flex-col overflow-hidden bg-background", activeView !== 'chart' && 'hidden')}>
+            <SidebarToggle placement="floating" />
             <TvLiveChart
               symbol={searchParams.get('symbol') || selectedWatchlistStock || 'NASDAQ:AAPL'}
               height="100%"

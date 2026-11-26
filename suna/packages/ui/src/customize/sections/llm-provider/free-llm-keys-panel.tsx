@@ -406,6 +406,8 @@ export function FreeLlmKeysPanel({
     setShowAddModal(false);
 
     // Sync added key to remote server if configured
+    const remoteOrigin = process.env.NEXT_PUBLIC_FLM_REMOTE_BASE_URL || '';
+    const remoteAuth = process.env.NEXT_PUBLIC_FLM_REMOTE_AUTH_HEADER || '';
     if (remoteOrigin) {
       fetch(`${remoteOrigin}/api/keys`, {
         method: 'POST',
@@ -418,17 +420,17 @@ export function FreeLlmKeysPanel({
           key: newKeyInput.trim() || undefined,
           label: newKeyLabel.trim() || `${plat.name} Free Key`,
         }),
-      }).catch(() => {});
-    }
-      .then((res) => (res.ok ? res.json() : null))
-      .then((created) => {
-        if (created?.id) {
-          setKeys((prev) =>
-            prev.map((k) => (k.id === newItem.id ? { ...k, id: String(created.id) } : k))
-          );
-        }
       })
-      .catch(() => {});
+        .then((res) => (res.ok ? res.json() : null))
+        .then((created) => {
+          if (created?.id) {
+            setKeys((prev) =>
+              prev.map((k) => (k.id === newItem.id ? { ...k, id: String(created.id) } : k))
+            );
+          }
+        })
+        .catch(() => {});
+    }
 
     setNewKeyInput('');
     setNewKeyLabel('');
