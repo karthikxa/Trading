@@ -700,6 +700,67 @@ export async function handleTradingRequest(
     return true;
   }
 
+  if (pathname.match(/^\/(?:v1\/)?projects\/[^/]+\/connections(?:\/all)?\/?$/) && method === 'GET') {
+    const isConnected = Boolean(process.env.DHAN_ACCESS_TOKEN);
+    sendJson(200, {
+      connections: isConnected
+        ? [{ connection_id: 'dhan-conn-1', connector_id: 'dhan', slug: 'dhan', label: 'Dhan', status: 'active', owner_type: 'project', owner_id: null, is_default: true }]
+        : [],
+    });
+    return true;
+  }
+
+  if (pathname.match(/^\/(?:v1\/)?projects\/[^/]+\/connections(?:\/me)?\/?$/) && method === 'POST') {
+    sendJson(200, {
+      connection_id: 'dhan-conn-1',
+      connector_id: 'dhan',
+      slug: 'dhan',
+      label: 'Dhan',
+      status: 'needs_auth',
+      owner_type: pathname.endsWith('/me') ? 'member' : 'project',
+      owner_id: pathname.endsWith('/me') ? 'usr_local_trader' : null,
+      is_default: true,
+    });
+    return true;
+  }
+
+  if (
+    (pathname.match(/^\/(?:v1\/)?projects\/[^/]+\/connections\/[^/]+\/connect\/?$/) ||
+      pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/connectors\/[^/]+\/connect\/?$/)) &&
+    method === 'POST'
+  ) {
+    sendJson(200, {
+      connectUrl: '/api/dhan/auth/start?popup=1',
+      connectionId: 'dhan-conn-1',
+      connected: false,
+    });
+    return true;
+  }
+
+  if (
+    (pathname.match(/^\/(?:v1\/)?projects\/[^/]+\/connections\/[^/]+\/finalize\/?$/) ||
+      pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/connectors\/[^/]+\/connect\/finalize\/?$/)) &&
+    method === 'POST'
+  ) {
+    const isConnected = Boolean(process.env.DHAN_ACCESS_TOKEN);
+    sendJson(200, {
+      connected: isConnected,
+      status: isConnected ? 'active' : 'pending',
+      connectionId: 'dhan-conn-1',
+    });
+    return true;
+  }
+
+  if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/discover\/install\/?$/) && method === 'POST') {
+    sendJson(200, {
+      ok: true,
+      connector: { slug: 'dhan', name: 'Dhan', status: 'needs_auth' },
+      connectUrl: '/api/dhan/auth/start?popup=1',
+      sync: { status: 'synced', errors: [] },
+    });
+    return true;
+  }
+
   if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/connectors\/dhan\/?$/) && method === 'GET') {
     const isConnected = Boolean(process.env.DHAN_ACCESS_TOKEN);
     const clientId = process.env.DHAN_CLIENT_ID || '1114824544';

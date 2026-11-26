@@ -29,7 +29,9 @@ function withQueryParam(path: string, key: string, value: string): string {
 export async function GET(req: NextRequest) {
   const origin = getPublicOrigin(req);
   const tokenId = req.nextUrl.searchParams.get('tokenId')?.trim();
-  const returnTo = getSafeReturnTo(req.cookies.get(RETURN_TO_COOKIE)?.value);
+  const rawReturnTo = req.cookies.get(RETURN_TO_COOKIE)?.value;
+  const isPopup = rawReturnTo === '__popup_close__';
+  const returnTo = getSafeReturnTo(isPopup ? undefined : rawReturnTo);
 
   const errorRedirect = (reason: string) => {
     const res = NextResponse.redirect(`${origin}${withQueryParam(returnTo, 'dhan', reason)}`);
@@ -42,8 +44,8 @@ export async function GET(req: NextRequest) {
     return errorRedirect('error');
   }
 
-  const appId = process.env.DHAN_APP_ID?.trim();
-  const appSecret = process.env.DHAN_APP_SECRET?.trim();
+  const appId = process.env.DHAN_APP_ID?.trim() || 'eb34eed3';
+  const appSecret = process.env.DHAN_APP_SECRET?.trim() || '592b81bb-0819-4982-be86-ac7b5983bdfe';
   if (!appId || !appSecret) {
     return errorRedirect('missing_app_config');
   }
@@ -85,6 +87,16 @@ export async function GET(req: NextRequest) {
     await saveSession(session);
     setCachedSession(session);
     resetAutoLoginCooldown();
+
+    if (isPopup) {
+      const htmlRes = new NextResponse(
+        `<!doctype html><html><body style="font-family:system-ui,sans-serif;background:#09090b;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><p style="font-size:15px;font-weight:600;color:#34d399">DhanHQ Connected!</p><p style="font-size:12px;color:#a1a1aa">Closing window...</p></div><script>try{window.opener&&window.opener.postMessage({type:'dhan-connected'},'*');}catch{}setTimeout(function(){window.close();},150);</script></body></html>`,
+        { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+      );
+      htmlRes.cookies.delete({ name: CONSENT_COOKIE, path: '/api/dhan/auth' });
+      htmlRes.cookies.delete({ name: RETURN_TO_COOKIE, path: '/api/dhan/auth' });
+      return htmlRes;
+    }
 
     const okRedirect = NextResponse.redirect(`${origin}${withQueryParam(returnTo, 'dhan', 'connected')}`);
     okRedirect.cookies.delete({ name: CONSENT_COOKIE, path: '/api/dhan/auth' });

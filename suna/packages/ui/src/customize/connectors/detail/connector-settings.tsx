@@ -79,6 +79,7 @@ export function ConnectorSettings({
     mutationFn: async () => {
       if (isDhan) {
         await fetch('/api/dhan/auth/status', { method: 'DELETE' }).catch(() => {});
+        await fetch(`/api/connectors?slug=${encodeURIComponent(connector.slug)}`, { method: 'DELETE' }).catch(() => {});
       }
       return deleteConnector(projectId, connector.slug);
     },

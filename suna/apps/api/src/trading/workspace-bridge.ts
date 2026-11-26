@@ -268,7 +268,33 @@ const handleConnectorsList = async (c: any) => {
 };
 
 workspaceBridgeApp.get('/connectors/projects/:projectId/connectors', handleConnectorsList);
-workspaceBridgeApp.get('/connectors/projects/:projectId/connectors/dhan', handleConnectorsList);
+workspaceBridgeApp.get('/connectors/projects/:projectId/connectors/dhan', async (c) => {
+  const isConnected = await isDhanActiveInDb('trading');
+  return c.json(
+    {
+      connector: {
+        slug: 'dhan',
+        name: 'Dhan',
+        provider: 'composio',
+        iconUrl: '/logos/dhan.svg',
+        status: isConnected ? 'active' : 'needs_auth',
+        state: isConnected ? 'connected' : 'needs_account',
+        credentialMode: 'shared',
+        authorizationStrategy: 'project',
+        sensitive: true,
+        secretSet: isConnected,
+        actions: [
+          { name: 'fundlimit', description: 'Real-time Cash balance & Collateral Limit' },
+          { name: 'orders', description: 'Real-time Order Book and Trade History' },
+          { name: 'positions', description: 'Real-time Open and Closed Positions' },
+          { name: 'holdings', description: 'Demat Equity Holdings portfolio' },
+          { name: 'placeorder', description: 'Execute Limit & Market orders' },
+        ],
+      },
+    },
+    200,
+  );
+});
 workspaceBridgeApp.delete('/connectors/projects/:projectId/connectors/:slug', async (c) => {
   const slug = c.req.param('slug');
   if (slug === 'dhan' || slug.startsWith('dhan-')) {
@@ -282,8 +308,144 @@ workspaceBridgeApp.put('/projects/:projectId/connections/:connectionId/revoke', 
   await markDhanDisconnectedInDb('trading');
   return c.json({ ok: true }, 200);
 });
-workspaceBridgeApp.get('/connectors/projects/:projectId/connectors/dhan/accounts', (c) => {
-  return c.json({ accounts: [] }, 200);
+workspaceBridgeApp.get('/projects/:projectId/connections', async (c) => {
+  const isConnected = await isDhanActiveInDb('trading');
+  if (!isConnected) return c.json({ connections: [] }, 200);
+  return c.json(
+    {
+      connections: [
+        {
+          connection_id: 'dhan-conn-1',
+          connector_id: 'dhan',
+          slug: 'dhan',
+          label: 'Dhan',
+          status: 'active',
+          owner_type: 'project',
+          owner_id: null,
+          is_default: true,
+        },
+      ],
+    },
+    200,
+  );
+});
+workspaceBridgeApp.get('/projects/:projectId/connections/all', async (c) => {
+  const isConnected = await isDhanActiveInDb('trading');
+  if (!isConnected) return c.json({ connections: [] }, 200);
+  return c.json(
+    {
+      connections: [
+        {
+          connection_id: 'dhan-conn-1',
+          connector_id: 'dhan',
+          slug: 'dhan',
+          label: 'Dhan',
+          status: 'active',
+          owner_type: 'project',
+          owner_id: null,
+          is_default: true,
+        },
+      ],
+    },
+    200,
+  );
+});
+workspaceBridgeApp.post('/projects/:projectId/connections', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  return c.json(
+    {
+      connection_id: 'dhan-conn-1',
+      connector_id: 'dhan',
+      slug: 'dhan',
+      label: (body as any)?.label || 'Dhan',
+      status: 'needs_auth',
+      owner_type: 'project',
+      owner_id: null,
+      is_default: true,
+    },
+    200,
+  );
+});
+workspaceBridgeApp.post('/projects/:projectId/connections/me', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  return c.json(
+    {
+      connection_id: 'dhan-conn-1',
+      connector_id: 'dhan',
+      slug: 'dhan',
+      label: (body as any)?.label || 'Dhan',
+      status: 'needs_auth',
+      owner_type: 'member',
+      owner_id: 'usr_local_trader',
+      is_default: true,
+    },
+    200,
+  );
+});
+workspaceBridgeApp.post('/projects/:projectId/connections/:connectionId/connect', (c) => {
+  return c.json(
+    {
+      connectUrl: '/api/dhan/auth/start?popup=1',
+      connectionId: c.req.param('connectionId') || 'dhan-conn-1',
+      connected: false,
+    },
+    200,
+  );
+});
+workspaceBridgeApp.post('/projects/:projectId/connections/:connectionId/finalize', async (c) => {
+  const isConnected = await isDhanActiveInDb('trading');
+  return c.json(
+    {
+      connected: isConnected,
+      status: isConnected ? 'active' : 'pending',
+      connectionId: c.req.param('connectionId') || 'dhan-conn-1',
+    },
+    200,
+  );
+});
+workspaceBridgeApp.post('/connectors/projects/:projectId/connectors/:slug/connect', (c) => {
+  return c.json(
+    {
+      connectUrl: '/api/dhan/auth/start?popup=1',
+      connectionId: 'dhan-conn-1',
+      connected: false,
+    },
+    200,
+  );
+});
+workspaceBridgeApp.post('/connectors/projects/:projectId/connectors/:slug/connect/finalize', async (c) => {
+  const isConnected = await isDhanActiveInDb('trading');
+  return c.json(
+    {
+      connected: isConnected,
+      status: isConnected ? 'active' : 'pending',
+      connectionId: 'dhan-conn-1',
+    },
+    200,
+  );
+});
+workspaceBridgeApp.post('/connectors/projects/:projectId/discover/install', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const slug = String((body as any)?.slug || 'dhan').toLowerCase();
+  return c.json(
+    {
+      ok: true,
+      connector: { slug, name: slug === 'dhan' ? 'Dhan' : slug, status: 'needs_auth' },
+      connectUrl: slug === 'dhan' ? '/api/dhan/auth/start?popup=1' : undefined,
+      sync: { status: 'synced', errors: [] },
+    },
+    200,
+  );
+});
+workspaceBridgeApp.get('/connectors/projects/:projectId/connectors/dhan/accounts', async (c) => {
+  const isConnected = await isDhanActiveInDb('trading');
+  if (!isConnected) return c.json({ accounts: [] }, 200);
+  return c.json(
+    {
+      accounts: [{ id: 'dhan-conn-1', label: 'Dhan', status: 'active' }],
+    },
+    200,
+  );
 });
 workspaceBridgeApp.get('/connectors/projects/:projectId/catalog', (c) => {
   return c.json({ catalog: [] }, 200);

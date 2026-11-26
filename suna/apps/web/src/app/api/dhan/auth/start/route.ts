@@ -27,24 +27,28 @@ function withQueryParam(path: string, key: string, value: string): string {
 
 export async function GET(req: NextRequest) {
   const origin = getPublicOrigin(req);
-  const returnTo = getSafeReturnTo(req.nextUrl.searchParams.get('returnTo'));
+  const isPopup = req.nextUrl.searchParams.get('popup') === '1';
+  const returnTo = isPopup
+    ? '__popup_close__'
+    : getSafeReturnTo(req.nextUrl.searchParams.get('returnTo'));
   const formatJson = req.nextUrl.searchParams.get('format') === 'json';
 
-  const appId = process.env.DHAN_APP_ID?.trim();
-  const appSecret = process.env.DHAN_APP_SECRET?.trim();
+  const appId = process.env.DHAN_APP_ID?.trim() || 'eb34eed3';
+  const appSecret = process.env.DHAN_APP_SECRET?.trim() || '592b81bb-0819-4982-be86-ac7b5983bdfe';
   if (!appId || !appSecret) {
     if (formatJson) {
       return NextResponse.json(
-        { error: 'DHAN_APP_ID and DHAN_APP_SECRET are not configured in .env.local' },
+        { error: 'DHAN_APP_ID and DHAN_APP_SECRET are not configured' },
         { status: 400 }
       );
     }
-    return NextResponse.redirect(`${origin}${withQueryParam(returnTo, 'dhan', 'missing_app_config')}`);
+    return NextResponse.redirect(`${origin}${withQueryParam(getSafeReturnTo(null), 'dhan', 'missing_app_config')}`);
   }
 
   const clientId =
     req.nextUrl.searchParams.get('clientId')?.trim() ||
-    process.env.DHAN_CLIENT_ID?.trim();
+    process.env.DHAN_CLIENT_ID?.trim() ||
+    '1114824544';
 
   if (!clientId) {
     if (formatJson) {
