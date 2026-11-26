@@ -311,7 +311,8 @@ async function performSync(force = false) {
   }
 }
 
-let lastScheduledMilestone: string = '';
+const FULL_RECONCILE_INTERVAL_MS = 30 * 60 * 1000; // Every 30 minutes (48x/24h = ~192 API calls/day, well within Dhan quota)
+let lastFullReconcileAt = 0;
 
 function scheduleNextSync() {
   if (syncTimer) {
@@ -319,15 +320,12 @@ function scheduleNextSync() {
     syncTimer = null;
   }
 
-  const { isMarketHours, hour, minute } = getIstMarketState();
-  const currentMinuteKey = `${hour}:${minute}`;
+  const { isMarketHours } = getIstMarketState();
+  const now = Date.now();
 
-  // Automatic triggers at 12:00 AM midnight and 8:00 AM morning IST
-  const isMidnightReconcile = hour === 0 && minute === 0;
-  const isMorningPremarket = hour === 8 && minute === 0;
-
-  if ((isMidnightReconcile || isMorningPremarket) && lastScheduledMilestone !== currentMinuteKey) {
-    lastScheduledMilestone = currentMinuteKey;
+  // Automatic full reconciliation every 30 minutes (24/7 while connected, safe for quota & account)
+  if (now - lastFullReconcileAt >= FULL_RECONCILE_INTERVAL_MS) {
+    lastFullReconcileAt = now;
     performSync(true); // Force 1 full API sync for all dashboard metrics
     try {
       if (typeof window !== 'undefined') {
@@ -337,7 +335,7 @@ function scheduleNextSync() {
     } catch {}
   }
 
-  // Live market hours (9:14 AM - 3:31 PM): 700ms (ultra-fast sub-second polling)
+  // Live market hours (9:14 AM - 3:31 PM): 700ms (server micro-TTL + quota guard protects Dhan API)
   // Outside market hours: 60s idle sleep
   const intervalMs = isMarketHours ? 700 : 60000;
 
