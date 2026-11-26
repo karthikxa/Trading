@@ -64,11 +64,16 @@ export function DhanConnectorCard({
 
   const handleDisconnect = async () => {
     if (!confirm('Disconnect DhanHQ account from this local environment?')) return;
-    await fetch('/api/dhan/auth/status', { method: 'DELETE' }).catch(() => {});
     setIsConnected(false);
     setClientId('');
     setFundsData(null);
-    window.dispatchEvent(new CustomEvent('dhan-token-updated'));
+    window.dispatchEvent(new CustomEvent('dhan-token-updated', { detail: { connected: false } }));
+    try {
+      await fetch('/api/dhan/auth/status', { method: 'DELETE' });
+    } catch {}
+    try {
+      await fetch(`/v1/connectors/projects/${projectId}/connectors/dhan`, { method: 'DELETE' });
+    } catch {}
   };
 
   const handleConnectClick = () => {

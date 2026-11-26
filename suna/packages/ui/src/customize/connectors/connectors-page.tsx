@@ -354,15 +354,25 @@ export function ConnectorsPage({
 
   useEffect(() => {
     let cancelled = false;
-    const checkDhanStatus = () => {
+    const checkDhanStatus = (e?: Event) => {
       if (typeof window !== 'undefined') {
         localStorage.removeItem('kortix_dhan_access_token');
         localStorage.removeItem('kortix_dhan_client_id');
       }
+      if (e instanceof CustomEvent && e.detail && typeof e.detail.connected === 'boolean') {
+        setDhanConnected(e.detail.connected);
+        queryClient.invalidateQueries({ queryKey: qk('connectors', projectId) });
+        queryClient.invalidateQueries({ queryKey: ['connectors'] });
+        return;
+      }
       fetch('/api/dhan/auth/status', { cache: 'no-store' })
         .then((r) => r.json())
         .then((data) => {
-          if (!cancelled) setDhanConnected(Boolean(data?.connected));
+          if (!cancelled) {
+            setDhanConnected(Boolean(data?.connected));
+            queryClient.invalidateQueries({ queryKey: qk('connectors', projectId) });
+            queryClient.invalidateQueries({ queryKey: ['connectors'] });
+          }
         })
         .catch(() => {
           if (!cancelled) setDhanConnected(false);
@@ -377,47 +387,37 @@ export function ConnectorsPage({
       clearInterval(interval);
       window.removeEventListener('dhan-token-updated', checkDhanStatus);
     };
-  }, []);
+  }, [projectId, queryClient]);
 
   const connectors = useMemo(() => {
     const list = connectorsQuery.data?.connectors ?? [];
     if (typeof window === 'undefined') return list;
-    const existingDhan = list.find((c) => c.slug === 'dhan');
-    if (existingDhan) {
-      if (dhanConnected) {
-        existingDhan.status = 'active';
-        existingDhan.state = 'connected';
-      } else {
-        existingDhan.status = 'needs_auth';
-        existingDhan.state = 'needs_account';
-      }
-      return list;
+    const withoutDhan = list.filter((c) => c.slug !== 'dhan');
+    if (!dhanConnected) {
+      return withoutDhan;
     }
-    if (dhanConnected) {
-      return [
-        {
-          slug: 'dhan',
-          name: 'Dhan',
-          provider: 'composio',
-          iconUrl: '/logos/dhan.svg',
-          status: 'active',
-          state: 'connected',
-          credentialMode: 'shared',
-          authorizationStrategy: 'project',
-          sensitive: true,
-          secretSet: true,
-          actions: [
-            { name: 'fundlimit', description: 'Real-time Cash balance & Collateral Limit' },
-            { name: 'positions', description: 'Open Positions, Quantities & Unrealized PnL' },
-            { name: 'orders', description: 'Place, Modify & Cancel NSE/BSE Orders' },
-            { name: 'trades', description: 'Execution Book & Statutory Charges Ledger' },
-            { name: 'profile', description: 'User Profile & Market Segment Status' },
-          ],
-        } as any,
-        ...list,
-      ];
-    }
-    return list;
+    return [
+      {
+        slug: 'dhan',
+        name: 'Dhan',
+        provider: 'composio',
+        iconUrl: '/logos/dhan.svg',
+        status: 'active',
+        state: 'connected',
+        credentialMode: 'shared',
+        authorizationStrategy: 'project',
+        sensitive: true,
+        secretSet: true,
+        actions: [
+          { name: 'fundlimit', description: 'Real-time Cash balance & Collateral Limit' },
+          { name: 'positions', description: 'Open Positions, Quantities & Unrealized PnL' },
+          { name: 'orders', description: 'Place, Modify & Cancel NSE/BSE Orders' },
+          { name: 'trades', description: 'Execution Book & Statutory Charges Ledger' },
+          { name: 'profile', description: 'User Profile & Market Segment Status' },
+        ],
+      } as any,
+      ...withoutDhan,
+    ];
   }, [connectorsQuery.data, dhanConnected]);
   const connectedKeys = useMemo(() => connectedCatalogKeys(connectors), [connectors]);
 

@@ -201,6 +201,9 @@ workspaceBridgeApp.get('/billing/account-state/minimal', handleBillingState);
 // 9. Connectors API
 const handleConnectorsList = (c: any) => {
   const isConnected = Boolean(process.env.DHAN_ACCESS_TOKEN);
+  if (!isConnected) {
+    return c.json({ connectors: [] }, 200);
+  }
   return c.json(
     {
       connectors: [
@@ -209,12 +212,12 @@ const handleConnectorsList = (c: any) => {
           name: 'Dhan',
           provider: 'composio',
           iconUrl: '/logos/dhan.svg',
-          status: isConnected ? 'active' : 'needs_auth',
-          state: isConnected ? 'connected' : 'needs_account',
+          status: 'active',
+          state: 'connected',
           credentialMode: 'shared',
           authorizationStrategy: 'project',
           sensitive: true,
-          secretSet: isConnected,
+          secretSet: true,
           actions: [
             { name: 'fundlimit', description: 'Real-time Cash balance & Collateral Limit' },
             { name: 'orders', description: 'Real-time Order Book and Trade History' },
@@ -231,6 +234,17 @@ const handleConnectorsList = (c: any) => {
 
 workspaceBridgeApp.get('/connectors/projects/:projectId/connectors', handleConnectorsList);
 workspaceBridgeApp.get('/connectors/projects/:projectId/connectors/dhan', handleConnectorsList);
+workspaceBridgeApp.delete('/connectors/projects/:projectId/connectors/:slug', (c) => {
+  const slug = c.req.param('slug');
+  if (slug === 'dhan') {
+    delete process.env.DHAN_ACCESS_TOKEN;
+  }
+  return c.json({ ok: true, deleted: slug }, 200);
+});
+workspaceBridgeApp.put('/projects/:projectId/connections/:connectionId/revoke', (c) => {
+  delete process.env.DHAN_ACCESS_TOKEN;
+  return c.json({ ok: true }, 200);
+});
 workspaceBridgeApp.get('/connectors/projects/:projectId/connectors/dhan/accounts', (c) => {
   return c.json({ accounts: [] }, 200);
 });

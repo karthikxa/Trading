@@ -655,6 +655,10 @@ export async function handleTradingRequest(
   if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/connectors\/?$/) && method === 'GET') {
     const isConnected = Boolean(process.env.DHAN_ACCESS_TOKEN);
     const clientId = process.env.DHAN_CLIENT_ID || '1114824544';
+    if (!isConnected) {
+      sendJson(200, { connectors: [] });
+      return true;
+    }
     sendJson(200, {
       connectors: [
         {
@@ -662,12 +666,12 @@ export async function handleTradingRequest(
           name: 'Dhan',
           provider: 'composio',
           iconUrl: '/logos/dhan.svg',
-          status: isConnected ? 'active' : 'needs_auth',
-          state: isConnected ? 'connected' : 'needs_account',
+          status: 'active',
+          state: 'connected',
           credentialMode: 'shared',
           authorizationStrategy: 'project',
           sensitive: true,
-          secretSet: isConnected,
+          secretSet: true,
           actions: [
             { name: 'fundlimit', description: 'Real-time Cash balance & Collateral Limit' },
             { name: 'positions', description: 'Open Positions, Quantities & Unrealized PnL' },
@@ -677,10 +681,22 @@ export async function handleTradingRequest(
           ],
           authSecret: null,
           secretIdentifier: 'dhan_access_token',
-          credentialSource: isConnected ? 'stored' : 'none',
+          credentialSource: 'stored',
         },
       ],
     });
+    return true;
+  }
+
+  if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/connectors\/([^/]+)\/?$/) && method === 'DELETE') {
+    delete process.env.DHAN_ACCESS_TOKEN;
+    sendJson(200, { ok: true });
+    return true;
+  }
+
+  if (pathname.match(/^\/(?:v1\/)?projects\/[^/]+\/connections\/[^/]+\/revoke\/?$/) && (method === 'PUT' || method === 'POST')) {
+    delete process.env.DHAN_ACCESS_TOKEN;
+    sendJson(200, { ok: true });
     return true;
   }
 

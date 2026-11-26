@@ -11,15 +11,7 @@ services:
     branch: main
     rootDir: suna
     healthCheckPath: /v1/health
-    buildCommand: >-
-      (command -v bun >/dev/null 2>&1 || (export BUN_INSTALL="$PWD/.bun" && curl -fsSL https://bun.sh/install | bash)) &&
-      (command -v pnpm >/dev/null 2>&1 || corepack enable || npm install -g pnpm@10) &&
-      pnpm install --frozen-lockfile --prod=false &&
-      (cd apps/web && node scripts/validate-production-supabase-env.mjs && node scripts/copy-viewer-wasm.mjs && node scripts/copy-emojibase-data.mjs && node scripts/generate-fumadocs-source.mjs) &&
-      NODE_OPTIONS="--max-old-space-size=2048" RAYON_NUM_THREADS=1 TOKIO_WORKER_THREADS=1 UV_THREADPOOL_SIZE=2 MALLOC_ARENA_MAX=2 KORTIX_TURBOPACK_EVICTION=full NEXT_TELEMETRY_DISABLED=1 pnpm --filter Kortix-Computer-Frontend exec next build --debug-build-paths="app/**/projects/**/page.tsx,app/**/connectors/**/page.tsx,app/**/customize/**/page.tsx,app/**/drive/**/page.tsx,app/**/admin/**/page.tsx,app/**/markets/**/page.tsx,app/**/new/**/page.tsx,app/**/settings/**/page.tsx,app/**/setup/**/page.tsx,app/**/connections/**/page.tsx,app/**/bots/**/page.tsx,app/**/apps/**/page.tsx,app/api/**/route.ts,app/**/api/**/route.ts,app/robots.txt/route.ts,app/**/auth/**/route.ts,app/**/auth/**/page.tsx,app/**/logout/page.tsx,app/**/marketing/**/page.tsx,app/**/*rest*/page.tsx" &&
-      mkdir -p apps/web/.next/standalone/apps/web/.next apps/web/.next/standalone/apps/web/public &&
-      cp -R apps/web/.next/static apps/web/.next/standalone/apps/web/.next/static &&
-      cp -R apps/web/public/. apps/web/.next/standalone/apps/web/public/
+    buildCommand: bash scripts/build-render.sh
     startCommand: >-
       BUN_BIN="$(command -v bun || echo "$PWD/.bun/bin/bun")";
       (cd apps/api && PORT=8008 "$BUN_BIN" --smol --no-env-file --max-http-header-size=65536 run src/trading/lean-server.ts) &

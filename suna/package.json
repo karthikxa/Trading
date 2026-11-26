@@ -24,6 +24,7 @@
     "i18n:explicit-language": "node scripts/audit-explicit-language.mjs",
     "i18n:translations": "node scripts/audit-translations.mjs",
     "build": "pnpm -r run build",
+    "build:render": "bash scripts/build-render.sh",
     "cli:bundle": "pnpm --filter @kortix/cli bundle",
     "cli:bundle:all": "pnpm --filter @kortix/cli bundle:all",
     "tui:bundle": "pnpm --filter @kortix/tui bundle",
