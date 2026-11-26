@@ -729,8 +729,9 @@ export async function handleTradingRequest(
       pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/connectors\/[^/]+\/connect\/?$/)) &&
     method === 'POST'
   ) {
+    const returnTo = encodeURIComponent('/projects/trading/admin/connectors/dhan/dhan');
     sendJson(200, {
-      connectUrl: '/api/dhan/auth/start?popup=1',
+      connectUrl: `/api/dhan/auth/start?returnTo=${returnTo}`,
       connectionId: 'dhan-conn-1',
       connected: false,
     });
@@ -752,10 +753,11 @@ export async function handleTradingRequest(
   }
 
   if (pathname.match(/^\/(?:v1\/)?connectors\/projects\/[^/]+\/discover\/install\/?$/) && method === 'POST') {
+    const returnTo = encodeURIComponent('/projects/trading/admin/connectors/dhan/dhan');
     sendJson(200, {
       ok: true,
       connector: { slug: 'dhan', name: 'Dhan', status: 'needs_auth' },
-      connectUrl: '/api/dhan/auth/start?popup=1',
+      connectUrl: `/api/dhan/auth/start?returnTo=${returnTo}`,
       sync: { status: 'synced', errors: [] },
     });
     return true;

@@ -383,9 +383,11 @@ workspaceBridgeApp.post('/projects/:projectId/connections/me', async (c) => {
   );
 });
 workspaceBridgeApp.post('/projects/:projectId/connections/:connectionId/connect', (c) => {
+  const projectId = c.req.param('projectId') || 'trading';
+  const returnTo = encodeURIComponent(`/projects/${projectId}/admin/connectors/dhan/dhan`);
   return c.json(
     {
-      connectUrl: '/api/dhan/auth/start?popup=1',
+      connectUrl: `/api/dhan/auth/start?returnTo=${returnTo}`,
       connectionId: c.req.param('connectionId') || 'dhan-conn-1',
       connected: false,
     },
@@ -404,9 +406,11 @@ workspaceBridgeApp.post('/projects/:projectId/connections/:connectionId/finalize
   );
 });
 workspaceBridgeApp.post('/connectors/projects/:projectId/connectors/:slug/connect', (c) => {
+  const projectId = c.req.param('projectId') || 'trading';
+  const returnTo = encodeURIComponent(`/projects/${projectId}/admin/connectors/dhan/dhan`);
   return c.json(
     {
-      connectUrl: '/api/dhan/auth/start?popup=1',
+      connectUrl: `/api/dhan/auth/start?returnTo=${returnTo}`,
       connectionId: 'dhan-conn-1',
       connected: false,
     },
@@ -425,13 +429,15 @@ workspaceBridgeApp.post('/connectors/projects/:projectId/connectors/:slug/connec
   );
 });
 workspaceBridgeApp.post('/connectors/projects/:projectId/discover/install', async (c) => {
+  const projectId = c.req.param('projectId') || 'trading';
   const body = await c.req.json().catch(() => ({}));
   const slug = String((body as any)?.slug || 'dhan').toLowerCase();
+  const returnTo = encodeURIComponent(`/projects/${projectId}/admin/connectors/dhan/dhan`);
   return c.json(
     {
       ok: true,
       connector: { slug, name: slug === 'dhan' ? 'Dhan' : slug, status: 'needs_auth' },
-      connectUrl: slug === 'dhan' ? '/api/dhan/auth/start?popup=1' : undefined,
+      connectUrl: slug === 'dhan' ? `/api/dhan/auth/start?returnTo=${returnTo}` : undefined,
       sync: { status: 'synced', errors: [] },
     },
     200,

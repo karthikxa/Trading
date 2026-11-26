@@ -9,7 +9,7 @@ const HEADERS = {
 };
 
 describe('Dhan OAuth & Connector Lifecycle', () => {
-  it('connect endpoint returns official Dhan consent start popup URL', async () => {
+  it('connect endpoint returns official Dhan consent start URL with returnTo', async () => {
     const res = await fetch(`${API_BASE}/v1/connectors/projects/trading/connectors/dhan/connect`, {
       method: 'POST',
       headers: HEADERS,
@@ -17,15 +17,21 @@ describe('Dhan OAuth & Connector Lifecycle', () => {
     });
     assert.equal(res.status, 200);
     const data = (await res.json()) as { connectUrl?: string; connectionId?: string };
-    assert.equal(data.connectUrl, '/api/dhan/auth/start?popup=1');
+    assert.equal(
+      data.connectUrl,
+      '/api/dhan/auth/start?returnTo=%2Fprojects%2Ftrading%2Fadmin%2Fconnectors%2Fdhan%2Fdhan',
+    );
     assert.ok(data.connectionId);
   });
 
-  it('/api/dhan/auth/start?popup=1 redirects to official Dhan Consent Login using App ID & Secret', async () => {
-    const res = await fetch(`${WEB_BASE}/api/dhan/auth/start?popup=1`, {
-      redirect: 'manual',
-      headers: HEADERS,
-    });
+  it('/api/dhan/auth/start redirects to official Dhan Consent Login using App ID & Secret', async () => {
+    const res = await fetch(
+      `${WEB_BASE}/api/dhan/auth/start?returnTo=%2Fprojects%2Ftrading%2Fadmin%2Fconnectors%2Fdhan%2Fdhan`,
+      {
+        redirect: 'manual',
+        headers: HEADERS,
+      },
+    );
     assert.ok(res.status === 307 || res.status === 302, `Expected redirect, got ${res.status}`);
     const location = res.headers.get('location') || '';
     assert.ok(

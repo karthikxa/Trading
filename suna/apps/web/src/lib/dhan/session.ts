@@ -24,8 +24,10 @@ export interface DhanSession {
 
 const RUNTIME_FALLBACK_SEED =
   process.env.SESSION_SECRET ||
+  process.env.API_KEY_SECRET ||
+  process.env.DHAN_APP_SECRET ||
   process.env.DHAN_TOTP_SECRET ||
-  crypto.randomBytes(32).toString('hex');
+  'eb34eed3:592b81bb-0819-4982-be86-ac7b5983bdfe';
 
 const g = globalThis as unknown as { __dhanSessionFallbackSeed?: string };
 if (!g.__dhanSessionFallbackSeed) {
