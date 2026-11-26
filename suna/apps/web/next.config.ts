@@ -1049,7 +1049,6 @@ const nextConfig = (): NextConfig => ({
         '/automations',
         '/channels',
         '/company-as-code',
-        '/connectors',
         '/solutions',
       ].flatMap((page) => [
         { source: page, destination: '/', permanent: true },
@@ -1145,6 +1144,30 @@ const nextConfig = (): NextConfig => ({
       {
         source: '/trading',
         destination: '/projects/trading',
+      },
+      {
+        source: '/connectors',
+        destination: '/projects/trading/admin/connectors',
+      },
+      {
+        source: '/connectors/:path*',
+        destination: '/projects/trading/admin/connectors/:path*',
+      },
+      {
+        source: '/customize',
+        destination: '/projects/trading/customize/agents',
+      },
+      {
+        source: '/customize/:path*',
+        destination: '/projects/trading/customize/:path*',
+      },
+      {
+        source: '/drive',
+        destination: '/projects/trading/drive',
+      },
+      {
+        source: '/drive/:path*',
+        destination: '/projects/trading/drive/:path*',
       },
       {
         source: '/docs',

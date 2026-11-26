@@ -370,9 +370,11 @@ export function ConnectorsPage({
     };
 
     checkDhanStatus();
+    const interval = setInterval(checkDhanStatus, 30_000);
     window.addEventListener('dhan-token-updated', checkDhanStatus);
     return () => {
       cancelled = true;
+      clearInterval(interval);
       window.removeEventListener('dhan-token-updated', checkDhanStatus);
     };
   }, []);
