@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'node:fs';
 import path from 'node:path';
+import { getSession, clearSession } from '@/lib/dhan/session';
 import catalogData from '@/features/connectors/data/catalog-4000.json';
 import composioToolkitsData from '@/features/connectors/data/composio_toolkits_1610.json';
 
@@ -439,6 +440,16 @@ export async function GET(req: Request) {
 
   const catalog = getCatalog();
   const installedSlugs = getInstalledSlugs();
+  // Never report Dhan as installed/connected unless there is a real active Dhan session
+  for (const s of Array.from(installedSlugs)) {
+    if (s === 'dhan' || s.startsWith('dhan-')) {
+      installedSlugs.delete(s);
+    }
+  }
+  const dhanSession = await getSession().catch(() => null);
+  if (dhanSession) {
+    installedSlugs.add('dhan');
+  }
 
   // Mode: discover-detail (Explicit Discover connector detail with item + variants)
   if (mode === 'discover-detail' || (id && mode === 'discover')) {
@@ -800,6 +811,15 @@ export async function DELETE(req: Request) {
     const set = getInstalledSlugs();
     if (cleanSlug) set.delete(cleanSlug);
     if (raw) set.delete(raw);
+    if (cleanSlug === 'dhan' || raw === 'dhan' || raw.startsWith('dhan-')) {
+      for (const s of Array.from(set)) {
+        if (s === 'dhan' || s.startsWith('dhan-')) set.delete(s);
+      }
+      await clearSession(true).catch(() => {});
+      if (process.env.DHAN_ACCESS_TOKEN) {
+        delete process.env.DHAN_ACCESS_TOKEN;
+      }
+    }
     saveInstalled(set);
     return NextResponse.json({ ok: true });
   } catch (err: any) {

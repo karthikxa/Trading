@@ -271,7 +271,7 @@ workspaceBridgeApp.get('/connectors/projects/:projectId/connectors', handleConne
 workspaceBridgeApp.get('/connectors/projects/:projectId/connectors/dhan', handleConnectorsList);
 workspaceBridgeApp.delete('/connectors/projects/:projectId/connectors/:slug', async (c) => {
   const slug = c.req.param('slug');
-  if (slug === 'dhan') {
+  if (slug === 'dhan' || slug.startsWith('dhan-')) {
     delete process.env.DHAN_ACCESS_TOKEN;
     await markDhanDisconnectedInDb('trading');
   }

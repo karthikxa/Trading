@@ -359,7 +359,7 @@ export function ConnectorsPage({
         if (!prev?.connectors) return prev;
         return {
           ...prev,
-          connectors: prev.connectors.filter((c: any) => c.slug !== 'dhan'),
+          connectors: prev.connectors.filter((c: any) => c.slug !== 'dhan' && !c.slug?.startsWith('dhan-')),
         };
       });
     };
@@ -415,7 +415,7 @@ export function ConnectorsPage({
   const connectors = useMemo(() => {
     const list = connectorsQuery.data?.connectors ?? [];
     if (typeof window === 'undefined') return list;
-    const withoutDhan = list.filter((c) => c.slug !== 'dhan');
+    const withoutDhan = list.filter((c) => c.slug !== 'dhan' && !c.slug?.startsWith('dhan-'));
     if (!dhanConnected) {
       return withoutDhan;
     }

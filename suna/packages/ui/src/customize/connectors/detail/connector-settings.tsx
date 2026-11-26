@@ -74,9 +74,10 @@ export function ConnectorSettings({
   const queryClient = useQueryClient();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  const isDhan = connector.slug === 'dhan' || connector.slug?.startsWith('dhan-');
   const remove = useMutation({
     mutationFn: async () => {
-      if (connector.slug === 'dhan') {
+      if (isDhan) {
         await fetch('/api/dhan/auth/status', { method: 'DELETE' }).catch(() => {});
       }
       return deleteConnector(projectId, connector.slug);
@@ -86,11 +87,13 @@ export function ConnectorSettings({
         if (!prev?.connectors) return prev;
         return {
           ...prev,
-          connectors: prev.connectors.filter((c: any) => c.slug !== connector.slug),
+          connectors: prev.connectors.filter((c: any) =>
+            isDhan ? c.slug !== 'dhan' && !c.slug?.startsWith('dhan-') : c.slug !== connector.slug,
+          ),
         };
       });
       void queryClient.invalidateQueries({ queryKey: qk.project.connectors(projectId) });
-      if (connector.slug === 'dhan' && typeof window !== 'undefined') {
+      if (isDhan && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('dhan-token-updated', { detail: { connected: false } }));
       }
       successToast(tI18nComplete('textffd34ade9168', { value0: displayName }));
