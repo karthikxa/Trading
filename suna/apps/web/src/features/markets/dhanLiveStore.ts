@@ -196,26 +196,42 @@ async function performSync(force = false) {
     );
 
     if (isTokenExpired) {
+      // Preserve previous dashboard values while marking live feed as disconnected
       currentSnapshot = {
-        funds: null,
-        positions: [],
-        summary: {
-          realizedProfit: 0,
-          unrealizedProfit: 0,
-          totalDayPnl: 0,
-          positionsCount: 0,
-          openPositionsCount: 0,
-          lastUpdated: new Date().toISOString(),
-        },
+        ...currentSnapshot,
         lastSyncTimestamp: Date.now(),
         isLive: false,
         isTokenExpired: true,
       };
       try {
-        window.localStorage.removeItem(STORAGE_KEY);
-        window.localStorage.removeItem('kortix_trading_dhan_funds');
-        window.localStorage.removeItem('kortix_trading_dhan_positions');
+        dhanMarketFeed.disconnect();
+        dhanOrderUpdates.disconnect();
       } catch {}
+      // If we don't have cached values in memory yet, hydrate last saved snapshot from Supabase
+      if (!currentSnapshot.funds) {
+        fetch('/api/dhan/auth/status?includeSnapshot=1', { cache: 'no-store' })
+          .then((r) => r.json())
+          .then((statusData) => {
+            if (statusData?.snapshot?.funds && !currentSnapshot.funds) {
+              currentSnapshot = {
+                ...currentSnapshot,
+                funds: statusData.snapshot.funds,
+                positions: Array.isArray(statusData.snapshot.positions)
+                  ? statusData.snapshot.positions
+                  : currentSnapshot.positions,
+                summary: statusData.snapshot.summary || currentSnapshot.summary,
+              };
+              try {
+                window.localStorage.setItem(STORAGE_KEY, JSON.stringify(currentSnapshot));
+                window.localStorage.setItem('kortix_trading_dhan_funds', JSON.stringify(currentSnapshot.funds));
+                window.localStorage.setItem('kortix_trading_dhan_positions', JSON.stringify(currentSnapshot.positions));
+              } catch {}
+              subscribers.forEach((cb) => cb(currentSnapshot));
+              window.dispatchEvent(new CustomEvent('trading-dhan-live-updated', { detail: currentSnapshot }));
+            }
+          })
+          .catch(() => {});
+      }
       subscribers.forEach((cb) => cb(currentSnapshot));
       window.dispatchEvent(new CustomEvent('trading-dhan-live-updated', { detail: currentSnapshot }));
       return;
@@ -449,8 +465,50 @@ export function forceDhanSync() {
   return performSync(true);
 }
 
+let lastDbSnapshotAt = 0;
+
 if (typeof window !== 'undefined') {
-  window.addEventListener('dhan-token-updated', () => {
+  window.addEventListener('trading-dhan-live-updated', () => {
+    const now = Date.now();
+    if (currentSnapshot.isLive && currentSnapshot.funds && now - lastDbSnapshotAt > 30_000) {
+      lastDbSnapshotAt = now;
+      fetch('/api/dhan/auth/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          funds: currentSnapshot.funds,
+          positions: currentSnapshot.positions,
+          summary: currentSnapshot.summary,
+        }),
+      }).catch(() => {});
+    }
+  });
+
+  window.addEventListener('dhan-token-updated', (e: Event) => {
+    const detail = e instanceof CustomEvent ? e.detail : undefined;
+    if (detail && detail.connected === false) {
+      currentSnapshot = {
+        ...currentSnapshot,
+        isLive: false,
+        isTokenExpired: true,
+        lastSyncTimestamp: Date.now(),
+      };
+      try {
+        dhanMarketFeed.disconnect();
+        dhanOrderUpdates.disconnect();
+      } catch {}
+      subscribers.forEach((cb) => cb(currentSnapshot));
+      window.dispatchEvent(new CustomEvent('trading-dhan-live-updated', { detail: currentSnapshot }));
+      return;
+    }
+
+    // Reconnected: reconnect WebSockets and re-check & update all dashboard data
+    try {
+      dhanMarketFeed.connect().catch(() => {});
+      dhanOrderUpdates.connect().catch(() => {});
+    } catch {}
     performSync(true);
+    import('@/features/journal/dhanSync').then((m) => m.syncDhanTradesToJournal(undefined, true)).catch(() => {});
+    import('@/features/trading/dhanOrdersSync').then((m) => m.syncDhanOrders(true)).catch(() => {});
   });
 }

@@ -1,4 +1,6 @@
 import { OpenAPIHono } from '@hono/zod-openapi';
+import { sql } from 'drizzle-orm';
+import { db } from '../shared/db';
 import type { AppEnv } from '../types';
 
 export const workspaceBridgeApp = new OpenAPIHono<AppEnv>();
@@ -199,8 +201,41 @@ workspaceBridgeApp.get('/billing/account-state', handleBillingState);
 workspaceBridgeApp.get('/billing/account-state/minimal', handleBillingState);
 
 // 9. Connectors API
-const handleConnectorsList = (c: any) => {
-  const isConnected = Boolean(process.env.DHAN_ACCESS_TOKEN);
+async function isDhanActiveInDb(projectId = 'trading'): Promise<boolean> {
+  try {
+    const res = await db.execute(
+      sql`SELECT status, expires_at FROM public.dhan_connections WHERE id = ${`${projectId}:dhan`} LIMIT 1`,
+    );
+    const rows = (res as any)?.rows ?? (Array.isArray(res) ? res : []);
+    const row = rows[0];
+    if (!row) return Boolean(process.env.DHAN_ACCESS_TOKEN);
+    if (row.status !== 'active') return false;
+    if (row.expires_at && Date.now() >= new Date(row.expires_at).getTime()) {
+      await db.execute(
+        sql`UPDATE public.dhan_connections SET status = 'expired', disconnected_at = NOW(), updated_at = NOW() WHERE id = ${`${projectId}:dhan`}`,
+      );
+      return false;
+    }
+    return true;
+  } catch {
+    return Boolean(process.env.DHAN_ACCESS_TOKEN);
+  }
+}
+
+async function markDhanDisconnectedInDb(projectId = 'trading'): Promise<void> {
+  try {
+    await db.execute(
+      sql`INSERT INTO public.dhan_connections (id, project_id, status, disconnected_at, updated_at)
+          VALUES (${`${projectId}:dhan`}, ${projectId}, 'disconnected', NOW(), NOW())
+          ON CONFLICT (id) DO UPDATE SET status = 'disconnected', disconnected_at = NOW(), updated_at = NOW()`,
+    );
+  } catch {
+    // Non-blocking fallback
+  }
+}
+
+const handleConnectorsList = async (c: any) => {
+  const isConnected = await isDhanActiveInDb('trading');
   if (!isConnected) {
     return c.json({ connectors: [] }, 200);
   }
@@ -234,15 +269,17 @@ const handleConnectorsList = (c: any) => {
 
 workspaceBridgeApp.get('/connectors/projects/:projectId/connectors', handleConnectorsList);
 workspaceBridgeApp.get('/connectors/projects/:projectId/connectors/dhan', handleConnectorsList);
-workspaceBridgeApp.delete('/connectors/projects/:projectId/connectors/:slug', (c) => {
+workspaceBridgeApp.delete('/connectors/projects/:projectId/connectors/:slug', async (c) => {
   const slug = c.req.param('slug');
   if (slug === 'dhan') {
     delete process.env.DHAN_ACCESS_TOKEN;
+    await markDhanDisconnectedInDb('trading');
   }
   return c.json({ ok: true, deleted: slug }, 200);
 });
-workspaceBridgeApp.put('/projects/:projectId/connections/:connectionId/revoke', (c) => {
+workspaceBridgeApp.put('/projects/:projectId/connections/:connectionId/revoke', async (c) => {
   delete process.env.DHAN_ACCESS_TOKEN;
+  await markDhanDisconnectedInDb('trading');
   return c.json({ ok: true }, 200);
 });
 workspaceBridgeApp.get('/connectors/projects/:projectId/connectors/dhan/accounts', (c) => {

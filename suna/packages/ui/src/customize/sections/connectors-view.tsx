@@ -624,8 +624,16 @@ export function ConnectionsList({
   // removes the machine from Kortix (every project), not one account.
   const unpairComputer = useDeleteTunnelConnection();
   const disconnect = useMutation({
-    mutationFn: (connectionId: string) => revokeConnection(projectId, connectionId),
+    mutationFn: async (connectionId: string) => {
+      if (connector.slug === 'dhan') {
+        await fetch('/api/dhan/auth/status', { method: 'DELETE' }).catch(() => {});
+      }
+      return revokeConnection(projectId, connectionId);
+    },
     onSuccess: () => {
+      if (connector.slug === 'dhan' && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('dhan-token-updated', { detail: { connected: false } }));
+      }
       successToast(tI18nComplete.raw('text04dfac3671b4'));
       setConfirmDisconnect(null);
       refresh();

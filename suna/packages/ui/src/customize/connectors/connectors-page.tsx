@@ -354,28 +354,51 @@ export function ConnectorsPage({
 
   useEffect(() => {
     let cancelled = false;
+    const removeDhanFromCache = () => {
+      queryClient.setQueryData(qk.project.connectors(projectId), (prev: any) => {
+        if (!prev?.connectors) return prev;
+        return {
+          ...prev,
+          connectors: prev.connectors.filter((c: any) => c.slug !== 'dhan'),
+        };
+      });
+    };
+
     const checkDhanStatus = (e?: Event) => {
       if (typeof window !== 'undefined') {
         localStorage.removeItem('kortix_dhan_access_token');
         localStorage.removeItem('kortix_dhan_client_id');
       }
       if (e instanceof CustomEvent && e.detail && typeof e.detail.connected === 'boolean') {
-        setDhanConnected(e.detail.connected);
-        queryClient.invalidateQueries({ queryKey: qk('connectors', projectId) });
-        queryClient.invalidateQueries({ queryKey: ['connectors'] });
+        const nextConnected = e.detail.connected;
+        setDhanConnected(nextConnected);
+        if (!nextConnected) {
+          removeDhanFromCache();
+        }
+        for (const key of connectorConnectionQueryKeys(projectId)) {
+          void queryClient.invalidateQueries({ queryKey: key });
+        }
         return;
       }
       fetch('/api/dhan/auth/status', { cache: 'no-store' })
         .then((r) => r.json())
         .then((data) => {
           if (!cancelled) {
-            setDhanConnected(Boolean(data?.connected));
-            queryClient.invalidateQueries({ queryKey: qk('connectors', projectId) });
-            queryClient.invalidateQueries({ queryKey: ['connectors'] });
+            const nextConnected = Boolean(data?.connected);
+            setDhanConnected(nextConnected);
+            if (!nextConnected) {
+              removeDhanFromCache();
+            }
+            for (const key of connectorConnectionQueryKeys(projectId)) {
+              void queryClient.invalidateQueries({ queryKey: key });
+            }
           }
         })
         .catch(() => {
-          if (!cancelled) setDhanConnected(false);
+          if (!cancelled) {
+            setDhanConnected(false);
+            removeDhanFromCache();
+          }
         });
     };
 

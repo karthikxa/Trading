@@ -2,8 +2,9 @@
 
 import { useTranslations } from '../../../i18n';
 import { type AdminConnector, deleteConnector, setConnectorName } from '@kortix/sdk';
+import { qk } from '@kortix/sdk/react';
 import { ArrowRightIcon, TrashIcon } from '@phosphor-icons/react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useId, useState } from 'react';
 
 import { Badge } from '../../../primitives/badge';
@@ -70,11 +71,28 @@ export function ConnectorSettings({
   const isComputer = connector.provider === 'computer';
   const isDirectProvider =
     !isManagedConnectorProvider(connector.provider) && !isChannel && !isComputer;
+  const queryClient = useQueryClient();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const remove = useMutation({
-    mutationFn: () => deleteConnector(projectId, connector.slug),
+    mutationFn: async () => {
+      if (connector.slug === 'dhan') {
+        await fetch('/api/dhan/auth/status', { method: 'DELETE' }).catch(() => {});
+      }
+      return deleteConnector(projectId, connector.slug);
+    },
     onSuccess: () => {
+      queryClient.setQueryData(qk.project.connectors(projectId), (prev: any) => {
+        if (!prev?.connectors) return prev;
+        return {
+          ...prev,
+          connectors: prev.connectors.filter((c: any) => c.slug !== connector.slug),
+        };
+      });
+      void queryClient.invalidateQueries({ queryKey: qk.project.connectors(projectId) });
+      if (connector.slug === 'dhan' && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('dhan-token-updated', { detail: { connected: false } }));
+      }
       successToast(tI18nComplete('textffd34ade9168', { value0: displayName }));
       onRemoved();
     },

@@ -1,5 +1,11 @@
 import { cookies } from 'next/headers';
 import crypto from 'node:crypto';
+import {
+  getDhanConnectionRecord,
+  markDhanDisconnected,
+  TWENTY_FOUR_HOURS_MS,
+  upsertDhanConnection,
+} from './db';
 
 export const SESSION_COOKIE = 'dhan_session';
 export const DISCONNECTED_COOKIE = 'dhan_disconnected';
@@ -75,9 +81,20 @@ export function parseExpiryMs(expiryTime?: string): number | null {
 
 export async function saveSession(session: DhanSession): Promise<void> {
   const cookieStore = await cookies();
+  const connectedAt = session.connectedAt || new Date().toISOString();
+  const connectedMs = new Date(connectedAt).getTime();
+  const exact24hIso = new Date((Number.isNaN(connectedMs) ? Date.now() : connectedMs) + TWENTY_FOUR_HOURS_MS).toISOString();
+
+  // Enforce exact 24h auto-disconnect ceiling even if Dhan token reports a longer expiry
+  const tokenExpMs = parseExpiryMs(session.expiryTime);
+  const twentyFourHourExpMs = new Date(exact24hIso).getTime();
+  const effectiveExpMs =
+    tokenExpMs !== null ? Math.min(tokenExpMs, twentyFourHourExpMs) : twentyFourHourExpMs;
+
   const payload: DhanSession = {
     ...session,
-    connectedAt: session.connectedAt || new Date().toISOString(),
+    connectedAt,
+    expiryTime: new Date(effectiveExpMs).toISOString(),
   };
 
   cookieStore.set(SESSION_COOKIE, seal(payload), {
@@ -90,20 +107,52 @@ export async function saveSession(session: DhanSession): Promise<void> {
 
   // Explicit login clears any previous disconnect marker
   cookieStore.delete({ name: DISCONNECTED_COOKIE, path: '/' });
+
+  await upsertDhanConnection({
+    projectId: 'trading',
+    clientId: payload.clientId,
+    name: payload.name,
+    authMethod: payload.authMethod || 'totp',
+    connectedAt: payload.connectedAt,
+    expiresAt: payload.expiryTime,
+  });
 }
 
 export async function getSession(): Promise<DhanSession | null> {
   const cookieStore = await cookies();
+  if (cookieStore.get(DISCONNECTED_COOKIE)?.value === '1') {
+    return null;
+  }
+
   const raw = cookieStore.get(SESSION_COOKIE)?.value;
   if (!raw) return null;
 
   const session = unseal<DhanSession>(raw);
   if (!session || !session.accessToken || !session.clientId) return null;
 
+  const now = Date.now();
+
+  // Enforce exact 24h auto-disconnect from connectedAt
+  if (session.connectedAt) {
+    const connMs = new Date(session.connectedAt).getTime();
+    if (!Number.isNaN(connMs) && now >= connMs + TWENTY_FOUR_HOURS_MS) {
+      await markDhanDisconnected('trading', 'expired');
+      return null;
+    }
+  }
+
   const expMs = parseExpiryMs(session.expiryTime);
-  if (expMs !== null && expMs < Date.now()) {
+  if (expMs !== null && now >= expMs) {
+    await markDhanDisconnected('trading', 'expired');
     return null;
   }
+
+  // Verify against Supabase DB state (handles remote disconnect / 24h expiry)
+  const dbRecord = await getDhanConnectionRecord('trading');
+  if (dbRecord && dbRecord.status !== 'active') {
+    return null;
+  }
+
   return session;
 }
 
@@ -119,6 +168,7 @@ export async function clearSession(markDisconnected = false): Promise<void> {
       maxAge: 60 * 60 * 24 * 30,
     });
   }
+  await markDhanDisconnected('trading', markDisconnected ? 'disconnected' : 'expired');
 }
 
 export async function isExplicitlyDisconnected(): Promise<boolean> {
