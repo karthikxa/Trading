@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import { Dialog, DialogClose, DialogPopup, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogClose, DialogPopup, DialogTitle } from '@kortix/ui/dialog';
 
 export interface LightboxImage {
   url: string;

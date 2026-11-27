@@ -3,8 +3,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar as CalendarIcon, Check, ChevronDown, Clock } from 'lucide-react';
 import { cn } from '@kortix/ui/lib/utils';
-import { Calendar } from '@/components/ui/calendar';
-import { Popover, PopoverPopup, PopoverTrigger } from '@/components/ui/popover';
+import { Calendar } from '@kortix/ui/calendar';
+import { Popover, PopoverContent, PopoverTrigger } from '@kortix/ui/popover';
 
 const QUARTER_HOUR_SLOTS: string[] = Array.from({ length: 24 * 4 }, (_, idx) => {
   const hrs = String(Math.floor(idx / 4)).padStart(2, '0');
@@ -181,7 +181,7 @@ export function JournalDatePicker({
           }
         />
       </div>
-      <PopoverPopup align="start" sideOffset={6} className="p-2.5 w-auto font-sans z-[70]">
+      <PopoverContent align="start" sideOffset={6} className="p-2.5 w-auto font-sans z-[70]">
         <Calendar
           mode="single"
           captionLayout="dropdown-buttons"
@@ -217,7 +217,7 @@ export function JournalDatePicker({
           </button>
           <span className="text-[11px] text-zinc-400 tabular-nums">{value || 'YYYY-MM-DD'}</span>
         </div>
-      </PopoverPopup>
+      </PopoverContent>
     </Popover>
   );
 }
@@ -312,7 +312,7 @@ export function JournalTimeSelect({
           }
         />
       </div>
-      <PopoverPopup align="end" sideOffset={6} className="w-36 p-1 font-sans">
+      <PopoverContent align="end" sideOffset={6} className="w-36 p-1 font-sans">
         <div
           ref={listRef}
           role="listbox"
@@ -345,7 +345,7 @@ export function JournalTimeSelect({
             );
           })}
         </div>
-      </PopoverPopup>
+      </PopoverContent>
     </Popover>
   );
 }

@@ -1,0 +1,15 @@
+[
+  {
+    "id": "memory_event_1795798787031",
+    "memory_id": "memory_1795798787031",
+    "action": "created",
+    "value": "Temporary test",
+    "at": "2026-11-27T16:59:47.031Z"
+  },
+  {
+    "id": "memory_event_1795798787056",
+    "memory_id": "memory_1795798787031",
+    "action": "deleted",
+    "at": "2026-11-27T16:59:47.056Z"
+  }
+]

@@ -2,8 +2,8 @@
 
 import React from 'react';
 import { JournalTrade } from './types';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Card } from '@kortix/ui/card';
+import { Badge } from '@kortix/ui/badge';
 
 interface MonthlySummaryCardProps {
   trades: JournalTrade[];

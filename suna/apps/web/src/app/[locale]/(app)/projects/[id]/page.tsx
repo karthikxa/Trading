@@ -744,9 +744,11 @@ export default function ProjectIndexPage() {
                   </div>
                   <div className="mt-2 sm:mt-2.5 flex items-center gap-1.5 text-[11px] sm:text-[11.5px] font-medium text-muted-foreground font-sans">
                     <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10.5px] sm:text-[11px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-sans">
-                      {displayBalance > 0
-                        ? `+${(((tradingGoal.targetAmount - displayBalance) / displayBalance) * 100).toFixed(1)}% Goal`
-                        : '+25.0% Goal'}
+                      {displayBalance > 0 && tradingGoal.targetAmount > 0
+                        ? displayBalance >= tradingGoal.targetAmount
+                          ? '100% Goal'
+                          : `${((displayBalance / tradingGoal.targetAmount) * 100).toFixed(1)}% Goal`
+                        : '0.0% Goal'}
                     </span>
                   </div>
                 </div>

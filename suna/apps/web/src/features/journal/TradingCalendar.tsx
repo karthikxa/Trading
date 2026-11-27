@@ -11,12 +11,11 @@ import {
   Filter,
 } from 'lucide-react';
 import { CurrencyMode, JournalTrade } from './types';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
-import { Group, GroupSeparator } from '@/components/ui/group';
-import { Calendar } from '@/components/ui/calendar';
-import { Popover, PopoverPopup, PopoverTrigger } from '@/components/ui/popover';
+import { Button } from '@kortix/ui/button';
+import { Badge } from '@kortix/ui/badge';
+import { Card } from '@kortix/ui/card';
+import { Calendar } from '@kortix/ui/calendar';
+import { Popover, PopoverContent, PopoverTrigger } from '@kortix/ui/popover';
 import { formatIsoDate, parseIsoDate } from './JournalDateTimeFields';
 import { RightPanelGlyph } from './DayDetailsDrawer';
 import { cn } from '@kortix/ui/lib/utils';
@@ -232,7 +231,7 @@ export const TradingCalendar = React.memo(function TradingCalendar({
                 </button>
               }
             />
-            <PopoverPopup align="start" sideOffset={8} className="p-2.5 w-auto">
+            <PopoverContent align="start" sideOffset={8} className="p-2.5 w-auto">
               <Calendar
                 mode="single"
                 captionLayout="dropdown-buttons"
@@ -263,7 +262,7 @@ export const TradingCalendar = React.memo(function TradingCalendar({
                 </button>
                 <span className="text-[11px] text-zinc-400">Pick month or date</span>
               </div>
-            </PopoverPopup>
+            </PopoverContent>
           </Popover>
         </div>
 
@@ -289,7 +288,7 @@ export const TradingCalendar = React.memo(function TradingCalendar({
               <Filter className="size-3 sm:size-3.5 text-muted-foreground" />
               <span className="hidden xs:inline">Filter</span>
             </PopoverTrigger>
-            <PopoverPopup align="end" className="w-56 p-3 flex flex-col gap-2.5 border border-border/80 bg-card shadow-xl rounded-xl font-sans z-50">
+            <PopoverContent align="end" className="w-56 p-3 flex flex-col gap-2.5 border border-border/80 bg-card shadow-xl rounded-xl font-sans z-50">
               <span className="text-xs font-semibold text-foreground">Return / Currency Filter</span>
               <div className="flex flex-col gap-1">
                 {[
@@ -313,7 +312,7 @@ export const TradingCalendar = React.memo(function TradingCalendar({
                   </button>
                 ))}
               </div>
-            </PopoverPopup>
+            </PopoverContent>
           </Popover>
 
           <Button
@@ -328,15 +327,15 @@ export const TradingCalendar = React.memo(function TradingCalendar({
             <span className="xs:hidden">Add</span>
           </Button>
 
-          {onToggleDrawer && (
+          {onToggleDrawer && !drawerOpen && (
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="icon"
               onClick={onToggleDrawer}
-              aria-label={drawerOpen ? 'Close side panel' : 'Open side panel'}
-              title={drawerOpen ? 'Close side panel' : 'Open side panel'}
-              className="size-7 sm:size-8 rounded-lg border-zinc-200 bg-white text-zinc-700 hover:text-zinc-950 hover:bg-zinc-100 cursor-pointer shadow-2xs shrink-0 flex items-center justify-center"
+              aria-label="Open side panel"
+              title="Open side panel"
+              className="size-7 sm:size-8 rounded-lg text-zinc-600 hover:text-zinc-950 hover:bg-zinc-100 cursor-pointer shrink-0 flex items-center justify-center"
             >
               <RightPanelGlyph className="size-3.5 sm:size-4" />
             </Button>

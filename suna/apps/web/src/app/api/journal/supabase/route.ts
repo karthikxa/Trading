@@ -72,6 +72,21 @@ export async function POST(req: NextRequest) {
     // Remove any leftover test fixtures so they never cause count/PnL flicker
     await supabase.from('journal_trades').delete().like('id', '%_test%');
 
+    // When replaceAuto is set, purge stale auto-synced dhan_ rows not in the new consolidated batch
+    if (body?.replaceAuto) {
+      const keepIds = new Set(trades.map((t: any) => String(t.id)));
+      const { data: existingAuto } = await supabase
+        .from('journal_trades')
+        .select('id')
+        .eq('source', 'auto');
+      const staleIds = (existingAuto || [])
+        .map((r: any) => String(r.id))
+        .filter((id: string) => !keepIds.has(id));
+      if (staleIds.length > 0) {
+        await supabase.from('journal_trades').delete().in('id', staleIds);
+      }
+    }
+
     // Map frontend trades to snake_case Supabase table schema
     const rows = trades.map((t: any) => ({
       id: t.id,

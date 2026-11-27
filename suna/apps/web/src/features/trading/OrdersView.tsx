@@ -35,9 +35,8 @@ import {
   DialogTitle,
   DialogDescription,
   DialogFooter,
-} from '@/components/ui/dialog';
-import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
+} from '@kortix/ui';
+import { Badge, Button, Card, Popover, PopoverTrigger, PopoverContent } from '@kortix/ui';
 import {
   Table,
   TableBody,
@@ -47,10 +46,14 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table';
-import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
-import { Calendar } from '@/components/ui/calendar';
-import { Menu, MenuTrigger, MenuPopup, MenuItem } from '@/components/ui/menu';
+} from '@kortix/ui/table';
+import { Calendar } from '@kortix/ui/calendar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@kortix/ui';
 import { WallpaperBackground } from '@/components/ui/wallpaper-background';
 import { SidebarToggle } from '@kortix/ui/workspace';
 import StockSymbolIcon from '@/features/markets/StockSymbolIcon';
@@ -338,11 +341,15 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
         fetchOrders(true);
       }
     };
+    const handleDhanRecordsUpdated = () => {
+      setOrders(getLocalOrders());
+    };
 
     window.addEventListener('dhan-orders-updated', onOrdersUpdated);
     window.addEventListener('dhan-order-placing', handlePlacing);
     window.addEventListener('dhan-order-placed', handlePlaced);
     window.addEventListener('dhan-token-updated', handleTokenUpdated);
+    window.addEventListener('dhan-records-updated', handleDhanRecordsUpdated);
 
     // Live market polling every 1500ms with zero flicker
     const interval = setInterval(() => {
@@ -356,35 +363,49 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
       window.removeEventListener('dhan-order-placing', handlePlacing);
       window.removeEventListener('dhan-order-placed', handlePlaced);
       window.removeEventListener('dhan-token-updated', handleTokenUpdated);
+      window.removeEventListener('dhan-records-updated', handleDhanRecordsUpdated);
       clearInterval(interval);
     };
   }, [fetchOrders]);
 
-  // Derived KPI Metrics
+  // Derived KPI Metrics (Strictly for the current / selected day alone)
   const metrics = useMemo(() => {
-    const total = orders.length;
-    const traded = orders.filter((o) => o.orderStatus === 'TRADED');
-    const pending = orders.filter((o) => o.orderStatus === 'PENDING' || o.orderStatus === 'TRANSIT');
-    const rejected = orders.filter((o) => o.orderStatus === 'REJECTED');
-    const cancelled = orders.filter((o) => o.orderStatus === 'CANCELLED');
+    const activeDateStr = selectedDate
+      ? selectedDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+      : new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+    const getOrderIstDate = (o: DhanOrderItem) => {
+      if (o.exitDate) return o.exitDate;
+      if (o.exchangeTime) {
+        const dt = new Date(o.exchangeTime);
+        if (!isNaN(dt.getTime())) {
+          return dt.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        }
+      }
+      return (o.exchangeTime || o.entryDate || '').slice(0, 10);
+    };
+
+    const dayOrders = orders.filter((o) => {
+      const d = getOrderIstDate(o);
+      if (dateRange?.from) {
+        const fromStr = dateRange.from.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        const toStr = (dateRange.to ?? dateRange.from).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        return d >= fromStr && d <= toStr;
+      }
+      if (!selectedDate) return true;
+      return d === activeDateStr;
+    });
+
+    const total = dayOrders.length;
+    const traded = dayOrders.filter((o) => o.orderStatus === 'TRADED');
+    const pending = dayOrders.filter((o) => o.orderStatus === 'PENDING' || o.orderStatus === 'TRANSIT');
+    const rejected = dayOrders.filter((o) => o.orderStatus === 'REJECTED');
+    const cancelled = dayOrders.filter((o) => o.orderStatus === 'CANCELLED');
 
     const totalTurnover = traded.reduce((acc, o) => acc + (o.turnover || 0), 0);
     const totalCharges = traded.reduce((acc, o) => acc + (o.totalCharges || 0), 0);
     const totalPnl = traded.reduce((acc, o) => acc + (o.pnl || 0), 0);
     const fillRate = total > 0 ? ((traded.length / total) * 100).toFixed(1) : '100.0';
-
-    // Day PnL: strictly calculated for the active / selected day (defaults to today in IST)
-    const activeDateStr = selectedDate
-      ? selectedDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
-      : new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-
-    const dayTraded = traded.filter((o) => {
-      const d = (o.exchangeTime || o.entryDate || '').slice(0, 10);
-      return d === activeDateStr;
-    });
-
-    const dayPnl = dayTraded.reduce((acc, o) => acc + (o.pnl || 0), 0);
-    const dayCharges = dayTraded.reduce((acc, o) => acc + (o.totalCharges || 0), 0);
 
     return {
       total,
@@ -395,12 +416,12 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
       totalTurnover,
       totalCharges,
       totalPnl,
-      dayPnl,
-      dayCharges,
+      dayPnl: totalPnl,
+      dayCharges: totalCharges,
       activeDateStr,
       fillRate,
     };
-  }, [orders, selectedDate]);
+  }, [orders, selectedDate, dateRange]);
 
   // Filtered Orders
   const filteredOrders = useMemo(() => {
@@ -1268,15 +1289,19 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
         <div className="flex items-center gap-2">
           {/* A. Unified Filter Popover Button (Replaces ALL BUY SELL & native select) */}
           <Popover>
-            <PopoverTrigger
-              type="button"
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-lg border border-border/70 bg-card px-3 py-1.5 text-xs font-medium text-foreground shadow-2xs hover:bg-muted/50 transition-colors cursor-pointer font-sans',
-                (sideFilter !== 'ALL' || productFilter !== 'ALL') && 'bg-muted/60 text-foreground font-semibold'
-              )}
-            >
-              <Funnel className="size-3.5 text-muted-foreground" />
-              <span>Filter</span>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                className={cn(
+                  'gap-1.5 rounded-lg h-8 px-3 text-xs font-medium font-sans',
+                  (sideFilter !== 'ALL' || productFilter !== 'ALL') && 'bg-muted/60 text-foreground font-semibold'
+                )}
+              >
+                <Funnel className="size-3.5 text-muted-foreground" />
+                <span>Filter</span>
+              </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-64 p-3.5 flex flex-col gap-3.5 border border-border/80 bg-card shadow-xl rounded-xl font-sans">
               <div className="flex items-center justify-between border-b border-border/40 pb-2">
@@ -1352,70 +1377,31 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
 
           {/* B. Calendar Date Picker (Today by default, plus Previous Days & Custom Range) */}
           <Popover>
-            <PopoverTrigger
-              type="button"
-              aria-label="Filter by date"
-              title={
-                dateRange?.from
-                  ? `Range: ${dateRange.from.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} - ${(dateRange.to ?? dateRange.from).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`
-                  : selectedDate
-                    ? `Filter: ${selectedDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`
-                    : 'All Dates'
-              }
-              className={cn(
-                'inline-flex items-center justify-center size-8 rounded-lg border border-border/60 bg-card text-muted-foreground shadow-2xs hover:bg-muted/50 hover:text-foreground transition-colors cursor-pointer font-sans outline-none focus:outline-none focus:ring-0',
-                (selectedDate || dateRange?.from) && 'bg-primary/10 text-primary border-primary/30 font-semibold'
-              )}
-            >
-              <CalendarBlank className="size-4" />
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                aria-label="Filter by date"
+                title={
+                  dateRange?.from
+                    ? `Range: ${dateRange.from.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} - ${(dateRange.to ?? dateRange.from).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`
+                    : selectedDate
+                      ? `Filter: ${selectedDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`
+                      : 'All Dates'
+                }
+                className="size-8 rounded-lg shrink-0 font-sans border-border/70 bg-background text-muted-foreground hover:text-foreground hover:bg-muted/50"
+              >
+                <CalendarBlank className="size-4" />
+              </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="p-0 border border-border/80 bg-card shadow-xl rounded-xl">
-              <div className="px-2.5 pt-2.5 pb-1 flex items-center gap-1 border-b border-border/40">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCalendarMode('single');
-                    setDateRange(undefined);
-                    if (!selectedDate) setSelectedDate(new Date());
-                  }}
-                  className={cn(
-                    'flex-1 text-[11px] font-medium py-1 px-2 rounded-md transition-colors cursor-pointer',
-                    calendarMode === 'single'
-                      ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
-                  )}
-                >
-                  Single Day
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCalendarMode('range');
-                    if (!dateRange?.from && selectedDate) {
-                      setDateRange({ from: selectedDate, to: selectedDate });
-                    }
-                  }}
-                  className={cn(
-                    'flex-1 text-[11px] font-medium py-1 px-2 rounded-md transition-colors cursor-pointer',
-                    calendarMode === 'range'
-                      ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
-                  )}
-                >
-                  Custom Range
-                </button>
-              </div>
               <Calendar
-                mode={calendarMode as any}
-                selected={(calendarMode === 'range' ? dateRange : selectedDate) as any}
-                onSelect={(val: any) => {
-                  if (calendarMode === 'range') {
-                    setDateRange(val);
-                    if (val?.from) setSelectedDate(val.from);
-                  } else {
-                    setDateRange(undefined);
-                    setSelectedDate(val);
-                  }
+                mode="single"
+                selected={selectedDate}
+                onSelect={(val: Date | undefined) => {
+                  setDateRange(undefined);
+                  setSelectedDate(val);
                 }}
                 initialFocus
               />
@@ -1470,7 +1456,7 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
         </div>
       </div>
 
-      {/* 4. Table UI Built with components/ui/table & components/ui/badge */}
+      {/* 4. Table UI built with Kortix UI table and badge primitives */}
       <div className="w-full overflow-x-auto rounded-xl border border-border/70 bg-card shadow-2xs [scrollbar-width:thin] [-webkit-overflow-scrolling:touch]">
       <Table>
         <TableHeader>
@@ -1675,8 +1661,8 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
 
                   {/* 12. Action Column with Three Dots Menu */}
                   <TableCell className="text-center">
-                    <Menu>
-                      <MenuTrigger asChild>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
                         <button
                           type="button"
                           className="inline-flex items-center justify-center size-7 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
@@ -1684,28 +1670,28 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
                         >
                           <DotsThreeVertical className="size-4" weight="bold" />
                         </button>
-                      </MenuTrigger>
-                      <MenuPopup align="end" className="w-32 font-sans">
-                        <MenuItem
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-32 font-sans">
+                        <DropdownMenuItem
                           onSelect={() => setViewingOrder(order)}
                           className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
                         >
                           View
-                        </MenuItem>
-                        <MenuItem
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
                           onSelect={() => setSharingOrder(order)}
                           className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
                         >
                           Share
-                        </MenuItem>
-                        <MenuItem
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
                           onSelect={() => downloadOrderPdf(order)}
                           className="cursor-pointer text-xs py-1.5 px-2.5 font-medium"
                         >
                           Download
-                        </MenuItem>
-                      </MenuPopup>
-                    </Menu>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </TableCell>
                 </TableRow>
               );

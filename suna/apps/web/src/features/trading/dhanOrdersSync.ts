@@ -60,7 +60,33 @@ export interface DhanOrderItem {
   rawData?: any;
 }
 
+export interface DhanOrderAlertLike {
+  orderId: string;
+  orderStatus: DhanOrderItem['orderStatus'];
+  transactionType: DhanOrderItem['transactionType'];
+  exchangeSegment?: string;
+  productType?: string;
+  orderType?: string;
+  validity?: string;
+  tradingSymbol?: string;
+  securityId?: string;
+  quantity?: number;
+  price?: number;
+  triggerPrice?: number;
+  disclosedQuantity?: number;
+  filledQty?: number;
+  pendingQty?: number;
+  tradedPrice?: number;
+  createTime?: string;
+  updateTime?: string;
+  exchangeTime?: string;
+  omsErrorCode?: string;
+  omsErrorDescription?: string;
+}
+
 const ORDERS_STORAGE_KEY = 'kortix_trading_dhan_orders_v1';
+let lastRemoteSyncAt = 0;
+let remoteSyncInFlight: Promise<DhanOrderItem[]> | null = null;
 
 /**
  * Computes exact market session based on Kolkata IST time window
@@ -217,20 +243,85 @@ export function saveLocalOrders(orders: DhanOrderItem[]) {
   }
 }
 
+/** Apply a pushed order event before the REST reconciliation completes. */
+export function applyDhanOrderAlert(alert: DhanOrderAlertLike): void {
+  if (typeof window === 'undefined' || !alert.orderId) return;
+  const current = getLocalOrders();
+  const index = current.findIndex((order) => order.orderId === String(alert.orderId));
+  const existing = index >= 0 ? current[index] : undefined;
+  const symbol = normalizeSymbol(alert.tradingSymbol, existing?.customSymbol);
+  const eventTime = alert.exchangeTime || alert.updateTime || alert.createTime || existing?.exchangeTime || new Date().toISOString();
+  const next: DhanOrderItem = {
+    orderId: String(alert.orderId),
+    exchangeOrderId: existing?.exchangeOrderId,
+    dhanClientId: existing?.dhanClientId,
+    tradingSymbol: symbol.cleanSym,
+    customSymbol: symbol.displayName,
+    securityId: String(alert.securityId || existing?.securityId || ''),
+    isin: existing?.isin || '',
+    exchangeSegment: alert.exchangeSegment || existing?.exchangeSegment || 'NSE_EQ',
+    transactionType: alert.transactionType || existing?.transactionType || 'BUY',
+    orderType: (alert.orderType || existing?.orderType || 'MARKET').toUpperCase() as DhanOrderItem['orderType'],
+    productType: (alert.productType || existing?.productType || 'INTRADAY').toUpperCase() as DhanOrderItem['productType'],
+    orderStatus: alert.orderStatus,
+    quantity: Number(alert.quantity ?? existing?.quantity ?? 0),
+    disclosedQuantity: Number(alert.disclosedQuantity ?? existing?.disclosedQuantity ?? 0),
+    price: Number(alert.price ?? existing?.price ?? 0),
+    triggerPrice: Number(alert.triggerPrice ?? existing?.triggerPrice ?? 0),
+    tradedQuantity: Number(alert.filledQty ?? existing?.tradedQuantity ?? 0),
+    avgTradedPrice: Number(alert.tradedPrice ?? existing?.avgTradedPrice ?? alert.price ?? 0),
+    turnover: existing?.turnover ?? 0,
+    pnl: existing?.pnl ?? 0,
+    brokerageCharges: existing?.brokerageCharges ?? 0,
+    serviceTax: existing?.serviceTax ?? 0,
+    exchangeCharges: existing?.exchangeCharges ?? 0,
+    sebiTax: existing?.sebiTax ?? 0,
+    stampDuty: existing?.stampDuty ?? 0,
+    stt: existing?.stt ?? 0,
+    totalCharges: existing?.totalCharges ?? 0,
+    validity: alert.validity || existing?.validity || 'DAY',
+    omsErrorCode: alert.omsErrorCode || existing?.omsErrorCode,
+    omsErrorDescription: alert.omsErrorDescription || existing?.omsErrorDescription,
+    tradingSession: getTradingSessionForTime(eventTime),
+    exchangeTime: eventTime,
+    createTime: alert.createTime || existing?.createTime,
+    updateTime: alert.updateTime || existing?.updateTime,
+    rawData: { ...(existing?.rawData || {}), ...alert },
+  };
+  const nextOrders = index >= 0
+    ? current.map((order, orderIndex) => (orderIndex === index ? next : order))
+    : [next, ...current];
+  saveLocalOrders(nextOrders);
+}
+
 /**
  * Synchronizes orders from DhanHQ Live API & Supabase
  */
 export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderItem[]> {
   const cached = getLocalOrders();
 
-  // If not forcing refresh and we have recent cached orders, return them first
+  // Return the cache immediately, but only start one background refresh for a
+  // given freshness window. Previously every 1.5s dashboard tick scheduled a
+  // new forced request, creating overlapping Dhan calls and stale responses.
   if (!forceRefresh && cached.length > 0) {
-    // Background refresh
-    setTimeout(() => {
-      syncDhanOrders(true).catch(() => {});
-    }, 100);
+    if (Date.now() - lastRemoteSyncAt > 1500 && !remoteSyncInFlight) {
+      remoteSyncInFlight = syncDhanOrders(true).finally(() => {
+        remoteSyncInFlight = null;
+      });
+    }
     return cached;
   }
+
+  if (remoteSyncInFlight) return remoteSyncInFlight;
+  remoteSyncInFlight = syncDhanOrdersRemote().finally(() => {
+    remoteSyncInFlight = null;
+  });
+  return remoteSyncInFlight;
+}
+
+async function syncDhanOrdersRemote(): Promise<DhanOrderItem[]> {
+  const cached = getLocalOrders();
+  lastRemoteSyncAt = Date.now();
 
   try {
     // 1. Fetch today's orders & executions from Dhan (authenticated via httpOnly session cookie)
@@ -309,7 +400,8 @@ export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderIte
       });
     }
 
-    // Step B: Synthesize executed orders from Dhan trades execution log
+    // Step B: Synthesize & accumulate executed orders from Dhan trades execution log
+    const partialFillSeen = new Set<string>();
     for (const t of tradesList) {
       const orderId = String(t.orderId);
       const { cleanSym, displayName } = normalizeSymbol(t.tradingSymbol, t.customSymbol);
@@ -327,21 +419,40 @@ export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderIte
       const totalCharges = Number((brokerage + serviceTax + exchangeCharges + sebiTax + stampDuty + stt).toFixed(4));
 
       if (orderMap.has(orderId)) {
-        // Enrich existing live order with exact execution details & fee breakdown
         const existing = orderMap.get(orderId)!;
         existing.orderStatus = 'TRADED';
         existing.exchangeOrderId = t.exchangeOrderId ? String(t.exchangeOrderId) : existing.exchangeOrderId;
-        existing.tradedQuantity = tradedQty;
-        existing.avgTradedPrice = tradedPrice;
-        existing.turnover = turnover;
-        existing.brokerageCharges = brokerage;
-        existing.serviceTax = serviceTax;
-        existing.exchangeCharges = exchangeCharges;
-        existing.sebiTax = sebiTax;
-        existing.stampDuty = stampDuty;
-        existing.stt = stt;
-        existing.totalCharges = totalCharges;
+        if (partialFillSeen.has(orderId)) {
+          // Accumulate multiple partial fills for the same orderId
+          const prevQty = existing.tradedQuantity || 0;
+          const prevTurnover = prevQty * (existing.avgTradedPrice || 0);
+          const nextQty = prevQty + tradedQty;
+          existing.tradedQuantity = nextQty;
+          existing.quantity = Math.max(existing.quantity, nextQty);
+          existing.avgTradedPrice = nextQty > 0 ? Number(((prevTurnover + turnover) / nextQty).toFixed(4)) : tradedPrice;
+          existing.turnover = Number((existing.turnover + turnover).toFixed(2));
+          existing.brokerageCharges = Number((existing.brokerageCharges + brokerage).toFixed(4));
+          existing.serviceTax = Number((existing.serviceTax + serviceTax).toFixed(4));
+          existing.exchangeCharges = Number((existing.exchangeCharges + exchangeCharges).toFixed(4));
+          existing.sebiTax = Number((existing.sebiTax + sebiTax).toFixed(4));
+          existing.stampDuty = Number((existing.stampDuty + stampDuty).toFixed(4));
+          existing.stt = Number((existing.stt + stt).toFixed(4));
+          existing.totalCharges = Number((existing.totalCharges + totalCharges).toFixed(4));
+        } else {
+          partialFillSeen.add(orderId);
+          existing.tradedQuantity = tradedQty;
+          existing.avgTradedPrice = tradedPrice;
+          existing.turnover = turnover;
+          existing.brokerageCharges = brokerage;
+          existing.serviceTax = serviceTax;
+          existing.exchangeCharges = exchangeCharges;
+          existing.sebiTax = sebiTax;
+          existing.stampDuty = stampDuty;
+          existing.stt = stt;
+          existing.totalCharges = totalCharges;
+        }
       } else {
+        partialFillSeen.add(orderId);
         // Create full executed order record from execution
         orderMap.set(orderId, {
           orderId,
@@ -379,15 +490,22 @@ export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderIte
       }
     }
 
-    // Step C: Compute real-time exact realized PnL per executed trade matching (Long & Short FIFO)
-    const openPositions: Record<string, Array<{
-      orderId: string;
-      side: 'BUY' | 'SELL';
-      qty: number;
-      price: number;
-      time: string;
-      feePerUnit: number;
-    }>> = {};
+    // Step C: Consolidate each full position lifecycle (0 -> open -> 0 flat) per symbol into ONE trade
+    // matching dhanSync.ts 1:1 so Journal and Orders always agree on trade count and Net PnL.
+    interface ActivePos {
+      isLong: boolean;
+      netQty: number;
+      entryQty: number;
+      entryValueSum: number;
+      exitQty: number;
+      exitValueSum: number;
+      totalFees: number;
+      firstOrder: DhanOrderItem;
+      orderIds: string[];
+    }
+
+    const activeBySym: Record<string, ActivePos> = {};
+    const consumedOrderIds = new Set<string>();
 
     const chronological = [...orderMap.values()].sort(
       (a, b) => new Date(a.exchangeTime).getTime() - new Date(b.exchangeTime).getTime()
@@ -396,105 +514,164 @@ export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderIte
     for (const tr of chronological) {
       if (tr.orderStatus !== 'TRADED') continue;
       const sym = tr.tradingSymbol;
-      if (!openPositions[sym]) openPositions[sym] = [];
-
       const side = tr.transactionType;
-      let remainingQty = Number(tr.tradedQuantity || tr.quantity || 0);
+      let qty = Number(tr.tradedQuantity || tr.quantity || 0);
+      if (qty <= 0) continue;
       const price = Number(tr.avgTradedPrice || tr.price || 0);
       const time = tr.exchangeTime;
       const totalFee = Number(tr.totalCharges || 0);
-      const feePerUnit = remainingQty > 0 ? totalFee / remainingQty : 0;
-      const oppositeSide = side === 'BUY' ? 'SELL' : 'BUY';
+      const feePerUnit = qty > 0 ? totalFee / qty : 0;
 
-      while (remainingQty > 0 && openPositions[sym].length > 0) {
-        const matchIdx = openPositions[sym].findIndex((o) => o.side === oppositeSide);
-        if (matchIdx === -1) break;
-
-        const openOrder = openPositions[sym][matchIdx];
-        const matchQty = Math.min(openOrder.qty, remainingQty);
-
-        const isLong = openOrder.side === 'BUY';
-        const entryPrice = openOrder.price;
-        const exitPrice = price;
-
-        const grossPnl = isLong ? (exitPrice - entryPrice) * matchQty : (entryPrice - exitPrice) * matchQty;
-        const openFeePortion = Number((openOrder.feePerUnit * matchQty).toFixed(2));
-        const closeFeePortion = Number((feePerUnit * matchQty).toFixed(2));
-        const tradeFees = Number((openFeePortion + closeFeePortion).toFixed(2));
-        const netPnl = Number((grossPnl - tradeFees).toFixed(2));
-
-        const entryParts = (openOrder.time || '').split('T');
-        const exitParts = (time || '').split('T');
-        const entryDate = entryParts[0] || new Date().toISOString().split('T')[0];
-        const entryTime = formatSimpleTime(entryParts[1] || '09:30');
-        const exitDate = exitParts[0] || entryDate;
-        const exitTime = formatSimpleTime(exitParts[1] || '15:30');
-
-        const riskPerShare = Math.max(0.5, entryPrice * 0.01);
-        const riskR = Number((riskPerShare * matchQty).toFixed(2));
-        const returnR = riskR > 0 ? Number((netPnl / riskR).toFixed(2)) : null;
-
-        const stopLoss = isLong
-          ? Number((entryPrice - riskPerShare).toFixed(2))
-          : Number((entryPrice + riskPerShare).toFixed(2));
-        const takeProfit = isLong
-          ? Number((entryPrice + riskPerShare * 2).toFixed(2))
-          : Number((entryPrice - riskPerShare * 2).toFixed(2));
-
-        // Timeframe duration
-        const d1 = new Date(openOrder.time).getTime();
-        const d2 = new Date(time).getTime();
-        const diffSecs = Math.max(1, Math.round((d2 - d1) / 1000));
-        let timeframe = '1m';
-        if (diffSecs < 120) timeframe = '1m';
-        else if (diffSecs < 300) timeframe = '3m';
-        else if (diffSecs < 600) timeframe = '5m';
-        else if (diffSecs < 1800) timeframe = '15m';
-        else timeframe = `${Math.round(diffSecs / 60)}m`;
-
-        // Mark the exit order
-        tr.isExitTrade = true;
-        tr.tradeDirection = isLong ? 'Buy' : 'Sell';
-        tr.entryPrice = Number(entryPrice.toFixed(2));
-        tr.exitPrice = Number(exitPrice.toFixed(2));
-        tr.entryDate = entryDate;
-        tr.entryTimeStr = entryTime;
-        tr.exitDate = exitDate;
-        tr.exitTimeStr = exitTime;
-        tr.timeframe = timeframe;
-        tr.grossPnl = Number(grossPnl.toFixed(2));
-        tr.pnl = netPnl;
-        tr.stopLossPrice = stopLoss;
-        tr.takeProfitPrice = takeProfit;
-        tr.riskR = riskR;
-        tr.returnR = returnR ?? undefined;
-        tr.totalFees = tradeFees;
-        tr.swap = 0;
-
-        remainingQty -= matchQty;
-        openOrder.qty -= matchQty;
-        if (openOrder.qty <= 0) {
-          openPositions[sym].splice(matchIdx, 1);
+      while (qty > 0) {
+        let pos = activeBySym[sym];
+        if (!pos) {
+          pos = {
+            isLong: side === 'BUY',
+            netQty: 0,
+            entryQty: 0,
+            entryValueSum: 0,
+            exitQty: 0,
+            exitValueSum: 0,
+            totalFees: 0,
+            firstOrder: tr,
+            orderIds: [],
+          };
+          activeBySym[sym] = pos;
         }
-      }
 
-      if (remainingQty > 0) {
-        openPositions[sym].push({
-          orderId: tr.orderId,
-          side,
-          qty: remainingQty,
-          price,
-          time,
-          feePerUnit,
-        });
+        const isSameDirection = (pos.isLong && side === 'BUY') || (!pos.isLong && side === 'SELL');
+        if (isSameDirection) {
+          pos.netQty += qty;
+          pos.entryQty += qty;
+          pos.entryValueSum += price * qty;
+          pos.totalFees += feePerUnit * qty;
+          if (pos.orderIds.length > 0 && tr.orderId !== pos.firstOrder.orderId) {
+            consumedOrderIds.add(tr.orderId);
+          }
+          pos.orderIds.push(tr.orderId);
+          qty = 0;
+        } else {
+          const closeQty = Math.min(pos.netQty, qty);
+          pos.netQty -= closeQty;
+          pos.exitQty += closeQty;
+          pos.exitValueSum += price * closeQty;
+          pos.totalFees += feePerUnit * closeQty;
+          qty -= closeQty;
+
+          if (pos.netQty <= 0) {
+            // Mark all earlier legs (including firstOrder) as consumed; `tr` holds the consolidated trade
+            for (const oid of pos.orderIds) {
+              if (oid !== tr.orderId) consumedOrderIds.add(oid);
+            }
+
+            const avgEntry = pos.entryQty > 0 ? Number((pos.entryValueSum / pos.entryQty).toFixed(2)) : 0;
+            const avgExit = pos.exitQty > 0 ? Number((pos.exitValueSum / pos.exitQty).toFixed(2)) : Number(price.toFixed(2));
+            const totalLots = pos.entryQty;
+
+            const grossPnl = pos.isLong
+              ? (avgExit - avgEntry) * totalLots
+              : (avgEntry - avgExit) * totalLots;
+
+            let legFees = pos.totalFees;
+            if (legFees <= 0) {
+              const isIntraday = tr.productType === 'INTRADAY';
+              const buyP = pos.isLong ? avgEntry : avgExit;
+              const sellP = pos.isLong ? avgExit : avgEntry;
+              const buyT = buyP * totalLots;
+              const sellT = sellP * totalLots;
+              const totalT = buyT + sellT;
+              legFees =
+                (isIntraday ? sellT * 0.00025 : totalT * 0.001) +
+                totalT * 0.0000325 * 1.18 +
+                (totalT / 10000000) * 10 +
+                buyT * 0.00015;
+            }
+
+            const roundedGross = Number(grossPnl.toFixed(2));
+            const roundedFees = Number(legFees.toFixed(2));
+            const netPnl = Number((roundedGross - roundedFees).toFixed(2));
+
+            const entryDateObj = new Date(pos.firstOrder.exchangeTime || time);
+            const exitDateObj = new Date(time);
+            const entryDate = !isNaN(entryDateObj.getTime())
+              ? entryDateObj.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+              : new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+            const exitDate = !isNaN(exitDateObj.getTime())
+              ? exitDateObj.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+              : entryDate;
+            const entryTime = formatSimpleTime(
+              !isNaN(entryDateObj.getTime())
+                ? entryDateObj.toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit' })
+                : '09:30'
+            );
+            const exitTime = formatSimpleTime(
+              !isNaN(exitDateObj.getTime())
+                ? exitDateObj.toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false, hour: '2-digit', minute: '2-digit' })
+                : '15:30'
+            );
+
+            const riskPerShare = Math.max(0.5, avgEntry * 0.01);
+            const riskR = Number((riskPerShare * totalLots).toFixed(2));
+            const returnR = riskR > 0 ? Number((netPnl / riskR).toFixed(2)) : null;
+
+            const stopLoss = pos.isLong
+              ? Number((avgEntry - riskPerShare).toFixed(2))
+              : Number((avgEntry + riskPerShare).toFixed(2));
+            const takeProfit = pos.isLong
+              ? Number((avgEntry + riskPerShare * 2).toFixed(2))
+              : Number((avgEntry - riskPerShare * 2).toFixed(2));
+
+            const d1 = entryDateObj.getTime();
+            const d2 = exitDateObj.getTime();
+            const diffSecs = Math.max(1, Math.round((d2 - d1) / 1000));
+            let timeframe = '1m';
+            if (diffSecs < 120) timeframe = '1m';
+            else if (diffSecs < 300) timeframe = '3m';
+            else if (diffSecs < 600) timeframe = '5m';
+            else if (diffSecs < 1800) timeframe = '15m';
+            else timeframe = `${Math.round(diffSecs / 60)}m`;
+
+            tr.transactionType = pos.isLong ? 'BUY' : 'SELL';
+            tr.isExitTrade = true;
+            tr.tradeDirection = pos.isLong ? 'Buy' : 'Sell';
+            tr.quantity = totalLots;
+            tr.tradedQuantity = totalLots;
+            tr.entryPrice = avgEntry;
+            tr.exitPrice = avgExit;
+            tr.avgTradedPrice = avgEntry;
+            tr.turnover = Number(((avgEntry + avgExit) * totalLots).toFixed(2));
+            tr.entryDate = entryDate;
+            tr.entryTimeStr = entryTime;
+            tr.exitDate = exitDate;
+            tr.exitTimeStr = exitTime;
+            tr.timeframe = timeframe;
+            tr.grossPnl = roundedGross;
+            tr.totalCharges = roundedFees;
+            tr.pnl = netPnl;
+            tr.stopLossPrice = stopLoss;
+            tr.takeProfitPrice = takeProfit;
+            tr.riskR = riskR;
+            tr.returnR = returnR ?? undefined;
+            tr.totalFees = roundedFees;
+            tr.swap = 0;
+
+            delete activeBySym[sym];
+          } else {
+            // Partial close: mark this closing leg as consumed into the active position
+            if (qty === 0) consumedOrderIds.add(tr.orderId);
+            pos.orderIds.push(tr.orderId);
+          }
+        }
       }
     }
 
-    const mergedOrders = Array.from(orderMap.values()).sort((a, b) => {
-      const timeA = new Date(a.exchangeTime).getTime() || 0;
-      const timeB = new Date(b.exchangeTime).getTime() || 0;
-      return timeB - timeA;
-    });
+    const mergedOrders = Array.from(orderMap.values())
+      .filter((o) => !consumedOrderIds.has(o.orderId))
+      .sort((a, b) => {
+        const timeA = new Date(a.exchangeTime).getTime() || 0;
+        const timeB = new Date(b.exchangeTime).getTime() || 0;
+        return timeB - timeA;
+      });
 
     if (mergedOrders.length > 0) {
       saveLocalOrders(mergedOrders);

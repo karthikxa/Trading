@@ -348,8 +348,8 @@ const ProjectSheelLayout = ({ children }: { children: React.ReactNode }) => {
       {/* Page headers can share z-50 with this fixed control. Paint the
           control after them so their macOS drag regions cannot take its click. */}
       {children}
-      {/* On desktop or web, show the opener toggle whenever collapsed */}
-      {!isExpanded && (
+      {/* On desktop, show the opener toggle whenever collapsed */}
+      {!isMobile && !isExpanded && (
         <div className="fixed top-3 left-3 z-50">
           <Hint
             label={

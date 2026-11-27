@@ -1,0 +1,1147 @@
+[@sentry/nextjs] Importing `withSentryConfig` from `@sentry/nextjs` is deprecated and will stop working in v11. Import it from `@sentry/nextjs/config` instead:
+  import { withSentryConfig } from '@sentry/nextjs/config';
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead.
+
+  To migrate automatically, run:
+  npx @next/codemod@canary middleware-to-proxy .
+
+  Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+Failed to proxy http://localhost:8008/v1/projects/trading/sessions/80187eff-1001-48e4-8d15-9a810000cb51/events?schema=v2&tab_id=b8d7c7c9-1dad-4792-8459-2522b27d1b82&since_control=3&cepoch=ep1 Error: read ECONNRESET
+    at ignore-listed frames {
+  errno: -4077,
+  code: 'ECONNRESET',
+  syscall: 'read'
+}
+Error: read ECONNRESET
+    at ignore-listed frames {
+  errno: -4077,
+  code: 'ECONNRESET',
+  syscall: 'read'
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/sessions/80187eff-1001-48e4-8d15-9a810000cb51/events?schema=v2&tab_id=b8d7c7c9-1dad-4792-8459-2522b27d1b82&since_control=3&cepoch=ep1 AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+⚠ Fast Refresh had to perform a full reload when ./packages/sdk/src/core/http/transport.ts changed. Read more: https://nextjs.org/docs/messages/fast-refresh-reload
+⨯ SyntaxError: Invalid regular expression: /^\/projects\/([^/]+)\/sessions\/([^/]+)/: Stack overflow
+    at String.match (<anonymous>)
+    at SessionSiteHeader (..\..\packages\ui\src\session\header\session-site-header.tsx:186:34)
+  184 |   // URL has another shape still gets them. apps/web's route is the fallback.
+  185 |   const sessionIds = useSessionIds();
+> 186 |   const projectRoute = pathname?.match(/^\/projects\/([^/]+)\/sessions\/([^/]+)/);
+      |                                  ^
+  187 |   const projectId = sessionIds.projectId ?? projectRoute?.[1];
+  188 |   const projectSessionId = sessionIds.sessionId ?? projectRoute?.[2];
+  189 |   const isProjectSession = !!projectId && !!projectSessionId; {
+  digest: '958601542'
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/sessions/80187eff-1001-48e4-8d15-9a810000cb51/events?schema=v2&tab_id=29465242-3880-470a-94fc-e6c307e6acba&since_control=3&cepoch=ep1 Error: read ECONNRESET
+    at ignore-listed frames {
+  errno: -4077,
+  code: 'ECONNRESET',
+  syscall: 'read'
+}
+Error: read ECONNRESET
+    at ignore-listed frames {
+  errno: -4077,
+  code: 'ECONNRESET',
+  syscall: 'read'
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/sessions/80187eff-1001-48e4-8d15-9a810000cb51/events?schema=v2&tab_id=29465242-3880-470a-94fc-e6c307e6acba&since=6&epoch=ep1 AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/sessions/80187eff-1001-48e4-8d15-9a810000cb51/events?schema=v2&tab_id=29465242-3880-470a-94fc-e6c307e6acba&since=6&epoch=ep1 Error: read ECONNRESET
+    at ignore-listed frames {
+  errno: -4077,
+  code: 'ECONNRESET',
+  syscall: 'read'
+}
+Error: read ECONNRESET
+    at ignore-listed frames {
+  errno: -4077,
+  code: 'ECONNRESET',
+  syscall: 'read'
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/sessions/80187eff-1001-48e4-8d15-9a810000cb51/events?schema=v2&tab_id=29465242-3880-470a-94fc-e6c307e6acba&since=6&epoch=ep1&since_control=3&cepoch=ep1 AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+⨯ SyntaxError: Invalid regular expression: /^\/projects\/([^/]+)\/sessions\/([^/]+)/: Stack overflow
+    at String.match (<anonymous>)
+    at SessionSiteHeader (..\..\packages\ui\src\session\header\session-site-header.tsx:186:34)
+  184 |   // URL has another shape still gets them. apps/web's route is the fallback.
+  185 |   const sessionIds = useSessionIds();
+> 186 |   const projectRoute = pathname?.match(/^\/projects\/([^/]+)\/sessions\/([^/]+)/);
+      |                                  ^
+  187 |   const projectId = sessionIds.projectId ?? projectRoute?.[1];
+  188 |   const projectSessionId = sessionIds.sessionId ?? projectRoute?.[2];
+  189 |   const isProjectSession = !!projectId && !!projectSessionId; {
+  digest: '958601542'
+}
+Failed to proxy http://localhost:8008/v1/accounts/acc-trading/iam/members/usr_local_trader/effective:batch AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/accounts/acc-trading/iam/members/usr_local_trader/effective?action=project.settings.write&resourceType=project&resourceId=trading AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/accounts/acc-trading/iam/members/usr_local_trader/effective:batch AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/accounts/acc-default-workspace/iam/members/usr_local_trader/effective?action=project.create AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/billing/account-state?account_id=acc-trading AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/accounts/acc-trading/iam/members/usr_local_trader/effective?action=project.app.deploy&resourceType=project&resourceId=trading AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/accounts/acc-trading/iam/members/usr_local_trader/effective?action=project.secret.read&resourceType=project&resourceId=trading AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/accounts/acc-trading/iam/members/usr_local_trader/effective:batch AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/accounts/acc-trading/iam/members/usr_local_trader/effective?action=project.members.manage&resourceType=project&resourceId=trading AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/accounts/acc-trading/iam/members/usr_local_trader/effective?action=project.app.admin&resourceType=project&resourceId=trading AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/sessions AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/secrets AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/triggers AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/review/items?segment=needs_you AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/resource-grants AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/snapshots AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/branches?include_session_branches=false AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+Failed to proxy http://localhost:8008/v1/projects/trading/access-requests AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+AggregateError: 
+    at ignore-listed frames {
+  code: 'ECONNREFUSED',
+  [errors]: [
+    Error: connect ECONNREFUSED ::1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '::1',
+      port: 8008
+    },
+    Error: connect ECONNREFUSED 127.0.0.1:8008
+        at ignore-listed frames {
+      errno: -4078,
+      code: 'ECONNREFUSED',
+      syscall: 'connect',
+      address: '127.0.0.1',
+      port: 8008
+    }
+  ]
+}
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+⚠ Fast Refresh had to perform a full reload when ./packages/sdk/src/core/http/transport.ts changed. Read more: https://nextjs.org/docs/messages/fast-refresh-reload
+Failed to proxy http://localhost:8008/v1/projects/trading/sessions/80187eff-1001-48e4-8d15-9a810000cb51/events?schema=v2&tab_id=5fdcfb95-2ee6-48db-8a32-837148968064&since_control=3&cepoch=ep1 Error: read ECONNRESET
+    at ignore-listed frames {
+  errno: -4077,
+  code: 'ECONNRESET',
+  syscall: 'read'
+}
+Error: read ECONNRESET
+    at ignore-listed frames {
+  errno: -4077,
+  code: 'ECONNRESET',
+  syscall: 'read'
+}
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)
+[browser] [DhanMarketFeed] WebSocket error: [object Event] (src/features/markets/dhanMarketFeedWs.ts:82:17)

@@ -20,20 +20,25 @@ import { uploadChartImage } from './storage';
 import { ChartLightbox } from './ChartLightbox';
 import { InstrumentPicker } from './InstrumentPicker';
 import { JournalDatePicker, JournalTimeSelect } from './JournalDateTimeFields';
-import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
-import { Field, FieldLabel } from '@/components/ui/field';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
+import {
+  Tabs,
+  TabsList,
+  TabsContent as TabsPanel,
+  TabsTrigger as TabsTab,
+} from '@kortix/ui';
+import { Field, FieldLabel } from '@kortix/ui/field';
+import { Input } from '@kortix/ui/input';
+import { Textarea } from '@kortix/ui/textarea';
+import { Button } from '@kortix/ui/button';
+import { Badge } from '@kortix/ui/badge';
+import { Card } from '@kortix/ui/card';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
+} from '@kortix/ui/select';
 
 interface AddTradeViewProps {
   onBack: () => void;

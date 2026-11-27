@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BotAvatar, type BotShape, type BotExpression } from './bot-avatar';
 import {
   CaretRight,
@@ -417,6 +417,7 @@ export function AgentsSidebarView({
   // Server-driven agent state: API is sole source of truth
   const [agentOverrides, setAgentOverrides] = useState<Record<string, Partial<TradingAgentDef>>>({});
   const [editingAgent, setEditingAgent] = useState<TradingAgentDef | null>(null);
+  const editOpenedAtRef = useRef<number>(0);
 
   // Transient session activity tracking driven by server last-message timestamps
   const [agentActivity, setAgentActivity] = useState<Record<string, { lastMessage?: string; lastMessageAt?: number; time?: string }>>({});
@@ -796,9 +797,8 @@ export function AgentsSidebarView({
   };
 
   const handleOpenEditDrawer = (agent: TradingAgentDef) => {
-    setTimeout(() => {
-      setEditingAgent({ ...agent });
-    }, 80);
+    editOpenedAtRef.current = Date.now();
+    setEditingAgent({ ...agent });
   };
 
   const handleOpenCreateAgent = async () => {
@@ -1085,8 +1085,7 @@ export function AgentsSidebarView({
                               <span className="text-amber-600 font-medium">Make Admin</span>
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                              onSelect={(e) => {
-                                e.preventDefault();
+                              onSelect={() => {
                                 handleOpenEditDrawer(bot);
                               }}
                               className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer text-zinc-700 dark:text-zinc-300 transition-colors"
@@ -1641,7 +1640,15 @@ export function AgentsSidebarView({
       </Dialog>
 
       {/* Edit Agent Identity Drawer (Slide-Over Sheet from Right) */}
-      <Sheet open={!!editingAgent} modal={false} onOpenChange={(open) => !open && setEditingAgent(null)}>
+      <Sheet
+        open={!!editingAgent}
+        modal={false}
+        onOpenChange={(open) => {
+          if (!open && Date.now() - editOpenedAtRef.current > 350) {
+            setEditingAgent(null);
+          }
+        }}
+      >
         <SheetContent
           side="right"
           hideOverlay
@@ -1649,7 +1656,7 @@ export function AgentsSidebarView({
           onPointerDownOutside={(e) => e.preventDefault()}
           onInteractOutside={(e) => e.preventDefault()}
           onFocusOutside={(e) => e.preventDefault()}
-          className="top-0 right-0 bottom-0 h-screen md:h-screen w-[420px] max-w-[420px] !m-0 md:!m-0 !rounded-none md:!rounded-none border-y-0 border-r-0 border-l border-sidebar-border bg-sidebar shadow-2xl p-0 flex flex-col font-sans overflow-hidden outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 ring-0 [&:focus]:outline-none [&:focus-visible]:outline-none [&:focus]:ring-0 z-40"
+          className="top-0 right-0 bottom-0 h-screen md:h-screen w-full sm:w-[420px] max-w-full sm:max-w-[420px] !m-0 md:!m-0 !rounded-none md:!rounded-none border-y-0 border-r-0 border-l border-sidebar-border bg-sidebar shadow-2xl p-0 flex flex-col font-sans overflow-hidden outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 ring-0 [&:focus]:outline-none [&:focus-visible]:outline-none [&:focus]:ring-0 z-50"
           style={{ outline: 'none' }}
         >
           <SheetHeader className="p-5 pb-3 border-b border-sidebar-border flex flex-col gap-1 text-left shrink-0">
@@ -1686,8 +1693,10 @@ export function AgentsSidebarView({
                     <span className="font-bold text-sm text-foreground block">{editingAgent.name || 'Agent'}</span>
                     <span className="text-[11px] text-muted-foreground block">{editingAgent.role || 'Trading Specialist'}</span>
                   </div>
-                  <button
+                  <Button
                     type="button"
+                    variant="outline"
+                    size="xs"
                     onClick={() => {
                       const canvas = document.createElement('canvas');
                       canvas.width = 400;
@@ -1712,11 +1721,11 @@ export function AgentsSidebarView({
                       link.href = canvas.toDataURL('image/png');
                       link.click();
                     }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-sidebar-border bg-background hover:bg-muted text-xs font-medium text-foreground transition-colors cursor-pointer shadow-2xs outline-none focus:outline-none"
+                    className="gap-1.5 rounded-lg font-sans font-medium"
                   >
                     <DownloadIcon className="size-3.5" />
                     <span>Export as PNG</span>
-                  </button>
+                  </Button>
                 </div>
 
                 {/* Name */}

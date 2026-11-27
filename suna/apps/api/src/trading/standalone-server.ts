@@ -13,7 +13,7 @@
 
 import http from 'http';
 import url from 'url';
-import { handleTradingRequest } from './trading-server-module.ts';
+import { handleTradingRequest, runProactiveScheduler } from './trading-server-module.ts';
 
 const PORT = Number(process.env.PORT || process.env.FLM_PORT || 8008);
 
@@ -727,6 +727,13 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Endpoint not found. Visit http://localhost:' + PORT + ' for dashboard.' }));
 });
+
+const proactiveTimer = setInterval(() => {
+  void runProactiveScheduler(dispatchLlmCall).catch((error) => {
+    console.error('[ProactiveScheduler] cycle failed:', error?.message || error);
+  });
+}, 15_000);
+proactiveTimer.unref?.();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n======================================================`);

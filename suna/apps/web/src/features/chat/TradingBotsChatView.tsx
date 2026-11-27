@@ -45,7 +45,7 @@ import {
   Sparkle,
 } from '@phosphor-icons/react';
 import { WallpaperBackground } from '@/components/ui/wallpaper-background';
-import { cn } from '@kortix/ui';
+import { cn, Textarea } from '@kortix/ui';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -63,10 +63,15 @@ import {
 import {
   getHeartbeatSettings,
   saveHeartbeatSettings,
-  dispatchAgentHeartbeat,
+  requestProactiveAgentCheck,
   type HeartbeatCadence,
   type HeartbeatSettings,
 } from './agentHeartbeatEngine';
+import { getUnifiedTradingContext } from '@/features/trading/unifiedTradingContext';
+
+function requestNeedsTradingData(prompt: string): boolean {
+  return /\b(dhan|trade|trades|trading|position|positions|holding|holdings|order|orders|p&l|pnl|profit|loss|balance|funds|margin|portfolio|account|broker|market|price|quote|risk|exposure)\b/i.test(prompt);
+}
 
 export interface ChatStep {
   icon: 'skill' | 'file' | 'search';
@@ -195,7 +200,7 @@ export function TradingBotsChatView({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // OpenMausBot / Grok Proactive Heartbeat Settings & Pulse
+  // Proactive heartbeat settings and pulse
   const [heartbeatSettings, setHeartbeatSettings] = useState<HeartbeatSettings>(getHeartbeatSettings);
 
   const handleChangeCadence = (cadence: HeartbeatCadence) => {
@@ -218,11 +223,7 @@ export function TradingBotsChatView({
   };
 
   const handleManualPulse = () => {
-    const msg = dispatchAgentHeartbeat(activeAgent.id, activeAgent.name, activeAgent.role);
-    setMessages((prev) => {
-      if (prev.some((m) => m.id === msg.id)) return prev;
-      return [...prev, msg];
-    });
+    void requestProactiveAgentCheck(activeAgent.id, activeAgent.name, activeAgent.role);
   };
 
   // Heartbeat background interval for proactive agent intelligence
@@ -230,7 +231,7 @@ export function TradingBotsChatView({
     if (heartbeatSettings.cadence === 'paused' || heartbeatSettings.intervalMs <= 0) return;
 
     const timer = setInterval(() => {
-      dispatchAgentHeartbeat(activeAgent.id, activeAgent.name, activeAgent.role);
+      void requestProactiveAgentCheck(activeAgent.id, activeAgent.name, activeAgent.role);
     }, heartbeatSettings.intervalMs);
 
     return () => clearInterval(timer);
@@ -581,12 +582,16 @@ Trade execution discarded per Human-in-the-Loop rejection. No orders were placed
             sender: m.sender,
             content: m.content,
           })),
+          // Keep normal conversation lightweight. Read the connector-backed
+          // snapshot only when the user asks for trading/account information.
+          tradingContext: requestNeedsTradingData(query) ? getUnifiedTradingContext() : undefined,
         }),
         signal: abortCtrl.signal,
       });
 
       if (!res.ok || !res.body) {
-        throw new Error(`SSE stream connection failed: HTTP ${res.status}`);
+        const failure = await res.json().catch(() => null);
+        throw new Error(failure?.error || `Chat service returned HTTP ${res.status}`);
       }
 
       // 3. Read SSE stream with line-by-line buffer pattern (fetch-sse.ts)
@@ -641,7 +646,10 @@ Trade execution discarded per Human-in-the-Loop rejection. No orders were placed
       abortControllerRef.current = null;
 
       // 4. Finalize bot message
-      const finalReply = accumulated.trim() || `**${activeAgent.name}**\n\nMarket evaluation complete for: "${query}". Ready for order execution.`;
+      if (!accumulated.trim()) {
+        throw new Error('The model completed without returning an answer.');
+      }
+      const finalReply = accumulated.trim();
 
       const finalizedBotMsg: ChatMessage = {
         id: `bot-${Date.now()}`,
@@ -682,8 +690,7 @@ Trade execution discarded per Human-in-the-Loop rejection. No orders were placed
       abortControllerRef.current = null;
       console.error('Failed to communicate with bot:', err);
 
-      const fallbackReply = `**${activeAgent.name}**\n\nConnection established with Render FreeLLMAPI. Ready to evaluate trading directives for "${query}".`;
-      const fallbackBotMsg: ChatMessage = {
+      const errorBotMsg: ChatMessage = {
         id: `bot-${Date.now()}`,
         sender: 'agent',
         agentId: activeAgent.id,
@@ -691,12 +698,11 @@ Trade execution discarded per Human-in-the-Loop rejection. No orders were placed
         shape: activeAgent.shape,
         color: activeAgent.color,
         expression: activeAgent.expression,
-        content: fallbackReply,
-        steps: dynamicSteps,
+        content: `⚠️ **Chat unavailable**\n\n${err?.message || 'The configured model service did not return an answer. Check the Render service and try again.'}`,
         timestamp: timeStr,
       };
 
-      saveMessages([...nextMessages, fallbackBotMsg]);
+      saveMessages([...nextMessages, errorBotMsg]);
       setStreamingText('');
       setStreamingSteps([]);
     }
@@ -743,7 +749,7 @@ Trade execution discarded per Human-in-the-Loop rejection. No orders were placed
                     ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 border-border/40'
                     : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
                 )}
-                title={`OpenMausBot Heartbeat: ${heartbeatSettings.cadence} cadence`}
+                title={`Proactive heartbeat: ${heartbeatSettings.cadence} cadence`}
               >
                 <span
                   className={cn(
@@ -760,7 +766,7 @@ Trade execution discarded per Human-in-the-Loop rejection. No orders were placed
               className="w-56 p-1.5 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200/90 dark:border-zinc-800 shadow-xl text-xs font-sans z-50 text-zinc-900 dark:text-zinc-100"
             >
               <div className="px-2.5 py-1.5 font-semibold text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border/40 mb-1">
-                OpenMausBot Heartbeat Cadence
+                Proactive Heartbeat Cadence
               </div>
               <DropdownMenuItem
                 onClick={handleManualPulse}
@@ -930,13 +936,14 @@ Trade execution discarded per Human-in-the-Loop rejection. No orders were placed
             {/* Kortix Card Composer */}
             <div className="w-full text-left">
               <div className="bg-background border-border relative isolate z-10 w-full rounded-2xl border p-3.5 shadow-sm focus-within:border-zinc-400 dark:focus-within:border-zinc-700 transition-all flex flex-col gap-3">
-                <textarea
+                <Textarea
                   value={inputVal}
                   onChange={(e) => setInputVal(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="Describe a task to start a session..."
-                  rows={2}
-                  className="w-full resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none font-sans"
+                  minHeight={48}
+                  maxHeight={200}
+                  className="w-full resize-none border-0 bg-transparent px-1 py-0.5 text-[15px] leading-relaxed text-foreground placeholder:text-muted-foreground shadow-none outline-none focus-visible:ring-0 select-text font-sans"
                 />
 
                 <div className="flex items-center justify-between pt-1">
@@ -998,14 +1005,16 @@ Trade execution discarded per Human-in-the-Loop rejection. No orders were placed
                 'Compare Apple vs AMD & Microsoft',
                 'Market breakdown & key technicals',
               ].map((chip) => (
-                <button
+                <Button
                   key={chip}
                   type="button"
+                  variant="outline"
+                  size="xs"
                   onClick={() => handleSendMessage(chip)}
-                  className="rounded-full bg-white dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200/90 dark:border-zinc-800 px-3.5 py-1.5 text-xs font-medium transition-all cursor-pointer shadow-2xs font-sans"
+                  className="rounded-full bg-popover/90 hover:bg-accent text-muted-foreground hover:text-foreground border-border/80 px-3.5 h-7 text-xs font-medium shadow-2xs font-sans"
                 >
                   {chip}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
@@ -1290,14 +1299,15 @@ Trade execution discarded per Human-in-the-Loop rejection. No orders were placed
           <div className="max-w-3xl w-full mx-auto px-4 pb-6 pt-2 shrink-0">
             {/* The Composer Card */}
             <div className="bg-background border-border relative isolate z-10 w-full rounded-2xl border p-3.5 shadow-sm focus-within:border-zinc-400 dark:focus-within:border-zinc-700 transition-all flex flex-col gap-2.5">
-              <textarea
+              <Textarea
                 ref={textareaRef}
                 value={inputVal}
                 onChange={(e) => setInputVal(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Type / for skills, commands, and files"
-                rows={1}
-                className="w-full resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none font-sans min-h-[38px]"
+                minHeight={44}
+                maxHeight={200}
+                className="w-full resize-none border-0 bg-transparent px-1 py-0.5 text-[15px] leading-relaxed text-foreground placeholder:text-muted-foreground shadow-none outline-none focus-visible:ring-0 select-text font-sans"
               />
 
               {/* Inside Toolbar: Model + Auto Speed + Send/Stop Button */}

@@ -1,0 +1,9 @@
+
+======================================================
+🚀 FreeLLMAPI Standalone Gateway is RUNNING!
+📍 Web Dashboard:   http://localhost:8008/
+📋 Models Catalog:  http://localhost:8008/v1/models
+💬 Chat Endpoint:   http://localhost:8008/v1/chat/completions
+⚡ Instant Test:    http://localhost:8008/v1/test?model=pollinations-openai
+======================================================
+

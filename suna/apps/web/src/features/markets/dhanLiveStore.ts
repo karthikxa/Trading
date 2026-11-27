@@ -9,6 +9,7 @@
 
 import { dhanMarketFeed, MarketTick } from './dhanMarketFeedWs';
 import { dhanOrderUpdates } from '@/features/trading/dhanOrderUpdateWs';
+import { applyDhanOrderAlert } from '@/features/trading/dhanOrdersSync';
 
 export interface DhanPositionsSummary {
   realizedProfit: number;
@@ -405,8 +406,18 @@ function startLiveSync() {
   try {
     dhanMarketFeed.connect().catch(() => {});
     dhanOrderUpdates.connect().catch(() => {});
-    dhanOrderUpdates.onOrderAlert(() => {
+    dhanOrderUpdates.onOrderAlert((alert) => {
+      applyDhanOrderAlert(alert);
       performSync(true).catch(() => {});
+      // Order updates arrive before the slower dashboard reconciliation timer.
+      // Refresh the two record collections immediately and broadcast once so
+      // Journal, Orders, and any other mounted dashboard surface update together.
+      Promise.all([
+        import('@/features/journal/dhanSync').then((m) => m.syncDhanTradesToJournal(undefined, true)),
+        import('@/features/trading/dhanOrdersSync').then((m) => m.syncDhanOrders(true)),
+      ])
+        .then(() => window.dispatchEvent(new CustomEvent('dhan-records-updated')))
+        .catch(() => {});
     });
     dhanMarketFeed.onAnyTick((tick) => {
       handleLiveMarketTick(tick);

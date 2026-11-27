@@ -83,17 +83,14 @@ export default function JournalView({ projectId }: JournalViewProps) {
   const handleSyncDhan = useCallback(async (isBackground = false) => {
     if (!isBackground) setIsSyncingDhan(true);
     try {
-      const res = await syncDhanTradesToJournal(projectId);
-      // CRITICAL: Never replace existing trades with an empty result.
-      // Dhan API returns 0 trades when the token just expired — that must
-      // not blank the calendar. Only update if we got real data.
+      const res = await syncDhanTradesToJournal(projectId, !isBackground);
       if (res && Array.isArray(res.trades) && res.trades.length > 0) {
+        const latest = sortJournalTrades(getLocalTrades());
         setTrades((prev) => {
-          const sorted = sortJournalTrades(res.trades);
-          if (prev.length === sorted.length && JSON.stringify(prev) === JSON.stringify(sorted)) {
+          if (prev.length === latest.length && JSON.stringify(prev) === JSON.stringify(latest)) {
             return prev;
           }
-          return sorted;
+          return latest;
         });
       }
     } catch (err) {
@@ -145,6 +142,11 @@ export default function JournalView({ projectId }: JournalViewProps) {
       });
     };
     window.addEventListener('trading-journal-updated', onJournalUpdated);
+    const onDhanRecordsUpdated = () => {
+      const fresh = getLocalTrades();
+      if (fresh.length > 0) setTrades(sortJournalTrades(fresh));
+    };
+    window.addEventListener('dhan-records-updated', onDhanRecordsUpdated);
 
     // Supabase-backed sync: 60s is plenty — data is durable in Supabase.
     // 3s was causing back-to-back reconciles that wiped the calendar.
@@ -152,11 +154,12 @@ export default function JournalView({ projectId }: JournalViewProps) {
       if (document.visibilityState === 'visible') {
         handleSyncDhan(true);
       }
-    }, 60000);
+    }, 5000);
 
     return () => {
       isMounted = false;
       window.removeEventListener('trading-journal-updated', onJournalUpdated);
+      window.removeEventListener('dhan-records-updated', onDhanRecordsUpdated);
       clearInterval(interval);
     };
   }, [projectId, handleSyncDhan]);

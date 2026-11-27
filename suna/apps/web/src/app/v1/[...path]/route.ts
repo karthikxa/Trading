@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
+const DEFAULT_RENDER_BASE_URL = 'https://server-llm-1.onrender.com';
 
 // In-memory session message and log store
 interface StoredMessage {
@@ -87,6 +88,54 @@ You can review individual trade confluences, entry timestamps, and statutory bro
 All quantitative risk metrics, Dhan execution queues, and live Indian market structures are aligned. Let me know what specific action, backtest, or position parameter you want to execute.`;
 }
 
+function remoteCompletionUrl(): string | null {
+  const baseUrl = (process.env.FLM_REMOTE_BASE_URL || DEFAULT_RENDER_BASE_URL).replace(/\/$/, '');
+  return baseUrl.endsWith('/v1') ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
+}
+
+async function requestModelReply(
+  agentName: string,
+  messages: Array<{ role: string; content: string }>,
+  requestedModel?: string,
+  tradingContext?: unknown,
+): Promise<{ content: string; model: string }> {
+  const remoteUrl = remoteCompletionUrl();
+  if (!remoteUrl) throw new Error('Render model URL is not configured.');
+
+  const serializedContext = tradingContext && typeof tradingContext === 'object'
+    ? JSON.stringify(tradingContext)
+    : '';
+  const contextPrompt = serializedContext && serializedContext.length <= 120_000
+    ? `\n\nLatest dashboard trading snapshot captured before this message. Use it as read-only source data; never invent missing values or execute an order without explicit approval.\n[TRADING_CONTEXT]\n${serializedContext}\n[/TRADING_CONTEXT]`
+    : '';
+
+  const response = await fetch(remoteUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(process.env.FLM_REMOTE_API_KEY ? { Authorization: `Bearer ${process.env.FLM_REMOTE_API_KEY}` } : {}),
+    },
+    body: JSON.stringify({
+      model: requestedModel === 'zed' || !requestedModel ? 'auto' : requestedModel,
+      messages: [
+        {
+          role: 'system',
+          content: `You are ${agentName.replace(/_/g, ' ')}, a trading desk assistant. Answer only from information available in the conversation and dashboard snapshot. If trade data is not present, say that clearly. Never invent account balances, positions, executions, or P&L.${contextPrompt}`,
+        },
+        ...messages,
+      ],
+      stream: false,
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!response.ok) throw new Error(`Render model returned HTTP ${response.status}.`);
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content || data?.reply;
+  if (typeof content !== 'string' || !content.trim()) throw new Error('Render model returned an empty response.');
+  return { content: content.trim(), model: data?.model || 'auto' };
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
@@ -141,7 +190,7 @@ export async function POST(
         };
         sess.messages.push(userMsg);
 
-        // Instant assistant response
+        const reply = await requestModelReply(agentName, [{ role: 'user', content: userPromptText }], undefined, body.tradingContext);
         const assistantMsg: StoredMessage = {
           schema: 'kortix.session/2',
           v: 1,
@@ -154,14 +203,14 @@ export async function POST(
           in_context: true,
           agent: agentName,
           reply_to: userMessageId,
-          model: { provider: 'qwen', model: 'Qwen3.6-27B' },
+          model: { provider: 'render', model: reply.model },
           usage: { input: 120, output: 85, cache_read: 0, cache_write: 0 },
           finish: 'stop',
           error: null,
           created_at: new Date().toISOString(),
           completed_at: new Date().toISOString(),
           producer: { harness: 'kortix-agent', harness_version: '1.0.0', adapter_version: '1.0.0' },
-          blocks: [{ id: `blk_asst_${Date.now()}`, type: 'text', text: generateQuickReply(userPromptText, agentName) }],
+          blocks: [{ id: `blk_asst_${Date.now()}`, type: 'text', text: reply.content }],
         };
         sess.messages.push(assistantMsg);
       }
@@ -243,43 +292,11 @@ export async function POST(
       };
       sess.messages.push(userMsg);
 
-      // Instant fast reply fallback
-      let replyContent = generateQuickReply(promptText, agentName);
-
-      // Attempt FreeLLMAPI with a strict 2s timeout for instant UX
-      try {
-        const conversationHistory = sess.messages.slice(-8).map((m) => ({
-          role: m.role,
-          content: m.blocks.map((b) => b.text).join('\n'),
-        }));
-
-        const systemPrompt = `You are ${agentName.replace(/_/g, ' ').toUpperCase()}, a high-conviction AI trading, portfolio risk, and quantitative market strategist on the Kortix Trading platform. Provide clear, actionable, professional market insights in Kortix markdown style.`;
-
-        const upstreamModel = (body.overrides?.model?.modelID === 'zed' || !body.overrides?.model?.modelID) ? 'auto' : body.overrides.model.modelID;
-        const remoteUrl = process.env.FLM_REMOTE_BASE_URL
-          ? `${process.env.FLM_REMOTE_BASE_URL}/v1/chat/completions`
-          : 'http://localhost:8008/v1/trading/chat';
-        const llmRes = await fetch(remoteUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: upstreamModel,
-            messages: [{ role: 'system', content: systemPrompt }, ...conversationHistory],
-            stream: false,
-          }),
-          signal: AbortSignal.timeout(2000),
-        });
-
-        if (llmRes.ok) {
-          const llmData = await llmRes.json();
-          const generated = llmData?.choices?.[0]?.message?.content;
-          if (generated) {
-            replyContent = generated;
-          }
-        }
-      } catch (err: any) {
-        // Fast local fallback was already prepared
-      }
+      const conversationHistory = sess.messages.slice(-12).map((m) => ({
+        role: m.role,
+        content: m.blocks.map((b) => b.text).join('\n'),
+      }));
+      const reply = await requestModelReply(agentName, conversationHistory, body.overrides?.model?.modelID, body.tradingContext);
 
       // Save assistant message to transcript
       const assistantMsg: StoredMessage = {
@@ -294,7 +311,7 @@ export async function POST(
         in_context: true,
         agent: agentName,
         reply_to: userMessageId,
-        model: { provider: 'qwen', model: 'Qwen3.6-27B' },
+        model: { provider: 'render', model: reply.model },
         usage: { input: 120, output: 85, cache_read: 0, cache_write: 0 },
         finish: 'stop',
         error: null,
@@ -305,7 +322,7 @@ export async function POST(
           {
             id: `blk_asst_${Date.now()}`,
             type: 'text',
-            text: replyContent,
+            text: reply.content,
           },
         ],
       };
@@ -321,8 +338,8 @@ export async function POST(
     } catch (err: any) {
       console.error('[v1/prompts POST error]', err);
       return NextResponse.json(
-        { prompt_id: `pmt_${Date.now()}`, state: 'admitted', deduped: false },
-        { status: 200 }
+        { error: err?.message || 'The model service did not return a reply.', code: 'MODEL_UNAVAILABLE' },
+        { status: 503 }
       );
     }
   }

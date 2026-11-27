@@ -27,6 +27,21 @@ const SWARM_RUNS_FILE = path.join(DATA_DIR, 'swarm_runs.json');
 const GRANTS_FILE = path.join(DATA_DIR, 'connector_grants.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const TRANSCRIPTS_FILE = path.join(DATA_DIR, 'transcripts.json');
+const MEMORY_FILE = path.join(DATA_DIR, 'bot_memory.json');
+const SKILLS_FILE = path.join(DATA_DIR, 'bot_skills.json');
+const ROUTINES_FILE = path.join(DATA_DIR, 'bot_routines.json');
+const TASKS_FILE = path.join(DATA_DIR, 'bot_tasks.json');
+const MEMORY_HISTORY_FILE = path.join(DATA_DIR, 'bot_memory_history.json');
+const MEMORY_POLICY_FILE = path.join(DATA_DIR, 'bot_memory_policy.json');
+let latestTradingContext: Record<string, unknown> | null = null;
+let latestTradingContextRevision = 0;
+
+function recordTradingContext(context: Record<string, unknown>): void {
+  if (JSON.stringify(context) !== JSON.stringify(latestTradingContext)) {
+    latestTradingContext = context;
+    latestTradingContextRevision += 1;
+  }
+}
 
 function ensureDataDir() {
   try {
@@ -51,6 +66,10 @@ export interface StoredAgent {
   is_pinned: boolean;
   is_archived: boolean;
   pending_approvals_count: number;
+  lead_agent_id?: string;
+  can_delegate?: boolean;
+  can_receive_tasks?: boolean;
+  allow_sideways?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +115,81 @@ export interface StoredGrant {
   is_allowed: boolean;
   requires_approval: boolean;
   created_at: string;
+}
+
+export interface StoredMemory {
+  id: string;
+  scope: 'workspace' | 'agent';
+  agent_id?: string;
+  key: string;
+  value: string;
+  source: 'user' | 'bot' | 'connector' | 'system';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StoredMemoryHistory {
+  id: string;
+  memory_id: string;
+  action: 'created' | 'updated' | 'deleted' | 'expired';
+  value?: string;
+  at: string;
+}
+
+export interface MemoryPolicy {
+  retention_days: number;
+  max_items: number;
+  updated_at: string;
+}
+
+function classifyApproval(instruction: string): { needsApproval: boolean; actionType: StoredApproval['action_type']; reason: string; confidence: number } {
+  const text = instruction.toLowerCase();
+  const write = /\b(place|modify|cancel|execute|buy|sell|short|cover|pay|send|email|post|publish|delete|transfer|withdraw|change|set)\b/.test(text);
+  const trading = /\b(order|buy|sell|short|cover|position|trade|stop[- ]loss|target)\b/.test(text);
+  const computer = /\b(computer|browser|terminal|shell|file|email|slack|message|post|publish)\b/.test(text);
+  return {
+    needsApproval: write,
+    actionType: trading ? 'trade_execution' : computer ? 'computer_command' : 'risk_limit_change',
+    reason: write ? 'This request could create an external side effect.' : 'This request is read-only or analytical.',
+    confidence: write ? 0.94 : 0.91,
+  };
+}
+
+export interface StoredSkill {
+  id: string;
+  name: string;
+  description: string;
+  agent_id: string;
+  steps: string[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  last_run_at?: string;
+}
+
+export interface StoredRoutine {
+  id: string;
+  name: string;
+  agent_id: string;
+  instruction: string;
+  interval_ms: number;
+  enabled: boolean;
+  next_run_at: string;
+  last_run_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StoredTask {
+  id: string;
+  session_id: string;
+  from_agent: string;
+  to_agent: string;
+  instruction: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  result?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // ── Default Canonical Agents ────────────────────────────────────────────────
@@ -280,24 +374,6 @@ const CANONICAL_AGENTS: StoredAgent[] = [
     created_at: '2026-11-20T00:00:00.000Z',
     updated_at: '2026-11-20T00:00:00.000Z',
   },
-  {
-    id: 'manus',
-    name: 'Maus Bot',
-    role: 'Autonomous Proactive Intelligence',
-    group_category: 'Researchers',
-    shape: 'orb',
-    color: '#8B5CF6',
-    expression: 'attentive',
-    description: 'Autonomous proactive trading desk intelligence modeled after OpenMausBot / Grok. Proactively monitors desk telemetry and initiates check-ins.',
-    system_prompt: 'You are Maus Bot, the autonomous proactive intelligence on the Tauric trading desk. Proactively analyze market shifts, notify the user of key milestones, and provide sharp, witty, and actionable trading insights without being asked.',
-    model: 'zed',
-    is_admin: false,
-    is_pinned: true,
-    is_archived: false,
-    pending_approvals_count: 0,
-    created_at: '2026-11-20T00:00:00.000Z',
-    updated_at: '2026-11-20T00:00:00.000Z',
-  },
 ];
 
 const CANONICAL_GROUPS: StoredGroup[] = [
@@ -341,6 +417,12 @@ class TradingDataStore {
   sessionTranscripts: Map<string, any[]> = new Map();
   sessionPrompts: Map<string, any[]> = new Map();
   sessionSseStreams: Map<string, Set<any>> = new Map();
+  memories: Map<string, StoredMemory> = new Map();
+  skills: Map<string, StoredSkill> = new Map();
+  routines: Map<string, StoredRoutine> = new Map();
+  tasks: Map<string, StoredTask> = new Map();
+  memoryHistory: StoredMemoryHistory[] = [];
+  memoryPolicy: MemoryPolicy = { retention_days: 365, max_items: 2000, updated_at: new Date().toISOString() };
 
   constructor() {
     ensureDataDir();
@@ -430,6 +512,28 @@ class TradingDataStore {
       }
     } catch {}
 
+    const loadMap = <T extends { id: string }>(file: string, target: Map<string, T>) => {
+      try {
+        if (!fs.existsSync(file)) return;
+        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (Array.isArray(raw)) raw.forEach((item) => item?.id && target.set(item.id, item));
+      } catch {}
+    };
+    loadMap<StoredMemory>(MEMORY_FILE, this.memories);
+    loadMap<StoredSkill>(SKILLS_FILE, this.skills);
+    loadMap<StoredRoutine>(ROUTINES_FILE, this.routines);
+    loadMap<StoredTask>(TASKS_FILE, this.tasks);
+    try {
+      if (fs.existsSync(MEMORY_HISTORY_FILE)) {
+        const raw = JSON.parse(fs.readFileSync(MEMORY_HISTORY_FILE, 'utf8'));
+        if (Array.isArray(raw)) this.memoryHistory = raw;
+      }
+      if (fs.existsSync(MEMORY_POLICY_FILE)) {
+        const raw = JSON.parse(fs.readFileSync(MEMORY_POLICY_FILE, 'utf8'));
+        if (raw && typeof raw === 'object') this.memoryPolicy = { ...this.memoryPolicy, ...raw };
+      }
+    } catch {}
+
     this.recomputeApprovalCounts();
   }
 
@@ -479,6 +583,13 @@ class TradingDataStore {
     } catch {}
   }
 
+  saveMemories() { try { fs.writeFileSync(MEMORY_FILE, JSON.stringify(Array.from(this.memories.values()), null, 2)); } catch {} }
+  saveSkills() { try { fs.writeFileSync(SKILLS_FILE, JSON.stringify(Array.from(this.skills.values()), null, 2)); } catch {} }
+  saveRoutines() { try { fs.writeFileSync(ROUTINES_FILE, JSON.stringify(Array.from(this.routines.values()), null, 2)); } catch {} }
+  saveTasks() { try { fs.writeFileSync(TASKS_FILE, JSON.stringify(Array.from(this.tasks.values()).slice(-500), null, 2)); } catch {} }
+  saveMemoryHistory() { try { fs.writeFileSync(MEMORY_HISTORY_FILE, JSON.stringify(this.memoryHistory.slice(-5000), null, 2)); } catch {} }
+  saveMemoryPolicy() { try { fs.writeFileSync(MEMORY_POLICY_FILE, JSON.stringify(this.memoryPolicy, null, 2)); } catch {} }
+
   recomputeApprovalCounts() {
     const counts = new Map<string, number>();
     for (const app of this.approvals.values()) {
@@ -493,6 +604,167 @@ class TradingDataStore {
 }
 
 export const store = new TradingDataStore();
+
+function resolveStoredAgent(value: unknown, fallback: StoredAgent = CANONICAL_AGENTS[0]): StoredAgent {
+  const wanted = String(value || '').trim().toLowerCase();
+  if (!wanted) return fallback;
+  return Array.from(store.agents.values()).find((agent) => agent.id.toLowerCase() === wanted || agent.name.toLowerCase() === wanted) || fallback;
+}
+
+/** Shared BOPS-style capability context. Every agent gets its own memory and
+ * skills, including agents created later or placed into a group. */
+function agentCapabilityContext(agentId: string): string {
+  const memories = Array.from(store.memories.values())
+    .filter((memory) => memory.scope === 'workspace' || memory.agent_id === agentId)
+    .slice(-20)
+    .map((memory) => `- ${memory.key}: ${memory.value}`)
+    .join('\n');
+  const skills = Array.from(store.skills.values())
+    .filter((skill) => skill.enabled && skill.agent_id === agentId)
+    .slice(-20)
+    .map((skill) => `- ${skill.name}: ${skill.description || skill.steps.join('; ')}`)
+    .join('\n');
+  if (!memories && !skills) return '';
+  return `\n\nTEAMMATE CAPABILITIES (persistent, non-secret):\n${memories ? `Memory:\n${memories}\n` : ''}${skills ? `Saved skills:\n${skills}\n` : ''}Use these only as working context. Never claim a skill ran unless it actually ran, and never invent trading data.`;
+}
+
+const followUpLastRun = new Map<string, number>();
+const dashboardRevisionSeenBySession = new Map<string, number>();
+const PROACTIVE_WELCOME_DELAY_MS = 15_000;
+const PROACTIVE_SECOND_NOTE_DELAY_MS = 120_000;
+
+function broadcastSessionEvent(sessionId: string, eventData: any): void {
+  const streams = store.sessionSseStreams.get(sessionId);
+  if (!streams?.size) return;
+  const payload = `data: ${JSON.stringify(eventData)}\n\n`;
+  for (const clientRes of streams) {
+    try { clientRes.write(payload); } catch { streams.delete(clientRes); }
+  }
+}
+
+function appendProactiveMessage(sessionId: string, agent: StoredAgent, text: string): void {
+  const timestamp = Date.now();
+  const messageId = `msg_proactive_${timestamp}_${Math.random().toString(36).slice(2, 7)}`;
+  const transcript = store.sessionTranscripts.get(sessionId) || [];
+  const storedMessage = {
+    info: { id: messageId, sessionID: sessionId, role: 'assistant', agent: agent.id, proactive: true, time: { created: timestamp, completed: timestamp } },
+    parts: [{ id: `part_${messageId}`, sessionID: sessionId, messageID: messageId, type: 'text', text }],
+    role: 'assistant', created: new Date(timestamp).toISOString(), completed: new Date(timestamp).toISOString(),
+    text, tools: [], files: [], reasoning_omitted: false, error: null,
+  };
+  transcript.push(storedMessage);
+  store.sessionTranscripts.set(sessionId, transcript);
+  store.saveTranscripts();
+  broadcastSessionEvent(sessionId, {
+    channel: 'runtime', seq: transcript.length, epoch: 'ep1', type: 'log.message',
+    payload: { rev: timestamp, message: {
+      schema: 'kortix.session/2', v: 1, message_id: messageId, thread_id: 'thread-main', seq: transcript.length - 1,
+      role: 'assistant', agent: agent.id, kind: 'proactive', status: 'complete', in_context: true, model: null, usage: null,
+      finish: 'stop', error: null, created_at: new Date(timestamp).toISOString(), completed_at: new Date(timestamp).toISOString(),
+      producer: { harness: 'kortix', harness_version: '2.0.0', adapter_version: '2.0.0' }, blocks: [{ id: `blk_${messageId}_0`, type: 'text', text }],
+    } },
+  });
+}
+
+/** Server-side proactive loop. It only sends an onboarding note and a teammate
+ * introduction; later messages require a real task, routine, or data event. */
+export async function runProactiveScheduler(
+  dispatchLlmCall: (modelId: string, messages: { role: string; content: string }[]) => Promise<{ ok: boolean; content: string; error?: string }>,
+): Promise<void> {
+  const now = Date.now();
+  const cutoff = now - store.memoryPolicy.retention_days * 86_400_000;
+  let memoryChanged = false;
+  for (const memory of Array.from(store.memories.values())) {
+    if (Date.parse(memory.updated_at) < cutoff) {
+      store.memories.delete(memory.id);
+      store.memoryHistory.push({ id: `memory_event_${Date.now()}_${memory.id}`, memory_id: memory.id, action: 'expired', at: new Date().toISOString() });
+      memoryChanged = true;
+    }
+  }
+  if (store.memories.size > store.memoryPolicy.max_items) {
+    const oldest = Array.from(store.memories.values()).sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at));
+    for (const memory of oldest.slice(0, store.memories.size - store.memoryPolicy.max_items)) {
+      store.memories.delete(memory.id);
+      store.memoryHistory.push({ id: `memory_event_${Date.now()}_${memory.id}`, memory_id: memory.id, action: 'expired', at: new Date().toISOString() });
+      memoryChanged = true;
+    }
+  }
+  if (memoryChanged) { store.saveMemories(); store.saveMemoryHistory(); }
+  const activeSessions = Array.from(store.sessionSseStreams.entries()).filter(([, streams]) => streams.size > 0);
+  for (const [sessionId] of activeSessions) {
+    const session = store.sessions.get(sessionId);
+    const agent = store.agents.get(session?.agent_name || 'portfolio_manager') || CANONICAL_AGENTS[0];
+    const transcript = store.sessionTranscripts.get(sessionId) || [];
+    const proactive = transcript.filter((message: any) => message?.info?.proactive === true);
+    const dashboardRevisionSeen = dashboardRevisionSeenBySession.get(sessionId) || 0;
+    if (latestTradingContext && latestTradingContextRevision > dashboardRevisionSeen) {
+      dashboardRevisionSeenBySession.set(sessionId, latestTradingContextRevision);
+      const reviewGroup = Array.from(store.groups.values()).find((group) => group.agent_ids.includes(agent.id)) || Array.from(store.groups.values())[0];
+      const reviewer = reviewGroup
+        ? reviewGroup.agent_ids.map((id) => store.agents.get(id)).find((candidate): candidate is StoredAgent => Boolean(candidate))
+        : agent;
+      const proactiveReviewer = reviewer || agent;
+      const result = await dispatchLlmCall(proactiveReviewer.model !== 'zed' ? proactiveReviewer.model : 'auto', [
+        { role: 'system', content: `${proactiveReviewer.system_prompt || `You are ${proactiveReviewer.name}.`} A new read-only dashboard snapshot arrived. Report only a specific, verified item that needs attention. If nothing needs attention, reply exactly NO_UPDATE. Never invent values or claim an order was placed.` },
+        { role: 'user', content: JSON.stringify(latestTradingContext).slice(0, 120_000) },
+      ]);
+      if (result.ok && result.content?.trim() && result.content.trim() !== 'NO_UPDATE') {
+        appendProactiveMessage(sessionId, proactiveReviewer, result.content.trim());
+      }
+    }
+    const sessionStartedAt = Date.parse(session?.created_at || '') || now;
+    if (proactive.length === 0 && now - sessionStartedAt >= PROACTIVE_WELCOME_DELAY_MS) {
+      appendProactiveMessage(
+        sessionId,
+        agent,
+        `${agent.name} is active in this chat. I will message you only for a real task update, scheduled routine, Dhan-data change, or item needing your approval.`,
+      );
+      continue;
+    }
+    const lastProactiveAt = proactive.length ? Date.parse(proactive[proactive.length - 1]?.created || '') : now;
+    if (proactive.length === 1 && now - lastProactiveAt >= PROACTIVE_SECOND_NOTE_DELAY_MS) {
+      const reviewGroup = Array.from(store.groups.values()).find((group) => group.agent_ids.includes(agent.id)) || Array.from(store.groups.values())[0];
+      const teammate = reviewGroup
+        ? reviewGroup.agent_ids.map((id) => store.agents.get(id)).find((candidate) => candidate && candidate.id !== agent.id)
+        : undefined;
+      if (teammate) {
+        appendProactiveMessage(sessionId, teammate, `${teammate.name} joined the watch. I will report only a verified technical or execution item, not periodic “all clear” messages.`);
+      }
+    }
+  }
+
+  const dueRoutines = Array.from(store.routines.values()).filter((routine) => routine.enabled && Date.parse(routine.next_run_at) <= now).slice(0, 10);
+  for (const routine of dueRoutines) {
+    const agent = store.agents.get(routine.agent_id) || CANONICAL_AGENTS[0];
+    const result = await dispatchLlmCall(agent.model !== 'zed' ? agent.model : 'auto', [
+      { role: 'system', content: `${agent.system_prompt || `You are ${agent.name}, ${agent.role}.`}${agentCapabilityContext(agent.id)}\nRun this scheduled routine and report the result. No external writes or trades without approval.` },
+      { role: 'user', content: routine.instruction },
+    ]);
+    // The routine may have been deleted while its model call was in flight.
+    // Never recreate deleted work from an old scheduler snapshot.
+    if (!store.routines.has(routine.id)) continue;
+    routine.last_run_at = new Date().toISOString();
+    routine.next_run_at = new Date(now + routine.interval_ms).toISOString();
+    routine.updated_at = routine.last_run_at;
+    store.routines.set(routine.id, routine);
+    const target = activeSessions.find(([sid]) => store.sessions.get(sid)?.agent_name === agent.id)?.[0];
+    if (target && result.ok && result.content?.trim()) appendProactiveMessage(target, agent, `[Routine: ${routine.name}]\n${result.content.trim()}`);
+  }
+  if (dueRoutines.length) store.saveRoutines();
+
+  // Follow up on work that is still open. A reminder is delivered at most once
+  // per five minutes per task, so the desk is proactive without becoming noisy.
+  for (const task of store.tasks.values()) {
+    if (!['queued', 'running'].includes(task.status)) continue;
+    const age = now - Date.parse(task.updated_at || task.created_at);
+    if (age < 5 * 60_000 || now - (followUpLastRun.get(task.id) || 0) < 5 * 60_000) continue;
+    const target = activeSessions.find(([sid]) => store.sessions.get(sid)?.agent_name === task.from_agent)?.[0];
+    if (!target) continue;
+    followUpLastRun.set(task.id, now);
+    const agent = store.agents.get(task.from_agent) || CANONICAL_AGENTS[0];
+    appendProactiveMessage(target, agent, `[Follow-up] Task ${task.id} is still ${task.status}: ${task.instruction}. I’m checking with ${task.to_agent} and will report back when it completes.`);
+  }
+}
 
 // ── HTTP Request Handler ────────────────────────────────────────────────────
 
@@ -1203,6 +1475,10 @@ export async function handleTradingRequest(
         is_pinned: isPinned,
         is_archived: false,
         pending_approvals_count: 0,
+        ...(body.lead_agent_id ? { lead_agent_id: body.lead_agent_id } : {}),
+        can_delegate: body.can_delegate !== false,
+        can_receive_tasks: body.can_receive_tasks !== false,
+        allow_sideways: body.allow_sideways !== false,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -1240,6 +1516,10 @@ export async function handleTradingRequest(
       if (body.description !== undefined) agent.description = body.description;
       if (body.system_prompt !== undefined) agent.system_prompt = body.system_prompt;
       if (body.model) agent.model = body.model;
+      if (body.lead_agent_id !== undefined) agent.lead_agent_id = body.lead_agent_id || undefined;
+      if (body.can_delegate !== undefined) agent.can_delegate = Boolean(body.can_delegate);
+      if (body.can_receive_tasks !== undefined) agent.can_receive_tasks = Boolean(body.can_receive_tasks);
+      if (body.allow_sideways !== undefined) agent.allow_sideways = Boolean(body.allow_sideways);
 
       if (body.isAdmin !== undefined || body.is_admin !== undefined) {
         const wantsAdmin = Boolean(body.isAdmin || body.is_admin);
@@ -1344,6 +1624,13 @@ export async function handleTradingRequest(
     }
   }
 
+  if (pathname === '/v1/trading/approvals/classify' && method === 'POST') {
+    const body = parseBody();
+    const instruction = String(body.instruction || body.message || body.prompt || '');
+    sendJson(200, { ok: true, instruction, classification: classifyApproval(instruction) });
+    return true;
+  }
+
   // 5. Approvals Engine (/v1/trading/approvals)
   if (pathname === '/v1/trading/approvals') {
     if (method === 'GET') {
@@ -1399,6 +1686,14 @@ export async function handleTradingRequest(
     const sessionId = body.sessionId || `session-${agentId}`;
     const projectId = body.projectId || 'b0000000-0000-0000-0000-000000000001';
     const hopCount = Number(body.hopCount || 0);
+    const tradingContext = body.tradingContext;
+    const history = Array.isArray(body.history)
+      ? body.history.slice(-12).flatMap((entry: any) => {
+          const content = typeof entry?.content === 'string' ? entry.content.trim() : '';
+          if (!content) return [];
+          return [{ role: entry.role === 'assistant' || entry.sender === 'agent' ? 'assistant' : 'user', content }];
+        })
+      : [];
 
     // Guardrail: Server-enforced max 3 hops for group chats
     if (hopCount > 3) {
@@ -1411,29 +1706,110 @@ export async function handleTradingRequest(
       return true;
     }
 
-    const agent = store.agents.get(agentId) || CANONICAL_AGENTS[0];
+    const agent = resolveStoredAgent(agentId);
     const systemPrompt =
       agent.system_prompt ||
-      `You are ${agent.name}, ${agent.role} on the Tauric trading desk. Speak decisvely as ${agent.name}.`;
+      `You are ${agent.name}, ${agent.role} on the Tauric trading desk. Speak decisively as ${agent.name}.`;
+    const capabilityContext = agentCapabilityContext(agent.id);
 
     // Extract trading context guardrails
     let contextNote = '';
     const promptLower = prompt.toLowerCase();
-    if (promptLower.includes('pnl') || promptLower.includes('profit') || promptLower.includes('loss') || promptLower.includes('goal')) {
+    if (false) {
       contextNote = `\n[Desk Telemetry]: Available cash balance ₹720.02. Trading Goal Target: ₹1,00,000. Active Market Session: NSE/BSE IST.`;
     }
 
+    if (tradingContext && typeof tradingContext === 'object') {
+      try {
+        const serialized = JSON.stringify(tradingContext);
+        if (serialized && serialized.length <= 120_000) {
+          recordTradingContext(tradingContext as Record<string, unknown>);
+          contextNote += `\n\n[UNIFIED_TRADING_CONTEXT]\nLatest dashboard snapshot captured before this message. Treat it as read-only factual context; do not invent missing values and never place, modify, or cancel an order without explicit user confirmation through the dashboard approval flow.\n${serialized}\n[/UNIFIED_TRADING_CONTEXT]`;
+        }
+      } catch {
+        // Optional context is best-effort; the normal bot prompt remains available.
+      }
+    }
+
+    // Maus/Grok-style group chat: specialists give independent opinions, then the
+    // first group member (the coordinator) synthesizes one desk answer.
+    const group = groupId ? store.groups.get(groupId) : undefined;
+    if (group && group.agent_ids.length > 1) {
+      const participants = group.agent_ids
+        .map((id: string) => store.agents.get(id))
+        .filter((candidate): candidate is StoredAgent => Boolean(candidate))
+        .slice(0, 6);
+
+      if (participants.length > 1) {
+        const specialistResults = await Promise.all(
+          participants.map(async (participant) => {
+            const result = await dispatchLlmCall(
+              participant.model && participant.model !== 'zed' ? participant.model : 'auto',
+              [
+                { role: 'system', content: `${participant.system_prompt || `You are ${participant.name}, ${participant.role}.`}${agentCapabilityContext(participant.id)}${contextNote}` },
+                { role: 'user', content: prompt },
+              ],
+            );
+            return {
+              name: participant.name,
+              role: participant.role,
+              content: result.ok && result.content ? result.content : 'No report returned.',
+            };
+          }),
+        );
+
+        const coordinator = participants[0];
+        const debate = specialistResults
+          .map((result) => `### ${result.name} (${result.role})\n${result.content}`)
+          .join('\n\n');
+        const synthesis = await dispatchLlmCall(
+          coordinator.model && coordinator.model !== 'zed' ? coordinator.model : 'auto',
+          [
+            {
+              role: 'system',
+              content: `${coordinator.system_prompt || `You are ${coordinator.name}, the group coordinator.`}${agentCapabilityContext(coordinator.id)}${contextNote}\nSynthesize the specialists below into one concise, evidence-based trading response. State disagreement, risks, and missing data. Recommendations are not orders; require explicit trader approval before execution.`,
+            },
+            { role: 'user', content: `${prompt}\n\nSPECIALIST REPORTS:\n${debate}` },
+          ],
+        );
+        const groupReply = synthesis.ok && synthesis.content
+          ? synthesis.content
+          : specialistResults.map((result) => `**${result.name}**\n${result.content}`).join('\n\n');
+
+        sendJson(200, {
+          ok: true,
+          agentId: coordinator.id,
+          agentName: group.name,
+          groupId,
+          groupName: group.name,
+          participants: participants.map((participant) => ({ id: participant.id, name: participant.name, role: participant.role })),
+          reply: groupReply,
+          hopCount: hopCount + 1,
+          model: 'auto',
+          provider: 'FreeLLMAPI',
+        });
+        return true;
+      }
+    }
+
     const messages = [
-      { role: 'system', content: `${systemPrompt}${contextNote}` },
+      { role: 'system', content: `${systemPrompt}${capabilityContext}${contextNote}` },
+      ...history,
       { role: 'user', content: prompt },
     ];
 
     const modelToUse = agent.model && agent.model !== 'zed' ? agent.model : 'auto';
     const llmResult = await dispatchLlmCall(modelToUse, messages);
 
-    const replyText = llmResult.ok && llmResult.content
-      ? llmResult.content
-      : `I am ${agent.name}. I have analyzed the desk telemetry for "${prompt.slice(0, 50)}". Capital allocation and risk parameters remain within tolerance.`;
+    if (!llmResult.ok || !llmResult.content) {
+      sendJson(503, {
+        ok: false,
+        code: 'MODEL_UNAVAILABLE',
+        error: llmResult.error || 'The configured model service did not return an answer.',
+      });
+      return true;
+    }
+    const replyText = llmResult.content;
 
     // Persist messages in server history
     const userMsg: StoredMessage = {
@@ -1506,14 +1882,260 @@ export async function handleTradingRequest(
     return true;
   }
 
+  // BOPS-style teammate state: durable memory, learned skills, routines and delegated work.
+  if (pathname === '/v1/trading/memory' && method === 'POST') {
+    const body = parseBody();
+    const now = new Date().toISOString();
+    const memory: StoredMemory = {
+      id: body.id || `memory_${Date.now()}`,
+      scope: body.agent_id ? 'agent' : 'workspace',
+      ...(body.agent_id ? { agent_id: body.agent_id } : {}),
+      key: String(body.key || '').trim().slice(0, 160),
+      value: String(body.value || '').trim().slice(0, 12000),
+      source: ['user', 'bot', 'connector', 'system'].includes(body.source) ? body.source : 'user',
+      created_at: body.created_at || now,
+      updated_at: now,
+    };
+    if (!memory.key || !memory.value) { sendJson(400, { ok: false, error: 'Memory key and value are required.' }); return true; }
+    store.memories.set(memory.id, memory);
+    store.memoryHistory.push({ id: `memory_event_${Date.now()}`, memory_id: memory.id, action: 'created', value: memory.value, at: now });
+    store.saveMemories();
+    store.saveMemoryHistory();
+    sendJson(201, { ok: true, memory });
+    return true;
+  }
+
+  if (pathname === '/v1/trading/memory' && method === 'DELETE') {
+    const id = String(parsedUrl.query.id || '');
+    if (!id || !store.memories.delete(id)) { sendJson(404, { ok: false, error: 'Memory item not found.' }); return true; }
+    store.memoryHistory.push({ id: `memory_event_${Date.now()}`, memory_id: id, action: 'deleted', at: new Date().toISOString() });
+    store.saveMemories();
+    store.saveMemoryHistory();
+    sendJson(200, { ok: true, deleted: id });
+    return true;
+  }
+
+  if (pathname === '/v1/trading/memory/policy' && method === 'GET') {
+    sendJson(200, { ok: true, policy: store.memoryPolicy });
+    return true;
+  }
+  if (pathname === '/v1/trading/memory/policy' && method === 'POST') {
+    const body = parseBody();
+    store.memoryPolicy = {
+      retention_days: Math.max(1, Math.min(Number(body.retention_days || store.memoryPolicy.retention_days), 3650)),
+      max_items: Math.max(10, Math.min(Number(body.max_items || store.memoryPolicy.max_items), 100000)),
+      updated_at: new Date().toISOString(),
+    };
+    store.saveMemoryPolicy();
+    sendJson(200, { ok: true, policy: store.memoryPolicy });
+    return true;
+  }
+
+  if (pathname === '/v1/trading/skills' && method === 'GET') {
+    sendJson(200, { skills: Array.from(store.skills.values()).filter((skill) => skill.enabled) });
+    return true;
+  }
+  if (pathname === '/v1/trading/skills' && method === 'POST') {
+    const body = parseBody();
+    const now = new Date().toISOString();
+    const skill: StoredSkill = {
+      id: body.id || `skill_${Date.now()}`,
+      name: String(body.name || '').trim().slice(0, 160),
+      description: String(body.description || '').trim().slice(0, 1000),
+      agent_id: body.agent_id || 'portfolio_manager',
+      steps: Array.isArray(body.steps) ? body.steps.map((step: unknown) => String(step).trim()).filter(Boolean).slice(0, 50) : [],
+      enabled: body.enabled !== false,
+      created_at: body.created_at || now,
+      updated_at: now,
+    };
+    if (!skill.name || skill.steps.length === 0) { sendJson(400, { ok: false, error: 'A skill name and at least one step are required.' }); return true; }
+    store.skills.set(skill.id, skill);
+    store.saveSkills();
+    sendJson(201, { ok: true, skill });
+    return true;
+  }
+
+  if (pathname === '/v1/trading/skills/learn' && method === 'POST') {
+    const body = parseBody();
+    const agent = store.agents.get(body.agent_id || 'portfolio_manager') || CANONICAL_AGENTS[0];
+    const demonstration = String(body.demonstration || body.example || '').trim();
+    if (!demonstration) { sendJson(400, { ok: false, error: 'A task demonstration is required.' }); return true; }
+    const extraction = await dispatchLlmCall('auto', [
+      { role: 'system', content: 'Convert the user demonstration into a safe reusable procedure. Return only a JSON array of short imperative step strings. Do not include trade execution or external writes as automatic steps; mark those steps as requiring approval.' },
+      { role: 'user', content: demonstration.slice(0, 12000) },
+    ]);
+    if (!extraction.ok || !extraction.content) { sendJson(503, { ok: false, code: 'MODEL_UNAVAILABLE', error: extraction.error || 'Skill learning failed.' }); return true; }
+    let steps: string[] = [];
+    try {
+      const jsonText = extraction.content.match(/\[[\s\S]*\]/)?.[0] || extraction.content;
+      const parsed = JSON.parse(jsonText);
+      if (Array.isArray(parsed)) steps = parsed.map((step) => String(step).trim()).filter(Boolean).slice(0, 50);
+    } catch {
+      steps = extraction.content.split(/\r?\n/).map((step) => step.replace(/^\s*[-*\d.)]+\s*/, '').trim()).filter(Boolean).slice(0, 50);
+    }
+    if (!steps.length) { sendJson(422, { ok: false, error: 'The demonstration could not be converted into steps.' }); return true; }
+    const now = new Date().toISOString();
+    const skill: StoredSkill = { id: `skill_${Date.now()}`, name: String(body.name || 'Learned task').trim().slice(0, 160), description: String(body.description || 'Learned from a user demonstration').slice(0, 1000), agent_id: agent.id, steps, enabled: true, created_at: now, updated_at: now };
+    store.skills.set(skill.id, skill);
+    store.saveSkills();
+    sendJson(201, { ok: true, learned: true, skill });
+    return true;
+  }
+
+  const skillRunMatch = pathname.match(/^\/v1\/trading\/skills\/([^/]+)\/run$/);
+  if (skillRunMatch && method === 'POST') {
+    const skill = store.skills.get(decodeURIComponent(skillRunMatch[1]));
+    if (!skill) { sendJson(404, { ok: false, error: 'Skill not found.' }); return true; }
+    const body = parseBody();
+    const instruction = String(body.instruction || skill.description || skill.name);
+    const agent = store.agents.get(body.agent_id || skill.agent_id) || CANONICAL_AGENTS[0];
+    const result = await dispatchLlmCall(agent.model !== 'zed' ? agent.model : 'auto', [
+      { role: 'system', content: `${agent.system_prompt || `You are ${agent.name}.`} You are running the saved skill "${skill.name}". Follow these steps exactly:\n${skill.steps.map((step, i) => `${i + 1}. ${step}`).join('\n')}` },
+      { role: 'user', content: instruction },
+    ]);
+    if (!result.ok || !result.content) { sendJson(503, { ok: false, code: 'MODEL_UNAVAILABLE', error: result.error || 'Skill execution failed.' }); return true; }
+    skill.last_run_at = new Date().toISOString();
+    skill.updated_at = skill.last_run_at;
+    store.skills.set(skill.id, skill);
+    store.saveSkills();
+    sendJson(200, { ok: true, skill, result: result.content, agent: agent.name });
+    return true;
+  }
+
+  const skillDeleteMatch = pathname.match(/^\/v1\/trading\/skills\/([^/]+)$/);
+  if (skillDeleteMatch && method === 'DELETE') {
+    const id = decodeURIComponent(skillDeleteMatch[1]);
+    if (!store.skills.delete(id)) { sendJson(404, { ok: false, error: 'Skill not found.' }); return true; }
+    store.saveSkills();
+    sendJson(200, { ok: true, deleted: id });
+    return true;
+  }
+
+  if (pathname === '/v1/trading/routines' && method === 'GET') {
+    sendJson(200, { routines: Array.from(store.routines.values()) });
+    return true;
+  }
+  if (pathname === '/v1/trading/routines' && method === 'POST') {
+    const body = parseBody();
+    const intervalMs = Math.max(10_000, Math.min(Number(body.interval_ms || 3_600_000), 31_536_000_000));
+    const now = new Date();
+    const routine: StoredRoutine = {
+      id: body.id || `routine_${Date.now()}`,
+      name: String(body.name || 'Desk routine').trim().slice(0, 160),
+      agent_id: resolveStoredAgent(body.agent_id || 'portfolio_manager').id,
+      instruction: String(body.instruction || '').trim().slice(0, 4000),
+      interval_ms: intervalMs,
+      enabled: body.enabled !== false,
+      next_run_at: new Date(now.getTime() + intervalMs).toISOString(),
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    };
+    if (!routine.instruction) { sendJson(400, { ok: false, error: 'Routine instruction is required.' }); return true; }
+    store.routines.set(routine.id, routine);
+    store.saveRoutines();
+    sendJson(201, { ok: true, routine });
+    return true;
+  }
+  const routineDeleteMatch = pathname.match(/^\/v1\/trading\/routines\/([^/]+)$/);
+  if (routineDeleteMatch && method === 'DELETE') {
+    const id = decodeURIComponent(routineDeleteMatch[1]);
+    if (!store.routines.delete(id)) { sendJson(404, { ok: false, error: 'Routine not found.' }); return true; }
+    store.saveRoutines();
+    sendJson(200, { ok: true, deleted: id });
+    return true;
+  }
+
+  if (pathname === '/v1/trading/routines/tick' && method === 'POST') {
+    const nowMs = Date.now();
+    const due = Array.from(store.routines.values()).filter((routine) => routine.enabled && Date.parse(routine.next_run_at) <= nowMs).slice(0, 10);
+    const runs = [] as Array<Record<string, unknown>>;
+    for (const routine of due) {
+      const agent = store.agents.get(routine.agent_id) || CANONICAL_AGENTS[0];
+      const result = await dispatchLlmCall(agent.model !== 'zed' ? agent.model : 'auto', [
+        { role: 'system', content: `${agent.system_prompt || `You are ${agent.name}, ${agent.role}.`}${agentCapabilityContext(agent.id)}\nThis is a scheduled routine. Report what you found and what needs the user's attention. Do not execute trades or external writes without approval.` },
+        { role: 'user', content: routine.instruction },
+      ]);
+      const runAt = new Date().toISOString();
+      routine.last_run_at = runAt;
+      routine.next_run_at = new Date(nowMs + routine.interval_ms).toISOString();
+      routine.updated_at = runAt;
+      store.routines.set(routine.id, routine);
+      runs.push({ routine_id: routine.id, agent_id: agent.id, ok: result.ok, result: result.content || result.error || 'No result returned.' });
+    }
+    store.saveRoutines();
+    sendJson(200, { ok: true, checked_at: new Date().toISOString(), due: due.length, runs });
+    return true;
+  }
+
+  if (pathname === '/v1/trading/tasks' && method === 'GET') {
+    const sessionId = String(parsedUrl.query.sessionId || '');
+    const tasks = Array.from(store.tasks.values()).filter((task) => !sessionId || task.session_id === sessionId);
+    sendJson(200, { tasks });
+    return true;
+  }
+
+  if (pathname === '/v1/trading/tasks/delegate' && method === 'POST') {
+    const body = parseBody();
+    const from = store.agents.get(body.from_agent || 'portfolio_manager') || CANONICAL_AGENTS[0];
+    const target = Array.from(store.agents.values()).find((candidate) => candidate.id === body.to_agent || candidate.name.toLowerCase() === String(body.to_agent || '').toLowerCase());
+    if (!target) { sendJson(404, { ok: false, error: 'Target teammate not found.' }); return true; }
+    const hierarchyAllowed = from.is_admin || (from.can_delegate !== false && target.can_receive_tasks !== false && (!target.lead_agent_id || target.lead_agent_id === from.id || from.allow_sideways !== false));
+    if (!hierarchyAllowed) {
+      sendJson(403, { ok: false, error: `${from.name} is not permitted to delegate work to ${target.name} under the current team hierarchy.` });
+      return true;
+    }
+    const instruction = String(body.instruction || '').trim();
+    if (!instruction) { sendJson(400, { ok: false, error: 'Delegation instruction is required.' }); return true; }
+    const now = new Date().toISOString();
+    const task: StoredTask = { id: `task_${Date.now()}`, session_id: body.session_id || `session-${from.id}`, from_agent: from.id, to_agent: target.id, instruction, status: 'running', created_at: now, updated_at: now };
+    store.tasks.set(task.id, task);
+    store.saveTasks();
+    const approvalDecision = classifyApproval(instruction);
+    if (approvalDecision.needsApproval && body.approval_id !== 'approved') {
+      task.status = 'queued';
+      task.updated_at = new Date().toISOString();
+      const approval: StoredApproval = {
+        id: `app_${Date.now()}`,
+        agent_id: from.id,
+        agent_name: from.name,
+        action_type: approvalDecision.actionType,
+        details: { task_id: task.id, to_agent: target.id, instruction, classification: approvalDecision },
+        status: 'pending',
+        created_at: now,
+      };
+      store.approvals.set(approval.id, approval);
+      store.recomputeApprovalCounts();
+      store.saveApprovals();
+      store.saveAgents();
+      store.saveTasks();
+      sendJson(202, { ok: true, awaiting_approval: true, approval, task, classification: approvalDecision });
+      return true;
+    }
+    const result = await dispatchLlmCall(target.model !== 'zed' ? target.model : 'auto', [
+      { role: 'system', content: `${target.system_prompt || `You are ${target.name}, ${target.role}.`} You are a teammate receiving delegated work from ${from.name}. Complete the work and report back directly; do not ask the user to contact you manually.` },
+      { role: 'user', content: instruction },
+    ]);
+    task.status = result.ok && result.content ? 'completed' : 'failed';
+    task.result = result.content || result.error || 'No result returned.';
+    task.updated_at = new Date().toISOString();
+    store.tasks.set(task.id, task);
+    store.saveTasks();
+    if (!result.ok || !result.content) { sendJson(503, { ok: false, task, code: 'MODEL_UNAVAILABLE' }); return true; }
+    sendJson(200, { ok: true, task, teammate: { id: target.id, name: target.name, role: target.role }, result: result.content });
+    return true;
+  }
+
   // 9. Proactive Engine (/v1/trading/proactive/poll & /v1/trading/proactive/trigger)
   if (pathname === '/v1/trading/proactive/poll' && method === 'GET') {
-    const mausBot = store.agents.get('manus') || CANONICAL_AGENTS.find((a) => a.id === 'manus')!;
+    const requestedAgentId = String(parsedUrl.query.agentId || parsedUrl.query.agent_id || 'portfolio_manager');
+    const activeBot = resolveStoredAgent(requestedAgentId);
     sendJson(200, {
-      bot: mausBot.name,
+      bot: activeBot.name,
+      agent_id: activeBot.id,
       active: true,
       proactive_ready: true,
-      recent_message: 'Maus Bot is actively monitoring live market telemetry, statutory costs, and risk bounds.',
+      recent_message: null,
+      policy: 'Proactive messages are generated from configured checks or explicit triggers. Connector data is loaded only when a check requests it.',
     });
     return true;
   }
@@ -1521,11 +2143,23 @@ export async function handleTradingRequest(
   if (pathname === '/v1/trading/proactive/trigger' && method === 'POST') {
     const body = parseBody();
     const reason = body.reason || 'Desk telemetry milestone';
-    sendJson(200, {
-      triggered: true,
-      bot: 'Maus Bot',
-      proactive_message: `[Maus Bot Alert]: ${reason}. Telemetry verified across NSE/BSE feeds.`,
-    });
+    const requestedAgentId = body.agentId || body.agent_id || 'portfolio_manager';
+    const activeBot = store.agents.get(requestedAgentId) || CANONICAL_AGENTS[0];
+    const context = body.tradingContext && typeof body.tradingContext === 'object'
+      ? `\nConnector snapshot (read-only): ${JSON.stringify(body.tradingContext).slice(0, 120000)}`
+      : '\nNo connector snapshot was requested for this trigger. Do not infer account values.';
+    const proactiveResult = await dispatchLlmCall(
+      activeBot.model && activeBot.model !== 'zed' ? activeBot.model : 'auto',
+      [
+        { role: 'system', content: `${activeBot.system_prompt || `You are ${activeBot.name}, ${activeBot.role}.`}\nYou are a proactive teammate. Initiate a concise, factual check-in for your own area of responsibility. Mention uncertainty and ask for approval before any action.` },
+        { role: 'user', content: `A configured proactive check fired: ${reason}.${context}` },
+      ],
+    );
+    if (!proactiveResult.ok || !proactiveResult.content) {
+      sendJson(503, { triggered: false, code: 'MODEL_UNAVAILABLE', error: proactiveResult.error || 'The configured model service did not return an answer.' });
+      return true;
+    }
+    sendJson(200, { triggered: true, bot: activeBot.name, agent_id: activeBot.id, proactive_message: proactiveResult.content, model: 'auto' });
     return true;
   }
 
@@ -1537,6 +2171,10 @@ export async function handleTradingRequest(
       agents: Array.from(store.agents.values()),
       groups: Array.from(store.groups.values()),
       grants: Array.from(store.grants.values()),
+      memories: Array.from(store.memories.values()),
+      skills: Array.from(store.skills.values()),
+      routines: Array.from(store.routines.values()),
+      tasks: Array.from(store.tasks.values()),
     });
     return true;
   }
@@ -1551,10 +2189,17 @@ export async function handleTradingRequest(
       body.groups.forEach((g: StoredGroup) => store.groups.set(g.id, g));
       store.saveGroups();
     }
+    if (Array.isArray(body.memories)) { body.memories.forEach((m: StoredMemory) => store.memories.set(m.id, m)); store.saveMemories(); }
+    if (Array.isArray(body.skills)) { body.skills.forEach((s: StoredSkill) => store.skills.set(s.id, s)); store.saveSkills(); }
+    if (Array.isArray(body.routines)) { body.routines.forEach((r: StoredRoutine) => store.routines.set(r.id, r)); store.saveRoutines(); }
+    if (Array.isArray(body.tasks)) { body.tasks.forEach((t: StoredTask) => store.tasks.set(t.id, t)); store.saveTasks(); }
     sendJson(200, {
       imported: true,
       agents_count: store.agents.size,
       groups_count: store.groups.size,
+      memories_count: store.memories.size,
+      skills_count: store.skills.size,
+      routines_count: store.routines.size,
     });
     return true;
   }
@@ -1585,13 +2230,22 @@ export async function handleTradingRequest(
 
   // 12. Memory Recall & Usage (/v1/trading/memory & /v1/trading/usage)
   if (pathname === '/v1/trading/memory' && method === 'GET') {
+    const search = String(parsedUrl.query.search || parsedUrl.query.q || '').trim().toLowerCase();
+    const agentFilter = String(parsedUrl.query.agent_id || '').trim();
+    const memories = Array.from(store.memories.values()).filter((memory) =>
+      (!agentFilter || memory.agent_id === agentFilter) &&
+      (!search || `${memory.key} ${memory.value}`.toLowerCase().includes(search)),
+    );
     sendJson(200, {
       authority_note: 'Tauric Swarm capital governance rule: Max position size 2% NAV, hard stop 1% entry.',
-      memory_context: {
+      memories,
+      history: store.memoryHistory.slice(-500),
+      policy: store.memoryPolicy,
+      memory_context: latestTradingContext || {
+        note: 'No dashboard snapshot has been received in this server session yet.',
         trading_goal_target: 100000,
-        current_balance: 720.02,
-        open_positions: 0,
       },
+      source: latestTradingContext ? 'latest-dashboard-snapshot' : 'governance-defaults',
     });
     return true;
   }
@@ -1657,7 +2311,7 @@ export async function handleTradingRequest(
       if (method === 'POST') {
         const body = parseBody();
         const sid = body.session_id || `session-${Date.now()}`;
-        const agentName = body.agent || 'portfolio_manager';
+        const agentName = resolveStoredAgent(body.agent || 'portfolio_manager').id;
         const newSession = {
           session_id: sid,
           account_id: 'acc-trading',
@@ -1697,15 +2351,16 @@ export async function handleTradingRequest(
             // Execute LLM call in background
             (async () => {
               try {
-                const agent = store.agents.get(agentName) || CANONICAL_AGENTS[0];
+                const agent = resolveStoredAgent(agentName);
                 const systemPrompt = agent.system_prompt || `You are ${agent.name}, ${agent.role} on the Tauric trading desk. Speak decisively as ${agent.name}.`;
                 const llmRes = await dispatchLlmCall('auto', [
                   { role: 'system', content: systemPrompt },
                   { role: 'user', content: promptText },
                 ]);
-                const reply = llmRes.ok && llmRes.content
-                  ? llmRes.content
-                  : `I am ${agent.name}. I received: "${promptText}". Desk risk parameters remain normal.`;
+                if (!llmRes.ok || !llmRes.content?.trim()) {
+                  throw new Error(llmRes.error || 'The configured model did not return a response.');
+                }
+                const reply = llmRes.content.trim();
                 transcript.push({
                   role: 'assistant',
                   created: new Date().toISOString(),
@@ -1782,8 +2437,14 @@ export async function handleTradingRequest(
         const body = parseBody();
         const parts = Array.isArray(body.parts) ? body.parts : [];
         const promptText = parts.map((p: any) => p.text || '').join('\n').trim() || body.prompt || body.message || '';
-        const agentName = body.overrides?.agent || 'portfolio_manager';
-        const agent = store.agents.get(agentName) || CANONICAL_AGENTS[0];
+        const requestedHistory = Array.isArray(body.history) ? body.history : [];
+        const tradingContext = body.tradingContext && typeof body.tradingContext === 'object'
+          ? body.tradingContext
+          : null;
+        if (tradingContext) recordTradingContext(tradingContext);
+        const requestedAgent = body.overrides?.agent || body.agent || body.agentId || body.selection?.agent || body.pending_prompt?.agent || 'portfolio_manager';
+        const agent = resolveStoredAgent(requestedAgent);
+        const agentName = agent.id;
         const nowMs = Date.now();
         const userMsgId = `msg_user_${nowMs}_${Math.random().toString(36).substring(2, 6)}`;
         const userPartId = `part_${userMsgId}`;
@@ -1822,7 +2483,10 @@ export async function handleTradingRequest(
         const promptItem = {
           message_id: body.message_id || userMsgId,
           parts: parts.length > 0 ? parts : [{ type: 'text', text: promptText }],
-          placement: 'top',
+          // This prompt is persisted in the transcript immediately. Marking it
+          // as `top` makes the Kortix UI render it as a queued bubble above the
+          // real conversation, which is the ordering bug users see.
+          placement: 'transcript',
           created_at: new Date(nowMs).toISOString(),
         };
         store.sessionPrompts.set(matchedSessionId, []);
@@ -1865,17 +2529,53 @@ export async function handleTradingRequest(
         // Trigger LLM in background with 'auto' model via Render LLM endpoint
         (async () => {
           try {
-            const systemPrompt = `You are ${agent.name}, ${agent.role} on the Tauric trading desk.
+            const handoffMatch = promptText.match(/\btell\s+(?:the\s+)?(.+?)\s+to\s+(?:message|contact|reply|send)\s+me\b/i);
+            const requestedAgent = handoffMatch
+              ? Array.from(store.agents.values()).find((candidate) => {
+                  const wanted = handoffMatch[1].trim().toLowerCase();
+                  return candidate.name.toLowerCase() === wanted || candidate.id.toLowerCase() === wanted || candidate.name.toLowerCase().includes(wanted);
+                })
+              : undefined;
+            const respondingAgent = requestedAgent || agent;
+            const modelPrompt = requestedAgent
+              ? `You are taking over this conversation at the request of ${agent.name}. The user asked: "${promptText}". Address the user directly as ${respondingAgent.name}, acknowledge the handoff briefly, and provide your useful next step. Do not ask the user to manually message you.`
+              : promptText;
+            let contextBlock = '';
+            if (tradingContext) {
+              try {
+                const serializedContext = JSON.stringify(tradingContext).slice(0, 120000);
+                contextBlock = `\n\nLATEST DASHBOARD TRADING CONTEXT (read-only, supplied by connected Dhan/dashboard data):\n${serializedContext}\nUse these values when answering trading questions. Never invent positions, orders, balances, P&L, or trade history. If the context is missing or stale, say so clearly. Do not place, modify, or cancel an order without explicit user approval.`;
+              } catch {
+                contextBlock = '\n\nThe connected trading context could not be serialized. Do not invent account or trade data.';
+              }
+            }
+            const systemPrompt = `You are ${respondingAgent.name}, ${respondingAgent.role} on the Tauric trading desk.
 Speak naturally, directly, concisely, and stay in character.
-When asked for your name or who you are, state that you are ${agent.name}, ${agent.role} on the Tauric Trading Desk.`;
+When asked for your name or who you are, state that you are ${respondingAgent.name}, ${respondingAgent.role} on the Tauric Trading Desk.${agentCapabilityContext(respondingAgent.id)}${contextBlock}`;
+            const historyMessages = requestedHistory
+              .filter((item: any) => item && (item.role === 'user' || item.role === 'assistant' || item.role === 'system'))
+              .slice(-12)
+              .map((item: any) => ({
+                role: item.role,
+                content: typeof item.content === 'string'
+                  ? item.content
+                  : typeof item.text === 'string'
+                    ? item.text
+                    : Array.isArray(item.parts)
+                      ? item.parts.map((part: any) => part?.text || '').join('\n')
+                      : '',
+              }))
+              .filter((item: any) => item.content.trim());
             const messages = [
               { role: 'system', content: systemPrompt },
-              { role: 'user', content: promptText },
+              ...historyMessages,
+              { role: 'user', content: modelPrompt },
             ];
             const llmRes = await dispatchLlmCall('auto', messages);
-            let reply = llmRes.ok && llmRes.content
-              ? llmRes.content
-              : `I am ${agent.name}. I received your message. Desk telemetry and risk parameters remain normal.`;
+            if (!llmRes.ok || !llmRes.content) {
+              throw new Error(llmRes.error || 'The configured model service did not return an answer.');
+            }
+            const reply = llmRes.content;
 
             const asstTimeMs = Date.now();
             const asstMsgId = `msg_asst_${asstTimeMs}_${Math.random().toString(36).substring(2, 6)}`;
@@ -1885,7 +2585,7 @@ When asked for your name or who you are, state that you are ${agent.name}, ${age
                 id: asstMsgId,
                 sessionID: matchedSessionId,
                 role: 'assistant',
-                agent: agentName,
+                agent: respondingAgent.id,
                 time: { created: asstTimeMs, completed: asstTimeMs },
               },
               parts: [
@@ -1918,6 +2618,7 @@ When asked for your name or who you are, state that you are ${agent.name}, ${age
               thread_id: 'thread-main',
               seq: transcript.length - 1,
               role: 'assistant',
+              agent: respondingAgent.id,
               kind: 'turn',
               status: 'complete',
               in_context: true,
@@ -1990,6 +2691,64 @@ When asked for your name or who you are, state that you are ${agent.name}, ${age
             });
           } catch (e: any) {
             console.error('[Session Prompts Async LLM Error]:', e.message);
+            const errorTimeMs = Date.now();
+            const errorText = `⚠️ Chat unavailable: ${e?.message || 'the configured model service did not return an answer.'}`;
+            const errorMsgId = `msg_error_${errorTimeMs}_${Math.random().toString(36).substring(2, 6)}`;
+            const errorMsg = {
+              info: {
+                id: errorMsgId,
+                sessionID: matchedSessionId,
+                role: 'assistant',
+                agent: agentName,
+                time: { created: errorTimeMs, completed: errorTimeMs },
+              },
+              parts: [{
+                id: `part_${errorMsgId}`,
+                sessionID: matchedSessionId,
+                messageID: errorMsgId,
+                type: 'text',
+                text: errorText,
+              }],
+              role: 'assistant',
+              created: new Date(errorTimeMs).toISOString(),
+              completed: new Date(errorTimeMs).toISOString(),
+              text: errorText,
+              tools: [],
+              files: [],
+              reasoning_omitted: false,
+              error: e?.message || 'model_unavailable',
+            };
+            transcript.push(errorMsg);
+            store.sessionTranscripts.set(matchedSessionId, transcript);
+            store.saveTranscripts();
+            broadcastSessionEvent(matchedSessionId, {
+              channel: 'runtime',
+              seq: transcript.length,
+              epoch: 'ep1',
+              type: 'log.message',
+              payload: {
+                rev: errorTimeMs,
+                message: {
+                  schema: 'kortix.session/2',
+                  v: 1,
+                  message_id: errorMsgId,
+                  thread_id: 'thread-main',
+                  seq: transcript.length - 1,
+                  role: 'assistant',
+                  kind: 'turn',
+                  status: 'error',
+                  in_context: true,
+                  model: null,
+                  usage: null,
+                  finish: 'error',
+                  error: e?.message || 'model_unavailable',
+                  created_at: new Date(errorTimeMs).toISOString(),
+                  completed_at: new Date(errorTimeMs).toISOString(),
+                  producer: { harness: 'kortix', harness_version: '2.0.0', adapter_version: '2.0.0' },
+                  blocks: [{ id: `blk_${errorMsgId}_0`, type: 'text', text: errorText }],
+                },
+              },
+            });
             broadcastSessionEvent(matchedSessionId, {
               type: 'kortix.control.turn',
               channel: 'control',
@@ -2002,6 +2761,14 @@ When asked for your name or who you are, state that you are ${agent.name}, ${age
                 last_ended: { ended_at: new Date().toISOString() },
                 can_stop: false,
               },
+            });
+            broadcastSessionEvent(matchedSessionId, {
+              type: 'kortix.control.queue',
+              channel: 'control',
+              cseq: Date.now() + 1,
+              cepoch: 'ep1',
+              at: Date.now(),
+              payload: { known: true, prompts: [], sent: [], held: false, observed_at: new Date().toISOString() },
             });
           }
         })();

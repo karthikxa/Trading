@@ -338,5 +338,85 @@
     "sender": "agent",
     "content": "Hey there! How’s your day shaping up?",
     "created_at": "2026-11-24T16:25:04.719Z"
+  },
+  {
+    "id": "msg_u_1795794334311",
+    "project_id": "b0000000-0000-0000-0000-000000000001",
+    "session_id": "session-portfolio_manager",
+    "agent_id": "portfolio_manager",
+    "agent_name": "User",
+    "sender": "user",
+    "content": "",
+    "created_at": "2026-11-27T15:45:34.311Z"
+  },
+  {
+    "id": "msg_a_1795794334312",
+    "project_id": "b0000000-0000-0000-0000-000000000001",
+    "session_id": "session-portfolio_manager",
+    "agent_id": "portfolio_manager",
+    "agent_name": "Portfolio Manager",
+    "sender": "agent",
+    "content": "Hey there! How’s your day going?",
+    "created_at": "2026-11-27T15:45:34.411Z"
+  },
+  {
+    "id": "msg_u_1795794346471",
+    "project_id": "b0000000-0000-0000-0000-000000000001",
+    "session_id": "session-portfolio_manager",
+    "agent_id": "portfolio_manager",
+    "agent_name": "User",
+    "sender": "user",
+    "content": "",
+    "created_at": "2026-11-27T15:45:46.471Z"
+  },
+  {
+    "id": "msg_a_1795794346472",
+    "project_id": "b0000000-0000-0000-0000-000000000001",
+    "session_id": "session-portfolio_manager",
+    "agent_id": "portfolio_manager",
+    "agent_name": "Portfolio Manager",
+    "sender": "agent",
+    "content": "Hi there! How can I help you on the desk today?",
+    "created_at": "2026-11-27T15:45:46.571Z"
+  },
+  {
+    "id": "msg_u_1795794418110",
+    "project_id": "b0000000-0000-0000-0000-000000000001",
+    "session_id": "session-portfolio_manager",
+    "agent_id": "portfolio_manager",
+    "agent_name": "User",
+    "sender": "user",
+    "content": "",
+    "created_at": "2026-11-27T15:46:58.110Z"
+  },
+  {
+    "id": "msg_a_1795794418111",
+    "project_id": "b0000000-0000-0000-0000-000000000001",
+    "session_id": "session-portfolio_manager",
+    "agent_id": "portfolio_manager",
+    "agent_name": "Portfolio Manager",
+    "sender": "agent",
+    "content": "Hey! You catch me mid-sip. What's on your mind?",
+    "created_at": "2026-11-27T15:46:58.210Z"
+  },
+  {
+    "id": "msg_u_1795799642669",
+    "project_id": "b0000000-0000-0000-0000-000000000001",
+    "session_id": "direct-switch-test",
+    "agent_id": "technical_analyst",
+    "agent_name": "User",
+    "sender": "user",
+    "content": "hi",
+    "created_at": "2026-11-27T17:14:02.669Z"
+  },
+  {
+    "id": "msg_a_1795799642670",
+    "project_id": "b0000000-0000-0000-0000-000000000001",
+    "session_id": "direct-switch-test",
+    "agent_id": "technical_analyst",
+    "agent_name": "Technical Analyst",
+    "sender": "agent",
+    "content": "Hello. I'm ready to apply the Tauric desk framework.\n\nTo identify high-probability order blocks, fair value gaps, and liquidity targets, I'll need a few specifics:\n- Instrument / pair\n- Timeframe of interest\n- Recent price action (swing points, breakouts, or consecutive closes)\n- Any session overlap or macro catalyst you're watching\n\nOnce I have those, I'll map out:\n- **Order Blocks** (premium/discount, institutional entry zones)\n- **Fair Value Gaps** (unfilled liquidity windows with mean-reversion bias)\n- **Liquidity Targets** (buy-side/sell-side clusters, stop-l hunt zones, and confluencing risk/reward levels)\n\nDrop the symbol and timeframe, or share a chart snapshot, and I'll walk the setup.",
+    "created_at": "2026-11-27T17:14:02.769Z"
   }
 ]

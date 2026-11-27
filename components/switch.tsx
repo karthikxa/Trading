@@ -1,0 +1,235 @@
+'use client';
+
+import { Switch as SwitchPrimitive } from '@base-ui/react/switch';
+import { animate, m, useMotionValue } from 'motion/react';
+import { forwardRef, useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
+import { checkedState, stateRender, controlRender } from '../lib/base-ui-compat';
+import { spring } from '../lib/springs';
+import { cn } from '../lib/utils';
+
+type SwitchProps = Omit<
+  ComponentProps<'button'>,
+  'value' | 'checked' | 'defaultChecked' | 'onChange' | 'ref'
+> & {
+  checked?: boolean;
+  defaultChecked?: boolean;
+  onCheckedChange?: (checked: boolean) => void;
+  name?: string;
+  value?: string;
+  required?: boolean;
+  label?: string;
+};
+
+// Track is `w-[34px] h-[20px]` in the className — keep it in sync with these.
+const TRACK_WIDTH = 34;
+const THUMB_SIZE = 16;
+const THUMB_OFFSET = 2;
+const THUMB_TRAVEL = TRACK_WIDTH - THUMB_SIZE - THUMB_OFFSET * 2;
+const PILL_EXTEND = 2;
+const PRESS_EXTEND = 4;
+const PRESS_SHRINK = 4;
+const DRAG_DEAD_ZONE = 2;
+
+const Switch = forwardRef<HTMLButtonElement, SwitchProps>(
+  ({ label, checked, onCheckedChange, disabled = false, className, id, ...props }, ref) => {
+    const hasMounted = useRef(false);
+    const [hovered, setHovered] = useState(false);
+    const [pressed, setPressed] = useState(false);
+    const isChecked = checked ?? false;
+
+    const dragging = useRef(false);
+    const didDrag = useRef(false);
+    const pointerStart = useRef<{
+      clientX: number;
+      originX: number;
+    } | null>(null);
+
+    const motionX = useMotionValue(isChecked ? THUMB_OFFSET + THUMB_TRAVEL : THUMB_OFFSET);
+
+    useEffect(() => {
+      hasMounted.current = true;
+    }, []);
+
+    // A disabled switch does not move under the pointer: no hover pill, no press squash.
+    const isPressed = pressed && !disabled;
+    const isHovered = hovered && !disabled;
+    const thumbWidth = isPressed
+      ? THUMB_SIZE + PRESS_EXTEND
+      : isHovered
+        ? THUMB_SIZE + PILL_EXTEND
+        : THUMB_SIZE;
+    const thumbHeight = isPressed ? THUMB_SIZE - PRESS_SHRINK : THUMB_SIZE;
+    const thumbY = isPressed ? THUMB_OFFSET + PRESS_SHRINK / 2 : THUMB_OFFSET;
+    const extraWidth = thumbWidth - THUMB_SIZE;
+    const thumbX = isChecked ? THUMB_OFFSET + THUMB_TRAVEL - extraWidth : THUMB_OFFSET;
+
+    useEffect(() => {
+      if (dragging.current) return;
+      if (!hasMounted.current) {
+        motionX.set(thumbX);
+      } else {
+        animate(motionX, thumbX, spring.moderate);
+      }
+    }, [thumbX, motionX]);
+
+    const handlePointerDown = useCallback(
+      (e: React.PointerEvent<HTMLElement>) => {
+        if (disabled) return;
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        setPressed(true);
+        dragging.current = false;
+        didDrag.current = false;
+        pointerStart.current = {
+          clientX: e.clientX,
+          originX: motionX.get(),
+        };
+        e.currentTarget.setPointerCapture(e.pointerId);
+      },
+      [disabled, motionX],
+    );
+
+    const handlePointerMove = useCallback(
+      (e: React.PointerEvent<HTMLElement>) => {
+        if (!pointerStart.current) return;
+        const delta = e.clientX - pointerStart.current.clientX;
+
+        if (!dragging.current) {
+          if (Math.abs(delta) < DRAG_DEAD_ZONE) return;
+          dragging.current = true;
+        }
+
+        const dragMin = THUMB_OFFSET;
+        const pressedThumbWidth = THUMB_SIZE + PRESS_EXTEND;
+        const dragMax = TRACK_WIDTH - THUMB_OFFSET - pressedThumbWidth;
+        const rawX = pointerStart.current.originX + delta;
+        motionX.set(Math.max(dragMin, Math.min(dragMax, rawX)));
+      },
+      [motionX],
+    );
+
+    const handlePointerUp = useCallback(() => {
+      if (!pointerStart.current) return;
+      setPressed(false);
+
+      if (dragging.current) {
+        didDrag.current = true;
+        dragging.current = false;
+
+        const currentX = motionX.get();
+        const dragMin = THUMB_OFFSET;
+        const pressedThumbWidth = THUMB_SIZE + PRESS_EXTEND;
+        const dragMax = TRACK_WIDTH - THUMB_OFFSET - pressedThumbWidth;
+        const midpoint = (dragMin + dragMax) / 2;
+
+        const shouldBeOn = currentX > midpoint;
+
+        if (shouldBeOn !== isChecked) {
+          onCheckedChange?.(shouldBeOn);
+        } else {
+          const snapTarget = isChecked ? THUMB_OFFSET + THUMB_TRAVEL : THUMB_OFFSET;
+          animate(motionX, snapTarget, spring.moderate);
+        }
+
+        requestAnimationFrame(() => {
+          didDrag.current = false;
+        });
+      }
+
+      pointerStart.current = null;
+    }, [isChecked, onCheckedChange, motionX]);
+
+    const switchControl = (
+      <SwitchPrimitive.Root
+        ref={ref}
+        id={id}
+        checked={checked}
+        disabled={disabled}
+        tabIndex={0}
+        className={cn(
+          'group/switch relative h-[20px] w-[34px] shrink-0 touch-none rounded-full outline-none', // pointer comes from the global rule; disabled keeps the default cursor
+          'transition-colors duration-80',
+          // Disabled reads as unavailable: half opacity (a labelled switch dims
+          // its whole row below instead). The cursor stays default: globals.css
+          // forces it on every disabled control.
+          !label && 'disabled:opacity-50',
+          'focus-visible:ring-ring focus-visible:ring-offset-background focus-visible:ring-1 focus-visible:ring-offset-2',
+          // Colours come from `data-state` (checked / unchecked), never from JS state.
+          // Off is translucent ink, so one class reads in both themes and on
+          // any panel. Thumb vs track (WCAG 1.4.11, 3:1), worst of page /
+          // card / muted: rest 3.13:1, hover 4.13:1. On: white thumb 3.23:1.
+          'data-[state=checked]:bg-kortix-blue',
+          'data-[state=unchecked]:bg-foreground/10 data-[state=unchecked]:enabled:hover:bg-foreground/15',
+          !label && className,
+        )}
+        onPointerEnter={(e) => {
+          if (e.pointerType === 'mouse' && !disabled) setHovered(true);
+        }}
+        onPointerLeave={() => setHovered(false)}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onCheckedChange={(nextChecked) => {
+          if (didDrag.current) return;
+          onCheckedChange?.(nextChecked);
+        }}
+        // The root renders a <button> (`nativeButton`), so button props are right at runtime.
+        {...(props as unknown as ComponentProps<typeof SwitchPrimitive.Root>)}
+        nativeButton
+        render={controlRender(checkedState)}
+      >
+        <SwitchPrimitive.Thumb
+          render={stateRender(
+            'span',
+            checkedState,
+            <m.span
+              className={cn(
+                'duration-fast absolute top-0 left-0 rounded-full shadow-sm transition-colors',
+                'data-[state=checked]:bg-white',
+                // A white thumb on the light off track would be ~1.25:1.
+                'data-[state=unchecked]:bg-foreground/45 group-enabled/switch:group-hover/switch:data-[state=unchecked]:bg-foreground/55',
+              )}
+              initial={false}
+              // Motion value binding for drag, not a colour or layout style.
+              style={{ x: motionX }}
+              animate={{
+                y: thumbY,
+                width: thumbWidth,
+                height: thumbHeight,
+              }}
+              transition={hasMounted.current ? spring.moderate : { duration: 0 }}
+            />,
+          )}
+        />
+      </SwitchPrimitive.Root>
+    );
+
+    if (!label) {
+      return switchControl;
+    }
+
+    return (
+      <div
+        className={cn(
+          'relative z-10 flex cursor-pointer items-center gap-2.5 px-3 py-2 select-none',
+          disabled && 'pointer-events-none opacity-50',
+          className,
+        )}
+      >
+        {switchControl}
+        <span
+          className={cn(
+            'text-sm transition-[color] duration-80',
+            isChecked ? 'text-foreground' : 'text-muted-foreground',
+          )}
+        >
+          {label}
+        </span>
+      </div>
+    );
+  },
+);
+
+Switch.displayName = 'Switch';
+
+export { Switch };
+export type { SwitchProps };

@@ -34,13 +34,21 @@ export function estimateIndianCharges(
  * Format timestamp into Asia/Kolkata (IST) date and time strings
  */
 export function formatToKolkataTime(timestamp: string | Date | number): { date: string; time: string } {
-  if (typeof timestamp === 'string' && timestamp.includes('T')) {
-    const parts = timestamp.split('T');
-    const dateStr = parts[0];
-    const timeStr = (parts[1] || '09:30').slice(0, 5);
-    return { date: dateStr, time: timeStr };
+  if (typeof timestamp === 'string' && !timestamp.endsWith('Z') && !/[+-]\d{2}:?\d{2}$/.test(timestamp)) {
+    // Naive IST timestamp from Dhan without timezone offset
+    const clean = timestamp.trim();
+    const parts = clean.split(/[T ]+/);
+    if (parts[0] && /^\d{4}-\d{2}-\d{2}$/.test(parts[0])) {
+      return {
+        date: parts[0],
+        time: (parts[1] || '09:30').slice(0, 5),
+      };
+    }
   }
   const d = new Date(timestamp);
+  if (isNaN(d.getTime())) {
+    return { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }), time: '09:30' };
+  }
   const dateStr = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
   const timeStr = d.toLocaleTimeString('en-GB', {
     timeZone: 'Asia/Kolkata',
@@ -94,153 +102,208 @@ export function getIndianTradingSession(timeStr: string): string {
 }
 
 /**
- * Match raw chronological executions into completed round-trip trades
+ * Match raw chronological executions into consolidated round-trip trades
+ * (Multiple partial fills & scale-in/scale-out orders for one position from open to flat = 1 trade)
  */
 export function matchDhanExecutions(
   executions: any[],
   existingTrades: JournalTrade[] = [],
   projectId?: string
 ): JournalTrade[] {
-  // Index existing trades by ID so we don't overwrite user notes / confluences / chartHtf
   const existingMap = new Map<string, JournalTrade>();
   for (const t of existingTrades) {
     existingMap.set(t.id, t);
   }
 
+  // Step 1: Accumulate partial fills sharing the same orderId
+  const orderGrouped = new Map<string, any>();
+  for (const raw of executions) {
+    const orderId = String(raw.orderId || raw.exchangeOrderId || Math.random().toString(36).substring(7));
+    const qty = Number(raw.tradedQuantity || raw.quantity || 0);
+    const price = Number(raw.tradedPrice || raw.price || 0);
+    const statFee = Number(
+      (
+        (raw.brokerageCharges || 0) +
+        (raw.exchangeTransactionCharges || 0) +
+        (raw.sebiTax || 0) +
+        (raw.serviceTax || 0) +
+        (raw.stampDuty || 0) +
+        (raw.stt || 0)
+      ).toFixed(4)
+    );
+    if (orderGrouped.has(orderId)) {
+      const prev = orderGrouped.get(orderId)!;
+      const totalQty = prev.qty + qty;
+      prev.price = totalQty > 0 ? (prev.price * prev.qty + price * qty) / totalQty : price;
+      prev.qty = totalQty;
+      prev.statFee += statFee;
+    } else {
+      orderGrouped.set(orderId, {
+        ...raw,
+        orderId,
+        qty,
+        price,
+        statFee,
+        time: raw.exchangeTime || raw.createTime || new Date().toISOString(),
+      });
+    }
+  }
+
   // Sort chronological ascending
-  const sorted = [...executions].sort(
-    (a, b) => new Date(a.exchangeTime || a.createTime).getTime() - new Date(b.exchangeTime || b.createTime).getTime()
+  const sorted = [...orderGrouped.values()].sort(
+    (a, b) => new Date(a.time).getTime() - new Date(b.time).getTime()
   );
 
-  const openPositions: Record<string, any[]> = {};
+  // Step 2: Consolidate each full position lifecycle (0 -> open -> 0 flat) per symbol into ONE trade
+  interface ActivePosition {
+    isLong: boolean;
+    netQty: number;
+    entryQty: number;
+    entryValueSum: number;
+    exitQty: number;
+    exitValueSum: number;
+    totalFees: number;
+    firstOrderId: string;
+    lastOrderId: string;
+    firstTime: string;
+    lastTime: string;
+    isIntraday: boolean;
+  }
+
+  const activeBySym: Record<string, ActivePosition> = {};
   const completedTrades: JournalTrade[] = [];
 
   for (const tr of sorted) {
     const rawSym = tr.customSymbol || tr.tradingSymbol || tr.securityId || 'STOCK';
     const sym = rawSym.replace(/^NSE:/, '').replace(/\.NS$/, '');
-    if (!openPositions[sym]) openPositions[sym] = [];
-
     const side = (tr.transactionType || 'BUY').toUpperCase(); // BUY or SELL
-    let remainingQty = Number(tr.tradedQuantity || tr.quantity || 0);
-    const price = Number(tr.tradedPrice || tr.price || 0);
-    const time = tr.exchangeTime || tr.createTime || new Date().toISOString();
+    let qty = Number(tr.qty || 0);
+    if (qty <= 0) continue;
+    const price = Number(tr.price || 0);
+    const time = tr.time;
+    const isIntraday = String(tr.productType || 'INTRADAY').toUpperCase() === 'INTRADAY';
+    const feePerUnit = tr.qty > 0 ? tr.statFee / tr.qty : 0;
 
-    // Exact statutory charges from Dhan or estimated fallback
-    const statFee = Number(
-      (
-        (tr.brokerageCharges || 0) +
-        (tr.exchangeTransactionCharges || 0) +
-        (tr.sebiTax || 0) +
-        (tr.serviceTax || 0) +
-        (tr.stampDuty || 0) +
-        (tr.stt || 0)
-      ).toFixed(2)
-    );
-    const totalFee = statFee > 0 ? statFee : estimateIndianCharges(price, price, remainingQty, true);
-    const feePerUnit = remainingQty > 0 ? totalFee / remainingQty : 0;
-
-    const oppositeSide = side === 'BUY' ? 'SELL' : 'BUY';
-
-    while (remainingQty > 0 && openPositions[sym].length > 0) {
-      const matchIdx = openPositions[sym].findIndex((o) => o.side === oppositeSide);
-      if (matchIdx === -1) break;
-
-      const openOrder = openPositions[sym][matchIdx];
-      const matchQty = Math.min(openOrder.qty, remainingQty);
-
-      const isLong = openOrder.side === 'BUY';
-      const entryPrice = openOrder.price;
-      const exitPrice = price;
-
-      // Profit & Loss calculation:
-      // For Long: (Exit - Entry) * Qty
-      // For Short: (Entry - Exit) * Qty
-      const grossPnl = isLong ? (exitPrice - entryPrice) * matchQty : (entryPrice - exitPrice) * matchQty;
-      const openFeePortion = Number((openOrder.feePerUnit * matchQty).toFixed(2));
-      const closeFeePortion = Number((feePerUnit * matchQty).toFixed(2));
-      const tradeFees = Number((openFeePortion + closeFeePortion).toFixed(2));
-      const netPnl = Number((grossPnl - tradeFees).toFixed(2));
-
-      const entryParts = (openOrder.time || '').trim().split(/[T ]+/);
-      const exitParts = (time || '').trim().split(/[T ]+/);
-
-      const entryDate = entryParts[0] || new Date().toISOString().split('T')[0];
-      const entryTime = formatSimpleTime(entryParts[1] || '09:30');
-      const exitDate = exitParts[0] || entryDate;
-      const exitTime = formatSimpleTime(exitParts[1] || '15:30');
-
-      // Estimated Risk & Return calculation:
-      // Default risk is 1% of entry price or min ₹0.50 per share
-      const riskPerShare = Math.max(0.5, entryPrice * 0.01);
-      const riskR = Number((riskPerShare * matchQty).toFixed(2));
-      const returnR = riskR > 0 ? Number((netPnl / riskR).toFixed(2)) : null;
-
-      // Auto-calculated Stop Loss & Take Profit:
-      const stopLoss = isLong
-        ? Number((entryPrice - riskPerShare).toFixed(2))
-        : Number((entryPrice + riskPerShare).toFixed(2));
-      const takeProfit = isLong
-        ? Number((entryPrice + riskPerShare * 2).toFixed(2))
-        : Number((entryPrice - riskPerShare * 2).toFixed(2));
-
-      const tradeId = `dhan_${openOrder.orderId}_${tr.orderId}_${matchQty}`;
-      const existing = existingMap.get(tradeId);
-
-      const journalTrade: JournalTrade = {
-        id: tradeId,
-        projectId: projectId || existing?.projectId,
-        instrument: sym,
-        direction: (isLong ? 'Buy' : 'Sell') as Direction,
-        lots: matchQty,
-        entryPrice: Number(entryPrice.toFixed(2)),
-        exitPrice: Number(exitPrice.toFixed(2)),
-        stopLoss: existing?.stopLoss ?? stopLoss,
-        takeProfit: existing?.takeProfit ?? takeProfit,
-        entryDate,
-        entryTime,
-        exitDate,
-        exitTime,
-        session: getIndianTradingSession(entryTime),
-        pnl: netPnl,
-        commission: tradeFees,
-        swap: 0,
-        riskR: existing?.riskR ?? riskR,
-        returnR: existing?.returnR ?? returnR,
-        followedPlan: existing?.followedPlan ?? true,
-        planName: existing?.planName || 'DhanHQ Execution',
-        confluences: existing?.confluences || [],
-        mistakes: existing?.mistakes || [],
-        notes: existing?.notes && !existing.notes.trim().startsWith('Dhan execution order #') ? existing.notes : '',
-        chartHtf: existing?.chartHtf,
-        chartMtf: existing?.chartMtf,
-        chartLtf: existing?.chartLtf,
-        source: 'auto',
-        createdAt: existing?.createdAt || openOrder.time,
-        updatedAt: new Date().toISOString(),
-      };
-
-      completedTrades.push(journalTrade);
-
-      remainingQty -= matchQty;
-      openOrder.qty -= matchQty;
-      if (openOrder.qty <= 0) {
-        openPositions[sym].splice(matchIdx, 1);
+    while (qty > 0) {
+      let pos = activeBySym[sym];
+      if (!pos) {
+        pos = {
+          isLong: side === 'BUY',
+          netQty: 0,
+          entryQty: 0,
+          entryValueSum: 0,
+          exitQty: 0,
+          exitValueSum: 0,
+          totalFees: 0,
+          firstOrderId: tr.orderId,
+          lastOrderId: tr.orderId,
+          firstTime: time,
+          lastTime: time,
+          isIntraday,
+        };
+        activeBySym[sym] = pos;
       }
-    }
 
-    if (remainingQty > 0) {
-      openPositions[sym].push({
-        orderId: tr.orderId || Math.random().toString(36).substring(7),
-        side,
-        qty: remainingQty,
-        price,
-        time,
-        feePerUnit,
-      });
+      const isSameDirection = (pos.isLong && side === 'BUY') || (!pos.isLong && side === 'SELL');
+      if (isSameDirection) {
+        pos.netQty += qty;
+        pos.entryQty += qty;
+        pos.entryValueSum += price * qty;
+        pos.totalFees += feePerUnit * qty;
+        pos.lastOrderId = tr.orderId;
+        pos.lastTime = time;
+        qty = 0;
+      } else {
+        const closeQty = Math.min(pos.netQty, qty);
+        pos.netQty -= closeQty;
+        pos.exitQty += closeQty;
+        pos.exitValueSum += price * closeQty;
+        pos.totalFees += feePerUnit * closeQty;
+        pos.lastOrderId = tr.orderId;
+        pos.lastTime = time;
+        qty -= closeQty;
+
+        // Position returned to 0 (flat): emit ONE consolidated round-trip trade!
+        if (pos.netQty <= 0) {
+          const avgEntry = pos.entryQty > 0 ? pos.entryValueSum / pos.entryQty : 0;
+          const avgExit = pos.exitQty > 0 ? pos.exitValueSum / pos.exitQty : 0;
+          const totalLots = pos.entryQty;
+
+          const grossPnl = pos.isLong
+            ? (avgExit - avgEntry) * totalLots
+            : (avgEntry - avgExit) * totalLots;
+
+          const tradeFees =
+            pos.totalFees > 0
+              ? Number(pos.totalFees.toFixed(2))
+              : estimateIndianCharges(
+                  pos.isLong ? avgEntry : avgExit,
+                  pos.isLong ? avgExit : avgEntry,
+                  totalLots,
+                  pos.isIntraday
+                );
+          const netPnl = Number((grossPnl - tradeFees).toFixed(2));
+
+          const entryIst = formatToKolkataTime(pos.firstTime || new Date());
+          const exitIst = formatToKolkataTime(pos.lastTime || new Date());
+          const entryDate = entryIst.date;
+          const entryTime = formatSimpleTime(entryIst.time);
+          const exitDate = exitIst.date;
+          const exitTime = formatSimpleTime(exitIst.time);
+
+          const riskPerShare = Math.max(0.5, avgEntry * 0.01);
+          const riskR = Number((riskPerShare * totalLots).toFixed(2));
+          const returnR = riskR > 0 ? Number((netPnl / riskR).toFixed(2)) : null;
+
+          const stopLoss = pos.isLong
+            ? Number((avgEntry - riskPerShare).toFixed(2))
+            : Number((avgEntry + riskPerShare).toFixed(2));
+          const takeProfit = pos.isLong
+            ? Number((avgEntry + riskPerShare * 2).toFixed(2))
+            : Number((avgEntry - riskPerShare * 2).toFixed(2));
+
+          const tradeId = `dhan_${pos.firstOrderId}_${pos.lastOrderId}_${totalLots}`;
+          const existing = existingMap.get(tradeId);
+
+          completedTrades.push({
+            id: tradeId,
+            projectId: projectId || existing?.projectId,
+            instrument: sym,
+            direction: (pos.isLong ? 'Buy' : 'Sell') as Direction,
+            lots: totalLots,
+            entryPrice: Number(avgEntry.toFixed(2)),
+            exitPrice: Number(avgExit.toFixed(2)),
+            stopLoss: existing?.stopLoss ?? stopLoss,
+            takeProfit: existing?.takeProfit ?? takeProfit,
+            entryDate,
+            entryTime,
+            exitDate,
+            exitTime,
+            session: getIndianTradingSession(entryTime),
+            pnl: netPnl,
+            commission: tradeFees,
+            swap: 0,
+            riskR: existing?.riskR ?? riskR,
+            returnR: existing?.returnR ?? returnR,
+            followedPlan: existing?.followedPlan ?? true,
+            planName: existing?.planName || 'DhanHQ Execution',
+            confluences: existing?.confluences || [],
+            mistakes: existing?.mistakes || [],
+            notes: existing?.notes && !existing.notes.trim().startsWith('Dhan execution order #') ? existing.notes : '',
+            chartHtf: existing?.chartHtf,
+            chartMtf: existing?.chartMtf,
+            chartLtf: existing?.chartLtf,
+            source: 'auto',
+            createdAt: existing?.createdAt || pos.firstTime,
+            updatedAt: new Date().toISOString(),
+          });
+
+          delete activeBySym[sym];
+        }
+      }
     }
   }
 
-  // Sort newest first
   return completedTrades.reverse();
 }
 
@@ -249,6 +312,7 @@ export function matchDhanExecutions(
  * Prioritizes Supabase cache to avoid unnecessary calls to Dhan API
  */
 let lastBackgroundDhanReconcileAt = 0;
+let journalSyncInFlight: Promise<{ syncedCount: number; trades: JournalTrade[] }> | null = null;
 
 function stableTradesChanged(prevRaw: string | null, nextTrades: JournalTrade[]): boolean {
   if (!prevRaw) return true;
@@ -260,7 +324,21 @@ function stableTradesChanged(prevRaw: string | null, nextTrades: JournalTrade[])
   }
 }
 
-export async function syncDhanTradesToJournal(
+export function syncDhanTradesToJournal(
+  projectId?: string,
+  forceRefresh = false
+): Promise<{
+  syncedCount: number;
+  trades: JournalTrade[];
+}> {
+  if (journalSyncInFlight) return journalSyncInFlight;
+  journalSyncInFlight = syncDhanTradesToJournalRemote(projectId, forceRefresh).finally(() => {
+    journalSyncInFlight = null;
+  });
+  return journalSyncInFlight;
+}
+
+async function syncDhanTradesToJournalRemote(
   projectId?: string,
   forceRefresh = false
 ): Promise<{
@@ -377,7 +455,7 @@ export async function syncDhanTradesToJournal(
         fetch('/api/journal/supabase', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ trades: matchedTrades }),
+          body: JSON.stringify({ trades: matchedTrades, replaceAuto: true }),
         }).catch((err) => console.warn('Supabase journal async persist error:', err));
       } catch {}
     }

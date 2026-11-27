@@ -305,6 +305,41 @@ export function dispatchAgentHeartbeat(
   return heartbeatEngine.dispatchAgentHeartbeat(agentId, agentNameOrCustom, role, ...rest);
 }
 
+/** Ask the configured model for a real proactive check-in. Account data is not
+ * included here; connector-backed context is requested separately on demand. */
+export async function requestProactiveAgentCheck(
+  agentId: string,
+  agentName: string,
+  role: string,
+): Promise<HeartbeatMessage | null> {
+  try {
+    const response = await fetch('/v1/trading/proactive/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reason: `Scheduled check-in for ${agentName} (${role})`,
+        agentId,
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.proactive_message) return null;
+    const message: HeartbeatMessage = {
+      id: `hb_${agentId}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      sender: 'agent',
+      agentId,
+      agentName,
+      content: result.proactive_message,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      model: result.model,
+    };
+    heartbeatEngine.recordAgentHeartbeat(agentId, { isAlive: true, status: 'monitoring', currentTask: 'Proactive model check-in' });
+    window.dispatchEvent(new CustomEvent('agent-heartbeat-pulse', { detail: { agentId, agentName, message } }));
+    return message;
+  } catch {
+    return null;
+  }
+}
+
 export function startAgentHeartbeat(intervalMs: number = 30000): () => void {
   return heartbeatEngine.start(intervalMs);
 }

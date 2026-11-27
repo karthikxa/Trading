@@ -191,6 +191,7 @@ export function AgentSelector({
       } else if (custom.detail?.id) {
         setSelectedBotId(custom.detail.id);
         setSelectedGroup(null);
+        onSelect(custom.detail.id);
       }
     };
 
@@ -207,7 +208,7 @@ export function AgentSelector({
       window.removeEventListener('selected-swarm-agent', handleSwarmSelect);
       window.removeEventListener('tauric-groups-updated', handleGroupsUpdate);
     };
-  }, []);
+  }, [onSelect]);
 
   const DEFAULT_SWARM_LEAD: TradingAgentDef = {
     id: 'portfolio_manager',
@@ -319,9 +320,20 @@ export function AgentSelector({
         variant="ghost"
         size="sm"
         disabled
-        className="text-muted-foreground rounded-lg hit-area-y-3"
+        className="text-muted-foreground rounded-lg hit-area-y-3 gap-2"
       >
-        <span className={cn('max-w-[120px] truncate font-medium', triggerLabelClassName)}>
+        {selectedGroup ? (
+          <OverlappingAvatars agentIds={selectedGroup.agentIds} size={18} />
+        ) : (
+          <BotAvatar
+            shape={activeSwarmBot?.shape || 'circle'}
+            color={activeSwarmBot?.color || '#7C5CFF'}
+            size={18}
+            expression={activeSwarmBot?.expression || 'attentive'}
+            isAnimated={false}
+          />
+        )}
+        <span className={cn('max-w-[120px] truncate font-medium font-sans', triggerLabelClassName)}>
           {currentDisplayName}
         </span>
       </Button>
@@ -344,6 +356,17 @@ export function AgentSelector({
           />
         }
       >
+        {selectedGroup ? (
+          <OverlappingAvatars agentIds={selectedGroup.agentIds} size={18} />
+        ) : (
+          <BotAvatar
+            shape={activeSwarmBot?.shape || 'circle'}
+            color={activeSwarmBot?.color || '#7C5CFF'}
+            size={18}
+            expression={activeSwarmBot?.expression || 'attentive'}
+            isAnimated={false}
+          />
+        )}
         <span
           className={cn(
             'truncate text-sm font-medium text-zinc-900 dark:text-zinc-100 leading-tight font-sans tracking-normal max-w-[160px]',

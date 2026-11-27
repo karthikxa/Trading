@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
 export const dynamic = 'force-dynamic';
+const DEFAULT_RENDER_BASE_URL = 'https://server-llm-1.onrender.com';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_KEY =
@@ -56,6 +57,31 @@ async function ensureDbRecord(
   }
 }
 
+function buildTradingContextPrompt(context: unknown): string {
+  if (!context || typeof context !== 'object') return '';
+  try {
+    const serialized = JSON.stringify(context);
+    if (!serialized || serialized.length > 120_000) return '';
+    return `\n\n[UNIFIED_TRADING_CONTEXT]\nThe following is the latest dashboard snapshot captured immediately before this message. Treat it as read-only factual context. Do not invent missing values. Never place, modify, or cancel an order without an explicit user confirmation through the dashboard approval flow.\n${serialized}\n[/UNIFIED_TRADING_CONTEXT]`;
+  } catch {
+    return '';
+  }
+}
+
+function remoteCompletionUrl(): string | null {
+  const baseUrl = (process.env.FLM_REMOTE_BASE_URL || DEFAULT_RENDER_BASE_URL).replace(/\/$/, '');
+  return baseUrl.endsWith('/v1') ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
+}
+
+function normalizeHistory(history: unknown): Array<{ role: 'user' | 'assistant'; content: string }> {
+  if (!Array.isArray(history)) return [];
+  return history.slice(-12).flatMap((entry: any) => {
+    const content = typeof entry?.content === 'string' ? entry.content.trim() : '';
+    if (!content) return [];
+    return [{ role: entry.sender === 'agent' || entry.role === 'assistant' ? 'assistant' : 'user', content }];
+  });
+}
+
 /**
  * Chat handler: forwards directly to the same-origin /v1/trading/chat gateway
  * or local API server (http://localhost:8008/v1/trading/chat) where persona
@@ -72,6 +98,7 @@ export async function POST(req: NextRequest) {
       projectId = 'b0000000-0000-0000-0000-000000000001',
       sessionId = `session-${agentId}`,
       history = [],
+      tradingContext,
       stream = true,
       hopCount = 0,
     } = body;
@@ -80,21 +107,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: 'Empty prompt' }, { status: 400 });
     }
 
-    // Call unified /v1/trading/chat endpoint (local backend or same-origin)
-    const apiTarget = process.env.INTERNAL_API_URL || 'http://localhost:8008';
+    const apiTarget = process.env.INTERNAL_API_URL?.replace(/\/$/, '');
+    const remoteUrl = remoteCompletionUrl();
     let replyText = '';
     let modelName = 'auto';
-    let providerName = 'FreeLLMAPI';
+    let providerName = 'Render LLM';
+    let upstreamError = 'No model service is configured.';
+    const normalizedHistory = normalizeHistory(history);
 
-    try {
+    if (apiTarget) {
       const chatRes = await fetch(`${apiTarget}/v1/trading/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agentId,
+          agentName,
           message: prompt,
-          history,
+          history: normalizedHistory,
           hopCount,
+          tradingContext,
+          projectId,
+          sessionId,
         }),
         signal: AbortSignal.timeout(15000),
       });
@@ -102,37 +135,44 @@ export async function POST(req: NextRequest) {
       if (chatRes.ok) {
         const data = await chatRes.json();
         replyText = data.reply || '';
-        modelName = 'auto';
-        providerName = 'FreeLLMAPI';
+        modelName = data.model || modelName;
+        providerName = data.provider || providerName;
+      } else {
+        upstreamError = `Trading service returned HTTP ${chatRes.status}.`;
       }
-    } catch {
-      // Background server offline/restarting - direct FreeLLMAPI fallback
-    }
-
-    if (!replyText) {
-      try {
-        const pollRes = await fetch('https://text.pollinations.ai/openai/chat/completions', {
+    } else if (remoteUrl) {
+      const remoteRes = await fetch(remoteUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(process.env.FLM_REMOTE_API_KEY ? { Authorization: `Bearer ${process.env.FLM_REMOTE_API_KEY}` } : {}),
+          },
           body: JSON.stringify({
+            model: body.model === 'zed' || !body.model ? 'auto' : body.model,
             messages: [
-              { role: 'system', content: `You are ${agentName}, an institutional trading desk bot.` },
+              { role: 'system', content: `You are ${agentName}, an institutional trading desk bot. Use the supplied unified trading context as the source of truth. Do not execute trades without explicit confirmation.${buildTradingContextPrompt(tradingContext)}` },
+              ...normalizedHistory,
               { role: 'user', content: prompt },
             ],
-            model: 'openai-fast',
-            seed: Math.floor(Math.random() * 1000000),
+            stream: false,
           }),
-          signal: AbortSignal.timeout(20000),
+          signal: AbortSignal.timeout(30000),
         });
-        if (pollRes.ok) {
-          const pollData = await pollRes.json();
-          replyText = pollData?.choices?.[0]?.message?.content || '';
-        }
-      } catch {}
+      if (remoteRes.ok) {
+        const data = await remoteRes.json();
+        replyText = data?.choices?.[0]?.message?.content || data?.reply || '';
+        modelName = data?.model || modelName;
+        providerName = data?.provider || providerName;
+      } else {
+        upstreamError = `Render model returned HTTP ${remoteRes.status}.`;
+      }
     }
 
     if (!replyText) {
-      replyText = `**${agentName}**\n\nReceived: "${prompt}". Ready for trading instructions.`;
+      return NextResponse.json(
+        { ok: false, code: 'MODEL_UNAVAILABLE', error: upstreamError },
+        { status: 503 },
+      );
     }
 
     const messageId = `msg_${Date.now()}`;

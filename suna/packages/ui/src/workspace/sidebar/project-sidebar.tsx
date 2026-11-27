@@ -143,7 +143,7 @@ export function ProjectSidebar({
     }
   }, [setOpenMobile]);
 
-  // Close mobile sidebar automatically when switching tabs or routes in vertical (portrait) mode;
+  // Close mobile sidebar automatically when switching tabs in vertical (portrait) mode;
   // keep it open in horizontal (landscape) mode.
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -153,22 +153,6 @@ export function ProjectSidebar({
     window.addEventListener('trading-tab-change', closeIfPortrait);
     return () => window.removeEventListener('trading-tab-change', closeIfPortrait);
   }, [setOpenMobile]);
-
-  // Also auto-close whenever pathname or searchParams change in mobile portrait
-  const lastNavKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    const navKey = `${pathname}?${searchParams.toString()}`;
-    if (lastNavKeyRef.current === null) {
-      lastNavKeyRef.current = navKey;
-      return;
-    }
-    if (lastNavKeyRef.current !== navKey) {
-      lastNavKeyRef.current = navKey;
-      if (isPortraitMobileViewport()) {
-        setOpenMobile(false);
-      }
-    }
-  }, [pathname, searchParams, setOpenMobile]);
 
   useEffect(() => {
     if (channels) return;

@@ -1,53 +1,11 @@
 [
   {
-    "id": "tauric-analysts",
-    "name": "Research & Analysts",
-    "description": "Technical, Fundamental, Sentiment, and Macro analysis cluster",
-    "agent_ids": [
-      "technical_analyst",
-      "fundamentals_analyst",
-      "news_sentiment_analyst",
-      "macro_analyst"
-    ],
-    "is_archived": true,
-    "created_at": "2026-11-20T00:00:00.000Z",
-    "updated_at": "2026-11-24T14:39:33.483Z"
-  },
-  {
-    "id": "tauric-risk-gate",
-    "name": "Risk & Red Team Gate",
-    "description": "Risk Manager and Adversarial Critic gatekeeping trade entry",
-    "agent_ids": [
-      "risk_manager",
-      "critic"
-    ],
-    "is_archived": true,
-    "created_at": "2026-11-20T00:00:00.000Z",
-    "updated_at": "2026-11-24T14:39:35.287Z"
-  },
-  {
-    "id": "tauric-execution",
-    "name": "Capital Allocation & Execution",
-    "description": "Portfolio Manager, EA, and Smart Order Router",
-    "agent_ids": [
-      "portfolio_manager",
-      "executor",
-      "ea"
-    ],
+    "id": "market-review",
+    "name": "Market Review",
+    "description": "Technical Analyst and Trader Agent collaborate on analysis and execution planning.",
+    "agent_ids": ["technical_analyst", "trader_agent"],
     "is_archived": false,
-    "created_at": "2026-11-20T00:00:00.000Z",
-    "updated_at": "2026-11-20T00:00:00.000Z"
-  },
-  {
-    "id": "group_1795443034780",
-    "name": "Alpha Momentum Team",
-    "description": "Fast entry and risk hedgers",
-    "agent_ids": [
-      "portfolio_manager",
-      "test_bot_1795443034719"
-    ],
-    "is_archived": true,
-    "created_at": "2026-11-23T14:10:34.780Z",
-    "updated_at": "2026-11-24T14:39:38.363Z"
+    "created_at": "2026-11-27T00:00:00.000Z",
+    "updated_at": "2026-11-27T00:00:00.000Z"
   }
 ]

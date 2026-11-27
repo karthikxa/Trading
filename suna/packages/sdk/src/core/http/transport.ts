@@ -563,19 +563,11 @@ export const BOT_PERSONAS: Record<
     systemPrompt:
       'You are BOPS Orchestrator on the Tauric trading desk. Coordinate multi-agent tasks, synthesize cross-analyst validation, and deploy automated multi-agent intelligence. Speak directly in first person as BOPS.',
   },
-  manus: {
-    name: 'Manus Bot',
-    role: 'Autonomous Deep Research & Execution',
-    welcome: `Welcome to **Tauric Trading Desk**! I am **Manus Bot**.\n\nI perform autonomous web research, deep filing reviews, and automated data compilation. What workflow shall I investigate?`,
-    systemPrompt:
-      'You are Manus Bot on the Tauric trading desk. Perform deep market research, examine filings, compile financial data, and execute autonomous tasks end-to-end. Speak directly in first person as Manus Bot.',
-  },
 };
 
 export function normalizeAgentKey(key?: string | null): string {
   if (!key) return 'portfolio_manager';
   const clean = key.toLowerCase().trim().replace(/[\s-]+/g, '_');
-  if (clean.includes('manus') || clean.includes('maus')) return 'manus';
   if (clean.includes('bops') || clean.includes('boqs')) return 'bops';
   if (BOT_PERSONAS[clean]) return clean;
   for (const [id, bot] of Object.entries(BOT_PERSONAS)) {
@@ -2129,7 +2121,10 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
         console.error('[Render-LLM] Error fetching follow-up completion:', e);
       }
       if (!reply || !reply.trim()) {
-        reply = generateDynamicTradingAnalysis(promptText, 'zed', agentId);
+        return new Response(
+          JSON.stringify({ error: 'The configured model service did not return an answer.', code: 'MODEL_UNAVAILABLE' }),
+          { status: 503, headers: { 'Content-Type': 'application/json' } },
+        );
       }
 
       // Add assistant reply to session with explicit reply_to so transcript links it to the user turn!
@@ -2227,7 +2222,7 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
           client_message_id: clientMsgId,
           message_id: userMsgId,
           placement: 'transcript',
-          delivery: 'queue',
+          delivery: 'transcript',
           state: 'delivered',
           queued_at_ms: Date.now(),
           observed_at: now,
@@ -2617,7 +2612,10 @@ async function getMockBackendResponse(url: string, init?: RequestInit, input?: R
           console.error('[Render-LLM] Error fetching completion:', e);
         }
         if (!reply || !reply.trim()) {
-          reply = generateDynamicTradingAnalysis(promptText, 'zed', agentId);
+          return new Response(
+            JSON.stringify({ error: 'The configured model service did not return an answer.', code: 'MODEL_UNAVAILABLE' }),
+            { status: 503, headers: { 'Content-Type': 'application/json' } },
+          );
         }
 
         // Add assistant reply to session with explicit reply_to
@@ -2998,6 +2996,15 @@ async function dispatch(
       err?.message?.includes('Failed') ||
       err?.code === 'ECONNREFUSED';
     if (isNetworkFailure) {
+      const isSessionChatTransport =
+        url.includes('/sessions/') &&
+        (url.includes('/prompts') || url.includes('/prompt_async') || url.includes('/message') || url.includes('/turn') || url.includes('/log') || url.includes('/events'));
+      if (isSessionChatTransport) {
+        return new Response(
+          JSON.stringify({ error: 'The chat service could not be reached. Check the deployed web and Render services.', code: 'CHAT_UNREACHABLE' }),
+          { status: 503, headers: { 'content-type': 'application/json' } },
+        );
+      }
       return await getMockBackendResponse(url, init, input);
     }
     throw err;
@@ -3042,6 +3049,50 @@ function refreshedToken(rejectedToken: string): Promise<string | null> {
   return refresh;
 }
 
+function addTradingContextToSessionPrompt(url: string, init: RequestInit): RequestInit {
+  if (typeof window === 'undefined' || init.method?.toUpperCase() !== 'POST') return init;
+  if (!url.includes('/sessions/') || (!url.includes('/prompts') && !url.includes('/prompt_async'))) return init;
+  if (typeof init.body !== 'string') return init;
+
+  try {
+    const body = JSON.parse(init.body) as Record<string, any>;
+    if (body.tradingContext) return init;
+    const promptText = [
+      body.prompt,
+      body.message,
+      ...(Array.isArray(body.parts) ? body.parts.map((part: any) => part?.text || '') : []),
+    ].filter(Boolean).join('\n');
+    if (!/\b(dhan|trade|trades|trading|position|positions|holding|holdings|order|orders|p&l|pnl|profit|loss|balance|funds|margin|portfolio|account|broker|market|price|quote|risk|exposure)\b/i.test(promptText)) return init;
+    const read = (key: string, fallback: any) => {
+      try {
+        const value = window.localStorage.getItem(key);
+        return value ? JSON.parse(value) : fallback;
+      } catch {
+        return fallback;
+      }
+    };
+    const strip = (value: any): any => {
+      if (Array.isArray(value)) return value.slice(0, 100).map(strip);
+      if (!value || typeof value !== 'object') return value;
+      return Object.fromEntries(Object.entries(value).filter(([key]) => !/^(rawData|chartHtf|chartMtf|chartLtf|image|screenshot)$/i.test(key)).map(([key, item]) => [key, strip(item)]));
+    };
+    body.tradingContext = {
+      capturedAt: new Date().toISOString(),
+      market: {
+        liveSnapshot: strip(read('kortix_dhan_live_cache_v2', null)),
+        funds: strip(read('kortix_trading_dhan_funds', null)),
+        positions: strip(read('kortix_trading_dhan_positions', [])),
+      },
+      orders: strip(read('kortix_trading_dhan_orders_v1', [])),
+      journal: strip(read('kortix_trading_journal_trades_v2', [])),
+    };
+    const serialized = JSON.stringify(body);
+    return serialized.length <= 180_000 ? { ...init, body: serialized } : init;
+  } catch {
+    return init;
+  }
+}
+
 /** Send one request to the Kortix backend. See the module comment for the contract. */
 export async function send(
   input: RequestInfo | URL,
@@ -3062,49 +3113,46 @@ export async function send(
   }
 
   const url = input instanceof Request ? input.url : String(input);
+  const requestInit = addTradingContextToSessionPrompt(url, init);
 
-  // Directly route all connectors, sessions, prompts, turns, and log calls to the local engine
+  // Keep connector discovery on the local compatibility surface. Session chat must
+  // reach the configured backend so it can call the real model and persist a real transcript.
   if (
     url.includes('/discover') ||
     url.includes('/connectors/projects') ||
     url.includes('/connect/toolkits') ||
     url.includes('/connect-status') ||
     url.includes('/connections') ||
-    url.includes('/prompts') ||
-    url.includes('/prompt_async') ||
-    url.includes('/turn') ||
-    url.includes('/working') ||
-    url.includes('/log') ||
     url.includes('/sandboxes') ||
-    (url.includes('/sessions/') && (url.includes('/start') || url.includes('/log') || url.includes('/turn') || url.includes('/working') || url.includes('/prompts')))
+    (url.includes('/sessions/') && url.includes('/start'))
   ) {
     return await getMockBackendResponse(url, init, input);
   }
 
   const canRetry =
-    retryOnAuthError && !hasOneShotBody(init) && !hasHeader(callerHeaders(input, init), 'authorization');
+    retryOnAuthError && !hasOneShotBody(requestInit) && !hasHeader(callerHeaders(input, requestInit), 'authorization');
   const retryInput = canRetry && input instanceof Request ? input.clone() : input;
 
-  let response = await dispatch(fetchImpl, input, init, token, signal);
+  let response = await dispatch(fetchImpl, input, requestInit, token, signal);
   if (response.status === 401 && canRetry) {
     const fresh = await refreshedToken(token);
     if (fresh && fresh !== token) {
-      response = await dispatch(fetchImpl, retryInput, init, fresh, signal);
+      response = await dispatch(fetchImpl, retryInput, requestInit, fresh, signal);
     }
   }
 
   const isHtmlCatchall = response.headers.get('content-type')?.includes('text/html');
   if (!response.ok || isHtmlCatchall) {
+    const isSessionChatTransport =
+      url.includes('/sessions/') &&
+      (url.includes('/prompts') || url.includes('/prompt_async') || url.includes('/message') || url.includes('/turn') || url.includes('/log') || url.includes('/events'));
     if (
+      !isSessionChatTransport && (
       url.includes('proj-trading') ||
       url.includes('/projects') ||
       url.includes('/accounts') ||
       url.includes('/billing') ||
       url.includes('/session') ||
-      url.includes('/prompts') ||
-      url.includes('/prompt_async') ||
-      url.includes('/message') ||
-      url.includes('/turn') ||
       url.includes('/can') ||
       url.includes('/permissions') ||
       url.includes('/effective') ||
@@ -3123,8 +3171,8 @@ export async function send(
       url.includes('/health') ||
       url.includes('/snapshot') ||
       url.includes('/presence') ||
-      url.includes('/events') ||
-      url.includes('/log')
+      url.includes('/events')
+      )
     ) {
       return await getMockBackendResponse(url, init, input);
     }

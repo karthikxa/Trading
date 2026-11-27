@@ -19,9 +19,9 @@ import {
 import { JournalTrade } from './types';
 import { ChartLightbox } from './ChartLightbox';
 import { TradingPairIcon } from './TradingPairIcon';
-import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@kortix/ui/button';
+import { Card } from '@kortix/ui/card';
+import { Badge } from '@kortix/ui/badge';
 import { formatSimpleTime } from '@/features/trading/dhanOrdersSync';
 
 function AlertCircleFilled({ className = 'size-3.5' }: { className?: string }) {
