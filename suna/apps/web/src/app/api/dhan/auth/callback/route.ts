@@ -34,6 +34,15 @@ export async function GET(req: NextRequest) {
   const returnTo = getSafeReturnTo(isPopup ? undefined : rawReturnTo);
 
   const errorRedirect = (reason: string) => {
+    if (isPopup) {
+      const htmlRes = new NextResponse(
+        `<!doctype html><html><body style="font-family:system-ui,sans-serif;background:#09090b;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><p style="font-size:15px;font-weight:600;color:#f87171">DhanHQ Connection Failed</p><p style="font-size:12px;color:#a1a1aa">${reason}</p></div><script>try{var bc=new BroadcastChannel('dhan-auth-channel');bc.postMessage({type:'dhan-error',reason:${JSON.stringify(reason)}});bc.close();}catch{}try{window.opener&&window.opener.postMessage({type:'dhan-error',reason:${JSON.stringify(reason)}},'*');}catch{}setTimeout(function(){window.close();},300);</script></body></html>`,
+        { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+      );
+      htmlRes.cookies.delete({ name: CONSENT_COOKIE, path: '/api/dhan/auth' });
+      htmlRes.cookies.delete({ name: RETURN_TO_COOKIE, path: '/api/dhan/auth' });
+      return htmlRes;
+    }
     const res = NextResponse.redirect(`${origin}${withQueryParam(returnTo, 'dhan', reason)}`);
     res.cookies.delete({ name: CONSENT_COOKIE, path: '/api/dhan/auth' });
     res.cookies.delete({ name: RETURN_TO_COOKIE, path: '/api/dhan/auth' });
@@ -89,8 +98,13 @@ export async function GET(req: NextRequest) {
     resetAutoLoginCooldown();
 
     if (isPopup) {
+      const payload = JSON.stringify({
+        type: 'dhan-connected',
+        clientId: session.clientId,
+        name: session.name || null,
+      });
       const htmlRes = new NextResponse(
-        `<!doctype html><html><body style="font-family:system-ui,sans-serif;background:#09090b;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><p style="font-size:15px;font-weight:600;color:#34d399">DhanHQ Connected!</p><p style="font-size:12px;color:#a1a1aa">Closing window...</p></div><script>try{window.opener&&window.opener.postMessage({type:'dhan-connected'},'*');}catch{}setTimeout(function(){window.close();},150);</script></body></html>`,
+        `<!doctype html><html><body style="font-family:system-ui,sans-serif;background:#09090b;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><p style="font-size:15px;font-weight:600;color:#00B386">DhanHQ Connected!</p><p style="font-size:12px;color:#a1a1aa">Syncing live account...</p></div><script>try{var bc=new BroadcastChannel('dhan-auth-channel');bc.postMessage(${payload});bc.close();}catch{}try{window.opener&&window.opener.postMessage(${payload},'*');}catch{}window.close();</script></body></html>`,
         { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
       );
       htmlRes.cookies.delete({ name: CONSENT_COOKIE, path: '/api/dhan/auth' });

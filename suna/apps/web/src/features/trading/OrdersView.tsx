@@ -59,6 +59,7 @@ import {
   DhanOrderItem,
   syncDhanOrders,
   getLocalOrders,
+  clearLocalOrders,
   formatToKolkataIST,
   formatSimpleTime,
 } from './dhanOrdersSync';
@@ -328,9 +329,20 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
       setTimeout(() => setPlacingOrder(null), 1200);
     };
 
+    const handleTokenUpdated = (e: Event) => {
+      const detail = e instanceof CustomEvent ? e.detail : undefined;
+      if (detail && detail.connected === false) {
+        clearLocalOrders();
+        setOrders([]);
+      } else {
+        fetchOrders(true);
+      }
+    };
+
     window.addEventListener('dhan-orders-updated', onOrdersUpdated);
     window.addEventListener('dhan-order-placing', handlePlacing);
     window.addEventListener('dhan-order-placed', handlePlaced);
+    window.addEventListener('dhan-token-updated', handleTokenUpdated);
 
     // Live market polling every 1500ms with zero flicker
     const interval = setInterval(() => {
@@ -343,6 +355,7 @@ export default function OrdersView({ projectId }: OrdersViewProps) {
       window.removeEventListener('dhan-orders-updated', onOrdersUpdated);
       window.removeEventListener('dhan-order-placing', handlePlacing);
       window.removeEventListener('dhan-order-placed', handlePlaced);
+      window.removeEventListener('dhan-token-updated', handleTokenUpdated);
       clearInterval(interval);
     };
   }, [fetchOrders]);

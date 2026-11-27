@@ -199,6 +199,14 @@ export function getLocalOrders(): DhanOrderItem[] {
   }
 }
 
+export function clearLocalOrders() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(ORDERS_STORAGE_KEY);
+    window.dispatchEvent(new CustomEvent('dhan-orders-updated', { detail: { count: 0 } }));
+  } catch {}
+}
+
 export function saveLocalOrders(orders: DhanOrderItem[]) {
   if (typeof window === 'undefined') return;
   try {
@@ -226,10 +234,25 @@ export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderIte
 
   try {
     // 1. Fetch today's orders & executions from Dhan (authenticated via httpOnly session cookie)
-    const [ordersRes, tradesRes] = await Promise.all([
-      fetch('/api/dhan?action=orders', { credentials: 'same-origin' }).then((r) => r.json()).catch(() => ({ ok: false, data: [] })),
-      fetch('/api/dhan?action=all_trades', { credentials: 'same-origin' }).then((r) => r.json()).catch(() => ({ ok: false, data: [] })),
+    const [ordersHttp, tradesHttp] = await Promise.all([
+      fetch('/api/dhan?action=orders', { credentials: 'same-origin', cache: 'no-store' }),
+      fetch('/api/dhan?action=all_trades', { credentials: 'same-origin', cache: 'no-store' }),
     ]);
+
+    if (ordersHttp.status === 401 || tradesHttp.status === 401) {
+      clearLocalOrders();
+      return [];
+    }
+
+    const [ordersRes, tradesRes] = await Promise.all([
+      ordersHttp.json().catch(() => ({ ok: false, data: [] })),
+      tradesHttp.json().catch(() => ({ ok: false, data: [] })),
+    ]);
+
+    if (ordersRes?.ok === false && String(ordersRes?.error || '').toLowerCase().includes('not connected')) {
+      clearLocalOrders();
+      return [];
+    }
 
     const liveOrdersList = Array.isArray(ordersRes?.data) ? ordersRes.data : [];
     const tradesList = Array.isArray(tradesRes?.data) ? tradesRes.data : [];
@@ -488,7 +511,8 @@ export async function syncDhanOrders(forceRefresh = false): Promise<DhanOrderIte
       return mergedOrders;
     }
 
-    return cached;
+    saveLocalOrders([]);
+    return [];
   } catch (err) {
     console.error('Failed to sync Dhan orders:', err);
     return cached;

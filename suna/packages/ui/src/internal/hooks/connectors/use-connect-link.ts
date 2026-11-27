@@ -115,8 +115,12 @@ export async function runConnectLinkFlow(
     try {
       popup.opener = null;
       if (popup.document) {
+        const isDhanRoute =
+          typeof window !== 'undefined' && window.location.pathname.toLowerCase().includes('/dhan');
         popup.document.write(
-          '<!DOCTYPE html><html><head><title>Connecting...</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#090d16;color:#f8fafc;font-size:14px;}.loader{width:36px;height:36px;border:3px solid #1e293b;border-top:3px solid #6366f1;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px;}@keyframes spin{to{transform:rotate(360deg)}}p{margin:0;color:#94a3b8;font-weight:500;}</style></head><body><div style="text-align:center"><div class="loader"></div><p>Opening OAuth Authorization...</p></div></body></html>'
+          isDhanRoute
+            ? '<!DOCTYPE html><html><head><title>DhanHQ — Connecting...</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#090d16;color:#f8fafc;font-size:14px;}.loader{width:36px;height:36px;border:3px solid #1e293b;border-top:3px solid #00B386;border-radius:50%;animation:spin 0.6s linear infinite;margin:0 auto 16px;}@keyframes spin{to{transform:rotate(360deg)}}.brand{font-size:16px;font-weight:700;color:#00B386;margin-bottom:6px;letter-spacing:-0.01em}p{margin:0;color:#94a3b8;font-weight:500;font-size:13px;}</style></head><body><div style="text-align:center"><div class="loader"></div><div class="brand">DhanHQ</div><p>Connecting to DhanHQ Login...</p></div></body></html>'
+            : '<!DOCTYPE html><html><head><title>Connecting...</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#090d16;color:#f8fafc;font-size:14px;}.loader{width:36px;height:36px;border:3px solid #1e293b;border-top:3px solid #6366f1;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px;}@keyframes spin{to{transform:rotate(360deg)}}p{margin:0;color:#94a3b8;font-weight:500;}</style></head><body><div style="text-align:center"><div class="loader"></div><p>Opening OAuth Authorization...</p></div></body></html>'
         );
       }
     } catch {
@@ -128,35 +132,87 @@ export async function runConnectLinkFlow(
     const url = connectLinkUrl(response);
     if (!url) throw new Error('The connector did not return a Connect Link. Try again.');
 
-    // If it's Dhan authentication or requested direct redirection, redirect the main window directly
-    if (url.includes('/api/dhan/auth/start') || url.includes('auth.dhan.co')) {
-      closePopupSafely(popup);
-      window.location.assign(url);
-      return { connected: true };
-    }
+    const isDhanAuth = url.includes('/api/dhan/auth/start') || url.includes('auth.dhan.co');
+    const targetUrl =
+      url.includes('/api/dhan/auth/start') && !url.includes('popup=1')
+        ? `${url}${url.includes('?') ? '&' : '?'}popup=1`
+        : url;
 
     if (popup.closed) {
       throw new Error(POPUP_CLOSED_MESSAGE);
     }
 
-    popup.location.replace(url);
+    popup.location.replace(targetUrl);
+
+    // 0ms instant notification listener for DhanHQ callback (BroadcastChannel + postMessage)
+    let cleanupChannel: (() => void) | undefined;
+    const instantConnected = isDhanAuth
+      ? new Promise<{ connected: true; clientId?: string; name?: string }>((resolve, reject) => {
+          let bc: BroadcastChannel | null = null;
+          const onMsg = (data: any) => {
+            if (!data || typeof data !== 'object') return;
+            if (data.type === 'dhan-connected') {
+              resolve({ connected: true, clientId: data.clientId, name: data.name });
+            } else if (data.type === 'dhan-error') {
+              reject(new Error(`DhanHQ authorization failed (${data.reason || 'error'}).`));
+            }
+          };
+          const handleWindowMessage = (e: MessageEvent) => onMsg(e.data);
+          window.addEventListener('message', handleWindowMessage);
+          try {
+            if (typeof BroadcastChannel !== 'undefined') {
+              bc = new BroadcastChannel('dhan-auth-channel');
+              bc.onmessage = (e) => onMsg(e.data);
+            }
+          } catch {}
+          cleanupChannel = () => {
+            window.removeEventListener('message', handleWindowMessage);
+            try {
+              bc?.close();
+            } catch {}
+          };
+        })
+      : new Promise<never>(() => {});
+    instantConnected.catch(() => undefined);
 
     const sleep = options.sleep ?? defaultSleep;
     const now = options.now ?? (() => Date.now());
-    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    const pollIntervalMs = options.pollIntervalMs ?? (isDhanAuth ? 400 : DEFAULT_POLL_INTERVAL_MS);
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const deadline = now() + timeoutMs;
 
-    while (true) {
-      const result = await Promise.race([finalize(), watcher.closed, abortPromise]);
-      if (result.connected) return { connected: true };
-      if (popup.closed) {
-        throw new Error(POPUP_CLOSED_MESSAGE);
-      }
+    try {
+      while (true) {
+        const result = await Promise.race([
+          instantConnected,
+          finalize(),
+          watcher.closed,
+          abortPromise,
+        ]);
+        if (result.connected) {
+          if (isDhanAuth && typeof window !== 'undefined') {
+            window.dispatchEvent(
+              new CustomEvent('dhan-token-updated', {
+                detail: {
+                  connected: true,
+                  clientId: 'clientId' in result ? result.clientId : undefined,
+                  name: 'name' in result ? result.name : undefined,
+                },
+              }),
+            );
+          }
+          return { connected: true };
+        }
+        if (popup.closed) {
+          throw new Error(POPUP_CLOSED_MESSAGE);
+        }
 
-      const remainingMs = deadline - now();
-      if (remainingMs <= 0) throw new Error(timeoutMessage(timeoutMs));
-      await sleep(Math.min(pollIntervalMs, remainingMs));
+        const remainingMs = deadline - now();
+        if (remainingMs <= 0) throw new Error(timeoutMessage(timeoutMs));
+        await sleep(Math.min(pollIntervalMs, remainingMs));
+      }
+    } finally {
+      cleanupChannel?.();
     }
   } finally {
     activeAbort = null;

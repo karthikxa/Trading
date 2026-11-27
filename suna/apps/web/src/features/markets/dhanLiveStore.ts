@@ -486,17 +486,33 @@ if (typeof window !== 'undefined') {
     const detail = e instanceof CustomEvent ? e.detail : undefined;
     if (detail && detail.connected === false) {
       currentSnapshot = {
-        ...currentSnapshot,
+        funds: null,
+        positions: [],
+        summary: {
+          realizedProfit: 0,
+          unrealizedProfit: 0,
+          totalDayPnl: 0,
+          positionsCount: 0,
+          openPositionsCount: 0,
+          lastUpdated: new Date().toISOString(),
+        },
+        lastSyncTimestamp: Date.now(),
         isLive: false,
         isTokenExpired: true,
-        lastSyncTimestamp: Date.now(),
       };
+      try {
+        window.localStorage.removeItem(STORAGE_KEY);
+        window.localStorage.removeItem('kortix_trading_dhan_funds');
+        window.localStorage.removeItem('kortix_trading_dhan_positions');
+        window.localStorage.removeItem('kortix_trading_dhan_orders_v1');
+      } catch {}
       try {
         dhanMarketFeed.disconnect();
         dhanOrderUpdates.disconnect();
       } catch {}
       subscribers.forEach((cb) => cb(currentSnapshot));
       window.dispatchEvent(new CustomEvent('trading-dhan-live-updated', { detail: currentSnapshot }));
+      window.dispatchEvent(new CustomEvent('dhan-orders-updated', { detail: { count: 0 } }));
       return;
     }
 

@@ -76,14 +76,8 @@ export function ConnectorSettings({
 
   const isDhan = connector.slug === 'dhan' || connector.slug?.startsWith('dhan-');
   const remove = useMutation({
-    mutationFn: async () => {
-      if (isDhan) {
-        await fetch('/api/dhan/auth/status', { method: 'DELETE' }).catch(() => {});
-        await fetch(`/api/connectors?slug=${encodeURIComponent(connector.slug)}`, { method: 'DELETE' }).catch(() => {});
-      }
-      return deleteConnector(projectId, connector.slug);
-    },
-    onSuccess: () => {
+    onMutate: () => {
+      setConfirmDelete(false);
       queryClient.setQueryData(qk.project.connectors(projectId), (prev: any) => {
         if (!prev?.connectors) return prev;
         return {
@@ -93,10 +87,23 @@ export function ConnectorSettings({
           ),
         };
       });
-      void queryClient.invalidateQueries({ queryKey: qk.project.connectors(projectId) });
       if (isDhan && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('dhan-token-updated', { detail: { connected: false } }));
       }
+    },
+    mutationFn: async () => {
+      if (isDhan) {
+        await Promise.all([
+          fetch('/api/dhan/auth/status', { method: 'DELETE' }).catch(() => {}),
+          fetch(`/api/connectors?slug=${encodeURIComponent(connector.slug)}`, { method: 'DELETE' }).catch(() => {}),
+          deleteConnector(projectId, connector.slug),
+        ]);
+        return;
+      }
+      return deleteConnector(projectId, connector.slug);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: qk.project.connectors(projectId) });
       successToast(tI18nComplete('textffd34ade9168', { value0: displayName }));
       onRemoved();
     },

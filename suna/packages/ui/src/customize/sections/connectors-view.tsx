@@ -623,22 +623,39 @@ export function ConnectionsList({
   // Your own computer row follows you into every project, so its Disconnect
   // removes the machine from Kortix (every project), not one account.
   const unpairComputer = useDeleteTunnelConnection();
+  const queryClient = useQueryClient();
   const disconnect = useMutation({
+    onMutate: (connectionId: string) => {
+      setConfirmDisconnect(null);
+      queryClient.setQueryData(['connections', projectId], (prev: any) => {
+        if (!prev?.connections) return prev;
+        return {
+          ...prev,
+          connections: prev.connections.filter((c: any) => c.connection_id !== connectionId),
+        };
+      });
+      if (connector.slug === 'dhan' && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('dhan-token-updated', { detail: { connected: false } }));
+      }
+    },
     mutationFn: async (connectionId: string) => {
       if (connector.slug === 'dhan') {
-        await fetch('/api/dhan/auth/status', { method: 'DELETE' }).catch(() => {});
+        const [, res] = await Promise.all([
+          fetch('/api/dhan/auth/status', { method: 'DELETE' }).catch(() => {}),
+          revokeConnection(projectId, connectionId),
+        ]);
+        return res;
       }
       return revokeConnection(projectId, connectionId);
     },
     onSuccess: () => {
-      if (connector.slug === 'dhan' && typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('dhan-token-updated', { detail: { connected: false } }));
-      }
       successToast(tI18nComplete.raw('text04dfac3671b4'));
-      setConfirmDisconnect(null);
       refresh();
     },
-    onError: (e: Error) => errorToast(e.message || tI18nComplete.raw('textb7668a581f59')),
+    onError: (e: Error) => {
+      refresh();
+      errorToast(e.message || tI18nComplete.raw('textb7668a581f59'));
+    },
   });
 
   const rename = useMutation({
